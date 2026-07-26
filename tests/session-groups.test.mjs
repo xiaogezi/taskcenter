@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { groupSessions, sessionIdsForGroup, filterThreadsWithRequirements, filterThreadsWithTasks, requirementThreadIds } from "../app/session-groups.mjs";
+import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithRequirements, filterThreadsWithTasks, requirementThreadIds } from "../app/session-groups.mjs";
 
 test("同名 Codex 会话归并为一个组并保留全部 sessionId", () => {
   const groups = groupSessions([
@@ -95,4 +95,26 @@ test("filterThreadsWithTasks 不因需求卡片保留无任务会话", () => {
 
   const filtered = filterThreadsWithTasks(threads, [{ sessionId: "thread-task" }]);
   assert.deepEqual(filtered.map((t) => t.id), ["thread-task"]);
+});
+
+test("已登记但不在 Codex 来源中的任务 Session 会补齐到左侧来源", () => {
+  const merged = mergeTaskSessions(
+    [{ id: "codex-session", title: "Codex 会话" }],
+    [{ id: "task-external", sessionId: "external-session", title: "Claude 文件修改", workspace: "/work", status: "in_progress", updatedAt: "2026-07-26T04:00:00Z" }],
+    { "external-session": { agent: "claude", status: "registered" } },
+  );
+
+  const external = merged.find((thread) => thread.id === "external-session");
+  assert.equal(external?.title, "Claude 文件修改");
+  assert.equal(external?.sessionSource, "task-ledger");
+  assert.deepEqual(external?.sessionIds, ["external-session"]);
+});
+
+test("已有同一个真实 Session 时不会重复补齐", () => {
+  const merged = mergeTaskSessions(
+    [{ id: "same-session", title: "真实会话" }],
+    [{ id: "task-1", sessionId: "same-session", title: "任务" }],
+  );
+
+  assert.equal(merged.filter((thread) => thread.id === "same-session").length, 1);
 });

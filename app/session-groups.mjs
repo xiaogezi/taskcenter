@@ -42,6 +42,35 @@ export function groupSessions(threads) {
   });
 }
 
+export function mergeTaskSessions(threads, tasks, sessionStatuses = {}) {
+  const merged = [...threads];
+  const knownIds = new Set(threads.flatMap((thread) => [thread.id, ...(thread.sessionIds ?? [])]).filter(Boolean));
+  const latestTaskBySession = new Map();
+  for (const task of tasks) {
+    if (!task?.sessionId || task.status === "removed") continue;
+    const previous = latestTaskBySession.get(task.sessionId);
+    if (!previous || new Date(task.updatedAt ?? 0).getTime() > new Date(previous.updatedAt ?? 0).getTime()) {
+      latestTaskBySession.set(task.sessionId, task);
+    }
+  }
+  for (const [sessionId, task] of latestTaskBySession) {
+    if (knownIds.has(sessionId)) continue;
+    const status = sessionStatuses[sessionId];
+    merged.push({
+      id: sessionId,
+      title: task.title || `${status?.agent ?? "外部"} Session ${sessionId.slice(0, 8)}…`,
+      cwd: task.workspace,
+      updatedAt: task.updatedAt,
+      messageCount: 0,
+      sessionIds: [sessionId],
+      sessionCount: 1,
+      sessionSource: "task-ledger",
+    });
+    knownIds.add(sessionId);
+  }
+  return merged;
+}
+
 export function sessionIdsForGroup(selectedGroupId, groups) {
   return groups.find((group) => group.id === selectedGroupId)?.sessionIds ?? [];
 }

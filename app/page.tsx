@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import dashboardJson from "../data/dashboard.json";
-import { groupSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
+import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
 
 type SessionGroup = Thread & {
@@ -92,6 +92,7 @@ type Thread = {
   sessionIds?: string[];
   sessionCount?: number;
   groupKey?: string;
+  sessionSource?: "codex" | "task-ledger";
 };
 
 type SessionSelection = { mode: "all" | "selected"; threadIds: string[] };
@@ -415,7 +416,8 @@ export default function Home() {
     [allBoardRequirements, requirementOverrides],
   );
   const selectionThreads = liveAvailableThreads.length > 0 ? liveAvailableThreads : availableThreads;
-  const threadsWithTasks = filterThreadsWithTasks(selectionThreads, tasks);
+  const taskBackedThreads = mergeTaskSessions(selectionThreads, tasks, sessionStatuses);
+  const threadsWithTasks = filterThreadsWithTasks(taskBackedThreads, tasks);
   const selectionGroups = useMemo(() => groupSessions(threadsWithTasks), [threadsWithTasks]);
   const mergedThreads = selectionGroups;
 
@@ -745,7 +747,14 @@ export default function Home() {
                 </span>
                 <span className="thread-arrow">↗</span>
                 </button>
-                <button className="thread-remove-button" onClick={() => removeSessionGroup(thread.sessionIds ?? [id])} disabled={isSavingSessionSelection}>移除</button>
+                <button
+                  className="thread-remove-button"
+                  onClick={() => removeSessionGroup(thread.sessionIds ?? [id])}
+                  disabled={isSavingSessionSelection || thread.sessionSource === "task-ledger"}
+                  title={thread.sessionSource === "task-ledger" ? "该 Session 来自任务登记，不属于 Codex 扫描范围" : "移除会话"}
+                >
+                  {thread.sessionSource === "task-ledger" ? "已登记" : "移除"}
+                </button>
               </div>
             );
           })}
@@ -759,7 +768,7 @@ export default function Home() {
         <section className="board-area">
           <TaskLedger
             tasks={tasks}
-            availableThreads={liveAvailableThreads.length > 0 ? liveAvailableThreads : mergedThreads}
+            availableThreads={mergedThreads}
             sessionGroups={mergedThreads}
             selectedSessionId={selectedThread}
             sessionStatuses={sessionStatuses}
@@ -872,7 +881,7 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
     ? tasks
     : tasks.filter((task) => taskMatchesSession(task, {
       selectedSessionIds,
-      availableSessionIds: threadsForTask.map((thread) => thread.id).filter(Boolean),
+      availableSessionIds: threadsForTask.flatMap((thread) => [thread.id, ...(thread.sessionIds ?? [])]).filter(Boolean),
       selectedThread: sessionGroups.find((thread) => thread.id === selectedSessionId),
     }));
 
@@ -930,7 +939,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   const isDemo = task.id.startsWith("ui-demo-");
 
   const sessionInfo = useMemo(
-    () => resolveTaskSessionDisplay(task, threadsForTask.find((thread) => thread.id === task.sessionId)),
+    () => resolveTaskSessionDisplay(task, threadsForTask.find((thread) => thread.id === task.sessionId || thread.sessionIds?.includes(task.sessionId))),
     [task, threadsForTask],
   );
 
