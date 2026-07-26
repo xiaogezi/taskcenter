@@ -107,10 +107,16 @@ export function getSessionStatuses(availableSessionIds = [], tasks = loadTasks()
 }
 
 export function reconcileTasks(availableSessionIds) {
-  const available = new Set([...availableSessionIds].filter((id) => typeof id === "string" && id));
-  const registered = new Set(Object.keys(loadSessionRegistry()));
+  const available = new Set([...availableSessionIds]
+    .filter((id) => typeof id === "string" && id)
+    .map(canonicalSessionId));
+  const registered = new Set(Object.keys(loadSessionRegistry()).map(canonicalSessionId));
   const tasks = readLedger();
-  const stale = tasks.filter((task) => task.status !== "removed" && !available.has(task.sessionId) && !registered.has(task.sessionId));
+  const stale = tasks.filter((task) => {
+    if (task.status === "removed") return false;
+    const sessionId = canonicalSessionId(task.sessionId);
+    return !available.has(sessionId) && !registered.has(sessionId);
+  });
   if (!stale.length) return [];
   const now = new Date().toISOString();
   const removedIds = new Set(stale.map((task) => task.id));
