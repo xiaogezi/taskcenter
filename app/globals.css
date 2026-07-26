@@ -498,3 +498,40 @@ button { cursor: pointer; }
   .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .dialog-actions button { min-width: 0; }
 }
+
+/* Keep the board operational first: less poster, more readable workspace. */
+.app-shell { padding-left: clamp(24px, 3.5vw, 56px); padding-right: clamp(24px, 3.5vw, 56px); }
+.hero-section { background: linear-gradient(110deg, rgba(255,255,255,.34), transparent 62%); border-bottom: 1px solid var(--line); padding: 38px 0 30px; }
+.hero-section h1 { font-size: clamp(36px, 4.4vw, 64px); letter-spacing: -.065em; margin: 10px 0 16px; max-width: 760px; }
+.hero-description { font-size: 14px; line-height: 1.65; max-width: 560px; }
+.hero-stamp { border-radius: 4px; height: 82px; margin-right: 8px; transform: rotate(2deg); width: 82px; }
+.hero-stamp strong { font-size: 18px; }
+.metrics-grid { margin-bottom: 28px; }
+.metric-card { min-height: 118px; padding: 17px 18px; }
+.metric-card p { margin-bottom: 14px; }
+.content-layout { gap: 28px; grid-template-columns: 220px minmax(0, 1fr); }
+.thread-rail { padding-right: 18px; }
+.task-ledger { background: rgba(255,255,255,.22); border: 1px solid var(--line); border-top: 3px solid var(--ink); margin: 0 0 28px; padding: 16px 16px 0; }
+.ledger-heading { margin-bottom: 14px; }
+.ledger-heading h2 { font-size: 22px; }
+.task-table-wrapper { margin: 0 -16px; padding: 0; }
+.task-table { font-size: 11px; min-width: 900px; }
+.task-table th { background: rgba(17,36,59,.045); border-bottom-width: 1px; padding: 9px 10px; }
+.task-table td { padding: 10px; }
+.task-table tbody tr:hover { background: rgba(255,255,255,.7); }
+.task-table-count { height: 20px; min-width: 20px; }
+.requirement-section { margin-top: 30px; }
+
+@media (max-width: 900px) {
+  .hero-section { padding-top: 30px; }
+  .content-layout { gap: 20px; grid-template-columns: 190px minmax(0, 1fr); }
+}
+
+@media (max-width: 680px) {
+  .app-shell { padding-left: 17px; padding-right: 17px; }
+  .hero-section { padding: 31px 0 25px; }
+  .hero-section h1 { font-size: clamp(34px, 11vw, 52px); }
+  .metrics-grid { margin-bottom: 24px; }
+  .task-ledger { padding-left: 12px; padding-right: 12px; }
+  .task-table-wrapper { margin-left: -12px; margin-right: -12px; }
+}
