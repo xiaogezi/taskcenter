@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "canonicalSessionId": "codex-phase7-mvp-activation-20260726",
+  "mergedAt": "2026-07-26T11:18:11.049Z",
+  "reason": "同一条 Codex 工作链被错误拆分为多个阶段 Session",
+  "aliases": [
+    "codex-claude-delegation-probe-alignment-20260726",
+    "codex-claude-phase3b2-file-smoke-20260726",
+    "codex-claude-phase3b3-pure-file-smoke-20260726",
+    "codex-delegation-minimal-runtime-20260726",
+    "codex-phase43-real-task-matrix-20260726",
+    "codex-phase431-mcp-fix-20260726",
+    "codex-phase44-codebuddy-cli-20260726",
+    "codex-phase442-codebuddy-adapter-20260726",
+    "codex-phase443-codebuddy-resume-20260726",
+    "codex-phase5-mvp-integration-20260726",
+    "codex-phase6-orchestration-20260726",
+    "codex-skill-quality-metadata-20260726"
+  ]
+}

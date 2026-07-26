@@ -8,12 +8,33 @@ export const taskLedgerPath = resolve(process.env.REQRADAR_TASK_LEDGER_PATH || j
 export const processedEventIdsPath = resolve(process.env.REQRADAR_TASK_EVENT_IDS_PATH || join(projectRoot, "data", "task-event-ids.json"));
 export const taskReconcilePath = resolve(process.env.REQRADAR_TASK_RECONCILE_PATH || join(projectRoot, "data", "task-reconcile.jsonl"));
 export const sessionRegistryPath = resolve(process.env.REQRADAR_SESSION_REGISTRY_PATH || join(projectRoot, "data", "session-registry.json"));
+export const sessionMergesPath = resolve(process.env.REQRADAR_SESSION_MERGES_PATH || join(projectRoot, "data", "session-merges.json"));
 
 const statuses = new Set(["planned", "in_progress", "blocked", "done_claimed", "verified", "cancelled", "removed"]);
 const demoPattern = /^ui-demo-/;
 
 export function loadTasks() {
-  return readLedger().filter((task) => task.status !== "removed");
+  return readLedger()
+    .filter((task) => task.status !== "removed")
+    .map((task) => ({ ...task, sessionId: canonicalSessionId(task.sessionId) }));
+}
+
+export function loadSessionMerges() {
+  if (!existsSync(sessionMergesPath)) return {};
+  try {
+    const value = JSON.parse(readFileSync(sessionMergesPath, "utf8"));
+    const canonical = typeof value?.canonicalSessionId === "string" ? value.canonicalSessionId : "";
+    const aliases = Array.isArray(value?.aliases) ? value.aliases : [];
+    if (!canonical) return {};
+    return Object.fromEntries(aliases.filter((id) => typeof id === "string" && id).map((id) => [id, canonical]));
+  } catch {
+    return {};
+  }
+}
+
+export function canonicalSessionId(sessionId) {
+  const value = String(sessionId || "");
+  return loadSessionMerges()[value] || value;
 }
 
 export function loadSessionRegistry() {
@@ -46,10 +67,18 @@ export function loadSessionRegistry() {
         };
       }
     }
-    return registry;
   } catch {
-    return registry;
+    registry = {};
   }
+  const merges = loadSessionMerges();
+  const normalized = {};
+  for (const [sessionId, entry] of Object.entries(registry)) {
+    if (merges[sessionId]) continue;
+    const canonical = canonicalSessionId(entry?.sessionId || sessionId);
+    if (!canonical || normalized[canonical]) continue;
+    normalized[canonical] = { ...entry, sessionId: canonical };
+  }
+  return normalized;
 }
 
 export function getSessionStatuses(availableSessionIds = [], tasks = loadTasks()) {
