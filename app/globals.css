@@ -535,3 +535,29 @@ button { cursor: pointer; }
   .task-ledger { padding-left: 12px; padding-right: 12px; }
   .task-table-wrapper { margin-left: -12px; margin-right: -12px; }
 }
+
+/* Sidebar refresh: compact rounded controls instead of narrow rectangular tiles. */
+.rail-heading { align-items: flex-start; display: block; }
+.rail-actions { align-items: center; display: flex; gap: 6px; margin-top: 13px; width: 100%; }
+.rail-actions > button:not(.count-pill) { border-radius: 12px; flex: 1 1 0; min-width: 0; padding: 8px 6px; white-space: nowrap; }
+.manage-sessions-button { background: rgba(255,255,255,.58); border-color: transparent; color: var(--ink-soft); }
+.manage-sessions-button:hover { background: white; box-shadow: 0 5px 14px rgba(17,36,59,.08); }
+.scan-button { background: var(--orange-pale); border-color: transparent; color: var(--orange); }
+.scan-button:hover { background: #f7cdbb; }
+.refresh-button { background: var(--ink); border-color: var(--ink); box-shadow: 0 5px 12px rgba(17,36,59,.12); }
+.refresh-button:hover { background: #223b58; }
+.rail-actions .count-pill { flex: 0 0 27px; }
+.thread-row { border-bottom: 0; margin-top: 5px; }
+.thread-item { border: 1px solid transparent; border-radius: 14px; min-height: 64px; padding: 11px 10px; }
+.thread-item:hover { background: rgba(255,255,255,.72); border-color: rgba(216,209,196,.8); padding-left: 10px; }
+.thread-item.selected { background: white; border-color: rgba(237,109,50,.35); box-shadow: 0 6px 16px rgba(17,36,59,.06); padding-left: 10px; }
+.thread-row .thread-item { border-bottom: 1px solid transparent; }
+.thread-content strong { font-size: 11px; }
+.thread-remove-button { border-radius: 9px; margin-left: 4px; padding: 5px 6px; }
+.privacy-note { border-radius: 14px; margin-top: 20px; }
+
+@media (max-width: 680px) {
+  .rail-actions { flex-wrap: wrap; }
+  .rail-actions > button:not(.count-pill) { flex: 1 1 30%; }
+  .rail-actions .count-pill { margin-left: auto; }
+}
