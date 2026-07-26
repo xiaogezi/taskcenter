@@ -1,0 +1,660 @@
+[
+  {
+    "id": "foundation-rename",
+    "title": "项目彻底改名并为开源做准备",
+    "category": "项目基础",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "从 BossHunter 迁移为职策 ZhiCe，补齐开源治理、发布与迁移资产。",
+    "gap": "仍需首次正式发布和外部安装验证。",
+    "keywords": ["彻底改名", "开源", "名字已经不合适", "移到这个文件夹"],
+    "evidence": ["ZhiCe/README.md", "ZhiCe/CHANGELOG.md", "ZhiCe/.github/workflows/release.yml"]
+  },
+  {
+    "id": "foundation-desktop",
+    "title": "独立桌面 App 与一键启动",
+    "category": "项目基础",
+    "priority": "P0",
+    "status": "partial",
+    "summary": "提供 macOS 桌面入口和安全启停脚本。",
+    "gap": "缺少面向其他用户的一键安装包、签名、公证和卸载流程验收。",
+    "keywords": ["桌面APP", "方便启动", "一键打包发布", "给别人用", "一直输密码"],
+    "evidence": ["ZhiCe/scripts/zhice-control.sh", "ZhiCe/scripts/macos/build-zhice-app.sh"]
+  },
+  {
+    "id": "foundation-config",
+    "title": "本地配置与能力中心",
+    "category": "项目基础",
+    "priority": "P0",
+    "status": "partial",
+    "summary": "WebUI 检查浏览器、BOSS、AI、CLI、Wiki 和微信桥接能力。",
+    "gap": "CLI 自动安装只覆盖部分能力，跨机器首次部署仍需完整实测。",
+    "keywords": ["配置中心", "API key", "本机cli", "依赖哪些能力"],
+    "evidence": ["ZhiCe/src/zhice/web/capabilities.py", "ZhiCe/src/zhice/web/frontend/src/pages/Capabilities.tsx"]
+  },
+  {
+    "id": "collection-one-click",
+    "title": "一键启动岗位采集",
+    "category": "采集监控",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "从采集监控页人工启动采集和持续低频监控。",
+    "gap": "仍需要在真实 BOSS 登录态持续观察风控表现。",
+    "keywords": ["一键启动采集", "立即采集", "启动采集"],
+    "evidence": ["ZhiCe/src/zhice/web/frontend/src/pages/Collector.tsx", "ZhiCe/src/zhice/web/collector_monitor.py"]
+  },
+  {
+    "id": "collection-scale",
+    "title": "单轮采集扩大到上百岗位",
+    "category": "采集监控",
+    "priority": "P0",
+    "status": "needs_validation",
+    "summary": "配置已支持多关键词、多轮和更大岗位池。",
+    "gap": "尚无稳定证据证明单轮能在不触发风控的前提下持续获得 100+ 有效岗位。",
+    "keywords": ["上百个", "一次采集的岗位有点少", "扩大采集范围"],
+    "evidence": ["ZhiCe/src/zhice/scraper/jobs.py", "ZhiCe/config.example.yaml"]
+  },
+  {
+    "id": "collection-risk",
+    "title": "低频运行且避免平台风控",
+    "category": "采集监控",
+    "priority": "P0",
+    "status": "partial",
+    "summary": "具备节流、风险事件、持续监控和人工登录边界。",
+    "gap": "任何浏览器自动化都无法承诺零风控；需要长期真实运行数据和自动停机统计。",
+    "keywords": ["不要触发风控", "不怕慢", "低频运行"],
+    "evidence": ["ZhiCe/src/zhice/throttle.py", "ZhiCe/src/zhice/web/collector_monitor.py"]
+  },
+  {
+    "id": "collection-monitor-state",
+    "title": "运行中心清晰展示持续监控状态",
+    "category": "采集监控",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "运行中心展示持续任务、下一轮、轮次和任务历史。",
+    "gap": "需要继续优化异常退出后的状态解释。",
+    "keywords": ["看不到监控状态", "持续运行", "巡检"],
+    "evidence": ["ZhiCe/src/zhice/web/frontend/src/pages/Runs.tsx", "ZhiCe/src/zhice/web/collector_monitor.py"]
+  },
+  {
+    "id": "collection-browser-tabs",
+    "title": "避免浏览器空置与持续打开 Tab",
+    "category": "采集监控",
+    "priority": "P0",
+    "status": "needs_validation",
+    "summary": "采集会话已加入页面复用和数量控制逻辑。",
+    "gap": "用户曾明确反馈持续开 Tab，尚缺长时间运行后的浏览器验收报告。",
+    "keywords": ["持续打开tab", "空置浏览器", "影响我操作"],
+    "evidence": ["ZhiCe/src/zhice/browser/session.py"]
+  },
+  {
+    "id": "collection-account",
+    "title": "BOSS 小号采集、大号筛选的账号管理",
+    "category": "采集监控",
+    "priority": "P0",
+    "status": "partial",
+    "summary": "支持主账号、采集账号、备用账号和能力路由。",
+    "gap": "浏览器只有一个当前登录态，仍需人工确认账号切换；跨账号岗位归属和投递流程需要实测。",
+    "keywords": ["小号采集", "大号选择岗位", "账号管理", "切换了账号"],
+    "evidence": ["ZhiCe/src/zhice/db.py", "ZhiCe/src/zhice/web/frontend/src/pages/Settings.tsx"]
+  },
+  {
+    "id": "collection-manual-link",
+    "title": "手动添加岗位链接并分析",
+    "category": "岗位管理",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "支持粘贴遗漏岗位链接并进入分析流程。",
+    "gap": "外部平台和非 BOSS 链接仍需扩展适配器。",
+    "keywords": ["主动添加岗位链接", "手动添加的入口"],
+    "evidence": ["ZhiCe/src/zhice/web/server.py", "ZhiCe/src/zhice/web/frontend/src/pages/Jobs.tsx"]
+  },
+  {
+    "id": "collection-clean-closed",
+    "title": "清理关闭或不存在的岗位",
+    "category": "岗位管理",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "岗位存在可用性状态和失效清理逻辑。",
+    "gap": "需要定期统计关闭原因和误判恢复率。",
+    "keywords": ["岗位不存在", "关闭要有一个清理"],
+    "evidence": ["ZhiCe/src/zhice/db.py", "ZhiCe/src/zhice/web/server.py"]
+  },
+  {
+    "id": "pool-overview",
+    "title": "岗位池总数与单次运行成果概览",
+    "category": "岗位管理",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "总览和运行中心提供岗位总数、新增、复查、补全与过滤结果。",
+    "gap": "不同任务的成果口径仍可进一步统一。",
+    "keywords": ["岗位总数", "数据成果", "运行完一脸懵"],
+    "evidence": ["ZhiCe/src/zhice/db.py", "ZhiCe/src/zhice/web/frontend/src/pages/Dashboard.tsx"]
+  },
+  {
+    "id": "salary-obfuscation",
+    "title": "正确处理薪资字体混淆",
+    "category": "岗位管理",
+    "priority": "P0",
+    "status": "partial",
+    "summary": "系统会识别薪资不可读并明确标记，而不展示乱码。",
+    "gap": "尚未证明所有 BOSS 字体变化都能自动还原为真实薪资。",
+    "keywords": ["没拿到还是什么原因", "薪资"],
+    "evidence": ["ZhiCe/src/zhice/insights/salary.py", "ZhiCe/src/zhice/web/frontend/src/pages/Jobs.tsx"]
+  },
+  {
+    "id": "job-viability",
+    "title": "结合 BOSS 活跃度、回复次数与挂岗天数决策",
+    "category": "岗位情报",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "机会有效性模型解释活跃度、今日回复、岗位年龄和降权理由。",
+    "gap": "仍需真实投递结果校准权重。",
+    "keywords": ["BOSS 活跃度", "今天回复了多少次", "岗位挂的天数"],
+    "evidence": ["ZhiCe/src/zhice/insights/opportunity_viability.py", "ZhiCe/tests/test_opportunity_viability.py"]
+  },
+  {
+    "id": "jd-keywords",
+    "title": "JD 高频关键词、同义词与必备/加分项",
+    "category": "岗位情报",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "资深 Android JD 支持技能归一、词频、必备/加分证据和简历差距。",
+    "gap": "当前技能分类仍偏 Android，需要扩展到更多职业族。",
+    "keywords": ["高频关键词", "合并同义词", "必备/加分项"],
+    "evidence": ["ZhiCe/src/zhice/insights/android_jd.py", "ZhiCe/src/zhice/web/frontend/src/pages/JdInsights.tsx"]
+  },
+  {
+    "id": "resume-gate",
+    "title": "基于主简历判断逐岗位简历关风险",
+    "category": "岗位情报",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "输出值得冲、拉伸、降优先和硬阻断，并解释竞争信号与硬门槛。",
+    "gap": "无法知道字节、拼多多等公司的内部 ATS 规则，必须持续用真实结果校准。",
+    "keywords": ["基于简历分析", "拼多多", "字节", "简历就不会过"],
+    "evidence": ["ZhiCe/src/zhice/insights/android_jd.py", "ZhiCe/tests/test_android_jd_insights.py"]
+  },
+  {
+    "id": "search-keywords",
+    "title": "岗位搜索关键词分层与去重",
+    "category": "岗位情报",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "把 Android、Kotlin、车载、移动端和 AI Native 等方向拆成可控搜索簇，避免同义词堆叠造成重复采集。",
+    "gap": "仍需按真实新增率、重复率和命中率持续淘汰低价值关键词。",
+    "keywords": ["Android开发", "Kotlin开发", "移动端开发", "车载Android", "AI native", "关键词我觉得可能要优化"],
+    "evidence": ["ZhiCe/config.example.yaml", "ZhiCe/src/zhice/ai/search_strategy.py"]
+  },
+  {
+    "id": "search-autonomy",
+    "title": "AI 自主决定挖掘与采集方向",
+    "category": "岗位情报",
+    "priority": "P1",
+    "status": "needs_validation",
+    "summary": "低频采集可自动建立首个策略，并按采集、评分、确认、投递和回复结果持续演进；AI 扩展受每日预算和冷却时间约束。",
+    "gap": "代码与离线测试已验收；仍需在真实 BOSS 登录态下跨多个采集周期验证方向质量、自动切换效果和风控表现。",
+    "keywords": ["AI自主决定", "挖掘采集", "自主性"],
+    "evidence": ["ZhiCe/src/zhice/ai/search_strategy.py", "ZhiCe/src/zhice/web/collector_monitor.py", "ZhiCe/src/zhice/web/frontend/src/pages/SearchStrategy.tsx", "ZhiCe/tests/test_search_strategy.py"]
+  },
+  {
+    "id": "career-opportunities",
+    "title": "扩展 Android 之外的转职与 AI 机会",
+    "category": "机会探索",
+    "priority": "P1",
+    "status": "partial",
+    "summary": "机会雷达结合简历、Wiki 和本地岗位探索工程、产品、顾问、AI 等方向。",
+    "gap": "市场验证仍主要依赖本地岗位池，非技术岗位样本和行动入口不足。",
+    "keywords": ["转职的契机", "不用死盯着Android", "AI相关的岗位", "机会雷达"],
+    "evidence": ["ZhiCe/src/zhice/insights/career_opportunities.py", "ZhiCe/src/zhice/web/frontend/src/pages/CareerOpportunities.tsx"]
+  },
+  {
+    "id": "wiki-link",
+    "title": "联动个人 Wiki 发掘职业机会",
+    "category": "机会探索",
+    "priority": "P1",
+    "status": "verified",
+    "summary": "只读扫描 Wiki 证据并关联可迁移能力。",
+    "gap": "尚未提供可视化证据确认和排除机制。",
+    "keywords": ["联动wiki", "碰撞出来火花"],
+    "evidence": ["ZhiCe/src/zhice/insights/career_opportunities.py"]
+  },
+  {
+    "id": "outsourcing-zone",
+    "title": "外包岗位专区",
+    "category": "机会探索",
+    "priority": "P1",
+    "status": "verified",
+    "summary": "展示外包分类、证据、风险和核实问题。",
+    "gap": "外包供应商和真实用工方的实体关系仍未结构化。",
+    "keywords": ["外包专区", "外包岗位"],
+    "evidence": ["ZhiCe/src/zhice/insights/outsourcing.py", "ZhiCe/src/zhice/web/frontend/src/pages/Outsourcing.tsx"]
+  },
+  {
+    "id": "part-time-zone",
+    "title": "兼职与灵活机会专区",
+    "category": "机会探索",
+    "priority": "P1",
+    "status": "verified",
+    "summary": "提供兼职分类、风险提示、关键词和评估方法。",
+    "gap": "兼职来源仍少，缺少合同、结算和工时跟踪。",
+    "keywords": ["兼职专区", "兼职我也很感兴趣"],
+    "evidence": ["ZhiCe/src/zhice/insights/part_time.py", "ZhiCe/src/zhice/web/frontend/src/pages/PartTime.tsx"]
+  },
+  {
+    "id": "company-research",
+    "title": "一键背调目标公司",
+    "category": "公司情报",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "汇总本地招聘证据、外包风险、工商司法和人工核验清单。",
+    "gap": "官方信息仍需用户点击核验，未形成工商实体自动解析。",
+    "keywords": ["一键背调", "目标公司"],
+    "evidence": ["ZhiCe/src/zhice/insights/company_research.py", "ZhiCe/src/zhice/web/frontend/src/pages/CompanyResearch.tsx"]
+  },
+  {
+    "id": "community-intel",
+    "title": "小红书、脉脉等舆情情报系统",
+    "category": "公司情报",
+    "priority": "P1",
+    "status": "partial",
+    "summary": "已有公开搜索入口和人工情报收件箱。",
+    "gap": "尚未自动检索、去重、时效衰减、冲突检测或 AI 引用归纳；受平台登录与风控边界限制。",
+    "keywords": ["小红书", "脉脉", "舆情", "情报系统"],
+    "evidence": ["ZhiCe/src/zhice/insights/company_research.py", "ZhiCe/INTELLIGENCE_ROADMAP.md"]
+  },
+  {
+    "id": "resume-upload",
+    "title": "自主上传与切换主简历",
+    "category": "简历与求职",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "支持 md、txt、docx 上传、版本和主简历切换。",
+    "gap": "PDF 解析和版式保真导出仍需增强。",
+    "keywords": ["自主上传简历", "简历形式固定"],
+    "evidence": ["ZhiCe/src/zhice/resumes/library.py", "ZhiCe/src/zhice/web/frontend/src/pages/Resumes.tsx"]
+  },
+  {
+    "id": "resume-tailor",
+    "title": "系统内优化简历且手动触发",
+    "category": "简历与求职",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "针对岗位手动触发多版本简历优选，避免默认消耗 Token。",
+    "gap": "需要更多真实投递结果验证不同版本的效果。",
+    "keywords": ["系统里优化简历", "简历优选手动触发", "费token"],
+    "evidence": ["ZhiCe/src/zhice/web/frontend/src/pages/ResumeLab.tsx", "ZhiCe/src/zhice/ai/resume.py"]
+  },
+  {
+    "id": "multi-agent-resume",
+    "title": "Claude、Codex、WorkBuddy 多 Agent 简历优选",
+    "category": "简历与求职",
+    "priority": "P1",
+    "status": "partial",
+    "summary": "具备多 Agent 候选版本、匿名比较和事实检查框架。",
+    "gap": "WorkBuddy 混元与所有本机 CLI 的稳定调用、成本统计和故障降级尚需跨环境验收。",
+    "keywords": ["多Agent", "Claude、codex、workbuddy", "混元模型"],
+    "evidence": ["ZhiCe/src/zhice/ai/resume.py", "ZhiCe/src/zhice/web/frontend/src/pages/ResumeLab.tsx"]
+  },
+  {
+    "id": "assessment",
+    "title": "职测/笔试阶段与今日提醒",
+    "category": "简历与求职",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "支持职测待完成、已完成、截止时间、链接、结果和复盘。",
+    "gap": "尚缺职测题库、错题训练和知识点复习计划。",
+    "keywords": ["职测", "笔试阶段", "今日提醒"],
+    "evidence": ["ZhiCe/src/zhice/web/server.py", "ZhiCe/src/zhice/web/frontend/src/pages/Interviews.tsx"]
+  },
+  {
+    "id": "coaching",
+    "title": "漏斗诊断、每周陪跑计划与经历证据库",
+    "category": "简历与求职",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "独立求职教练中心使用真实事件诊断卡点并生成周行动。",
+    "gap": "周计划尚未支持人工结转和周复盘持久化，经历证据尚未自动关联岗位与面试。",
+    "keywords": ["求职陪跑", "漏斗诊断", "经历证据库", "每周陪跑"],
+    "evidence": ["ZhiCe/src/zhice/insights/coaching.py", "ZhiCe/src/zhice/web/frontend/src/pages/Coaching.tsx"]
+  },
+  {
+    "id": "product-open-source-discovery",
+    "title": "持续调研 GitHub 与开源求职方案",
+    "category": "产品发现",
+    "priority": "P1",
+    "status": "partial",
+    "requiresConfirmation": true,
+    "inboxExcerpt": "然后你github看下我们还有哪些可以完善的功能需求",
+    "summary": "持续参考开源求职、招聘情报和 Agent 项目，提炼可验证的功能候选，而不是一次性浏览后结束。",
+    "gap": "已有人工调研，但尚未形成定期扫描、候选去重、价值评估和采纳记录。",
+    "keywords": ["github看下我们还有哪些可以完善", "GitHub 看下还有哪些可以完善", "看看还有什么扩展点"],
+    "evidence": ["ReqRadar/data/requirements.seed.json"]
+  },
+  {
+    "id": "product-seeker-journey-review",
+    "title": "从求职者完整旅程持续审查产品缺口",
+    "category": "产品发现",
+    "priority": "P0",
+    "status": "partial",
+    "requiresConfirmation": true,
+    "inboxExcerpt": "从一个求职者角度看看还有哪些需要完善的",
+    "summary": "按发现机会、筛选、简历、投递、跟进、职测、面试和 Offer 全旅程检查系统缺口。",
+    "gap": "已有阶段性陪跑功能，但尚未建立周期性旅程审查清单和缺口关闭机制。",
+    "keywords": ["从一个求职者角度看看还有哪些需要完善", "求职者角度", "求职陪跑的内容"],
+    "evidence": ["ZhiCe/src/zhice/insights/coaching.py", "ReqRadar/data/requirements.seed.json"]
+  },
+  {
+    "id": "product-job-search-outcome",
+    "title": "提高简历通过率与求职命中率",
+    "category": "业务目标",
+    "priority": "P0",
+    "status": "needs_validation",
+    "requiresConfirmation": true,
+    "inboxExcerpt": "总的来说我希望通过这个系统来提高我求职的命中率 起码能过简历关",
+    "summary": "系统的北极星目标是提高有效机会发现、简历通过和后续面试转化，而不是只增加岗位数量。",
+    "gap": "尚缺稳定的投递漏斗基线、渠道归因和版本对照，无法证明系统已经提升真实命中率。",
+    "keywords": ["提高我求职的命中率", "起码能过简历关", "提高求职命中率"],
+    "evidence": ["ZhiCe/src/zhice/insights/coaching.py", "ZhiCe/src/zhice/insights/android_jd.py"]
+  },
+  {
+    "id": "contact-crm",
+    "title": "联系人、猎头与内推 CRM",
+    "category": "待建设",
+    "priority": "P1",
+    "status": "missing",
+    "summary": "管理 HR、猎头、前同事、内推人和下一次跟进。",
+    "gap": "尚未建立联系人实体、关系、互动记录与提醒。",
+    "keywords": ["联系人", "内推 CRM", "猎头"],
+    "evidence": []
+  },
+  {
+    "id": "mock-interview",
+    "title": "可追问、评分和复盘的模拟面试教练",
+    "category": "待建设",
+    "priority": "P1",
+    "status": "missing",
+    "summary": "根据岗位和轮次进行针对性模拟面试。",
+    "gap": "现有能力只生成面试准备材料，没有语音/文本多轮模拟与评分。",
+    "keywords": ["模拟面试", "面试教练"],
+    "evidence": []
+  },
+  {
+    "id": "offer-decision",
+    "title": "Offer 对比、谈薪和入职决策",
+    "category": "待建设",
+    "priority": "P1",
+    "status": "missing",
+    "summary": "比较总包、强度、成长、风险并准备谈薪。",
+    "gap": "尚无 Offer 实体、对比模型和谈薪工作流。",
+    "keywords": ["Offer 决策", "谈薪", "薪资谈判"],
+    "evidence": []
+  },
+  {
+    "id": "high-score-push",
+    "title": "80 分以上新岗位微信推送",
+    "category": "通知与运营",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "高匹配岗位通过 Claude-to-IM 本机队列推送。",
+    "gap": "需要持续观察重复通知、失败重试和摘要质量。",
+    "keywords": ["80分以上", "联动推送"],
+    "evidence": ["ZhiCe/src/zhice/notifications/im_bridge.py", "ZhiCe/src/zhice/ai/scorer.py"]
+  },
+  {
+    "id": "task-notification",
+    "title": "每次任务完成发送带摘要的微信通知",
+    "category": "通知与运营",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "任务完成、失败、采集和评分通知均包含安全摘要与下一步。",
+    "gap": "桥接历史失败项仍需要单独清理和失败原因面板。",
+    "keywords": ["每次完成任务", "微信通知", "加点摘要", "Claude-to-IM"],
+    "evidence": ["ZhiCe/src/zhice/notifications/im_bridge.py"]
+  },
+  {
+    "id": "ai-usage",
+    "title": "AI Token 消耗统计与能力说明",
+    "category": "通知与运营",
+    "priority": "P1",
+    "status": "partial",
+    "summary": "统计主模型 API 返回的 usage，并在帮助页说明 Token 0 能力。",
+    "gap": "Claude、Codex、WorkBuddy 等外部 Agent CLI 仍未统一纳入实际 Token 统计。",
+    "keywords": ["token消耗", "AI能力占用多少", "低频运行也不消耗token"],
+    "evidence": ["ZhiCe/src/zhice/db.py", "ZhiCe/src/zhice/web/frontend/src/pages/Help.tsx"]
+  },
+  {
+    "id": "help",
+    "title": "完整帮助和使用说明",
+    "category": "通知与运营",
+    "priority": "P1",
+    "status": "partial",
+    "summary": "帮助页解释主要功能、安全边界、Token 和人工确认。",
+    "gap": "新增功能仍需要持续自动纳入帮助索引和新手引导。",
+    "keywords": ["使用说明", "帮助页面", "怎么操作"],
+    "evidence": ["ZhiCe/src/zhice/web/frontend/src/pages/Help.tsx"]
+  },
+  {
+    "id": "ui-cache",
+    "title": "页面切换缓存与流畅体验",
+    "category": "体验",
+    "priority": "P1",
+    "status": "verified",
+    "summary": "API 客户端具备 TTL 缓存和请求去重。",
+    "gap": "大型页面的组件状态保持和离线缓存仍可继续优化。",
+    "keywords": ["每次切页面都刷新", "没做缓存"],
+    "evidence": ["ZhiCe/src/zhice/web/frontend/src/lib/api.ts"]
+  },
+  {
+    "id": "requirements-classification",
+    "title": "专业区分产品需求与一次性动作",
+    "category": "项目治理",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "将 Codex 消息分类为持续需求、缺陷反馈、一次性动作、提问、目标愿景和协作指令，仅前两类进入需求池。",
+    "gap": "规则分类器仍需用新的误判样本持续回归；低置信度内容保留人工判断边界。",
+    "keywords": ["需求识别的不专业", "很多不是需求", "正确识别", "就是一个动作", "在我看来是需求", "怎么没有了"],
+    "evidence": ["ReqRadar/scripts/classify-message.mjs", "ReqRadar/tests/dashboard.test.mjs"]
+  },
+  {
+    "id": "requirements-inbox-actions",
+    "title": "待整理需求继续、丢弃与撤销",
+    "category": "项目治理",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "待整理消息支持继续推进或丢弃，继续项会进入主看板，两类决定都能查看并撤销。",
+    "gap": "当前决定保存在本机浏览器；未来如需跨浏览器共享，应迁移到本地文件存储。",
+    "keywords": ["管理按钮", "丢弃或者继续", "继续推进"],
+    "evidence": ["ReqRadar/app/page.tsx", "ReqRadar/app/globals.css"]
+  },
+  {
+    "id": "requirements-partial-dispatch",
+    "title": "部分完成需求转发到原 Codex Session",
+    "category": "项目治理",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "部分完成卡片支持新建并注入压缩上下文的 Codex Session，并记录实际目标 ID。",
+    "gap": "原 Session 可见投递必须使用 Codex Desktop 的 send_message_to_thread 宿主能力；公开 SDK 不等价，当前入口已禁用以避免隐藏并发 turn。",
+    "keywords": ["部分完成的我也需要操作按钮", "发送到会话继续完成", "发送会话继续"],
+    "evidence": ["ReqRadar/app/page.tsx", "ReqRadar/scripts/control-server.mjs", "ReqRadar/scripts/dispatch-core.mjs", "ReqRadar/tests/dispatch.test.mjs"]
+  },
+  {
+    "id": "requirements-board",
+    "title": "独立 Codex 需求文档与项目看板",
+    "category": "项目治理",
+    "priority": "P0",
+    "status": "verified",
+    "summary": "按 Codex 任务同步聊天需求，并区分声明完成与代码验收。",
+    "gap": "当前先维护两个求职系统相关任务；新增项目需要配置对应 Codex 任务 ID。",
+    "keywords": ["需求文档网页", "项目管理工具", "自动更新", "聊天记录", "单独的项目管理工具", "不用远端"],
+    "evidence": ["ReqRadar/scripts/sync-codex.mjs", "ReqRadar/scripts/watch-codex.mjs", "ReqRadar/tests/dashboard.test.mjs"]
+  },
+  {
+    "id": "zhice-engineering-governance",
+    "title": "ZhiCe 工程治理与情报可靠性建设",
+    "category": "项目治理",
+    "priority": "P0",
+    "status": "needs_validation",
+    "kind": "epic",
+    "project": "ZhiCe",
+    "sourceKind": "professional_requirement",
+    "summary": "以可验证的工程边界、依赖治理、BOSS 采集可靠性和公司情报可信度为主线，统一推进四项 ZhiCe 工程需求。",
+    "gap": "代码、契约测试和构建已完成；仍需用真实 BOSS 页面验证选择器健康事件，并实际执行一次公开来源检索与当前页采集。",
+    "acceptanceCriteria": [
+      "四个子需求均挂载到本 Epic，并能在看板中按项目、层级和状态追踪。",
+      "每个子需求都有可执行的验收标准、实施阶段和 ZhiCe 证据路径。",
+      "完成判定以代码、测试或运行记录为准，不以聊天中的完成表述替代验收。"
+    ],
+    "implementationStages": [
+      "阶段 1 · 建立 Web/API、DB 和依赖边界基线",
+      "阶段 2 · 完成 BOSS 选择器可靠性与风险控制闭环",
+      "阶段 3 · 完成公司情报采集、公开来源和 AI 交叉验证闭环"
+    ],
+    "evidencePaths": [
+      "ZhiCe/pyproject.toml",
+      "ZhiCe/src/zhice/web/server.py",
+      "ZhiCe/src/zhice/db.py",
+      "ZhiCe/tests/"
+    ],
+    "keywords": [],
+    "evidence": ["ZhiCe/pyproject.toml", "ZhiCe/src/zhice/web/server.py", "ZhiCe/src/zhice/db.py"]
+  },
+  {
+    "id": "zhice-web-api-db-boundary",
+    "title": "Web/API 与 DB 分域拆分",
+    "category": "项目治理",
+    "priority": "P0",
+    "status": "verified",
+    "kind": "requirement",
+    "parentId": "zhice-engineering-governance",
+    "project": "ZhiCe",
+    "sourceKind": "professional_requirement",
+    "summary": "Web 路由、应用服务、数据库连接、迁移和仓储已经物理分域，路由与服务层不再直连 SQL，兼容入口保持原有 API 与导入方式。",
+    "gap": "无功能缺口；架构测试会阻止路由重新引入 execute/executemany/executescript，后续新增查询必须进入分域仓储。",
+    "acceptanceCriteria": [
+      "Web/API 层只负责请求校验、鉴权边界、响应 DTO 和调用应用服务，不直接拼装 SQL 或管理迁移。",
+      "DB 域集中维护连接、Schema、查询、事务和迁移；依赖方向可通过静态检查或架构测试验证。",
+      "至少覆盖健康接口、核心岗位/运行接口和一次迁移路径的契约回归测试，失败时能定位所属域。"
+    ],
+    "implementationStages": [
+      "阶段 1 · 盘点现有路由、查询、迁移和跨域导入",
+      "阶段 2 · 抽离应用服务与 DB repository 边界并迁移核心接口",
+      "阶段 3 · 增加架构依赖检查和 Web/API 回归契约"
+    ],
+    "evidencePaths": [
+      "ZhiCe/src/zhice/web/server.py",
+      "ZhiCe/src/zhice/web/routes/",
+      "ZhiCe/src/zhice/db.py",
+      "ZhiCe/src/zhice/persistence/",
+      "ZhiCe/tests/test_web_api.py",
+      "ZhiCe/tests/test_web_architecture.py",
+      "ZhiCe/tests/test_db_architecture.py",
+      "ZhiCe/tests/test_db_migration.py"
+    ],
+    "keywords": [],
+    "evidence": ["ZhiCe/src/zhice/web/routes/", "ZhiCe/src/zhice/persistence/", "ZhiCe/tests/test_web_architecture.py", "ZhiCe/tests/test_db_architecture.py"]
+  },
+  {
+    "id": "zhice-remove-fastapi-uvicorn",
+    "title": "清理 FastAPI/Uvicorn 遗留依赖",
+    "category": "项目治理",
+    "priority": "P1",
+    "status": "verified",
+    "kind": "requirement",
+    "parentId": "zhice-engineering-governance",
+    "project": "ZhiCe",
+    "sourceKind": "professional_requirement",
+    "summary": "FastAPI/Uvicorn 已从依赖声明和锁文件移除，当前 Web/API 统一使用 Bottle，并已通过锁文件、全量测试与 wheel/sdist 构建验收。",
+    "gap": "无功能缺口；后续发布门禁继续扫描遗留引用并验证干净安装。",
+    "acceptanceCriteria": [
+      "源码、pyproject、uv.lock、启动脚本和 CI 中不再存在无用途的 FastAPI/Uvicorn 遗留引用。",
+      "删除依赖后，ZhiCe 的 Web/API、CLI 和测试可在干净环境安装并启动；保留依赖必须有明确调用方和说明。",
+      "依赖清理结果有可复现的扫描命令、安装结果和测试报告作为证据。"
+    ],
+    "implementationStages": [
+      "阶段 1 · 扫描源码、依赖清单、锁文件、脚本和文档中的遗留引用",
+      "阶段 2 · 删除无用依赖并重生成锁文件，修正启动与部署说明",
+      "阶段 3 · 在干净环境安装、启动并运行全量测试"
+    ],
+    "evidencePaths": [
+      "ZhiCe/pyproject.toml",
+      "ZhiCe/uv.lock",
+      "ZhiCe/README.md",
+      "ZhiCe/tests/",
+      "ZhiCe/scripts/release-check.sh"
+    ],
+    "keywords": [],
+    "evidence": ["ZhiCe/pyproject.toml", "ZhiCe/uv.lock", "ZhiCe/tests/"]
+  },
+  {
+    "id": "zhice-boss-selector-reliability",
+    "title": "BOSS 选择器注册表、健康观测、契约测试和风险熔断",
+    "category": "采集监控",
+    "priority": "P0",
+    "status": "needs_validation",
+    "kind": "requirement",
+    "parentId": "zhice-engineering-governance",
+    "project": "ZhiCe",
+    "sourceKind": "professional_requirement",
+    "summary": "关键 BOSS 选择器已集中到版本化注册表，采集、详情、会话和发送链路会记录脱敏健康事件，并在连续两次契约失败后保守停止。",
+    "gap": "静态契约和回归测试已通过；仍需在真实 BOSS 列表、详情和聊天页面各执行一次，确认当前 DOM 命中并在安全中心看到健康/失败证据。",
+    "acceptanceCriteria": [
+      "岗位列表、岗位详情、公司信息和分页等关键选择器均来自可版本化注册表，禁止业务代码散落硬编码。",
+      "每轮采集记录选择器命中率、缺失字段、页面结构变化、重试和风控信号，并可在运行中心定位失败阶段。",
+      "契约测试覆盖关键页面 fixture；关键选择器连续失败或触发风控阈值时停止采集、保留证据并提示人工复核，不继续放大请求。"
+    ],
+    "implementationStages": [
+      "阶段 1 · 盘点 BOSS 页面元素、失败样本和现有采集/节流入口",
+      "阶段 2 · 建立选择器注册表、健康事件模型和 fixture 契约测试",
+      "阶段 3 · 接入风险阈值、自动降级/熔断、告警和运行中心展示"
+    ],
+    "evidencePaths": [
+      "ZhiCe/src/zhice/platforms/boss/selectors.py",
+      "ZhiCe/src/zhice/scraper/jobs.py",
+      "ZhiCe/src/zhice/web/boss_page_assistant.py",
+      "ZhiCe/src/zhice/web/collector_monitor.py",
+      "ZhiCe/src/zhice/browser/session.py",
+      "ZhiCe/tests/test_boss_page_assistant.py",
+      "ZhiCe/tests/test_collector.py"
+    ],
+    "keywords": [],
+    "evidence": ["ZhiCe/src/zhice/platforms/boss/selectors.py", "ZhiCe/src/zhice/scraper/jobs.py", "ZhiCe/tests/test_boss_selector_contract.py"]
+  },
+  {
+    "id": "zhice-company-intelligence-inbox",
+    "title": "公司多源情报收件箱、当前页采集、公开来源与 AI 交叉验证",
+    "category": "公司情报",
+    "priority": "P0",
+    "status": "needs_validation",
+    "kind": "requirement",
+    "parentId": "zhice-engineering-governance",
+    "project": "ZhiCe",
+    "sourceKind": "professional_requirement",
+    "summary": "公司情报已支持统一证据状态、岗位关联、当前公开页显式采集、公开新闻 RSS、去重和带真实证据 ID 引用的 AI 交叉分析。",
+    "gap": "Google News RSS 已联网返回结果；Bing News 在当前网络重定向到 cn.bing.com 并被安全策略拦截，需修正或移除该适配器。当前页采集和人工触发 AI 分析仍需在 WebUI 实测。",
+    "acceptanceCriteria": [
+      "情报收件箱可接收招聘页、公司官网、公开搜索结果和用户当前页采集内容，统一记录公司、来源、采集时间、原文摘录和 URL。",
+      "当前页采集必须由用户显式触发并只读取当前公开页面，不绕过登录、验证码或平台访问控制；失败时保留原因。",
+      "AI 交叉验证至少输出支持/冲突/待人工核验结论、涉及的来源引用和置信度，不把单一来源推断标成事实。"
+    ],
+    "implementationStages": [
+      "阶段 1 · 定义情报条目、来源、公司实体和人工核验状态模型",
+      "阶段 2 · 接入当前页采集与公开来源归档，完成收件箱检索和去重",
+      "阶段 3 · 接入 AI 多源交叉验证、冲突标记和人工复核闭环"
+    ],
+    "evidencePaths": [
+      "ZhiCe/src/zhice/intelligence/company_evidence.py",
+      "ZhiCe/src/zhice/intelligence/public_sources.py",
+      "ZhiCe/src/zhice/intelligence/page_capture.py",
+      "ZhiCe/src/zhice/intelligence/cross_analysis.py",
+      "ZhiCe/src/zhice/insights/company_research.py",
+      "ZhiCe/src/zhice/web/boss_page_assistant.py",
+      "ZhiCe/src/zhice/web/server.py",
+      "ZhiCe/tests/test_company_research.py",
+      "ZhiCe/tests/test_boss_page_assistant.py",
+      "ZhiCe/INTELLIGENCE_ROADMAP.md"
+    ],
+    "keywords": [],
+    "evidence": ["ZhiCe/src/zhice/intelligence/", "ZhiCe/src/zhice/web/routes/company_research.py", "ZhiCe/tests/test_company_intelligence.py"]
+  }
+]

@@ -1,0 +1,4 @@
+{"type":"session_meta","payload":{"cwd":"/test/project"},"timestamp":"2024-01-15T10:00:00Z"}
+{"type":"event_msg","payload":{"type":"user_message","message":"实现 alpha 功能的初步版本"},"timestamp":"2024-01-15T10:01:00Z"}
+{"type":"event_msg","payload":{"type":"user_message","message":"继续完成 beta 功能的优化"},"timestamp":"2024-01-15T10:05:00Z"}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"已完成 beta 功能的优化"}]},"timestamp":"2024-01-15T10:10:00Z"}

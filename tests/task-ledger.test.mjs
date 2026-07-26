@@ -1,0 +1,690 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const root = new URL("../", import.meta.url);
+const tempDir = await mkdtemp(join(tmpdir(), "reqradar-ledger-"));
+process.env.REQRADAR_DISABLE_LIVE_SESSION_RECONCILIATION = "1";
+
+const envPaths = {
+  REQRADAR_TASK_EVENTS_PATH: join(tempDir, "task-events.jsonl"),
+  REQRADAR_TASK_LEDGER_PATH: join(tempDir, "task-ledger.json"),
+  REQRADAR_TASK_EVENT_IDS_PATH: join(tempDir, "task-event-ids.json"),
+  REQRADAR_TASK_RECONCILE_PATH: join(tempDir, "task-reconcile.jsonl"),
+  REQRADAR_SESSION_REGISTRY_PATH: join(tempDir, "session-registry.json"),
+};
+for (const [key, value] of Object.entries(envPaths)) {
+  process.env[key] = value;
+}
+
+const { recordTaskEvent, loadTasks, reconcileTasks, TaskLedgerError } = await import("../scripts/task-ledger.mjs");
+
+async function resetLedger() {
+  for (const path of Object.values(envPaths)) {
+    await rm(path, { force: true });
+  }
+}
+
+async function startControlServer() {
+  const port = 38_000 + (process.pid % 1_000);
+  const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
+    cwd: root,
+    env: { ...process.env, REQRADAR_CONTROL_PORT: String(port), ...envPaths },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  await waitForReady(child);
+  return { port, child, base: `http://127.0.0.1:${port}` };
+}
+
+function taskHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "X-ReqRadar-Task": "mcp",
+  };
+}
+
+async function registerHttpSession(base, session_id, identity = {}) {
+  const response = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "session.register",
+      session_id,
+      workspace: "/work",
+      agent: identity.agent || "codex",
+      provider: identity.provider || "openai",
+      model: identity.model || "gpt-test",
+    }),
+  });
+  assert.equal(response.status, 200);
+}
+
+test("session.register 不误创建任务", async () => {
+  await resetLedger();
+  const result = recordTaskEvent({ type: "session.register", session_id: "sess-1", workspace: "/work" });
+  assert.equal(result.task, null);
+  assert.equal(result.idempotent, undefined);
+  assert.equal(loadTasks().length, 0);
+});
+
+test("任务 session_id 不在当前会话源时拒绝创建并可清理旧记录", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", session_id: "sess-stale", task_id: "task-stale", title: "旧任务", goal: "旧目标" });
+  recordTaskEvent({ type: "task.create", session_id: "sess-current", task_id: "task-current", title: "当前任务", goal: "当前目标" });
+
+  const removed = reconcileTasks(["sess-current"]);
+  assert.deepEqual(removed.map((task) => task.id), ["task-stale"]);
+  assert.deepEqual(loadTasks().map((task) => task.id), ["task-current"]);
+  assert.throws(
+    () => recordTaskEvent({ type: "task.create", session_id: "sess-missing", task_id: "task-missing", title: "失配任务", goal: "失配目标" }, { availableSessionIds: ["sess-current"] }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 409,
+  );
+});
+
+test("task.create 返回 accepted 与 task_id 并持久化", async () => {
+  await resetLedger();
+  const result = recordTaskEvent({
+    type: "task.create",
+    session_id: "sess-1",
+    task_id: "task-1",
+    title: "实现闸门",
+    goal: "完成会话任务闸门",
+    acceptance_criteria: ["可创建任务"],
+    plan: ["登记 session", "创建任务"],
+  });
+  assert.equal(result.task.id, "task-1");
+  assert.equal(result.task.status, "planned");
+  assert.equal(result.task.title, "实现闸门");
+  assert.equal(result.task.goal, "完成会话任务闸门");
+  assert.equal(loadTasks().length, 1);
+});
+
+test("未创建任务就 update/report 返回 404", async () => {
+  await resetLedger();
+  assert.throws(
+    () => recordTaskEvent({ type: "task.update", session_id: "sess-1", task_id: "ghost", current_step: "x" }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 404,
+  );
+  assert.throws(
+    () => recordTaskEvent({ type: "task.report", session_id: "sess-1", task_id: "ghost", status: "done_claimed" }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 404,
+  );
+});
+
+test("session 归属不匹配时返回 403", async () => {
+  await resetLedger();
+  recordTaskEvent({
+    type: "task.create",
+    session_id: "sess-1",
+    task_id: "task-1",
+    title: "t",
+    goal: "g",
+    acceptance_criteria: ["a"],
+    plan: ["p"],
+  });
+  assert.throws(
+    () => recordTaskEvent({ type: "task.update", session_id: "sess-OTHER", task_id: "task-1", current_step: "x" }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 403,
+  );
+});
+
+test("不同 session 对同一 task_id 的 task.create 返回 403 而非幂等", async () => {
+  await resetLedger();
+  const first = recordTaskEvent({
+    type: "task.create",
+    session_id: "sess-1",
+    task_id: "task-1",
+    title: "t",
+    goal: "g",
+    acceptance_criteria: ["a"],
+    plan: ["p"],
+  });
+  assert.equal(first.task.id, "task-1");
+  assert.equal(first.idempotent, undefined);
+
+  // 同一 session 重复创建应幂等返回
+  const sameSession = recordTaskEvent({
+    type: "task.create",
+    session_id: "sess-1",
+    task_id: "task-1",
+    title: "t2",
+    goal: "g2",
+    acceptance_criteria: ["a2"],
+    plan: ["p2"],
+  });
+  assert.equal(sameSession.idempotent, true);
+  assert.equal(sameSession.task.title, "t"); // 标题保持原值，不更新
+
+  // 不同 session 尝试复用同一 task_id 必须返回 403
+  assert.throws(
+    () => recordTaskEvent({
+      type: "task.create",
+      session_id: "sess-OTHER",
+      task_id: "task-1",
+      title: "hijack",
+      goal: "hijack",
+      acceptance_criteria: ["hijack"],
+      plan: ["hijack"],
+    }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 403,
+  );
+
+  // 任务列表仍然只有一条，未被篡改
+  const tasks = loadTasks();
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].sessionId, "sess-1");
+});
+
+test("事件幂等：重复 event_id 不重放副作用", async () => {
+  await resetLedger();
+  const create = { type: "task.create", session_id: "sess-1", task_id: "task-1", event_id: "evt-create", title: "t", goal: "g", acceptance_criteria: ["a"], plan: ["p"] };
+  const first = recordTaskEvent(create);
+  assert.equal(first.idempotent, undefined);
+  const second = recordTaskEvent(create);
+  assert.equal(second.idempotent, true);
+  assert.equal(loadTasks().length, 1);
+  assert.equal(second.task.updatedAt, first.task.updatedAt);
+
+  const update = { type: "task.update", session_id: "sess-1", task_id: "task-1", event_id: "evt-update", current_step: "doing" };
+  recordTaskEvent(update);
+  const dupUpdate = recordTaskEvent(update);
+  assert.equal(dupUpdate.idempotent, true);
+  const task = loadTasks()[0];
+  assert.equal(task.currentStep, "doing");
+  assert.equal(task.updatedAt, dupUpdate.task.updatedAt);
+});
+
+test("done_claimed 不会自动变 verified，会话也不能直接 set verified", async () => {
+  await resetLedger();
+  recordTaskEvent({
+    type: "task.create",
+    session_id: "sess-1",
+    task_id: "task-1",
+    title: "t",
+    goal: "g",
+    acceptance_criteria: ["a"],
+    plan: ["p"],
+  });
+  recordTaskEvent({ type: "task.report", session_id: "sess-1", task_id: "task-1", status: "done_claimed", changed_files: ["x.ts"] });
+  assert.equal(loadTasks()[0].status, "done_claimed");
+
+  assert.throws(
+    () => recordTaskEvent({ type: "task.update", session_id: "sess-1", task_id: "task-1", status: "verified" }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 400,
+  );
+  // 状态仍然停留在 done_claimed，没有升级为 verified
+  assert.equal(loadTasks()[0].status, "done_claimed");
+});
+
+test("控制服务任务闸门 HTTP 协议：register→create→update→report 并展示", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  const headers = taskHeaders();
+
+  const register = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ type: "session.register", session_id: "sess-http", workspace: "/work" }),
+  });
+  assert.equal(register.status, 200);
+  assert.equal((await register.json()).task, null);
+
+  const create = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: "sess-http",
+      task_id: "task-http",
+      title: "HTTP 闸门",
+      goal: "验证协议",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+      assumptions: ["假设A"],
+      risks: ["风险B"],
+      retrospective: "复盘C",
+    }),
+  });
+  assert.equal(create.status, 201);
+  const created = (await create.json()).task;
+  assert.equal(created.id, "task-http");
+  assert.equal(created.status, "planned");
+
+  const update = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      type: "task.update",
+      session_id: "sess-http",
+      task_id: "task-http",
+      current_step: "实现中",
+      next_action: "写测试",
+      assumptions: ["假设A"],
+      risks: ["风险B"],
+      retrospective: "复盘C",
+    }),
+  });
+  assert.equal(update.status, 200);
+
+  // 幂等重投递同一 create
+  const dupCreate = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: "sess-http",
+      task_id: "task-http",
+      event_id: "dup-create-1",
+      title: "HTTP 闸门",
+      goal: "验证协议",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+    }),
+  });
+  const dupPayload = await dupCreate.json();
+  assert.equal(dupCreate.status, 200);
+  assert.equal(dupPayload.idempotent, true);
+
+  // 错误 session 归属
+  const bad = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ type: "task.update", session_id: "other", task_id: "task-http", current_step: "x" }),
+  });
+  assert.equal(bad.status, 403);
+
+  // 未创建任务 update
+  const missing = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ type: "task.update", session_id: "x", task_id: "ghost", current_step: "x" }),
+  });
+  assert.equal(missing.status, 404);
+
+  // report done_claimed
+  const report = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      type: "task.report",
+      session_id: "sess-http",
+      task_id: "task-http",
+      status: "done_claimed",
+      changed_files: ["x.ts"],
+      tests: ["npm test"],
+      evidence: ["本地验证"],
+      assumptions: ["假设A"],
+      risks: ["风险B"],
+      retrospective: "复盘C",
+    }),
+  });
+  assert.equal(report.status, 200);
+  assert.equal((await report.json()).task.status, "done_claimed");
+
+  // GET /tasks 展示关键信息
+  const tasksPayload = await (await fetch(`${base}/tasks`)).json();
+  const task = tasksPayload.tasks.find((item) => item.id === "task-http");
+  assert.ok(task, "任务应出现在看板数据源");
+  assert.equal(task.title, "HTTP 闸门");
+  assert.equal(task.goal, "验证协议");
+  assert.equal(task.status, "done_claimed");
+  assert.equal(task.currentStep, "实现中");
+  assert.equal(task.nextAction, "写测试");
+  assert.equal(task.sessionId, "sess-http");
+  assert.equal(task.assumptions.length, 1);
+  assert.equal(task.risks.length, 1);
+  assert.ok(task.updatedAt);
+});
+
+test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["scripts/reqradar-mcp.mjs"],
+    env: { ...process.env, REQRADAR_CONTROL_URL: base },
+    cwd: root,
+  });
+  const client = new Client({ name: "reqradar-test", version: "0.0.0" });
+  await client.connect(transport);
+  context.after(async () => { await client.close().catch(() => {}); });
+
+  const tools = await client.listTools();
+  const toolNames = tools.tools.map((tool) => tool.name);
+  for (const expected of ["reqradar_session_register", "reqradar_task_create", "reqradar_task_update", "reqradar_task_report", "reqradar_task_query", "reqradar_session_status"]) {
+    assert.ok(toolNames.includes(expected), `MCP 应暴露 ${expected}`);
+  }
+
+  const register = await client.callTool({ name: "reqradar_session_register", arguments: { session_id: "sess-mcp", agent: "codex", provider: "openai", model: "gpt-test", workspace: "/work" } });
+  const registerPayload = JSON.parse(textOf(register));
+  assert.equal(registerPayload.accepted, true);
+  assert.equal(registerPayload.task, null);
+
+  const create = await client.callTool({
+    name: "reqradar_task_create",
+    arguments: {
+      session_id: "sess-mcp",
+      agent: "codex",
+      provider: "openai",
+      model: "gpt-test",
+      task_id: "task-mcp",
+      title: "MCP 闸门",
+      goal: "验证 MCP 通道",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+      assumptions: ["假设A"],
+      risks: ["风险B"],
+      retrospective: "复盘C",
+    },
+  });
+  const createPayload = JSON.parse(textOf(create));
+  assert.equal(createPayload.accepted, true);
+  assert.equal(createPayload.task.id, "task-mcp");
+  assert.equal(createPayload.task.status, "planned");
+
+  const query = await client.callTool({ name: "reqradar_task_query", arguments: { session_id: "sess-mcp" } });
+  const queryPayload = JSON.parse(textOf(query));
+  assert.ok(queryPayload.tasks.find((task) => task.id === "task-mcp"));
+});
+
+function textOf(result) {
+  if (!result.content || !result.content.length) return "";
+  return result.content.map((part) => part.text ?? "").join("");
+}
+
+function waitForReady(child) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("控制服务启动超时")), 5_000);
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`控制服务提前退出：${code}`));
+    });
+    child.stdout.on("data", (chunk) => {
+      if (!String(chunk).includes("ReqRadar control server is listening")) return;
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+test("人工操作端点：合法 UI 操作可变更任务状态", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "sess-manual");
+
+  // 先通过 MCP 创建任务
+  const create = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: "sess-manual",
+      task_id: "task-manual-1",
+      title: "人工操作测试",
+      goal: "验证 UI 操作",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+    }),
+  });
+  assert.equal(create.status, 201);
+  const created = (await create.json()).task;
+  assert.equal(created.id, "task-manual-1");
+  assert.equal(created.status, "planned");
+
+  // 合法人工操作：开始任务
+  const start = await fetch(`${base}/tasks/task-manual-1/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Origin": "http://localhost:3000",
+      "X-ReqRadar-Action": "delegate",
+    },
+    body: JSON.stringify({ action: "start" }),
+  });
+  assert.equal(start.status, 200);
+  const started = (await start.json()).task;
+  assert.equal(started.status, "in_progress");
+
+  // 合法人工操作：声明完成
+  const done = await fetch(`${base}/tasks/task-manual-1/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Origin": "http://localhost:3000",
+      "X-ReqRadar-Action": "delegate",
+    },
+    body: JSON.stringify({ action: "done" }),
+  });
+  assert.equal(done.status, 200);
+  const doneTask = (await done.json()).task;
+  assert.equal(doneTask.status, "done_claimed");
+
+  // 合法人工操作：取消任务
+  const cancel = await fetch(`${base}/tasks/task-manual-1/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Origin": "http://localhost:3000",
+      "X-ReqRadar-Action": "delegate",
+    },
+    body: JSON.stringify({ action: "cancel" }),
+  });
+  assert.equal(cancel.status, 200);
+  const cancelled = (await cancel.json()).task;
+  assert.equal(cancelled.status, "cancelled");
+});
+
+test("人工操作端点：缺少 UI 来源标记返回 403", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+
+  // 先创建任务
+  await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: "sess-protect",
+      task_id: "task-protect",
+      title: "保护测试",
+      goal: "验证权限",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+    }),
+  });
+
+  // 缺少 Origin
+  const noOrigin = await fetch(`${base}/tasks/task-protect/actions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-ReqRadar-Action": "delegate" },
+    body: JSON.stringify({ action: "start" }),
+  });
+  assert.equal(noOrigin.status, 403);
+
+  // 缺少 X-ReqRadar-Action
+  const noMark = await fetch(`${base}/tasks/task-protect/actions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Origin": "http://localhost:3000" },
+    body: JSON.stringify({ action: "start" }),
+  });
+  assert.equal(noMark.status, 403);
+
+  // 非 allowedOrigins
+  const badOrigin = await fetch(`${base}/tasks/task-protect/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Origin": "http://evil.com",
+      "X-ReqRadar-Action": "delegate",
+    },
+    body: JSON.stringify({ action: "start" }),
+  });
+  assert.equal(badOrigin.status, 403);
+});
+
+test("任务创建闸门：未登记 Session 被拒绝，登记后返回执行器身份", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+
+  const rejected = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: "sess-unregistered",
+      task_id: "task-gated",
+      title: "未登记任务",
+      goal: "验证闸门",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+    }),
+  });
+  assert.equal(rejected.status, 409);
+  assert.match((await rejected.json()).error, /先调用 reqradar_session_register/);
+
+  await registerHttpSession(base, "sess-claude", { agent: "claude", provider: "anthropic", model: "glm-5" });
+  const created = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: "sess-claude",
+      agent: "claude",
+      provider: "anthropic",
+      model: "glm-5",
+      task_id: "task-gated-claude",
+      title: "已登记任务",
+      goal: "验证执行器身份",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+    }),
+  });
+  assert.equal(created.status, 201);
+  assert.equal((await created.json()).task.agent, "claude");
+
+  const status = await fetch(`${base}/session-status`);
+  assert.equal(status.status, 200);
+  const session = (await status.json()).sessions.find((item) => item.sessionId === "sess-claude");
+  assert.deepEqual({ agent: session.agent, provider: session.provider, model: session.model, status: session.status, taskCount: session.taskCount }, {
+    agent: "claude",
+    provider: "anthropic",
+    model: "glm-5",
+    status: "registered",
+    taskCount: 1,
+  });
+});
+
+test("人工操作端点：演示任务可移除，真实任务取消", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "sess-demo");
+  await registerHttpSession(base, "sess-real");
+
+  // 创建演示任务
+  await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: "sess-demo",
+      task_id: "ui-demo-123",
+      title: "演示任务",
+      goal: "演示",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+    }),
+  });
+
+  // 创建真实任务
+  await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: "sess-real",
+      task_id: "task-real-456",
+      title: "真实任务",
+      goal: "真实",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+    }),
+  });
+
+  // 演示任务可移除
+  const removeDemo = await fetch(`${base}/tasks/ui-demo-123/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Origin": "http://localhost:3000",
+      "X-ReqRadar-Action": "delegate",
+    },
+    body: JSON.stringify({ action: "remove" }),
+  });
+  assert.equal(removeDemo.status, 200);
+  const removed = (await removeDemo.json()).task;
+  assert.equal(removed.status, "removed");
+
+  // 真实任务移除 -> 变成 cancelled
+  const removeReal = await fetch(`${base}/tasks/task-real-456/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Origin": "http://localhost:3000",
+      "X-ReqRadar-Action": "delegate",
+    },
+    body: JSON.stringify({ action: "remove" }),
+  });
+  assert.equal(removeReal.status, 200);
+  const cancelled = (await removeReal.json()).task;
+  assert.equal(cancelled.status, "cancelled");
+});
+
+test("人工操作事件绕过 session 归属校验", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "sess-owner");
+
+  // 任务属于 sess-owner
+  await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: "sess-owner",
+      task_id: "task-owner",
+      title: "归属测试",
+      goal: "验证人工操作绕过归属",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+    }),
+  });
+
+  // 人工操作端点不需要 session_id，直接操作
+  const action = await fetch(`${base}/tasks/task-owner/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Origin": "http://localhost:3000",
+      "X-ReqRadar-Action": "delegate",
+    },
+    body: JSON.stringify({ action: "start" }),
+  });
+  assert.equal(action.status, 200);
+  const started = (await action.json()).task;
+  assert.equal(started.status, "in_progress");
+  // 任务仍属于原 session
+  assert.equal(started.sessionId, "sess-owner");
+});
