@@ -86,6 +86,33 @@ test("任务 session_id 不在当前会话源时拒绝创建并可清理旧记�
   );
 });
 
+test("已登记的外部 Session 不被 Codex 会话清理误删", async () => {
+  await resetLedger();
+  recordTaskEvent({
+    type: "session.register",
+    session_id: "external-session",
+    workspace: "/work/ZhiCe",
+    agent: "claude",
+    provider: "anthropic",
+    model: "claude-test",
+  });
+  recordTaskEvent({
+    type: "task.create",
+    session_id: "external-session",
+    task_id: "external-task",
+    title: "外部任务",
+    goal: "验证外部 Session 任务闭环",
+  });
+
+  const removed = reconcileTasks(["codex-session"]);
+  assert.deepEqual(removed, []);
+  assert.equal(loadTasks()[0].id, "external-task");
+
+  recordTaskEvent({ type: "task.update", session_id: "external-session", task_id: "external-task", current_step: "已保留" });
+  recordTaskEvent({ type: "task.report", session_id: "external-session", task_id: "external-task", status: "done_claimed" });
+  assert.equal(loadTasks()[0].status, "done_claimed");
+});
+
 test("task.create 返回 accepted 与 task_id 并持久化", async () => {
   await resetLedger();
   const result = recordTaskEvent({
@@ -393,6 +420,13 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const query = await client.callTool({ name: "reqradar_task_query", arguments: { session_id: "sess-mcp" } });
   const queryPayload = JSON.parse(textOf(query));
   assert.ok(queryPayload.tasks.find((task) => task.id === "task-mcp"));
+
+  const update = await client.callTool({ name: "reqradar_task_update", arguments: { session_id: "sess-mcp", task_id: "task-mcp", current_step: "已更新" } });
+  assert.equal(JSON.parse(textOf(update)).accepted, true);
+  const report = await client.callTool({ name: "reqradar_task_report", arguments: { session_id: "sess-mcp", task_id: "task-mcp", status: "done_claimed", tests: ["MCP 闭环"] } });
+  assert.equal(JSON.parse(textOf(report)).accepted, true);
+  const finalQuery = await client.callTool({ name: "reqradar_task_query", arguments: { session_id: "sess-mcp", task_id: "task-mcp" } });
+  assert.equal(JSON.parse(textOf(finalQuery)).tasks[0].status, "done_claimed");
 });
 
 function textOf(result) {
