@@ -1,9 +1,10 @@
 {
   "version": 1,
-  "canonicalSessionId": "codex-phase7-mvp-activation-20260726",
+  "canonicalSessionId": "019f8758-4e45-7e52-8daf-c0a50184aebe",
   "mergedAt": "2026-07-26T11:18:11.049Z",
   "reason": "同一条 Codex 工作链被错误拆分为多个阶段 Session",
   "aliases": [
+    "codex-phase7-mvp-activation-20260726",
     "codex-claude-delegation-probe-alignment-20260726",
     "codex-claude-phase3b2-file-smoke-20260726",
     "codex-claude-phase3b3-pure-file-smoke-20260726",
