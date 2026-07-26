@@ -108,7 +108,11 @@ button { cursor: pointer; }
 .scan-button { background: transparent; border: 1px solid var(--orange); color: var(--orange); font-size: 10px; font-weight: 700; padding: 6px 8px; }
 .scan-button:hover { background: var(--orange-pale); }
 .scan-button:disabled { cursor: wait; opacity: .55; }
+.refresh-button { background: var(--ink); border: 1px solid var(--ink); color: white; font-size: 10px; font-weight: 700; padding: 6px 8px; }
+.refresh-button:hover { background: var(--ink-soft); }
+.refresh-button:disabled { cursor: wait; opacity: .55; }
 .sync-message { color: var(--cyan); font-size: 10px; line-height: 1.45; margin: 9px 0 0; }
+.refresh-message { color: var(--muted); font-size: 10px; line-height: 1.45; margin: 5px 0 0; }
 .session-picker { background: rgba(255, 255, 255, .75); border: 1px solid var(--orange); margin: 12px 0; padding: 12px; }
 .session-picker-heading { align-items: center; display: flex; justify-content: space-between; }
 .session-picker-heading strong { font-size: 11px; }

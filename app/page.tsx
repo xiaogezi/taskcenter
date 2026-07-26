@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dashboardJson from "../data/dashboard.json";
 import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
@@ -310,6 +310,9 @@ export default function Home() {
   const [isDispatching, setIsDispatching] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState("");
+  const refreshInFlight = useRef(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [pickerThreadIds, setPickerThreadIds] = useState<string[]>([]);
   const [isSavingSessionSelection, setIsSavingSessionSelection] = useState(false);
@@ -331,44 +334,49 @@ export default function Home() {
     return () => window.clearTimeout(restore);
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    const refresh = async () => {
-      try {
-        const response = await fetch(`${controlServerUrl}/dispatches`);
-        if (!response.ok) return;
-        const payload = await response.json() as { dispatches?: DispatchRecord[] };
-        if (active) setDispatches(payload.dispatches ?? []);
-        const tasksResponse = await fetch(`${controlServerUrl}/tasks`);
-        if (tasksResponse.ok) {
-          const tasksPayload = await tasksResponse.json() as { tasks?: TaskRecord[] };
-          if (active) setTasks(tasksPayload.tasks ?? []);
-        }
-        const sessionStatusResponse = await fetch(`${controlServerUrl}/session-status`);
-        if (sessionStatusResponse.ok) {
-          const sessionStatusPayload = await sessionStatusResponse.json() as { sessions?: SessionStatus[] };
-          if (active) setSessionStatuses(Object.fromEntries((sessionStatusPayload.sessions ?? []).map((session) => [session.sessionId, session])));
-        }
-        const overridesResponse = await fetch(`${controlServerUrl}/requirement-overrides`);
-        if (overridesResponse.ok) {
-          const overridesPayload = await overridesResponse.json() as { overrides?: Record<string, RequirementOverride> };
-          if (active) setRequirementOverrides(overridesPayload.overrides ?? {});
-        }
-        const threadsResponse = await fetch(`${controlServerUrl}/session-selection`);
-        if (threadsResponse.ok) {
-          const threadsPayload = await threadsResponse.json() as { availableThreads?: Thread[] };
-          if (active) setLiveAvailableThreads(threadsPayload.availableThreads ?? []);
-        }
-      } catch {
-        // The control service is optional when the board is opened read-only.
+  const refreshLiveData = async (manual = false) => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    if (manual) {
+      setIsRefreshing(true);
+      setRefreshMessage("");
+    }
+    try {
+      const [dispatchesResponse, tasksResponse, sessionStatusResponse, overridesResponse, threadsResponse] = await Promise.all([
+        fetch(`${controlServerUrl}/dispatches`),
+        fetch(`${controlServerUrl}/tasks`),
+        fetch(`${controlServerUrl}/session-status`),
+        fetch(`${controlServerUrl}/requirement-overrides`),
+        fetch(`${controlServerUrl}/session-selection`),
+      ]);
+      if (!dispatchesResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !overridesResponse.ok || !threadsResponse.ok) {
+        throw new Error("本地控制服务返回异常");
       }
-    };
-    void refresh();
-    const timer = window.setInterval(refresh, 5_000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
+      const [dispatchesPayload, tasksPayload, sessionStatusPayload, overridesPayload, threadsPayload] = await Promise.all([
+        dispatchesResponse.json() as Promise<{ dispatches?: DispatchRecord[] }>,
+        tasksResponse.json() as Promise<{ tasks?: TaskRecord[] }>,
+        sessionStatusResponse.json() as Promise<{ sessions?: SessionStatus[] }>,
+        overridesResponse.json() as Promise<{ overrides?: Record<string, RequirementOverride> }>,
+        threadsResponse.json() as Promise<{ availableThreads?: Thread[] }>,
+      ]);
+      setDispatches(dispatchesPayload.dispatches ?? []);
+      setTasks(tasksPayload.tasks ?? []);
+      setSessionStatuses(Object.fromEntries((sessionStatusPayload.sessions ?? []).map((session) => [session.sessionId, session])));
+      setRequirementOverrides(overridesPayload.overrides ?? {});
+      setLiveAvailableThreads(threadsPayload.availableThreads ?? []);
+      if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
+    } catch (error) {
+      if (manual) setRefreshMessage(error instanceof Error ? error.message : "刷新失败，请检查本地控制服务");
+    } finally {
+      refreshInFlight.current = false;
+      if (manual) setIsRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshLiveData();
+    const timer = window.setInterval(() => void refreshLiveData(), 5_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const updateInboxDecision = (id: string, decision?: InboxDecision) => {
@@ -571,7 +579,7 @@ export default function Home() {
         throw new Error(payload.error || "扫描失败，请确认本地控制服务正在运行。");
       }
       setSyncMessage(payload.message || `已扫描 ${payload.threadCount ?? 0} 个会话，${payload.messageCount ?? 0} 条需求消息。`);
-      window.setTimeout(() => window.location.reload(), 450);
+      void refreshLiveData();
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : "扫描失败，请稍后重试。");
     } finally {
@@ -599,7 +607,7 @@ export default function Home() {
       if (!response.ok) throw new Error(payload.error || "会话范围保存失败。");
       setShowSessionPicker(false);
       setSyncMessage(`已保存会话范围，当前纳入 ${payload.threadCount ?? threadIds.length} 个会话。`);
-      window.setTimeout(() => window.location.reload(), 450);
+      void refreshLiveData();
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : "会话范围保存失败。");
     } finally {
@@ -671,10 +679,14 @@ export default function Home() {
               <button className="scan-button" onClick={scanCodexSessions} disabled={isSyncing}>
                 {isSyncing ? "扫描中…" : "手动扫描"}
               </button>
+              <button className="refresh-button" onClick={() => void refreshLiveData(true)} disabled={isRefreshing}>
+                {isRefreshing ? "刷新中…" : "刷新数据"}
+              </button>
               <span className="count-pill">{mergedThreads.length}</span>
             </div>
           </div>
           {syncMessage && <p className="sync-message" role="status">{syncMessage}</p>}
+          {refreshMessage && <p className="refresh-message" role="status" aria-live="polite">{refreshMessage}</p>}
           {showSessionPicker && (
             <section className="session-picker" aria-label="选择需要记录的会话">
               <div className="session-picker-heading">
