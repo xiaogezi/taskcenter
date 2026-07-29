@@ -51,4 +51,6 @@ next-env.d.ts
 /data/task-reconcile.jsonl
 /data/session-registry.json
 /data/session-selection.json
+/data/context-task-map.json
+/data/context-sync-events.jsonl
 /data/requirement-overrides.json

@@ -19,6 +19,7 @@ import {
   resumeSession,
 } from "./session-cli.mjs";
 import { getSessionStatuses, loadTasks, reconcileTasks, recordTaskEvent, TaskLedgerError } from "./task-ledger.mjs";
+import { syncContextEvent } from "./context-bridge.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const dashboardPath = resolve(process.env.REQRADAR_DASHBOARD_PATH || join(projectRoot, "data", "dashboard.json"));
@@ -108,12 +109,14 @@ const server = createServer(async (request, response) => {
         ...(reconcileLiveSessions ? { availableSessionIds: sessionIds } : {}),
         requireRegistered: true,
       });
+      const contextSync = await syncContextEvent(result.event, result.task);
       // 幂等重投递（重复 event_id）返回 200，只有真正新建任务时才用 201。
       sendJson(response, body.type === "task.create" && !result.idempotent ? 201 : 200, {
         accepted: true,
         idempotent: Boolean(result.idempotent),
         event: result.event,
         task: result.task,
+        contextSync,
       });
       return;
     }
@@ -130,10 +133,12 @@ const server = createServer(async (request, response) => {
         throw new TaskLedgerError(400, "任务操作无效。");
       }
       const result = applyManualTaskAction(taskId, action);
+      const contextSync = await syncContextEvent(result.event, result.task);
       sendJson(response, 200, {
         accepted: true,
         action,
         task: result.task,
+        contextSync,
         actor: "manual",
       });
       return;
@@ -508,7 +513,7 @@ function applyManualTaskAction(taskId, action) {
     created_at: new Date().toISOString(),
   };
   const result = recordTaskEvent(event);
-  return { task: result.task };
+  return { event, task: result.task };
 }
 
 async function readJsonBody(request) {
