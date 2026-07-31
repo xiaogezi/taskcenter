@@ -29,17 +29,26 @@ export async function syncContextEvent(event, task) {
 }
 
 async function sync(event, task) {
-  let contextTaskId = loadMap()[task.id]?.contextTaskId;
+  const mapped = loadMap()[task.id];
+  let contextTaskId = mapped?.workspace === task.workspace ? mapped.contextTaskId : undefined;
   if (!contextTaskId) {
     const started = await callTool("context.start_task", {
-      project_id: "reqradar",
+      workspace: task.workspace,
       goal: task.goal || task.title,
-      keywords: [task.title, "ReqRadar"].filter(Boolean),
+      keywords: [task.title].filter(Boolean),
       event_id: `reqradar-context-start-${task.id}`,
     });
     contextTaskId = started.task_id;
     if (!contextTaskId) throw new Error("Context MCP 未返回 task_id。");
-    saveMap({ ...loadMap(), [task.id]: { contextTaskId, reqradarTaskId: task.id, startedAt: new Date().toISOString() } });
+    saveMap({
+      ...loadMap(),
+      [task.id]: {
+        contextTaskId,
+        workspace: task.workspace,
+        reqradarTaskId: task.id,
+        startedAt: new Date().toISOString(),
+      },
+    });
   }
 
   if (event.type === "task.create") return { contextTaskId };
