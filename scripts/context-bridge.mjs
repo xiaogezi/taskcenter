@@ -6,7 +6,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const projectRoot = resolve(import.meta.dirname, "..");
 const contextRoot = resolve(process.env.REQRADAR_CONTEXT_ROOT || "/Users/liuyuge/Documents/ProjectContextAgent");
 const contextServer = resolve(process.env.REQRADAR_CONTEXT_SERVER || join(contextRoot, "mcp", "server.mjs"));
-const nodeCommand = process.env.REQRADAR_CONTEXT_NODE || process.execPath;
+const nodeCommand = process.env.REQRADAR_CONTEXT_NODE || "/Users/liuyuge/.workbuddy/binaries/node/versions/22.22.2/bin/node";
 const mapPath = resolve(process.env.REQRADAR_CONTEXT_TASK_MAP_PATH || join(projectRoot, "data", "context-task-map.json"));
 const auditPath = resolve(process.env.REQRADAR_CONTEXT_AUDIT_PATH || join(projectRoot, "data", "context-sync-events.jsonl"));
 const timeoutMs = Number(process.env.REQRADAR_CONTEXT_TIMEOUT_MS || 10_000);
