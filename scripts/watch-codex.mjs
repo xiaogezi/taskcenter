@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,15 @@ let pendingSince = 0;
 let syncing = false;
 const pollIntervalMs = Number(process.env.REQRADAR_POLL_INTERVAL_MS || 5_000);
 const quietPeriodMs = Number(process.env.REQRADAR_QUIET_PERIOD_MS || 20_000);
+const heartbeatPath = process.env.REQRADAR_WATCHER_HEARTBEAT_PATH || join(import.meta.dirname, "..", ".local", "runtime", "watcher-heartbeat.json");
+function heartbeat(status = "watching") {
+  try {
+    mkdirSync(join(heartbeatPath, ".."), { recursive: true });
+    writeFileSync(heartbeatPath, JSON.stringify({ status, pid: process.pid, updatedAt: new Date().toISOString() }) + "\n", { mode: 0o600 });
+  } catch (error) {
+    console.error(`ReqRadar watcher heartbeat 写入失败：${error instanceof Error ? error.message : error}`);
+  }
+}
 
 function findWatchedFiles(directory) {
   if (!existsSync(directory)) return [];
@@ -45,17 +54,21 @@ function fingerprint() {
 function sync() {
   if (syncing) return;
   syncing = true;
+  heartbeat("syncing");
   const child = spawn(process.execPath, [join(import.meta.dirname, "sync-codex.mjs")], {
     stdio: "inherit",
     env: process.env,
   });
   child.on("exit", () => {
     syncing = false;
+    heartbeat("watching");
   });
 }
 
 sync();
+heartbeat();
 setInterval(() => {
+  heartbeat(syncing ? "syncing" : "watching");
   const currentFingerprint = fingerprint();
   if (currentFingerprint !== pendingFingerprint) {
     pendingFingerprint = currentFingerprint;

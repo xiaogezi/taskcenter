@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
@@ -18,7 +19,7 @@ import {
   inspectSessionState,
   resumeSession,
 } from "./session-cli.mjs";
-import { getSessionStatuses, loadTasks, reconcileTasks, recordTaskEvent, TaskLedgerError } from "./task-ledger.mjs";
+import { getSessionStatuses, loadTasks, reconcileTasks, recordTaskEvent, taskEventsPath, taskLedgerPath, TaskLedgerError } from "./task-ledger.mjs";
 import { syncContextEvent } from "./context-bridge.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
@@ -26,6 +27,7 @@ const dashboardPath = resolve(process.env.REQRADAR_DASHBOARD_PATH || join(projec
 const dispatchesPath = resolve(process.env.REQRADAR_DISPATCHES_PATH || join(projectRoot, "data", "dispatches.json"));
 const overridesPath = resolve(process.env.REQRADAR_OVERRIDES_PATH || join(projectRoot, "data", "requirement-overrides.json"));
 const sessionSelectionPath = resolve(process.env.REQRADAR_SESSION_SELECTION_PATH || join(projectRoot, "data", "session-selection.json"));
+const watcherHeartbeatPath = resolve(process.env.REQRADAR_WATCHER_HEARTBEAT_PATH || join(projectRoot, ".local", "runtime", "watcher-heartbeat.json"));
 const host = "127.0.0.1";
 const port = Number(process.env.REQRADAR_CONTROL_PORT || 3001);
 const dryRun = process.env.REQRADAR_DISPATCH_DRY_RUN === "1";
@@ -57,7 +59,10 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "GET" && request.url === "/health") {
-      sendJson(response, 200, { ok: true, dryRun, syncing: Boolean(syncing) });
+      const dashboard = inspectFile(dashboardPath);
+      const heartbeat = inspectFile(watcherHeartbeatPath, true);
+      const watcherFresh = heartbeat.readable && Date.now() - Date.parse(heartbeat.updatedAt) < 30_000;
+      sendJson(response, 200, { ok: true, dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()) }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable }, watcher: { ...heartbeat, healthy: watcherFresh } });
       return;
     }
     if (request.method === "POST" && request.url === "/sync") {
@@ -98,6 +103,14 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/tasks") {
       if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
       sendJson(response, 200, { tasks: loadTasks().slice().reverse() });
+      return;
+    }
+    const taskEventsMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/events(?:\?limit=(\d+))?$/) : null;
+    if (taskEventsMatch) {
+      const taskId = taskEventsMatch[1];
+      const limit = Math.min(100, Math.max(1, Number(taskEventsMatch[2] || 50)));
+      const events = readTaskEvents(taskId).slice(-limit).reverse();
+      sendJson(response, 200, { taskId, events });
       return;
     }
     if (request.method === "POST" && request.url === "/task-events") {
@@ -433,6 +446,33 @@ function migrateLegacyDispatches() {
 
 function safeError(error) {
   return String(error instanceof Error ? error.message : error || "未知错误").replace(/\s+/g, " ").slice(0, 300);
+}
+
+function inspectFile(path, parseJson = false) {
+  try {
+    const stat = statSync(path);
+    const mtime = new Date(stat.mtimeMs).toISOString();
+    if (!parseJson) return { readable: true, exists: true, generatedAt: mtime };
+    try {
+      return { readable: true, exists: true, generatedAt: mtime, updatedAt: JSON.parse(readFileSync(path, "utf8")).updatedAt || mtime };
+    } catch {
+      return { readable: false, exists: true, generatedAt: mtime, updatedAt: mtime };
+    }
+  } catch {
+    return { readable: false, exists: false, generatedAt: "", updatedAt: "" };
+  }
+}
+
+function readTaskEvents(taskId) {
+  try {
+    return readFileSync(taskEventsPath, "utf8").split("\n").flatMap((line) => {
+      if (!line.trim()) return [];
+      try {
+        const event = JSON.parse(line);
+        return event.task_id === taskId ? [event] : [];
+      } catch { return []; }
+    });
+  } catch { return []; }
 }
 
 function runSync() {

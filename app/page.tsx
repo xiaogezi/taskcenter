@@ -143,6 +143,7 @@ type SessionStatus = {
   taskCount: number;
   lastTaskAt: string;
 };
+type HealthState = { ok: boolean; dashboard?: { generatedAt?: string; readable?: boolean }; watcher?: { healthy?: boolean; updatedAt?: string } };
 
 type Dashboard = {
   generatedAt?: string;
@@ -328,6 +329,7 @@ export default function Home() {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [liveAvailableThreads, setLiveAvailableThreads] = useState<Thread[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, SessionStatus>>({});
+  const [health, setHealth] = useState<HealthState>({ ok: false });
 
   useEffect(() => {
     const restore = window.setTimeout(() => {
@@ -358,6 +360,9 @@ export default function Home() {
         fetch(`${controlServerUrl}/requirement-overrides`),
         fetch(`${controlServerUrl}/session-selection`),
       ]);
+      const healthResponse = await fetch(`${controlServerUrl}/health`);
+      if (!healthResponse.ok) throw new Error("本地控制服务健康检查失败");
+      setHealth(await healthResponse.json() as HealthState);
       if (!dispatchesResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !overridesResponse.ok || !threadsResponse.ok) {
         throw new Error("本地控制服务返回异常");
       }
@@ -375,6 +380,7 @@ export default function Home() {
       setLiveAvailableThreads(threadsPayload.availableThreads ?? []);
       if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
     } catch (error) {
+      setHealth({ ok: false });
       if (manual) setRefreshMessage(error instanceof Error ? error.message : "刷新失败，请检查本地控制服务");
     } finally {
       refreshInFlight.current = false;
@@ -793,6 +799,7 @@ export default function Home() {
             sessionGroups={mergedThreads}
             selectedSessionId={selectedThread}
             sessionStatuses={sessionStatuses}
+            serviceHealthy={health.ok && health.watcher?.healthy !== false}
             onTaskUpdated={(updatedTask) => {
               setTasks((current) => current.map((task) => task.id === updatedTask.id ? updatedTask : task));
             }}
@@ -896,18 +903,19 @@ const taskStatusMeta: Record<TaskStatus, { label: string; tone: string }> = {
 
 const TASKS_PER_PAGE = 40;
 
-function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, onTaskUpdated }: { tasks: TaskRecord[]; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; onTaskUpdated: (task: TaskRecord) => void }) {
+function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, onTaskUpdated }: { tasks: TaskRecord[]; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; onTaskUpdated: (task: TaskRecord) => void }) {
   // 筛选逻辑：全部任务显示全局，具体 Session 优先精确 session_id，不可用时按显式项目标识回退
   const selectedSessionIds = sessionIdsForGroup(selectedSessionId, sessionGroups);
   const filteredTasks = selectedSessionId === "全部任务"
     ? tasks
     : tasks.filter((task) => taskMatchesSession(task, {
       selectedSessionIds,
-      availableSessionIds: threadsForTask.flatMap((thread) => [thread.id, ...(thread.sessionIds ?? [])]).filter(Boolean),
+      availableSessionIds: threadsForTask.flatMap((thread) => [thread.id, ...(thread.sessionIds ?? [])]).filter((id): id is string => Boolean(id)),
       selectedThread: sessionGroups.find((thread) => thread.id === selectedSessionId),
     }));
   const [page, setPage] = useState(1);
   const [reviewOnly, setReviewOnly] = useState(false);
+  const [attention, setAttention] = useState<"all" | "blocked" | "overdue" | "done_claimed" | "service">("all");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | TaskStatus>("all");
   const [agentFilter, setAgentFilter] = useState("all");
@@ -916,7 +924,9 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
   const [showArchived, setShowArchived] = useState(false);
   const reviewCount = filteredTasks.filter((task) => (showArchived || !task.archivedAt) && task.status === "done_claimed").length;
   const agents: string[] = [...new Set(filteredTasks.map((task) => task.agent || "unknown"))];
-  const searchedTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt).filter((task) => statusFilter === "all" || task.status === statusFilter).filter((task) => agentFilter === "all" || (task.agent || "unknown") === agentFilter).filter((task) => timeFilter === "all" || taskTimeState(task)[timeFilter]).filter((task) => !query || `${task.title} ${task.id} ${task.sessionId}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => (Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || "")) * (sortOrder === "newest" ? 1 : -1));
+  const attentionTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt);
+  const attentionCounts = { blocked: attentionTasks.filter((task) => task.status === "blocked").length, overdue: attentionTasks.filter((task) => taskTimeState(task).overdue).length, done_claimed: attentionTasks.filter((task) => task.status === "done_claimed").length, service: serviceHealthy ? 0 : 1 };
+  const searchedTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt).filter((task) => statusFilter === "all" || task.status === statusFilter).filter((task) => agentFilter === "all" || (task.agent || "unknown") === agentFilter).filter((task) => timeFilter === "all" || taskTimeState(task)[timeFilter]).filter((task) => attention === "all" || (attention === "service" ? false : attention === "blocked" ? task.status === "blocked" : attention === "done_claimed" ? task.status === "done_claimed" : taskTimeState(task).overdue)).filter((task) => !query || `${task.title} ${task.id} ${task.sessionId}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => (Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || "")) * (sortOrder === "newest" ? 1 : -1));
   const shownTasks = reviewOnly ? searchedTasks.filter((task) => task.status === "done_claimed") : searchedTasks;
   const pageCount = Math.max(1, Math.ceil(shownTasks.length / TASKS_PER_PAGE));
   const visibleTasks = shownTasks.slice((page - 1) * TASKS_PER_PAGE, page * TASKS_PER_PAGE);
@@ -927,14 +937,16 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
 
   useEffect(() => {
     setPage(1);
-  }, [selectedSessionId, query, statusFilter, agentFilter, timeFilter, sortOrder, showArchived, reviewOnly]);
+  }, [selectedSessionId, query, statusFilter, agentFilter, timeFilter, sortOrder, showArchived, reviewOnly, attention]);
 
   return (
     <section className="task-ledger" aria-label="会话主动任务">
+      <div className={`session-health-bar ${serviceHealthy ? "healthy" : "unhealthy"}`} role="status">{serviceHealthy ? "● 控制服务正常 · 同步 watcher 正常" : "! 控制服务或同步 watcher 异常，正在重试"} · 最近数据生成时间以 dashboard 为准</div>
       <div className="ledger-heading">
         <p className="eyebrow orange">SESSION TASK GATE</p>
         <h2>会话主动任务<span>{filteredTasks.length}</span></h2>
         <button type="button" className="task-filter-button" onClick={() => setReviewOnly((value) => !value)}>{reviewOnly ? "全部任务" : `待验收 ${reviewCount}`}</button>
+        <span className="attention-summary">需要关注：</span>{(["blocked", "overdue", "done_claimed", "service"] as const).map((key) => <button type="button" key={key} className="task-filter-button" onClick={() => setAttention(attention === key ? "all" : key)}>{key === "blocked" ? "阻塞" : key === "overdue" ? "逾期" : key === "done_claimed" ? "待验收" : "服务"} {attentionCounts[key]}</button>)}
         <input aria-label="搜索任务" placeholder="标题 / ID / Session" value={query} onChange={(event) => setQuery(event.target.value)} />
         <select aria-label="任务状态" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | TaskStatus)}><option value="all">全部状态</option>{Object.keys(taskStatusMeta).map((status) => <option key={status} value={status}>{taskStatusMeta[status as TaskStatus].label}</option>)}</select>
         <select aria-label="任务 Agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}><option value="all">全部 Agent</option>{agents.map((agent) => <option key={agent}>{agent}</option>)}</select>
@@ -992,6 +1004,9 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   const [scheduleValue, setScheduleValue] = useState("");
   const [idCopyState, setIdCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [events, setEvents] = useState<Array<Record<string, string>> | null>(null);
+  const [eventsError, setEventsError] = useState("");
+  useEffect(() => { if (!detailsOpen || events) return; void fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/events`).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "事件加载失败"); setEvents(payload.events ?? []); }).catch((error) => setEventsError(error instanceof Error ? error.message : "事件加载失败")); }, [detailsOpen, events, task.id]);
   const meta = taskStatusMeta[task.status] ?? taskStatusMeta.planned;
   const detailItems = [
     { label: "审核理由", items: task.reviewReason ? [`${task.reviewReason}${task.reviewedAt ? ` · ${normalizeDate(task.reviewedAt)}` : ""}`] : [] },
@@ -1155,6 +1170,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
           <td colSpan={9}>
             <div className="task-detail-content">
               {nonEmptyDetails.map((item) => <section key={item.label}><strong>{item.label}</strong><ul>{item.items.map((value, index) => <li key={`${item.label}-${index}`}>{value}</li>)}</ul></section>)}
+              <section><strong>事件时间线</strong>{eventsError ? <p>{eventsError}</p> : events === null ? <p>加载中…</p> : events.length === 0 ? <p>暂无事件</p> : <ul>{events.map((event, index) => <li key={`${event.event_id || index}`}>{asText(event.type)} · {asText(event.status, "未标状态")} · {normalizeDate(event.created_at)} · {asText(event.current_step || event.tool_name || event.review_reason, "无摘要")}</li>)}</ul>}</section>
             </div>
           </td>
         </tr>
