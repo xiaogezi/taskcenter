@@ -120,6 +120,10 @@ type TaskRecord = {
   tests?: string[];
   evidence?: string[];
   updatedAt?: string;
+  startedAt?: string;
+  expectedAt?: string;
+  actualAt?: string;
+  toolCalls?: Record<string, number>;
 };
 
 type SessionStatus = {
@@ -886,6 +890,8 @@ const taskStatusMeta: Record<TaskStatus, { label: string; tone: string }> = {
   cancelled: { label: "已取消", tone: "cancelled" },
 };
 
+const TASKS_PER_PAGE = 40;
+
 function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, onTaskUpdated }: { tasks: TaskRecord[]; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; onTaskUpdated: (task: TaskRecord) => void }) {
   // 筛选逻辑：全部任务显示全局，具体 Session 优先精确 session_id，不可用时按显式项目标识回退
   const selectedSessionIds = sessionIdsForGroup(selectedSessionId, sessionGroups);
@@ -896,6 +902,17 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
       availableSessionIds: threadsForTask.flatMap((thread) => [thread.id, ...(thread.sessionIds ?? [])]).filter(Boolean),
       selectedThread: sessionGroups.find((thread) => thread.id === selectedSessionId),
     }));
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(filteredTasks.length / TASKS_PER_PAGE));
+  const visibleTasks = filteredTasks.slice((page - 1) * TASKS_PER_PAGE, page * TASKS_PER_PAGE);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [selectedSessionId]);
 
   return (
     <section className="task-ledger" aria-label="会话主动任务">
@@ -910,8 +927,9 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
             : "当前会话没有关联任务。"}
         </p>
       ) : (
-        <div className="task-table-wrapper">
-          <table className="task-table">
+        <>
+          <div className="task-table-wrapper">
+            <table className="task-table">
             <thead>
               <tr>
                 <th>标题</th>
@@ -920,15 +938,23 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
                 <th>阻塞</th>
                 <th className="task-count-header">假设 / 风险 / 取舍 / 待确认 / 复盘</th>
                 <th>Session</th>
-                <th>更新</th>
+                <th>时间 / 工具</th>
                 <th>人工操作</th>
               </tr>
             </thead>
             <tbody>
-              {filteredTasks.map((task) => <TaskRow key={task.id} task={task} availableThreads={threadsForTask} sessionStatuses={sessionStatuses} onTaskUpdated={onTaskUpdated} />)}
+              {visibleTasks.map((task) => <TaskRow key={task.id} task={task} availableThreads={threadsForTask} sessionStatuses={sessionStatuses} onTaskUpdated={onTaskUpdated} />)}
             </tbody>
           </table>
-        </div>
+          </div>
+          {pageCount > 1 && (
+            <nav className="task-pagination" aria-label="任务分页">
+              <button type="button" onClick={() => setPage((current) => current - 1)} disabled={page === 1}>上一页</button>
+              <span>第 {page} / {pageCount} 页 · 每页 {TASKS_PER_PAGE} 条</span>
+              <button type="button" onClick={() => setPage((current) => current + 1)} disabled={page === pageCount}>下一页</button>
+            </nav>
+          )}
+        </>
       )}
     </section>
   );
@@ -938,14 +964,16 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   const [actionState, setActionState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [actionError, setActionError] = useState("");
   const [idCopyState, setIdCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const meta = taskStatusMeta[task.status] ?? taskStatusMeta.planned;
-  const counts = [
-    { label: "假设", value: task.assumptions?.length ?? 0 },
-    { label: "风险", value: task.risks?.length ?? 0 },
-    { label: "取舍", value: task.tradeoffs?.length ?? 0 },
-    { label: "待确认", value: task.openQuestions?.length ?? 0 },
-    { label: "复盘", value: task.retrospective ? 1 : 0 },
+  const detailItems = [
+    { label: "假设", items: task.assumptions ?? [] },
+    { label: "风险", items: task.risks ?? [] },
+    { label: "取舍", items: task.tradeoffs ?? [] },
+    { label: "待确认", items: task.openQuestions ?? [] },
+    { label: "复盘", items: task.retrospective ? [task.retrospective] : [] },
   ];
+  const nonEmptyDetails = detailItems.filter((item) => item.items.length > 0);
   const stepText = task.currentStep ?? task.nextAction;
   const goalOrStep = task.goal || stepText ? `${asText(task.goal)}${stepText ? ` · ${asText(stepText)}` : ""}` : "—";
   const isDemo = task.id.startsWith("ui-demo-");
@@ -987,7 +1015,8 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   };
 
   return (
-    <tr className={`task-row status-task-${meta.tone}`}>
+    <>
+      <tr className={`task-row status-task-${meta.tone}`}>
       <td className="task-cell task-title-cell" title={asText(task.title, "未命名任务")}>
         <strong>{asText(task.title, "未命名任务")}</strong>
         <span className="task-id-line">
@@ -1008,11 +1037,18 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
       <td className="task-cell task-goal-cell" title={goalOrStep}>{goalOrStep}</td>
       <td className="task-cell task-blocker-cell" title={task.blocker || "—"}>{task.blocker ? asText(task.blocker) : "—"}</td>
       <td className="task-cell task-count-cell">
-        {counts.map((item) => (
-          <span key={item.label} className={`task-table-count ${item.value ? "" : "is-empty"}`} title={`${item.label}: ${item.value}`}>
-            {item.value}
-          </span>
-        ))}
+        {nonEmptyDetails.length > 0 ? (
+          <button
+            type="button"
+            className="task-detail-preview"
+            aria-expanded={detailsOpen}
+            aria-controls={`task-details-${task.id}`}
+            onClick={() => setDetailsOpen((open) => !open)}
+          >
+            {nonEmptyDetails.map((item) => <span key={item.label}><b>{item.label}</b> {asText(item.items[0])}{item.items.length > 1 ? ` +${item.items.length - 1}` : ""}</span>)}
+            <small>{detailsOpen ? "收起详情" : "查看详情"}</small>
+          </button>
+        ) : "—"}
       </td>
       <td className="task-cell task-session-cell" title={sessionInfo ? `${sessionInfo.title} · ${sessionInfo.detail}` : task.sessionId}>
         {sessionInfo ? (
@@ -1024,7 +1060,13 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
           <span className="no-session">{task.sessionId.slice(0, 8)}… 未关联会话</span>
         )}
       </td>
-      <td className="task-cell task-updated-cell">{normalizeDate(task.updatedAt)}</td>
+      <td className="task-cell task-metrics-cell">
+        <div>开始：{normalizeDate(task.startedAt)}</div>
+        <div>预计：{normalizeDate(task.expectedAt)}</div>
+        <div>实际：{normalizeDate(task.actualAt)}</div>
+        <div>耗时：{elapsedText(task.startedAt, task.actualAt || task.updatedAt)}</div>
+        <div className="task-tools">工具：{Object.entries(task.toolCalls ?? {}).length ? Object.entries(task.toolCalls ?? {}).map(([name, count]) => `${name} ×${count}`).join("、") : "—"}</div>
+      </td>
       <td className="task-cell task-actions-cell">
         {task.status === "planned" && (
           <button className="task-action-button action-start" onClick={() => handleAction("start")} disabled={actionState === "loading"}>
@@ -1051,8 +1093,25 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         )}
         {actionError && <span className="task-action-error">{actionError}</span>}
       </td>
-    </tr>
+      </tr>
+      {detailsOpen && nonEmptyDetails.length > 0 && (
+        <tr id={`task-details-${task.id}`} className="task-detail-row">
+          <td colSpan={8}>
+            <div className="task-detail-content">
+              {nonEmptyDetails.map((item) => <section key={item.label}><strong>{item.label}</strong><ul>{item.items.map((value, index) => <li key={`${item.label}-${index}`}>{value}</li>)}</ul></section>)}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
+}
+
+function elapsedText(start?: string, end?: string) {
+  const duration = Date.parse(end || "") - Date.parse(start || "");
+  if (!Number.isFinite(duration) || duration < 0) return "—";
+  const seconds = Math.floor(duration / 1000);
+  return seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
 }
 
 function RequirementCard({
