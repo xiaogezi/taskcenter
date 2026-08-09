@@ -90,13 +90,13 @@ test("只把持续能力和缺陷反馈识别为需求", () => {
   }
 });
 
-test("服务端渲染 ReqRadar 看板", async () => {
+test("服务端渲染 TaskCenter 看板", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
-  assert.match(html, /<title>ReqRadar/);
-  assert.match(html, /需求雷达/);
+  assert.match(html, /<title>TaskCenter/);
+  assert.match(html, /本地任务工作台/);
   assert.match(html, /Codex/);
   assert.doesNotMatch(html, /react-loading-skeleton/);
 });
