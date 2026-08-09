@@ -707,7 +707,9 @@ export default function Home() {
               <button className="refresh-button" onClick={() => void refreshLiveData(true)} disabled={isRefreshing}>
                 {isRefreshing ? "刷新中…" : "刷新数据"}
               </button>
-              <span className="count-pill">{mergedThreads.length}</span>
+              <span className="count-pill" aria-label={`当前 ${mergedThreads.length} 个会话`}>
+                <strong>{mergedThreads.length}</strong><small>会话</small>
+              </span>
             </div>
           </div>
           {syncMessage && <p className="sync-message" role="status">{syncMessage}</p>}

@@ -643,17 +643,20 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
   .task-table-wrapper { margin-left: -12px; margin-right: -12px; }
 }
 
-/* Sidebar refresh: compact rounded controls instead of narrow rectangular tiles. */
+/* Sidebar toolbar: one primary action, two secondary actions, read-only count. */
 .rail-heading { align-items: flex-start; display: block; }
-.rail-actions { align-items: center; display: flex; gap: 6px; margin-top: 13px; width: 100%; }
-.rail-actions > button:not(.count-pill) { border-radius: 12px; flex: 1 1 0; min-width: 0; padding: 8px 6px; white-space: nowrap; }
-.manage-sessions-button { background: rgba(255,255,255,.58); border-color: transparent; color: var(--ink-soft); }
-.manage-sessions-button:hover { background: white; box-shadow: 0 5px 14px rgba(17,36,59,.08); }
-.scan-button { background: var(--orange-pale); border-color: transparent; color: var(--orange); }
-.scan-button:hover { background: #f7cdbb; }
-.refresh-button { background: var(--ink); border-color: var(--ink); box-shadow: 0 5px 12px rgba(17,36,59,.12); }
-.refresh-button:hover { background: #223b58; }
-.rail-actions .count-pill { flex: 0 0 27px; }
+.rail-actions { align-items: stretch; display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 13px; width: 100%; }
+.rail-actions > button { border-radius: 10px; min-height: 44px; min-width: 0; padding: 8px 10px; white-space: nowrap; }
+.manage-sessions-button { background: transparent; border-color: var(--line); color: var(--ink-soft); }
+.manage-sessions-button:hover { background: var(--paper-deep); color: var(--ink); }
+.scan-button { background: transparent; border-color: var(--orange); color: var(--orange); }
+.scan-button:hover { background: var(--orange-pale); }
+.refresh-button { background: var(--ink); border-color: var(--ink); color: white; grid-column: 1 / -1; order: -1; }
+.refresh-button:hover { background: var(--ink-soft); }
+.rail-actions button:active { transform: translateY(1px); }
+.rail-actions .count-pill { align-items: baseline; background: transparent; border: 1px solid var(--line); border-radius: 10px; color: var(--ink-soft); display: inline-flex; gap: 5px; grid-column: 1 / -1; justify-self: start; min-height: 32px; padding: 5px 10px; }
+.count-pill strong { color: var(--ink); font-size: 14px; font-variant-numeric: tabular-nums; }
+.count-pill small { font-size: 10px; font-weight: 700; }
 .thread-row { border-bottom: 0; margin-top: 5px; }
 .thread-item { border: 1px solid transparent; border-radius: 14px; min-height: 64px; padding: 11px 10px; }
 .thread-item:hover { background: rgba(255,255,255,.72); border-color: rgba(216,209,196,.8); padding-left: 10px; }
@@ -677,7 +680,5 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
   .task-table .task-row > .task-title-cell { order: 1; }
   .task-table .task-row > .task-actions-cell { order: 2; }
   .thread-rail { max-height: 280px; overflow-y: auto; }
-  .rail-actions { flex-wrap: wrap; }
-  .rail-actions > button:not(.count-pill) { flex: 1 1 30%; }
-  .rail-actions .count-pill { margin-left: auto; }
+  .rail-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
