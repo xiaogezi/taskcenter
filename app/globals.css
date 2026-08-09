@@ -673,7 +673,7 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
     width: 100%;
   }
   .task-table .task-row { display: flex; flex-direction: column; }
-  .task-table .task-row > td { order: 3; }
+  .task-table .task-row > td { min-width: 0; order: 3; width: 100%; }
   .task-table .task-row > .task-title-cell { order: 1; }
   .task-table .task-row > .task-actions-cell { order: 2; }
   .thread-rail { max-height: 280px; overflow-y: auto; }
