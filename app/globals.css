@@ -663,7 +663,15 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
 .thread-remove-button { border-radius: 9px; margin-left: 4px; padding: 5px 6px; }
 .privacy-note { border-radius: 14px; margin-top: 20px; }
 
-@media (max-width: 680px) {
+@media (max-width: 768px) {
+  .task-table,
+  .task-table tbody,
+  .task-table tr,
+  .task-table td,
+  .task-cell.task-actions-cell {
+    min-width: 0;
+    width: 100%;
+  }
   .thread-rail { max-height: 280px; overflow-y: auto; }
   .rail-actions { flex-wrap: wrap; }
   .rail-actions > button:not(.count-pill) { flex: 1 1 30%; }
