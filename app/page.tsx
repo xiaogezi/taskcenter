@@ -106,6 +106,7 @@ type TaskRecord = {
   workspace?: string;
   title: string;
   goal: string;
+  requirementId?: string;
   status: TaskStatus;
   priority?: string;
   currentStep?: string;
@@ -123,6 +124,8 @@ type TaskRecord = {
   startedAt?: string;
   expectedAt?: string;
   actualAt?: string;
+  reviewReason?: string;
+  reviewedAt?: string;
   toolCalls?: Record<string, number>;
 };
 
@@ -830,6 +833,7 @@ export default function Home() {
                   index={index}
                   compact={view === "rows"}
                   dispatch={dispatches.find((item) => item.requirementId === requirement.id)}
+                  associatedTasks={tasks.filter((task) => task.requirementId === requirement.id)}
                   onContinue={openDispatch}
                   onCancelDispatch={cancelDispatch}
                   onUpdateRequirement={updateRequirement}
@@ -903,8 +907,11 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
       selectedThread: sessionGroups.find((thread) => thread.id === selectedSessionId),
     }));
   const [page, setPage] = useState(1);
-  const pageCount = Math.max(1, Math.ceil(filteredTasks.length / TASKS_PER_PAGE));
-  const visibleTasks = filteredTasks.slice((page - 1) * TASKS_PER_PAGE, page * TASKS_PER_PAGE);
+  const [reviewOnly, setReviewOnly] = useState(false);
+  const reviewCount = filteredTasks.filter((task) => task.status === "done_claimed").length;
+  const shownTasks = reviewOnly ? filteredTasks.filter((task) => task.status === "done_claimed") : filteredTasks;
+  const pageCount = Math.max(1, Math.ceil(shownTasks.length / TASKS_PER_PAGE));
+  const visibleTasks = shownTasks.slice((page - 1) * TASKS_PER_PAGE, page * TASKS_PER_PAGE);
 
   useEffect(() => {
     setPage((current) => Math.min(current, pageCount));
@@ -919,10 +926,13 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
       <div className="ledger-heading">
         <p className="eyebrow orange">SESSION TASK GATE</p>
         <h2>会话主动任务<span>{filteredTasks.length}</span></h2>
+        <button type="button" className="task-filter-button" onClick={() => setReviewOnly((value) => !value)}>{reviewOnly ? "全部任务" : `待验收 ${reviewCount}`}</button>
       </div>
-      {filteredTasks.length === 0 ? (
+      {shownTasks.length === 0 ? (
         <p className="ledger-empty">
-          {selectedSessionId === "全部任务"
+          {reviewOnly
+            ? "当前没有待验收任务。"
+            : selectedSessionId === "全部任务"
             ? "还没有已登记的会话主动任务。会话开始写代码前应先调用 reqradar_session_register 与 reqradar_task_create，取得 accepted=true 和 task_id 后再实施。"
             : "当前会话没有关联任务。"}
         </p>
@@ -933,6 +943,7 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
             <thead>
               <tr>
                 <th>标题</th>
+                <th>需求 ID</th>
                 <th>状态</th>
                 <th>目标 / 步骤</th>
                 <th>阻塞</th>
@@ -967,6 +978,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   const [detailsOpen, setDetailsOpen] = useState(false);
   const meta = taskStatusMeta[task.status] ?? taskStatusMeta.planned;
   const detailItems = [
+    { label: "审核理由", items: task.reviewReason ? [`${task.reviewReason}${task.reviewedAt ? ` · ${normalizeDate(task.reviewedAt)}` : ""}`] : [] },
     { label: "假设", items: task.assumptions ?? [] },
     { label: "风险", items: task.risks ?? [] },
     { label: "取舍", items: task.tradeoffs ?? [] },
@@ -983,15 +995,17 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
     [task, threadsForTask],
   );
 
-  const handleAction = async (action: "start" | "block" | "done" | "cancel" | "remove") => {
+  const handleAction = async (action: "start" | "block" | "done" | "cancel" | "remove" | "verify" | "reject") => {
     if (actionState === "loading") return;
+    const reason = action === "reject" ? window.prompt("请输入打回理由", "人工打回，需补充证据") : "";
+    if (action === "reject" && reason === null) return;
     setActionState("loading");
     setActionError("");
     try {
       const response = await fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/actions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-ReqRadar-Action": "delegate" },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, ...(action === "reject" ? { reason } : {}) }),
       });
       const payload = await response.json() as { error?: string; task?: TaskRecord | null };
       if (!response.ok) throw new Error(payload.error || "操作失败");
@@ -1033,6 +1047,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         </span>
         {idCopyState === "error" && <small className="task-id-copy-error">复制失败，请手动选择 ID</small>}
       </td>
+      <td className="task-cell"><code>{task.requirementId || "—"}</code></td>
       <td className="task-cell"><span className={`task-status status-${meta.tone}`}>{meta.label}</span></td>
       <td className="task-cell task-goal-cell" title={goalOrStep}>{goalOrStep}</td>
       <td className="task-cell task-blocker-cell" title={task.blocker || "—"}>{task.blocker ? asText(task.blocker) : "—"}</td>
@@ -1084,8 +1099,9 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
           </button>
         )}
         {task.status === "done_claimed" && (
-          <span className="task-action-note">已完成</span>
+          <><button className="task-action-button action-done" onClick={() => handleAction("verify")} disabled={actionState === "loading"}>验收通过</button><button className="task-action-button action-block" onClick={() => handleAction("reject")} disabled={actionState === "loading"}>打回</button></>
         )}
+        {task.status === "verified" && <span className="task-action-note">已验收</span>}
         {isDemo && (
           <button className="task-action-button action-remove" onClick={() => handleAction("remove")} disabled={actionState === "loading"}>
             移除演示
@@ -1096,7 +1112,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
       </tr>
       {detailsOpen && nonEmptyDetails.length > 0 && (
         <tr id={`task-details-${task.id}`} className="task-detail-row">
-          <td colSpan={8}>
+          <td colSpan={9}>
             <div className="task-detail-content">
               {nonEmptyDetails.map((item) => <section key={item.label}><strong>{item.label}</strong><ul>{item.items.map((value, index) => <li key={`${item.label}-${index}`}>{value}</li>)}</ul></section>)}
             </div>
@@ -1119,6 +1135,7 @@ function RequirementCard({
   index,
   compact,
   dispatch,
+  associatedTasks,
   onContinue,
   onCancelDispatch,
   onUpdateRequirement,
@@ -1127,6 +1144,7 @@ function RequirementCard({
   index: number;
   compact: boolean;
   dispatch?: DispatchRecord;
+  associatedTasks: TaskRecord[];
   onContinue: (requirement: Requirement) => void;
   onCancelDispatch: (dispatch: DispatchRecord) => Promise<void>;
   onUpdateRequirement: (requirement: Requirement, action: "complete" | "remove") => Promise<void>;
@@ -1157,6 +1175,7 @@ function RequirementCard({
             {requirement.parentId && <span>父项：{parentTitle(requirement)}</span>}
           </div>
           <p className="card-summary">{asText(requirement.summary)}</p>
+          {associatedTasks.length > 0 && <p className="list-gap">关联任务：{associatedTasks.map((task) => `${task.title}（${taskStatusMeta[task.status]?.label ?? task.status}）`).join("、")}</p>}
           <p className="list-gap">{asText(requirement.gap, status === "verified" ? "已有验收记录，继续保持回归验证。" : "还没有形成可验收记录。")}</p>
           <div className="list-meta-row">
             <div className="source-line">
@@ -1289,6 +1308,7 @@ function RequirementCard({
         <span className="priority-label">{priorityMeta[asText(requirement.priority, "未设置")] ?? asText(requirement.priority, "未设置")}</span>
       </div>
       <h3>{asText(requirement.title, "未命名需求")}</h3>
+      {associatedTasks.length > 0 && <p className="card-summary">关联任务：{associatedTasks.map((task) => `${task.title}（${taskStatusMeta[task.status]?.label ?? task.status}）`).join("、")}</p>}
       <div className="requirement-meta" aria-label="需求归属">
         <span>{requirement.kind === "epic" ? "Epic" : "专业需求"}</span>
         {requirement.project && <span>项目：{requirement.project}</span>}

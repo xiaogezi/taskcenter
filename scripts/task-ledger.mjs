@@ -228,6 +228,7 @@ function normalizeEvent(input) {
     event_id: String(input.event_id || randomUUID()),
     type,
     task_id: String(input.task_id || (type === "task.create" ? `task-${randomUUID()}` : "")),
+    requirement_id: cleanText(input.requirement_id, 200),
     session_id: sessionId,
     agent: cleanText(input.agent, 40) || "unknown",
     provider: cleanText(input.provider, 80) || "unknown",
@@ -251,6 +252,8 @@ function normalizeEvent(input) {
     open_questions: cleanList(input.open_questions, 20, 500),
     retrospective: cleanText(input.retrospective, 2_000),
     expected_at: cleanText(input.expected_at, 80),
+    review_reason: cleanText(input.review_reason, 1_000),
+    reviewed_at: cleanText(input.reviewed_at, 80),
     tool_name: cleanText(input.tool_name, 120),
     tool_use_id: cleanText(input.tool_use_id, 200),
     created_at: new Date().toISOString(),
@@ -264,7 +267,7 @@ function normalizeEvent(input) {
 function applyEvent(current, event) {
   // 会话不能自行把任务标成"已验收"。验收必须由 ReqRadar 基于代码/测试证据单独判定，
   // done_claimed 只能停留在"声明完成"，不会自动升级为 verified。
-  if (event.status === "verified") {
+  if (event.status === "verified" && (event.type !== "task.review" || !event.event_id.startsWith("manual-"))) {
     throw new TaskLedgerError(400, "会话不能直接把任务标记为已验收；验收需由 ReqRadar 基于证据判定。");
   }
   // 人工移除操作：允许移除演示任务，真实任务需确认
@@ -293,6 +296,7 @@ function applyEvent(current, event) {
     workspace: event.workspace,
     title: event.title || "未命名任务",
     goal: event.goal || "未记录目标",
+    requirementId: event.requirement_id || undefined,
     status: "planned",
     priority: event.priority || "P1",
     plan: [],
@@ -315,6 +319,7 @@ function applyEvent(current, event) {
     workspace: event.workspace || base.workspace,
     title: event.title || base.title,
     goal: event.goal || base.goal,
+    requirementId: event.requirement_id || base.requirementId,
     priority: event.priority || base.priority,
     status: event.status || (event.type === "task.blocked" ? "blocked" : event.type === "task.done_claimed" ? "done_claimed" : event.type === "task.create" ? "planned" : base.status),
     plan: event.plan.length ? event.plan : base.plan,
@@ -335,6 +340,8 @@ function applyEvent(current, event) {
     startedAt: base.startedAt || (event.type === "task.create" ? now : ""),
     expectedAt: event.expected_at || base.expectedAt || "",
     actualAt: event.type === "task.done_claimed" || event.status === "done_claimed" ? now : (base.actualAt || ""),
+    reviewReason: event.review_reason || base.reviewReason || "",
+    reviewedAt: event.reviewed_at || base.reviewedAt || "",
     toolCalls: { ...(base.toolCalls || {}) },
   };
   if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;

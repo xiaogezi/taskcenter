@@ -36,6 +36,8 @@ export function buildDispatchPrompt(requirement, cwd = "") {
   const evidence = (requirement.evidence || []).slice(0, 6);
   const lines = [
     "【ReqRadar 继续需求】",
+    `稳定需求 ID：${bounded(requirement.id, 200)}`,
+    `调用 reqradar_task_create 时 requirement_id 必须设置为 ${bounded(requirement.id, 200)}`,
     `需求：${bounded(requirement.title, 160)}`,
     `当前状态：${requirement.status === "in_progress" ? "进行中" : "部分完成"}`,
     `已完成概况：${bounded(requirement.summary, 500)}`,

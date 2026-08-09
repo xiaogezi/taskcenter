@@ -103,6 +103,9 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/task-events") {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
+      if (body.type === "task.review" || body.status === "verified") {
+        throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
+      }
       const sessionIds = availableSessionIds();
       if (reconcileLiveSessions) reconcileTasks(sessionIds);
       const result = recordTaskEvent(body, {
@@ -129,11 +132,31 @@ const server = createServer(async (request, response) => {
       const taskId = taskActionMatch[1];
       const body = await readJsonBody(request);
       const action = String(body.action || "");
-      if (!["start", "block", "done", "cancel", "remove"].includes(action)) {
+      if (!["start", "block", "done", "cancel", "remove", "verify", "reject"].includes(action)) {
         throw new TaskLedgerError(400, "任务操作无效。");
       }
-      const result = applyManualTaskAction(taskId, action);
+      const currentTask = loadTasks().find((item) => item.id === taskId);
+      if (action === "verify" && currentTask?.requirementId) verifyRequirementExists(currentTask.requirementId.replace(/^promoted-/, ""));
+      const result = applyManualTaskAction(taskId, action, body.reason);
       const contextSync = await syncContextEvent(result.event, result.task);
+      if (action === "verify" && result.task.requirementId) {
+        const requirementId = result.task.requirementId.replace(/^promoted-/, "");
+        verifyRequirementExists(requirementId);
+        requirementOverrides[requirementId] = {
+          ...(requirementOverrides[requirementId] || {}),
+          status: "verified", hidden: false, source: "manual", updatedAt: result.task.reviewedAt,
+        };
+        persistJsonObject(overridesPath, requirementOverrides);
+      }
+      if (action === "reject" && result.task.requirementId) {
+        const requirementId = result.task.requirementId.replace(/^promoted-/, "");
+        verifyRequirementExists(requirementId);
+        requirementOverrides[requirementId] = {
+          ...(requirementOverrides[requirementId] || {}),
+          status: "needs_validation", hidden: false, source: "manual", updatedAt: result.task.reviewedAt,
+        };
+        persistJsonObject(overridesPath, requirementOverrides);
+      }
       sendJson(response, 200, {
         accepted: true,
         action,
@@ -498,18 +521,26 @@ function verifyManualTaskAction(request) {
   }
 }
 
-function applyManualTaskAction(taskId, action) {
+function applyManualTaskAction(taskId, action, reason = "") {
   const tasks = loadTasks();
   const task = tasks.find((item) => item.id === taskId);
   if (!task) {
     throw new TaskLedgerError(404, "任务不存在。");
   }
+  if (action === "verify" && task.status !== "done_claimed") {
+    throw new TaskLedgerError(409, "只有已声明完成的任务可以验收。");
+  }
+  if (action === "reject" && !["done_claimed", "verified"].includes(task.status)) {
+    throw new TaskLedgerError(409, "只有待验收或已验收任务可以打回。");
+  }
   const event = {
     event_id: `manual-${randomUUID()}`,
-    type: action === "remove" ? "task.review" : "task.update",
+    type: ["remove", "verify", "reject"].includes(action) ? "task.review" : "task.update",
     task_id: taskId,
     session_id: task.sessionId,
-    status: action === "start" ? "in_progress" : action === "block" ? "blocked" : action === "done" ? "done_claimed" : action === "cancel" ? "cancelled" : action === "remove" ? "removed" : undefined,
+    status: action === "start" ? "in_progress" : action === "block" ? "blocked" : action === "done" ? "done_claimed" : action === "cancel" ? "cancelled" : action === "remove" ? "removed" : action === "verify" ? "verified" : action === "reject" ? "in_progress" : undefined,
+    review_reason: action === "reject" ? String(reason || "人工打回，需补充证据").slice(0, 1_000) : action === "verify" ? String(reason || "人工验收通过").slice(0, 1_000) : "",
+    reviewed_at: ["verify", "reject"].includes(action) ? new Date().toISOString() : "",
     created_at: new Date().toISOString(),
   };
   const result = recordTaskEvent(event);

@@ -12,6 +12,7 @@ const taskFields = {
   model: z.string().max(120).optional(),
   workspace: z.string().max(4_096).optional(),
   task_id: z.string().max(200).optional(),
+  requirement_id: z.string().max(200).optional(),
   event_id: z.string().max(200).optional(),
   title: z.string().max(200).optional(),
   goal: z.string().max(1_000).optional(),

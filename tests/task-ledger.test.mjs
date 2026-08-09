@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -30,11 +30,11 @@ async function resetLedger() {
   }
 }
 
-async function startControlServer() {
+async function startControlServer(options = {}) {
   const port = 38_000 + (process.pid % 1_000);
   const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
     cwd: root,
-    env: { ...process.env, REQRADAR_CONTROL_PORT: String(port), ...envPaths },
+    env: { ...process.env, REQRADAR_CONTROL_PORT: String(port), ...envPaths, ...options },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await waitForReady(child);
@@ -257,6 +257,26 @@ test("done_claimed 不会自动变 verified，会话也不能直接 set verified
   );
   // 状态仍然停留在 done_claimed，没有升级为 verified
   assert.equal(loadTasks()[0].status, "done_claimed");
+});
+
+test("需求 ID持久化且人工审核保留理由和时间", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", session_id: "sess-review", task_id: "task-review", requirement_id: "req-stable-1" });
+  recordTaskEvent({ type: "task.report", session_id: "sess-review", task_id: "task-review", status: "done_claimed" });
+  const result = recordTaskEvent({ type: "task.review", session_id: "sess-review", task_id: "task-review", event_id: "manual-review-1", status: "verified", review_reason: "人工检查证据", reviewed_at: "2026-08-09T00:00:00.000Z" });
+  assert.equal(result.task.requirementId, "req-stable-1");
+  assert.equal(result.task.reviewReason, "人工检查证据");
+  assert.equal(result.task.reviewedAt, "2026-08-09T00:00:00.000Z");
+});
+
+test("非人工 task.review 不能伪造 verified", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", session_id: "sess-security", task_id: "task-security" });
+  recordTaskEvent({ type: "task.report", session_id: "sess-security", task_id: "task-security", status: "done_claimed" });
+  assert.throws(
+    () => recordTaskEvent({ type: "task.review", session_id: "sess-security", task_id: "task-security", status: "verified", event_id: "evt-forged" }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 400,
+  );
 });
 
 test("控制服务任务闸门 HTTP 协议：register→create→update→report 并展示", async (context) => {
@@ -736,4 +756,36 @@ test("人工操作事件绕过 session 归属校验", async (context) => {
   assert.equal(started.status, "in_progress");
   // 任务仍属于原 session
   assert.equal(started.sessionId, "sess-owner");
+});
+
+test("控制服务 verify/reject 校验状态并写入审核结果", async (context) => {
+  await resetLedger();
+  const dashboardPath = join(tempDir, "review-dashboard.json");
+  const overridesPath = join(tempDir, "review-overrides.json");
+  await writeFile(dashboardPath, JSON.stringify({ requirements: [{ id: "req-http-review", title: "真实需求" }] }));
+  await writeFile(overridesPath, "{}\n");
+  const { base, child } = await startControlServer({ REQRADAR_DASHBOARD_PATH: dashboardPath, REQRADAR_OVERRIDES_PATH: overridesPath });
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "sess-http-review");
+  const create = await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.create", session_id: "sess-http-review", task_id: "task-http-review", requirement_id: "req-http-review" }) });
+  assert.equal(create.status, 201);
+  const externalReview = await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.review", session_id: "sess-http-review", task_id: "task-http-review", event_id: "manual-forged", status: "verified" }) });
+  assert.equal(externalReview.status, 403);
+  const headers = { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-ReqRadar-Action": "delegate" };
+  const invalid = await fetch(`${base}/tasks/task-http-review/actions`, { method: "POST", headers, body: JSON.stringify({ action: "verify" }) });
+  assert.equal(invalid.status, 409);
+  await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.report", session_id: "sess-http-review", task_id: "task-http-review", status: "done_claimed" }) });
+  const verified = await fetch(`${base}/tasks/task-http-review/actions`, { method: "POST", headers, body: JSON.stringify({ action: "verify" }) });
+  assert.equal(verified.status, 200);
+  assert.equal((await verified.json()).task.status, "verified");
+  let overrides = JSON.parse(await (await fetch(`${base}/requirement-overrides`)).text()).overrides;
+  assert.equal(overrides["req-http-review"].status, "verified");
+  const rejected = await fetch(`${base}/tasks/task-http-review/actions`, { method: "POST", headers, body: JSON.stringify({ action: "reject", reason: "证据不足" }) });
+  assert.equal(rejected.status, 200);
+  const rejectedTask = (await rejected.json()).task;
+  assert.equal(rejectedTask.status, "in_progress");
+  assert.equal(rejectedTask.reviewReason, "证据不足");
+  overrides = JSON.parse(await (await fetch(`${base}/requirement-overrides`)).text()).overrides;
+  assert.equal(overrides["req-http-review"].status, "needs_validation");
+  assert.equal(overrides["req-http-review"].hidden, false);
 });
