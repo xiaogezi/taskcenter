@@ -31,6 +31,7 @@ const taskFields = {
   tradeoffs: z.array(z.string().max(500)).max(20).optional(),
   open_questions: z.array(z.string().max(500)).max(20).optional(),
   retrospective: z.string().max(2_000).optional(),
+  expected_at: z.string().datetime({ offset: true }).optional(),
 };
 
 server.registerTool("reqradar_session_register", {

@@ -86,6 +86,17 @@ test("任务 session_id 不在当前会话源时拒绝创建并可清理旧记�
   );
 });
 
+test("任务聚合真实时间和工具调用次数", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", session_id: "sess-metrics", task_id: "task-metrics", event_id: "m-create" });
+  recordTaskEvent({ type: "tool.call", session_id: "sess-metrics", task_id: "task-metrics", event_id: "m-tool-1", tool_name: "exec_command" });
+  recordTaskEvent({ type: "tool.call", session_id: "sess-metrics", task_id: "task-metrics", event_id: "m-tool-2", tool_name: "exec_command" });
+  const task = loadTasks()[0];
+  assert.ok(task.startedAt);
+  assert.equal(task.toolCalls.exec_command, 2);
+  assert.equal(task.actualAt, "");
+});
+
 test("已登记的外部 Session 不被 Codex 会话清理误删", async () => {
   await resetLedger();
   recordTaskEvent({
@@ -276,12 +287,14 @@ test("控制服务任务闸门 HTTP 协议：register→create→update→report
       assumptions: ["假设A"],
       risks: ["风险B"],
       retrospective: "复盘C",
+      expected_at: "2026-08-10T12:00:00.000Z",
     }),
   });
   assert.equal(create.status, 201);
   const created = (await create.json()).task;
   assert.equal(created.id, "task-http");
   assert.equal(created.status, "planned");
+  assert.equal(created.expectedAt, "2026-08-10T12:00:00.000Z");
 
   const update = await fetch(`${base}/task-events`, {
     method: "POST",
@@ -410,12 +423,14 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
       assumptions: ["假设A"],
       risks: ["风险B"],
       retrospective: "复盘C",
+      expected_at: "2026-08-10T12:00:00.000Z",
     },
   });
   const createPayload = JSON.parse(textOf(create));
   assert.equal(createPayload.accepted, true);
   assert.equal(createPayload.task.id, "task-mcp");
   assert.equal(createPayload.task.status, "planned");
+  assert.equal(createPayload.task.expectedAt, "2026-08-10T12:00:00.000Z");
 
   const query = await client.callTool({ name: "reqradar_task_query", arguments: { session_id: "sess-mcp" } });
   const queryPayload = JSON.parse(textOf(query));

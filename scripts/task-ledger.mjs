@@ -218,13 +218,13 @@ function normalizeEvent(input) {
   if (!input || typeof input !== "object") throw new TaskLedgerError(400, "任务事件必须是 JSON 对象。");
   const type = String(input.type || "");
   const sessionId = String(input.session_id || "");
-  const allowedTypes = new Set(["session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.review"]);
+  const allowedTypes = new Set(["session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.review", "tool.call"]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
   if (!sessionId) throw new TaskLedgerError(400, "任务事件缺少 session_id。");
   if (type !== "session.register" && type !== "task.create" && !String(input.task_id || "")) {
     throw new TaskLedgerError(400, "任务事件缺少 task_id。");
   }
-  return {
+  const event = {
     event_id: String(input.event_id || randomUUID()),
     type,
     task_id: String(input.task_id || (type === "task.create" ? `task-${randomUUID()}` : "")),
@@ -250,8 +250,15 @@ function normalizeEvent(input) {
     tradeoffs: cleanList(input.tradeoffs, 20, 500),
     open_questions: cleanList(input.open_questions, 20, 500),
     retrospective: cleanText(input.retrospective, 2_000),
+    expected_at: cleanText(input.expected_at, 80),
+    tool_name: cleanText(input.tool_name, 120),
+    tool_use_id: cleanText(input.tool_use_id, 200),
     created_at: new Date().toISOString(),
   };
+  if (event.expected_at && !Number.isFinite(Date.parse(event.expected_at))) {
+    throw new TaskLedgerError(400, "expected_at 必须是可解析的 ISO 时间。");
+  }
+  return event;
 }
 
 function applyEvent(current, event) {
@@ -325,7 +332,12 @@ function applyEvent(current, event) {
     retrospective: event.retrospective || base.retrospective || "",
     updatedAt: now,
     lastEventId: event.event_id,
+    startedAt: base.startedAt || (event.type === "task.create" ? now : ""),
+    expectedAt: event.expected_at || base.expectedAt || "",
+    actualAt: event.type === "task.done_claimed" || event.status === "done_claimed" ? now : (base.actualAt || ""),
+    toolCalls: { ...(base.toolCalls || {}) },
   };
+  if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;
   if (event.type === "task.review") next.status = event.status || base.status;
   return next;
 }

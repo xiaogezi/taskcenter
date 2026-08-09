@@ -16,7 +16,8 @@ try {
     await registerSession();
     console.log(`ReqRadar Session 已登记: ${sessionId}`);
   } else if (action === "pre-tool-use") {
-    await requireTask();
+    const task = await requireTask();
+    await recordToolCall(task);
     console.log("ReqRadar 任务门禁通过");
   } else {
     throw new Error(`未知 Hook 操作: ${action}`);
@@ -24,6 +25,22 @@ try {
 } catch (error) {
   console.error(`ReqRadar Hook: ${error.message}`);
   process.exitCode = action === "pre-tool-use" ? 2 : 1;
+}
+
+async function recordToolCall(task) {
+  if (!event.tool_name && !event.tool && !event.name) return;
+  try {
+    await request("POST", "/task-events", {
+      type: "tool.call",
+      event_id: `hook-tool-${event.call_id || event.tool_use_id || `${sessionId}-${Date.now()}`}`,
+      session_id: sessionId,
+      task_id: event.task_id || task.id,
+      tool_name: event.tool_name || event.tool || event.name,
+      tool_use_id: event.tool_use_id || event.call_id || "",
+    });
+  } catch (error) {
+    console.error(`ReqRadar Hook 警告：工具统计上报失败，已放行（${error.message}）`);
+  }
 }
 
 async function registerSession() {
@@ -50,6 +67,12 @@ async function requireTask() {
   if (current.taskCount < 1) {
     throw new Error("当前 Session 尚未创建 ReqRadar 任务，请先调用 reqradar_task_create。");
   }
+  const tasks = await request("GET", "/tasks");
+  const active = (tasks.tasks || []).filter((task) => task.sessionId === sessionId && ["in_progress", "blocked", "planned"].includes(task.status));
+  const rank = { in_progress: 3, blocked: 2, planned: 1 };
+  const task = active.sort((left, right) => (rank[right.status] - rank[left.status]) || (Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || "")))[0];
+  if (!task) throw new Error("当前 Session 无活跃任务，请创建或启动任务后再调用工具。");
+  return task;
 }
 
 async function request(method, path, body) {

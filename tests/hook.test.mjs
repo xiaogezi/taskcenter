@@ -64,8 +64,18 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     }),
   });
   assert.equal(created.status, 201);
-  const allowed = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work" });
+  const allowed = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "stable-call-1" });
   assert.equal(allowed.code, 0);
+  const tasks = await (await fetch(`${base}/tasks`)).json();
+  assert.equal(tasks.tasks.find((task) => task.id === "hook-gate-task").toolCalls.exec_command, 1);
+  const replay = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "stable-call-1" });
+  assert.equal(replay.code, 0);
+  const afterReplay = await (await fetch(`${base}/tasks`)).json();
+  assert.equal(afterReplay.tasks.find((task) => task.id === "hook-gate-task").toolCalls.exec_command, 1);
+  await fetch(`${base}/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-ReqRadar-Task": "mcp" }, body: JSON.stringify({ type: "task.report", event_id: "hook-gate-done", task_id: "hook-gate-task", session_id: "gate-session", status: "done_claimed" }) });
+  const noActive = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "stable-call-2" });
+  assert.equal(noActive.code, 2);
+  assert.match(noActive.stderr, /无活跃任务/);
 });
 
 async function runHook(action, agent, payload) {
