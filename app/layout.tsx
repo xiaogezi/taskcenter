@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ReqRadar | 需求雷达",
-  description: "按 Codex 任务审计本地需求实现状态的独立看板。",
+  title: "TaskCenter | 本地任务工作台",
+  description: "按 Codex 任务审计本地需求实现状态的独立工作台。",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

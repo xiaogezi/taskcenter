@@ -266,8 +266,8 @@ function manualTaskText(requirement: Requirement) {
   const acceptance = requirement.acceptanceCriteria?.slice(0, 5) ?? [];
   const stages = requirement.implementationStages?.slice(0, 5) ?? [];
   return [
-    "【ReqRadar 继续需求】",
-    requirement.id ? `ReqRadar ID：${requirement.id.replace(/^promoted-/, "")}` : "",
+    "【TaskCenter 继续需求】",
+    requirement.id ? `TaskCenter ID：${requirement.id.replace(/^promoted-/, "")}` : "",
     `需求：${asText(requirement.title, "未命名需求")}`,
     `当前状态：${statusMeta[requirement.status ?? "untriaged"].label}`,
     requirement.project ? `项目：${requirement.project}` : "",
@@ -659,12 +659,12 @@ export default function Home() {
       <header className="masthead">
         <div className="brand-lockup">
           <div className="brand-mark" aria-hidden="true">
-            <span>R</span>
-            <span>R</span>
+            <span>T</span>
+            <span>C</span>
           </div>
           <div>
             <p className="eyebrow">LOCAL / CODEX MEMORY</p>
-            <p className="brand-name">REQ<span>/</span>RADAR</p>
+          <p className="brand-name">TASK<span>CENTER</span></p>
           </div>
         </div>
         <div className="masthead-note">
@@ -830,7 +830,7 @@ export default function Home() {
 
           <details className="requirement-section">
             <summary className="requirement-section-toggle">
-              <span>📋</span>
+              <span aria-hidden="true">▦</span>
               需求卡片（{filteredRequirements.length} 条）
             </summary>
 
@@ -883,7 +883,7 @@ export default function Home() {
       </div>
 
       <footer className="footer-bar">
-        <span>REQ/RADAR · 独立项目管理工具</span>
+        <span>TaskCenter · 独立项目管理工具</span>
         <span>最近同步：{normalizeDate(dashboard.generatedAt)}</span>
         <span>源：{dashboard.source?.mode ?? "read-only local JSONL"}</span>
       </footer>
@@ -1103,7 +1103,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   return (
     <>
       <tr className={`task-row status-task-${meta.tone}`}>
-      <td className="task-cell task-title-cell" title={asText(task.title, "未命名任务")}>
+      <td data-label="标题" className="task-cell task-title-cell" title={asText(task.title, "未命名任务")}>
         <strong>{asText(task.title, "未命名任务")}</strong>
         <span className="task-id-line">
           <code title="任务独立 ID">{task.id}</code>
@@ -1119,11 +1119,11 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         </span>
         {idCopyState === "error" && <small className="task-id-copy-error">复制失败，请手动选择 ID</small>}
       </td>
-      <td className="task-cell"><code>{task.requirementId || "—"}</code></td>
-      <td className="task-cell"><span className={`task-status status-${meta.tone}`}>{meta.label}</span>{timeState.stale && <small> · 陈旧</small>}{timeState.overdue && <small> · 已逾期</small>}</td>
-      <td className="task-cell task-goal-cell" title={goalOrStep}>{goalOrStep}</td>
-      <td className="task-cell task-blocker-cell" title={task.blocker || "—"}>{task.blocker ? asText(task.blocker) : "—"}</td>
-      <td className="task-cell task-count-cell">
+      <td data-label="需求 ID" className="task-cell"><code>{task.requirementId || "—"}</code></td>
+      <td data-label="状态" className="task-cell"><span className={`task-status status-${meta.tone}`}>{meta.label}</span>{timeState.stale && <small> · 陈旧</small>}{timeState.overdue && <small> · 已逾期</small>}</td>
+      <td data-label="目标 / 步骤" className="task-cell task-goal-cell" title={goalOrStep}>{goalOrStep}</td>
+      <td data-label="阻塞" className="task-cell task-blocker-cell" title={task.blocker || "—"}>{task.blocker ? asText(task.blocker) : "—"}</td>
+      <td data-label="假设 / 风险 / 取舍 / 待确认 / 复盘" className="task-cell task-count-cell">
         {nonEmptyDetails.length > 0 ? (
           <button
             type="button"
@@ -1137,7 +1137,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
           </button>
         ) : "—"}
       </td>
-      <td className="task-cell task-session-cell" title={sessionInfo ? `${sessionInfo.title} · ${sessionInfo.detail}` : task.sessionId}>
+      <td data-label="Session" className="task-cell task-session-cell" title={sessionInfo ? `${sessionInfo.title} · ${sessionInfo.detail}` : task.sessionId}>
         {sessionInfo ? (
           <>
             <strong>{sessionInfo.title}</strong>
@@ -1147,7 +1147,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
           <span className="no-session">{task.sessionId.slice(0, 8)}… 未关联会话</span>
         )}
       </td>
-      <td className="task-cell task-metrics-cell">
+      <td data-label="时间 / 工具" className="task-cell task-metrics-cell">
         <div>开始：{normalizeDate(task.startedAt)}</div>
         <div>预计：{normalizeDate(task.expectedAt)}</div>
         <div>实际：{normalizeDate(task.actualAt)}</div>
@@ -1155,7 +1155,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         {task.archivedAt && <div>归档：{normalizeDate(task.archivedAt)}</div>}
         <div className="task-tools">工具：{Object.entries(task.toolCalls ?? {}).length ? Object.entries(task.toolCalls ?? {}).map(([name, count]) => `${name} ×${count}`).join("、") : "—"}</div>
       </td>
-      <td className="task-cell task-actions-cell">
+      <td data-label="人工操作" className="task-cell task-actions-cell">
         {task.status === "planned" && (
           <button className="task-action-button action-start" onClick={() => handleAction("start")} disabled={actionState === "loading"}>
             开始
@@ -1677,7 +1677,7 @@ function EmptyBoard({ hasData }: { hasData: boolean }) {
       <div className="empty-symbol">∅</div>
       <div>
         <h3>{hasData ? "没有符合筛选条件的需求" : "看板正在等待会话数据"}</h3>
-        <p>{hasData ? "试试清空搜索或切换状态筛选。" : "先运行同步器，ReqRadar 会从本地 Codex JSONL 生成需求卡片。"}</p>
+        <p>{hasData ? "试试清空搜索或切换状态筛选。" : "先运行同步器，TaskCenter 会从本地 Codex JSONL 生成需求卡片。"}</p>
       </div>
     </div>
   );
