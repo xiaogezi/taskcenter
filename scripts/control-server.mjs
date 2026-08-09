@@ -26,6 +26,7 @@ const projectRoot = resolve(import.meta.dirname, "..");
 const dashboardPath = resolve(process.env.REQRADAR_DASHBOARD_PATH || join(projectRoot, "data", "dashboard.json"));
 const dispatchesPath = resolve(process.env.REQRADAR_DISPATCHES_PATH || join(projectRoot, "data", "dispatches.json"));
 const overridesPath = resolve(process.env.REQRADAR_OVERRIDES_PATH || join(projectRoot, "data", "requirement-overrides.json"));
+const inboxDecisionsPath = resolve(process.env.REQRADAR_INBOX_DECISIONS_PATH || join(projectRoot, "data", "inbox-decisions.json"));
 const sessionSelectionPath = resolve(process.env.REQRADAR_SESSION_SELECTION_PATH || join(projectRoot, "data", "session-selection.json"));
 const watcherHeartbeatPath = resolve(process.env.REQRADAR_WATCHER_HEARTBEAT_PATH || join(projectRoot, ".local", "runtime", "watcher-heartbeat.json"));
 const host = "127.0.0.1";
@@ -40,6 +41,7 @@ const allowedOrigins = new Set([
 ]);
 const dispatches = loadDispatches();
 const requirementOverrides = loadJsonObject(overridesPath);
+const inboxDecisions = loadJsonObject(inboxDecisionsPath);
 const activeThreadDispatches = new Set();
 let lastDispatchAt = 0;
 let processingQueue = false;
@@ -181,6 +183,47 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/requirement-overrides") {
       sendJson(response, 200, { overrides: requirementOverrides });
+      return;
+    }
+    if (request.method === "GET" && request.url === "/inbox-decisions") {
+      sendJson(response, 200, { decisions: inboxDecisions });
+      return;
+    }
+    const inboxBatchMatch = request.method === "POST" && request.url === "/inbox-decisions/batch";
+    if (inboxBatchMatch) {
+      verifyActionRequest(request);
+      const body = await readJsonBody(request);
+      const ids = Array.isArray(body.ids) ? [...new Set(body.ids)] : [];
+      validateInboxIds(ids);
+      const decision = body.decision === "clear" ? undefined : body.decision;
+      validateInboxDecision(body.decision);
+      const nextDecisions = { ...inboxDecisions };
+      for (const id of ids) {
+        if (decision) nextDecisions[id] = decision;
+        else delete nextDecisions[id];
+      }
+      persistJsonObject(inboxDecisionsPath, nextDecisions);
+      Object.keys(inboxDecisions).forEach((id) => delete inboxDecisions[id]);
+      Object.assign(inboxDecisions, nextDecisions);
+      sendJson(response, 200, { decisions: inboxDecisions });
+      return;
+    }
+    const inboxDecisionMatch = request.method === "POST"
+      ? request.url?.match(/^\/inbox-decisions\/([A-Za-z0-9._-]{1,160})$/)
+      : null;
+    if (inboxDecisionMatch) {
+      verifyActionRequest(request);
+      const id = inboxDecisionMatch[1];
+      const body = await readJsonBody(request);
+      validateInboxIds([id]);
+      validateInboxDecision(body.decision);
+      const nextDecisions = { ...inboxDecisions };
+      if (body.decision === "clear") delete nextDecisions[id];
+      else nextDecisions[id] = body.decision;
+      persistJsonObject(inboxDecisionsPath, nextDecisions);
+      Object.keys(inboxDecisions).forEach((existingId) => delete inboxDecisions[existingId]);
+      Object.assign(inboxDecisions, nextDecisions);
+      sendJson(response, 200, { id, decision: inboxDecisions[id] });
       return;
     }
     const decisionMatch = request.method === "POST"
@@ -524,6 +567,18 @@ function verifyActionRequest(request) {
   }
   if (!String(request.headers["content-type"] || "").startsWith("application/json")) {
     throw new DispatchError(415, "请求必须使用 JSON。");
+  }
+}
+
+function validateInboxIds(ids) {
+  if (!ids.length || ids.some((id) => typeof id !== "string" || !/^[A-Za-z0-9._-]{1,160}$/.test(id))) {
+    throw new DispatchError(400, "Inbox 需求 ID 无效。");
+  }
+}
+
+function validateInboxDecision(decision) {
+  if (!["continue", "discard", "clear"].includes(decision)) {
+    throw new DispatchError(400, "Inbox 决策无效。");
   }
 }
 

@@ -15,7 +15,7 @@
     "watch:codex": "node scripts/watch-codex.mjs",
     "control": "node scripts/control-server.mjs",
     "desktop:install": "bash scripts/macos/build-reqradar-app.sh",
-    "test": "node --test tests/sync.test.mjs",
+    "test": "npm run sync && npm run build && node --test tests/*.test.mjs",
     "test:integration": "npm run sync && npm run build && node --test tests/dashboard.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"

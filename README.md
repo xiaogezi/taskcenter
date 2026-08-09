@@ -15,6 +15,7 @@ ReqRadar 是一个独立、本地运行的 Codex 项目需求看板。它从本�
 - 复制文本包含稳定的 ReqRadar 需求 ID。当前跨 Session 的“已完成”表述只作为实现声明，不会自动升级为“已验收”；验收状态仍以本地需求基线和代码/测试证据为准。
 - 所有正式需求卡片支持人工标记完成或移除。人工决定保存在本机覆盖文件中；移除项不会删除原始需求，可从“已移除需求”区域恢复。
 - 运行期间检查会话文件变化，在 Codex 停止写入 20 秒后自动刷新数据，避免频繁打断页面。
+- 待整理 Inbox 决策由本地控制服务持久化到 `data/inbox-decisions.json`（可用 `REQRADAR_INBOX_DECISIONS_PATH` 覆盖），服务重启后仍可读取；原始 Codex 会话保持只读。
 
 ## 隐私边界
 
@@ -157,4 +158,8 @@ WorkBuddy 代码模型（hy3、Kimi-K2.7-Code、GLM-5.2）通过 Claude Code 的
 ```bash
 npm test
 npm run lint
+npm run build
+git diff --check
 ```
+
+`npm test` 会运行 `tests/*.test.mjs` 全量测试，专项测试仍可用 `node --test tests/<name>.test.mjs` 单独运行。健康检查、时间线和归档状态来自本地控制服务/任务账本；Chrome 长期稳定性仍需真实环境持续观察，不能由本地测试替代。

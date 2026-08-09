@@ -189,7 +189,6 @@ const priorityMeta: Record<string, string> = {
   P1: "P1 · 重要",
   P2: "P2 · 增强",
 };
-const inboxStorageKey = "reqradar:inbox-decisions:v1";
 // 控制服务 URL：优先使用环境变量，默认 IPv4 localhost
 const controlServerUrl = typeof process !== "undefined" && process.env?.REQRADAR_CONTROL_URL
   ? process.env.REQRADAR_CONTROL_URL
@@ -331,20 +330,6 @@ export default function Home() {
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, SessionStatus>>({});
   const [health, setHealth] = useState<HealthState>({ ok: false });
 
-  useEffect(() => {
-    const restore = window.setTimeout(() => {
-      try {
-        const stored = JSON.parse(localStorage.getItem(inboxStorageKey) ?? "{}");
-        if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-          setInboxDecisions(stored);
-        }
-      } catch {
-        localStorage.removeItem(inboxStorageKey);
-      }
-    }, 0);
-    return () => window.clearTimeout(restore);
-  }, []);
-
   const refreshLiveData = async (manual = false) => {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
@@ -353,31 +338,34 @@ export default function Home() {
       setRefreshMessage("");
     }
     try {
-      const [dispatchesResponse, tasksResponse, sessionStatusResponse, overridesResponse, threadsResponse] = await Promise.all([
+      const [dispatchesResponse, tasksResponse, sessionStatusResponse, overridesResponse, threadsResponse, inboxDecisionsResponse] = await Promise.all([
         fetch(`${controlServerUrl}/dispatches`),
         fetch(`${controlServerUrl}/tasks`),
         fetch(`${controlServerUrl}/session-status`),
         fetch(`${controlServerUrl}/requirement-overrides`),
         fetch(`${controlServerUrl}/session-selection`),
+        fetch(`${controlServerUrl}/inbox-decisions`),
       ]);
       const healthResponse = await fetch(`${controlServerUrl}/health`);
       if (!healthResponse.ok) throw new Error("本地控制服务健康检查失败");
       setHealth(await healthResponse.json() as HealthState);
-      if (!dispatchesResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !overridesResponse.ok || !threadsResponse.ok) {
+      if (!dispatchesResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !overridesResponse.ok || !threadsResponse.ok || !inboxDecisionsResponse.ok) {
         throw new Error("本地控制服务返回异常");
       }
-      const [dispatchesPayload, tasksPayload, sessionStatusPayload, overridesPayload, threadsPayload] = await Promise.all([
+      const [dispatchesPayload, tasksPayload, sessionStatusPayload, overridesPayload, threadsPayload, inboxDecisionsPayload] = await Promise.all([
         dispatchesResponse.json() as Promise<{ dispatches?: DispatchRecord[] }>,
         tasksResponse.json() as Promise<{ tasks?: TaskRecord[] }>,
         sessionStatusResponse.json() as Promise<{ sessions?: SessionStatus[] }>,
         overridesResponse.json() as Promise<{ overrides?: Record<string, RequirementOverride> }>,
         threadsResponse.json() as Promise<{ availableThreads?: Thread[] }>,
+        inboxDecisionsResponse.json() as Promise<{ decisions?: Record<string, InboxDecision> }>,
       ]);
       setDispatches(dispatchesPayload.dispatches ?? []);
       setTasks(tasksPayload.tasks ?? []);
       setSessionStatuses(Object.fromEntries((sessionStatusPayload.sessions ?? []).map((session) => [session.sessionId, session])));
       setRequirementOverrides(overridesPayload.overrides ?? {});
       setLiveAvailableThreads(threadsPayload.availableThreads ?? []);
+      setInboxDecisions(inboxDecisionsPayload.decisions ?? {});
       if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
     } catch (error) {
       setHealth({ ok: false });
@@ -394,14 +382,36 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const updateInboxDecision = (id: string, decision?: InboxDecision) => {
-    setInboxDecisions((current) => {
-      const next = { ...current };
-      if (decision) next[id] = decision;
-      else delete next[id];
-      localStorage.setItem(inboxStorageKey, JSON.stringify(next));
-      return next;
-    });
+  const updateInboxDecision = async (id: string, decision?: InboxDecision) => {
+    const previous = inboxDecisions[id];
+    setInboxDecisions((current) => ({ ...current, ...(decision ? { [id]: decision } : {}) }));
+    try {
+      const response = await fetch(`${controlServerUrl}/inbox-decisions/${encodeURIComponent(id)}`, {
+        method: "POST", headers: { "Content-Type": "application/json", "X-ReqRadar-Action": "delegate" },
+        body: JSON.stringify({ decision: decision ?? "clear" }),
+      });
+      const payload = await response.json() as { decision?: InboxDecision; error?: string };
+      if (!response.ok) throw new Error(payload.error || "Inbox 决策保存失败。");
+      setInboxDecisions((current) => { const next = { ...current }; if (payload.decision) next[id] = payload.decision; else delete next[id]; return next; });
+    } catch (error) {
+      setInboxDecisions((current) => { const next = { ...current }; if (previous) next[id] = previous; else delete next[id]; return next; });
+      setRefreshMessage(error instanceof Error ? error.message : "Inbox 决策保存失败。");
+    }
+  };
+  const batchInboxDecision = async (ids: string[], decision: InboxDecision | "clear") => {
+    if (!ids.length) return;
+    if (decision !== "continue" && !window.confirm(decision === "discard" ? "确认丢弃当前未处理的全部 Inbox？" : "确认清空已处理 Inbox？")) return;
+    const previous = inboxDecisions;
+    setInboxDecisions((current) => { const next = { ...current }; for (const id of ids) { if (decision === "clear") delete next[id]; else next[id] = decision; } return next; });
+    try {
+      const response = await fetch(`${controlServerUrl}/inbox-decisions/batch`, { method: "POST", headers: { "Content-Type": "application/json", "X-ReqRadar-Action": "delegate" }, body: JSON.stringify({ ids, decision }) });
+      const payload = await response.json() as { decisions?: Record<string, InboxDecision>; error?: string };
+      if (!response.ok || !payload.decisions) throw new Error(payload.error || "Inbox 批量保存失败。");
+      setInboxDecisions(payload.decisions);
+    } catch (error) {
+      setInboxDecisions(previous);
+      setRefreshMessage(error instanceof Error ? error.message : "Inbox 批量保存失败。");
+    }
   };
 
   const promotedRequirements = useMemo(
@@ -803,6 +813,19 @@ export default function Home() {
             onTaskUpdated={(updatedTask) => {
               setTasks((current) => current.map((task) => task.id === updatedTask.id ? updatedTask : task));
             }}
+          />
+
+          <Inbox
+            decisions={inboxDecisions}
+            excludedCount={dashboard.source?.excludedCounts ? Object.values(dashboard.source.excludedCounts).reduce((a, b) => a + b, 0) : 0}
+            excludedItems={dashboard.source?.excludedItems ?? []}
+            items={inbox}
+            onDecision={(id, decision) => void updateInboxDecision(id, decision)}
+            onBatchDecision={batchInboxDecision}
+            onToggleProcessed={() => setShowProcessedInbox((current) => !current)}
+            onToggleClassificationAudit={() => setShowClassificationAudit((current) => !current)}
+            showClassificationAudit={showClassificationAudit}
+            showProcessed={showProcessedInbox}
           />
 
           <details className="requirement-section">
@@ -1697,6 +1720,7 @@ function Inbox({
   excludedItems,
   items,
   onDecision,
+  onBatchDecision,
   onToggleProcessed,
   onToggleClassificationAudit,
   showClassificationAudit,
@@ -1707,6 +1731,7 @@ function Inbox({
   excludedItems: ExcludedItem[];
   items: Requirement[];
   onDecision: (id: string, decision?: InboxDecision) => void;
+  onBatchDecision: (ids: string[], decision: InboxDecision | "clear") => void;
   onToggleProcessed: () => void;
   onToggleClassificationAudit: () => void;
   showClassificationAudit: boolean;
@@ -1720,6 +1745,10 @@ function Inbox({
         <div>
           <p className="eyebrow">UNTRIAGED NOTES</p>
           <h2>待整理 inbox <span>{pending.length}</span></h2>
+        </div>
+        <div className="inbox-heading-actions">
+          {!!pending.length && <><button onClick={() => onBatchDecision(pending.map((item) => requirementKey(item, items.indexOf(item))), "continue")}>当前未处理全部继续</button><button className="discard-button" onClick={() => onBatchDecision(pending.map((item) => requirementKey(item, items.indexOf(item))), "discard")}>当前未处理全部丢弃</button></>}
+          {!!processed.length && <button onClick={() => onBatchDecision(processed.map((item) => requirementKey(item, items.indexOf(item))), "clear")}>清空已处理</button>}
         </div>
         <div className="inbox-heading-actions">
           <p>继续会加入主看板，丢弃可在已处理记录中撤销。</p>
