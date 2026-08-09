@@ -132,12 +132,12 @@ const server = createServer(async (request, response) => {
       const taskId = taskActionMatch[1];
       const body = await readJsonBody(request);
       const action = String(body.action || "");
-      if (!["start", "block", "done", "cancel", "remove", "verify", "reject"].includes(action)) {
+      if (!["start", "block", "done", "cancel", "remove", "verify", "reject", "archive", "unarchive", "schedule"].includes(action)) {
         throw new TaskLedgerError(400, "任务操作无效。");
       }
       const currentTask = loadTasks().find((item) => item.id === taskId);
       if (action === "verify" && currentTask?.requirementId) verifyRequirementExists(currentTask.requirementId.replace(/^promoted-/, ""));
-      const result = applyManualTaskAction(taskId, action, body.reason);
+      const result = applyManualTaskAction(taskId, action, body.reason, body.expectedAt);
       const contextSync = await syncContextEvent(result.event, result.task);
       if (action === "verify" && result.task.requirementId) {
         const requirementId = result.task.requirementId.replace(/^promoted-/, "");
@@ -521,7 +521,7 @@ function verifyManualTaskAction(request) {
   }
 }
 
-function applyManualTaskAction(taskId, action, reason = "") {
+function applyManualTaskAction(taskId, action, reason = "", expectedAt = "") {
   const tasks = loadTasks();
   const task = tasks.find((item) => item.id === taskId);
   if (!task) {
@@ -530,15 +530,23 @@ function applyManualTaskAction(taskId, action, reason = "") {
   if (action === "verify" && task.status !== "done_claimed") {
     throw new TaskLedgerError(409, "只有已声明完成的任务可以验收。");
   }
+  if (action === "archive" && !["done_claimed", "verified", "cancelled"].includes(task.status)) {
+    throw new TaskLedgerError(409, "只有已完成、已验收或已取消任务可以归档。");
+  }
+  if (action === "schedule" && (!expectedAt || !Number.isFinite(Date.parse(expectedAt)))) {
+    throw new TaskLedgerError(400, "预计完成时间必须是可解析的 ISO 时间。");
+  }
   if (action === "reject" && !["done_claimed", "verified"].includes(task.status)) {
     throw new TaskLedgerError(409, "只有待验收或已验收任务可以打回。");
   }
   const event = {
     event_id: `manual-${randomUUID()}`,
-    type: ["remove", "verify", "reject"].includes(action) ? "task.review" : "task.update",
+    type: ["remove", "verify", "reject", "archive", "unarchive"].includes(action) ? "task.review" : "task.update",
     task_id: taskId,
     session_id: task.sessionId,
     status: action === "start" ? "in_progress" : action === "block" ? "blocked" : action === "done" ? "done_claimed" : action === "cancel" ? "cancelled" : action === "remove" ? "removed" : action === "verify" ? "verified" : action === "reject" ? "in_progress" : undefined,
+    archived_at: action === "archive" ? new Date().toISOString() : action === "unarchive" ? "__UNARCHIVE__" : undefined,
+    expected_at: action === "schedule" ? expectedAt : undefined,
     review_reason: action === "reject" ? String(reason || "人工打回，需补充证据").slice(0, 1_000) : action === "verify" ? String(reason || "人工验收通过").slice(0, 1_000) : "",
     reviewed_at: ["verify", "reject"].includes(action) ? new Date().toISOString() : "",
     created_at: new Date().toISOString(),

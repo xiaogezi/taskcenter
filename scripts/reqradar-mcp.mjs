@@ -32,7 +32,7 @@ const taskFields = {
   tradeoffs: z.array(z.string().max(500)).max(20).optional(),
   open_questions: z.array(z.string().max(500)).max(20).optional(),
   retrospective: z.string().max(2_000).optional(),
-  expected_at: z.string().datetime({ offset: true }).optional(),
+  expected_at: z.string().datetime({ offset: true }).optional().describe("建议填写预计完成时间，便于任务治理和逾期提醒"),
 };
 
 server.registerTool("reqradar_session_register", {
@@ -43,7 +43,7 @@ server.registerTool("reqradar_session_register", {
 
 server.registerTool("reqradar_task_create", {
   title: "创建 ReqRadar 任务",
-  description: "在修改代码前创建正式任务。必须先获得 task_id 和 accepted=true。",
+  description: "在修改代码前创建正式任务。必须先获得 task_id 和 accepted=true；建议填写 expected_at。",
   inputSchema: z.object({ ...taskFields, title: z.string().min(1).max(200), goal: z.string().min(1).max(1_000), acceptance_criteria: z.array(z.string().min(1).max(500)).min(1).max(20), plan: z.array(z.string().min(1).max(500)).min(1).max(20) }).strict(),
 }, async (input) => report("task.create", input));
 

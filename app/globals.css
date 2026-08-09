@@ -325,7 +325,10 @@ button { cursor: pointer; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 .task-ledger { border-top: 1px solid var(--ink); margin: 4px 0 40px; padding-top: 19px; }
-.ledger-heading { align-items: flex-end; display: flex; justify-content: space-between; margin-bottom: 18px; }
+.ledger-heading { align-items: flex-end; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; margin-bottom: 18px; }
+.ledger-heading > input:not([type="checkbox"]), .ledger-heading > select { background: transparent; border: 1px solid var(--line); color: var(--ink); font-size: 11px; min-height: 30px; padding: 5px 8px; }
+.ledger-heading > label { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
+.task-actions-cell input[type="datetime-local"] { background: var(--paper); border: 1px solid var(--line); color: var(--ink); font-size: 10px; margin: 0 6px 4px 0; padding: 5px; }
 .ledger-heading h2 { font-family: Georgia, serif; font-size: 25px; font-weight: 400; letter-spacing: -.04em; margin: 0; }
 .ledger-heading h2 span { color: var(--orange); font-family: "Avenir Next", sans-serif; font-size: 11px; margin-left: 6px; }
 .ledger-empty { background: rgba(255, 255, 255, .35); border: 1px dashed var(--line); color: var(--ink-soft); font-size: 12px; line-height: 1.7; margin: 0; padding: 18px 20px; }

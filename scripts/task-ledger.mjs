@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { taskTimeState, STALE_TASK_MS } from "../app/task-time-state.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const taskEventsPath = resolve(process.env.REQRADAR_TASK_EVENTS_PATH || join(projectRoot, "data", "task-events.jsonl"));
@@ -12,6 +13,7 @@ export const sessionMergesPath = resolve(process.env.REQRADAR_SESSION_MERGES_PAT
 
 const statuses = new Set(["planned", "in_progress", "blocked", "done_claimed", "verified", "cancelled", "removed"]);
 const demoPattern = /^ui-demo-/;
+export { taskTimeState, STALE_TASK_MS };
 
 export function loadTasks() {
   return readLedger()
@@ -252,6 +254,7 @@ function normalizeEvent(input) {
     open_questions: cleanList(input.open_questions, 20, 500),
     retrospective: cleanText(input.retrospective, 2_000),
     expected_at: cleanText(input.expected_at, 80),
+    archived_at: cleanText(input.archived_at, 80),
     review_reason: cleanText(input.review_reason, 1_000),
     reviewed_at: cleanText(input.reviewed_at, 80),
     tool_name: cleanText(input.tool_name, 120),
@@ -265,6 +268,9 @@ function normalizeEvent(input) {
 }
 
 function applyEvent(current, event) {
+  if (event.archived_at && event.archived_at !== "__UNARCHIVE__" && current && !["done_claimed", "verified", "cancelled"].includes(current.status)) {
+    throw new TaskLedgerError(409, "只有已完成、已验收或已取消任务可以归档。");
+  }
   // 会话不能自行把任务标成"已验收"。验收必须由 ReqRadar 基于代码/测试证据单独判定，
   // done_claimed 只能停留在"声明完成"，不会自动升级为 verified。
   if (event.status === "verified" && (event.type !== "task.review" || !event.event_id.startsWith("manual-"))) {
@@ -339,6 +345,7 @@ function applyEvent(current, event) {
     lastEventId: event.event_id,
     startedAt: base.startedAt || (event.type === "task.create" ? now : ""),
     expectedAt: event.expected_at || base.expectedAt || "",
+    archivedAt: event.archived_at === "__UNARCHIVE__" ? "" : (event.archived_at || base.archivedAt || ""),
     actualAt: event.type === "task.done_claimed" || event.status === "done_claimed" ? now : (base.actualAt || ""),
     reviewReason: event.review_reason || base.reviewReason || "",
     reviewedAt: event.reviewed_at || base.reviewedAt || "",

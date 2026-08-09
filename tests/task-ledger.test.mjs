@@ -22,7 +22,7 @@ for (const [key, value] of Object.entries(envPaths)) {
   process.env[key] = value;
 }
 
-const { recordTaskEvent, loadTasks, reconcileTasks, TaskLedgerError } = await import("../scripts/task-ledger.mjs");
+const { recordTaskEvent, loadTasks, reconcileTasks, TaskLedgerError, taskTimeState } = await import("../scripts/task-ledger.mjs");
 
 async function resetLedger() {
   for (const path of Object.values(envPaths)) {
@@ -277,6 +277,31 @@ test("非人工 task.review 不能伪造 verified", async () => {
     () => recordTaskEvent({ type: "task.review", session_id: "sess-security", task_id: "task-security", status: "verified", event_id: "evt-forged" }),
     (error) => error instanceof TaskLedgerError && error.statusCode === 400,
   );
+});
+
+test("任务时间判断覆盖 active 与终态旧数据", () => {
+  const now = Date.parse("2026-08-10T12:00:00.000Z");
+  const active = taskTimeState({ status: "in_progress", startedAt: "2026-08-08T12:00:00.000Z", updatedAt: "2026-08-09T10:00:00.000Z", expectedAt: "2026-08-09T12:00:00.000Z" }, now);
+  assert.equal(active.stale, true);
+  assert.equal(active.overdue, true);
+  assert.equal(active.elapsedMs, 172800000);
+  const terminal = taskTimeState({ status: "cancelled", startedAt: "2026-08-08T12:00:00.000Z", updatedAt: "2026-08-09T12:00:00.000Z", expectedAt: "2026-08-09T10:00:00.000Z" }, now);
+  assert.equal(terminal.elapsedMs, 86400000);
+  assert.equal(terminal.overdue, true);
+});
+
+test("归档状态、预计时间校验和旧字段兼容", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", session_id: "sess-time", task_id: "task-time", title: "t" });
+  assert.equal(loadTasks()[0].archivedAt, "");
+  assert.throws(() => recordTaskEvent({ type: "task.review", session_id: "sess-time", task_id: "task-time", event_id: "manual-archive-bad", status: "verified", archived_at: new Date().toISOString() }), (error) => error instanceof TaskLedgerError && error.statusCode === 409);
+  recordTaskEvent({ type: "task.update", session_id: "sess-time", task_id: "task-time", event_id: "manual-schedule", expected_at: "2026-08-11T12:00:00.000Z" });
+  assert.equal(loadTasks()[0].expectedAt, "2026-08-11T12:00:00.000Z");
+  recordTaskEvent({ type: "task.done_claimed", session_id: "sess-time", task_id: "task-time", event_id: "done-time", status: "done_claimed" });
+  recordTaskEvent({ type: "task.review", session_id: "sess-time", task_id: "task-time", event_id: "manual-archive-ok", status: "done_claimed", archived_at: new Date().toISOString() });
+  assert.ok(loadTasks()[0].archivedAt);
+  recordTaskEvent({ type: "task.review", session_id: "sess-time", task_id: "task-time", event_id: "manual-unarchive", archived_at: "__UNARCHIVE__" });
+  assert.equal(loadTasks()[0].archivedAt, "");
 });
 
 test("控制服务任务闸门 HTTP 协议：register→create→update→report 并展示", async (context) => {
@@ -788,4 +813,27 @@ test("控制服务 verify/reject 校验状态并写入审核结果", async (cont
   overrides = JSON.parse(await (await fetch(`${base}/requirement-overrides`)).text()).overrides;
   assert.equal(overrides["req-http-review"].status, "needs_validation");
   assert.equal(overrides["req-http-review"].hidden, false);
+});
+
+test("控制服务 schedule/archive/unarchive HTTP 闭环", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "sess-http-governance");
+  await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.create", session_id: "sess-http-governance", task_id: "task-http-governance" }) });
+  const headers = { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-ReqRadar-Action": "delegate" };
+  const invalidSchedule = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "schedule", expectedAt: "bad" }) });
+  assert.equal(invalidSchedule.status, 400);
+  const schedule = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "schedule", expectedAt: "2026-08-11T12:00:00.000Z" }) });
+  assert.equal(schedule.status, 200);
+  assert.equal((await schedule.json()).task.expectedAt, "2026-08-11T12:00:00.000Z");
+  const activeArchive = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "archive" }) });
+  assert.equal(activeArchive.status, 409);
+  await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "done" }) });
+  const archive = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "archive" }) });
+  assert.equal(archive.status, 200);
+  assert.ok((await archive.json()).task.archivedAt);
+  const unarchive = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "unarchive" }) });
+  assert.equal(unarchive.status, 200);
+  assert.equal((await unarchive.json()).task.archivedAt, "");
 });

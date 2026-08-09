@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import dashboardJson from "../data/dashboard.json";
 import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
+import { taskTimeState } from "./task-time-state.mjs";
 
 type SessionGroup = Thread & {
   id: string;
@@ -124,6 +125,7 @@ type TaskRecord = {
   startedAt?: string;
   expectedAt?: string;
   actualAt?: string;
+  archivedAt?: string;
   reviewReason?: string;
   reviewedAt?: string;
   toolCalls?: Record<string, number>;
@@ -792,9 +794,7 @@ export default function Home() {
             selectedSessionId={selectedThread}
             sessionStatuses={sessionStatuses}
             onTaskUpdated={(updatedTask) => {
-              setTasks((current) => updatedTask.status === "removed"
-                ? current.filter((task) => task.id !== updatedTask.id)
-                : current.map((task) => task.id === updatedTask.id ? updatedTask : task));
+              setTasks((current) => current.map((task) => task.id === updatedTask.id ? updatedTask : task));
             }}
           />
 
@@ -908,8 +908,16 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
     }));
   const [page, setPage] = useState(1);
   const [reviewOnly, setReviewOnly] = useState(false);
-  const reviewCount = filteredTasks.filter((task) => task.status === "done_claimed").length;
-  const shownTasks = reviewOnly ? filteredTasks.filter((task) => task.status === "done_claimed") : filteredTasks;
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | TaskStatus>("all");
+  const [agentFilter, setAgentFilter] = useState("all");
+  const [timeFilter, setTimeFilter] = useState<"all" | "stale" | "overdue">("all");
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  const [showArchived, setShowArchived] = useState(false);
+  const reviewCount = filteredTasks.filter((task) => (showArchived || !task.archivedAt) && task.status === "done_claimed").length;
+  const agents: string[] = [...new Set(filteredTasks.map((task) => task.agent || "unknown"))];
+  const searchedTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt).filter((task) => statusFilter === "all" || task.status === statusFilter).filter((task) => agentFilter === "all" || (task.agent || "unknown") === agentFilter).filter((task) => timeFilter === "all" || taskTimeState(task)[timeFilter]).filter((task) => !query || `${task.title} ${task.id} ${task.sessionId}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => (Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || "")) * (sortOrder === "newest" ? 1 : -1));
+  const shownTasks = reviewOnly ? searchedTasks.filter((task) => task.status === "done_claimed") : searchedTasks;
   const pageCount = Math.max(1, Math.ceil(shownTasks.length / TASKS_PER_PAGE));
   const visibleTasks = shownTasks.slice((page - 1) * TASKS_PER_PAGE, page * TASKS_PER_PAGE);
 
@@ -919,7 +927,7 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
 
   useEffect(() => {
     setPage(1);
-  }, [selectedSessionId]);
+  }, [selectedSessionId, query, statusFilter, agentFilter, timeFilter, sortOrder, showArchived, reviewOnly]);
 
   return (
     <section className="task-ledger" aria-label="会话主动任务">
@@ -927,6 +935,12 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
         <p className="eyebrow orange">SESSION TASK GATE</p>
         <h2>会话主动任务<span>{filteredTasks.length}</span></h2>
         <button type="button" className="task-filter-button" onClick={() => setReviewOnly((value) => !value)}>{reviewOnly ? "全部任务" : `待验收 ${reviewCount}`}</button>
+        <input aria-label="搜索任务" placeholder="标题 / ID / Session" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <select aria-label="任务状态" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | TaskStatus)}><option value="all">全部状态</option>{Object.keys(taskStatusMeta).map((status) => <option key={status} value={status}>{taskStatusMeta[status as TaskStatus].label}</option>)}</select>
+        <select aria-label="任务 Agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}><option value="all">全部 Agent</option>{agents.map((agent) => <option key={agent}>{agent}</option>)}</select>
+        <select aria-label="时间筛选" value={timeFilter} onChange={(event) => setTimeFilter(event.target.value as "all" | "stale" | "overdue")}><option value="all">全部时间</option><option value="stale">陈旧</option><option value="overdue">逾期</option></select>
+        <select aria-label="更新时间排序" value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")}><option value="newest">更新时间：最新</option><option value="oldest">更新时间：最早</option></select>
+        <label><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> 显示归档</label>
       </div>
       {shownTasks.length === 0 ? (
         <p className="ledger-empty">
@@ -974,6 +988,8 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
 function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTaskUpdated }: { task: TaskRecord; availableThreads: Thread[]; sessionStatuses: Record<string, SessionStatus>; onTaskUpdated: (task: TaskRecord) => void }) {
   const [actionState, setActionState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [actionError, setActionError] = useState("");
+  const [scheduleEditing, setScheduleEditing] = useState(false);
+  const [scheduleValue, setScheduleValue] = useState("");
   const [idCopyState, setIdCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [detailsOpen, setDetailsOpen] = useState(false);
   const meta = taskStatusMeta[task.status] ?? taskStatusMeta.planned;
@@ -989,16 +1005,18 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   const stepText = task.currentStep ?? task.nextAction;
   const goalOrStep = task.goal || stepText ? `${asText(task.goal)}${stepText ? ` · ${asText(stepText)}` : ""}` : "—";
   const isDemo = task.id.startsWith("ui-demo-");
+  const timeState = taskTimeState(task);
 
   const sessionInfo = useMemo(
     () => resolveTaskSessionDisplay(task, threadsForTask.find((thread) => thread.id === task.sessionId || thread.sessionIds?.includes(task.sessionId))),
     [task, threadsForTask],
   );
 
-  const handleAction = async (action: "start" | "block" | "done" | "cancel" | "remove" | "verify" | "reject") => {
+  const handleAction = async (action: "start" | "block" | "done" | "cancel" | "remove" | "verify" | "reject" | "archive" | "unarchive" | "schedule") => {
     if (actionState === "loading") return;
     const reason = action === "reject" ? window.prompt("请输入打回理由", "人工打回，需补充证据") : "";
     if (action === "reject" && reason === null) return;
+    if (action === "schedule") return;
     setActionState("loading");
     setActionError("");
     try {
@@ -1011,6 +1029,22 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
       if (!response.ok) throw new Error(payload.error || "操作失败");
       if (!payload.task) throw new Error("操作成功但服务端未返回任务状态");
       onTaskUpdated(payload.task);
+      setActionState("done");
+    } catch (error) {
+      setActionState("error");
+      setActionError(error instanceof Error ? error.message : "操作失败");
+    }
+  };
+
+  const handleSchedule = async (value: string) => {
+    if (!value || Number.isNaN(Date.parse(value))) return;
+    setActionState("loading");
+    try {
+      const response = await fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/actions`, { method: "POST", headers: { "Content-Type": "application/json", "X-ReqRadar-Action": "delegate" }, body: JSON.stringify({ action: "schedule", expectedAt: new Date(value).toISOString() }) });
+      const payload = await response.json() as { error?: string; task?: TaskRecord | null };
+      if (!response.ok || !payload.task) throw new Error(payload.error || "操作失败");
+      onTaskUpdated(payload.task);
+      setScheduleEditing(false);
       setActionState("done");
     } catch (error) {
       setActionState("error");
@@ -1048,7 +1082,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         {idCopyState === "error" && <small className="task-id-copy-error">复制失败，请手动选择 ID</small>}
       </td>
       <td className="task-cell"><code>{task.requirementId || "—"}</code></td>
-      <td className="task-cell"><span className={`task-status status-${meta.tone}`}>{meta.label}</span></td>
+      <td className="task-cell"><span className={`task-status status-${meta.tone}`}>{meta.label}</span>{timeState.stale && <small> · 陈旧</small>}{timeState.overdue && <small> · 已逾期</small>}</td>
       <td className="task-cell task-goal-cell" title={goalOrStep}>{goalOrStep}</td>
       <td className="task-cell task-blocker-cell" title={task.blocker || "—"}>{task.blocker ? asText(task.blocker) : "—"}</td>
       <td className="task-cell task-count-cell">
@@ -1079,7 +1113,8 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         <div>开始：{normalizeDate(task.startedAt)}</div>
         <div>预计：{normalizeDate(task.expectedAt)}</div>
         <div>实际：{normalizeDate(task.actualAt)}</div>
-        <div>耗时：{elapsedText(task.startedAt, task.actualAt || task.updatedAt)}</div>
+        <div>耗时：{formatElapsed(timeState.elapsedMs)}</div>
+        {task.archivedAt && <div>归档：{normalizeDate(task.archivedAt)}</div>}
         <div className="task-tools">工具：{Object.entries(task.toolCalls ?? {}).length ? Object.entries(task.toolCalls ?? {}).map(([name, count]) => `${name} ×${count}`).join("、") : "—"}</div>
       </td>
       <td className="task-cell task-actions-cell">
@@ -1102,6 +1137,11 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
           <><button className="task-action-button action-done" onClick={() => handleAction("verify")} disabled={actionState === "loading"}>验收通过</button><button className="task-action-button action-block" onClick={() => handleAction("reject")} disabled={actionState === "loading"}>打回</button></>
         )}
         {task.status === "verified" && <span className="task-action-note">已验收</span>}
+        {["planned", "in_progress", "blocked"].includes(task.status) && <button className="task-action-button action-block" onClick={() => handleAction("cancel")} disabled={actionState === "loading"}>取消</button>}
+        {["planned", "in_progress", "blocked"].includes(task.status) && !scheduleEditing && <button className="task-action-button" onClick={() => { setScheduleEditing(true); setScheduleValue(toLocalDateTimeValue(task.expectedAt)); }}>设置预计时间</button>}
+        {scheduleEditing && <span><input type="datetime-local" value={scheduleValue} onChange={(event) => setScheduleValue(event.target.value)} /><button className="task-action-button" onClick={() => { if (!scheduleValue || Number.isNaN(Date.parse(scheduleValue))) return; void handleSchedule(scheduleValue); }}>保存</button><button className="task-action-button" onClick={() => setScheduleEditing(false)}>取消</button></span>}
+        {!(["planned", "in_progress", "blocked"].includes(task.status)) && !task.archivedAt && <button className="task-action-button" onClick={() => handleAction("archive")} disabled={actionState === "loading"}>归档</button>}
+        {task.archivedAt && <button className="task-action-button" onClick={() => handleAction("unarchive")} disabled={actionState === "loading"}>恢复</button>}
         {isDemo && (
           <button className="task-action-button action-remove" onClick={() => handleAction("remove")} disabled={actionState === "loading"}>
             移除演示
@@ -1121,6 +1161,20 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
       )}
     </>
   );
+}
+
+function toLocalDateTimeValue(value?: string) {
+  const time = Date.parse(value || "");
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatElapsed(duration: number) {
+  if (!Number.isFinite(duration) || duration < 0) return "—";
+  const seconds = Math.floor(duration / 1000);
+  return seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
 }
 
 function elapsedText(start?: string, end?: string) {
