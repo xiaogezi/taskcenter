@@ -654,7 +654,7 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
 .refresh-button { background: var(--ink); border-color: var(--ink); color: white; grid-column: 1 / -1; order: -1; }
 .refresh-button:hover { background: var(--ink-soft); }
 .rail-actions button:active { transform: translateY(1px); }
-.rail-actions .count-pill { align-items: baseline; background: transparent; border: 1px solid var(--line); border-radius: 10px; color: var(--ink-soft); display: inline-flex; gap: 5px; grid-column: 1 / -1; justify-self: start; min-height: 32px; padding: 5px 10px; }
+.rail-actions .count-pill { align-items: baseline; background: transparent; border: 1px solid var(--line); border-radius: 10px; color: var(--ink-soft); display: inline-flex; gap: 5px; grid-column: 1 / -1; height: auto; justify-self: start; min-height: 32px; padding: 5px 10px; white-space: nowrap; width: auto; }
 .count-pill strong { color: var(--ink); font-size: 14px; font-variant-numeric: tabular-nums; }
 .count-pill small { font-size: 10px; font-weight: 700; }
 .thread-row { border-bottom: 0; margin-top: 5px; }
