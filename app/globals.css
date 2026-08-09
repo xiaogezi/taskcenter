@@ -529,7 +529,7 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
   .task-table .task-title-cell { padding-top: 3px; }
   .task-table .task-title-cell::before { display: none; }
   .task-title-cell strong { font-size: 16px; white-space: normal; }
-  .task-cell.task-actions-cell { background: transparent; box-shadow: none; min-width: 0; position: static; }
+  .task-cell.task-actions-cell { background: transparent; box-shadow: none; min-width: 0; position: static; width: 100%; }
   .task-actions-cell .task-action-button { margin-bottom: 6px; }
   .task-detail-row { display: block; }
   .task-detail-row td { padding: 12px 0; }
@@ -608,8 +608,8 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
 
 /* Keep the board operational first: less poster, more readable workspace. */
 .app-shell { padding-left: clamp(24px, 3.5vw, 56px); padding-right: clamp(24px, 3.5vw, 56px); }
-.hero-section { background: linear-gradient(110deg, rgba(255,255,255,.34), transparent 62%); border-bottom: 1px solid var(--line); padding: 38px 0 30px; }
-.hero-section h1 { font-size: clamp(36px, 4.4vw, 64px); letter-spacing: -.065em; margin: 10px 0 16px; max-width: 760px; }
+.hero-section { background: linear-gradient(110deg, rgba(255,255,255,.34), transparent 62%); border-bottom: 1px solid var(--line); padding: 20px 0 18px; }
+.hero-section h1 { font-size: 34px; letter-spacing: -.045em; margin: 4px 0 6px; max-width: 760px; }
 .hero-description { font-size: 14px; line-height: 1.65; max-width: 560px; }
 .hero-stamp { border-radius: 4px; height: 82px; margin-right: 8px; transform: rotate(2deg); width: 82px; }
 .hero-stamp strong { font-size: 18px; }
@@ -636,8 +636,8 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
 
 @media (max-width: 680px) {
   .app-shell { padding-left: 17px; padding-right: 17px; }
-  .hero-section { padding: 31px 0 25px; }
-  .hero-section h1 { font-size: clamp(34px, 11vw, 52px); }
+  .hero-section { padding: 14px 0 16px; }
+  .hero-section h1 { font-size: 23px; margin: 4px 0 6px; }
   .metrics-grid { margin-bottom: 24px; }
   .task-ledger { padding-left: 12px; padding-right: 12px; }
   .task-table-wrapper { margin-left: -12px; margin-right: -12px; }
@@ -664,6 +664,7 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
 .privacy-note { border-radius: 14px; margin-top: 20px; }
 
 @media (max-width: 680px) {
+  .thread-rail { max-height: 280px; overflow-y: auto; }
   .rail-actions { flex-wrap: wrap; }
   .rail-actions > button:not(.count-pill) { flex: 1 1 30%; }
   .rail-actions .count-pill { margin-left: auto; }
