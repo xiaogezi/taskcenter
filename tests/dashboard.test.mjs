@@ -98,5 +98,8 @@ test("服务端渲染 TaskCenter 看板", async () => {
   assert.match(html, /<title>TaskCenter/);
   assert.match(html, /本地任务工作台/);
   assert.match(html, /Codex/);
+  assert.match(html, /会话主动任务/);
+  assert.doesNotMatch(html, /待整理 inbox/);
+  assert.doesNotMatch(html, /需求卡片/);
   assert.doesNotMatch(html, /react-loading-skeleton/);
 });
