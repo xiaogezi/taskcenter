@@ -130,6 +130,7 @@ WorkBuddy 代码模型（hy3、Kimi-K2.7-Code、GLM-5.2）通过 Claude Code 的
 
 旧任务和历史 Session 没有执行器元数据时显示 `unknown`，不会根据标题或 workspace 猜测 Codex/Claude。
 ProjectContext 自动建立的 `context-*` 影子记录仅用于内部生命周期衔接，不显示在业务任务看板，也不能替代正式 `reqradar_task_create` 通过写操作闸门；正式任务创建后会接管同 Session、同 `context_task_id` 的影子记录。
+ReqRadar 同步 ProjectContext 时优先使用对方仓库的 `scripts/mac-node.sh` 选择能加载 `better-sqlite3` 的兼容 Node；只有项目未提供启动器时才回退到 ReqRadar 当前 Node，也可用 `REQRADAR_CONTEXT_NODE` 显式覆盖。
 
 ### 客户端 Hook 门禁
 

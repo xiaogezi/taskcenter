@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -6,10 +6,26 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const projectRoot = resolve(import.meta.dirname, "..");
 const contextRoot = resolve(process.env.REQRADAR_CONTEXT_ROOT || join(projectRoot, "..", "ProjectContextAgent"));
 const contextServer = resolve(process.env.REQRADAR_CONTEXT_SERVER || join(contextRoot, "mcp", "server.mjs"));
-const nodeCommand = process.env.REQRADAR_CONTEXT_NODE || process.execPath;
+const nodeCommand = resolveContextCommand();
 const mapPath = resolve(process.env.REQRADAR_CONTEXT_TASK_MAP_PATH || join(projectRoot, "data", "context-task-map.json"));
 const auditPath = resolve(process.env.REQRADAR_CONTEXT_AUDIT_PATH || join(projectRoot, "data", "context-sync-events.jsonl"));
 const timeoutMs = Number(process.env.REQRADAR_CONTEXT_TIMEOUT_MS || 10_000);
+
+export function resolveContextCommand(options = {}) {
+  const root = resolve(options.contextRoot || contextRoot);
+  const explicitCommand = options.explicitCommand ?? process.env.REQRADAR_CONTEXT_NODE;
+  if (explicitCommand) return resolve(explicitCommand);
+
+  // ProjectContext 自带的启动器会探测能加载当前 better-sqlite3 的 Node ABI。
+  // ReqRadar 自身可能运行在更高版本 Node 上，不能直接假设 process.execPath 兼容。
+  const projectLauncher = join(root, "scripts", "mac-node.sh");
+  try {
+    accessSync(projectLauncher, constants.X_OK);
+    return projectLauncher;
+  } catch {
+    return process.execPath;
+  }
+}
 
 export async function syncContextEvent(event, task, options = {}) {
   const explicitContextTaskId = task?.contextTaskId || event?.context_task_id || "";

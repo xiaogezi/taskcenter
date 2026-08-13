@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { syncContextEvent } from "../scripts/context-bridge.mjs";
+import { resolveContextCommand, syncContextEvent } from "../scripts/context-bridge.mjs";
 
 function bridgeOptions(calls, savedMaps, initialMap = {}) {
   return {
@@ -17,6 +20,23 @@ function bridgeOptions(calls, savedMaps, initialMap = {}) {
     },
   };
 }
+
+test("Context bridge 优先使用项目自带的 ABI 兼容启动器", async () => {
+  const root = await mkdtemp(join(tmpdir(), "reqradar-context-command-"));
+  try {
+    const scripts = join(root, "scripts");
+    const launcher = join(scripts, "mac-node.sh");
+    await mkdir(scripts);
+    await writeFile(launcher, "#!/bin/sh\nexec node \"$@\"\n");
+    await chmod(launcher, 0o755);
+    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "" }), launcher);
+    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "/custom/node" }), "/custom/node");
+    await chmod(launcher, 0o644);
+    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "" }), process.execPath);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("显式 contextTaskId 优先于旧映射且不会新建 Context 任务", async () => {
   const calls = [];
