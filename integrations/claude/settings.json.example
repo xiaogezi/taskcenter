@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node '__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs' session-start --agent claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node '__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs' pre-tool-use --agent claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

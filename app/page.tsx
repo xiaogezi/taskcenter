@@ -1,0 +1,737 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import dashboardJson from "../data/dashboard.json";
+import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
+import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
+import { taskTimeState } from "./task-time-state.mjs";
+
+type SessionGroup = Thread & {
+  id: string;
+  groupKey: string;
+  sessionIds: string[];
+  sessionCount: number;
+};
+
+type Thread = {
+  id?: string;
+  title?: string;
+  cwd?: string;
+  messageCount?: number;
+  requirementCount?: number;
+  requirementsCount?: number;
+  lastActivity?: string;
+  updatedAt?: string;
+  sessionIds?: string[];
+  sessionCount?: number;
+  groupKey?: string;
+  sessionSource?: "codex" | "task-ledger";
+};
+
+type SessionSelection = { mode: "all" | "selected"; threadIds: string[] };
+type TaskStatus = "planned" | "in_progress" | "blocked" | "done_claimed" | "verified" | "cancelled";
+type TaskRecord = {
+  id: string;
+  sessionId: string;
+  agent?: "codex" | "claude" | "workbuddy" | "unknown";
+  provider?: string;
+  model?: string;
+  workspace?: string;
+  title: string;
+  goal: string;
+  requirementId?: string;
+  status: TaskStatus;
+  priority?: string;
+  currentStep?: string;
+  nextAction?: string;
+  blocker?: string;
+  assumptions?: string[];
+  risks?: string[];
+  tradeoffs?: string[];
+  openQuestions?: string[];
+  retrospective?: string;
+  changedFiles?: string[];
+  tests?: string[];
+  evidence?: string[];
+  updatedAt?: string;
+  startedAt?: string;
+  expectedAt?: string;
+  actualAt?: string;
+  archivedAt?: string;
+  reviewReason?: string;
+  reviewedAt?: string;
+  toolCalls?: Record<string, number>;
+};
+
+type SessionStatus = {
+  sessionId: string;
+  agent: "codex" | "claude" | "workbuddy" | "unknown";
+  provider: string;
+  model: string;
+  registeredAt: string;
+  lastSeenAt: string;
+  status: "registered" | "unregistered";
+  reason: string;
+  taskCount: number;
+  lastTaskAt: string;
+};
+type HealthState = { ok: boolean; dashboard?: { generatedAt?: string; readable?: boolean }; watcher?: { healthy?: boolean; updatedAt?: string } };
+
+type Dashboard = {
+  generatedAt?: string;
+  source?: {
+    mode?: string;
+    threadCount?: number;
+    messageCount?: number;
+    sessionSelection?: SessionSelection;
+    availableThreads?: Thread[];
+  };
+  threads?: Thread[];
+};
+
+const dashboard = dashboardJson as Dashboard;
+const threads = dashboard.threads ?? [];
+const availableThreads = dashboard.source?.availableThreads ?? threads;
+// 控制服务 URL：优先使用环境变量，默认 IPv4 localhost
+const controlServerUrl = typeof process !== "undefined" && process.env?.TASKCENTER_CONTROL_URL
+  ? process.env.TASKCENTER_CONTROL_URL
+  : "http://127.0.0.1:3001";
+
+function asText(value: unknown, fallback = "暂无记录") {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return fallback;
+}
+
+function normalizeDate(value?: string) {
+  if (!value) return "未记录时间";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Shanghai",
+  }).format(date);
+}
+
+async function copyToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("浏览器拒绝访问剪贴板");
+}
+
+export default function Home() {
+  const [selectedThread, setSelectedThread] = useState("全部任务");
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState("");
+  const refreshInFlight = useRef(false);
+  const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [pickerThreadIds, setPickerThreadIds] = useState<string[]>([]);
+  const [isSavingSessionSelection, setIsSavingSessionSelection] = useState(false);
+  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [liveAvailableThreads, setLiveAvailableThreads] = useState<Thread[]>([]);
+  const [sessionStatuses, setSessionStatuses] = useState<Record<string, SessionStatus>>({});
+  const [health, setHealth] = useState<HealthState>({ ok: false });
+
+  const refreshLiveData = async (manual = false) => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    if (manual) {
+      setIsRefreshing(true);
+      setRefreshMessage("");
+    }
+    try {
+      const [tasksResponse, sessionStatusResponse, threadsResponse] = await Promise.all([
+        fetch(`${controlServerUrl}/tasks`),
+        fetch(`${controlServerUrl}/session-status`),
+        fetch(`${controlServerUrl}/session-selection`),
+      ]);
+      const healthResponse = await fetch(`${controlServerUrl}/health`);
+      if (!healthResponse.ok) throw new Error("本地控制服务健康检查失败");
+      setHealth(await healthResponse.json() as HealthState);
+      if (!tasksResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok) {
+        throw new Error("本地控制服务返回异常");
+      }
+      const [tasksPayload, sessionStatusPayload, threadsPayload] = await Promise.all([
+        tasksResponse.json() as Promise<{ tasks?: TaskRecord[] }>,
+        sessionStatusResponse.json() as Promise<{ sessions?: SessionStatus[] }>,
+        threadsResponse.json() as Promise<{ availableThreads?: Thread[] }>,
+      ]);
+      setTasks(tasksPayload.tasks ?? []);
+      setSessionStatuses(Object.fromEntries((sessionStatusPayload.sessions ?? []).map((session) => [session.sessionId, session])));
+      setLiveAvailableThreads(threadsPayload.availableThreads ?? []);
+      if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
+    } catch (error) {
+      setHealth({ ok: false });
+      if (manual) setRefreshMessage(error instanceof Error ? error.message : "刷新失败，请检查本地控制服务");
+    } finally {
+      refreshInFlight.current = false;
+      if (manual) setIsRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    const initial = window.setTimeout(() => void refreshLiveData(), 0);
+    const timer = window.setInterval(() => void refreshLiveData(), 5_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const selectionThreads = liveAvailableThreads.length > 0 ? liveAvailableThreads : availableThreads;
+  const taskBackedThreads = mergeTaskSessions(selectionThreads, tasks, sessionStatuses);
+  const threadsWithTasks = filterThreadsWithTasks(taskBackedThreads, tasks);
+  const selectionGroups = useMemo(() => groupSessions(threadsWithTasks), [threadsWithTasks]);
+  const mergedThreads = selectionGroups;
+
+  // 当前选中会话被过滤后回退到全部任务
+  useEffect(() => {
+    if (selectedThread !== "全部任务" && !mergedThreads.some((thread) => thread.id === selectedThread)) {
+      const timer = window.setTimeout(() => setSelectedThread("全部任务"), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [mergedThreads, selectedThread]);
+
+  const scanCodexSessions = async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    setSyncMessage("");
+    try {
+      const response = await fetch(`${controlServerUrl}/sync`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-TaskCenter-Action": "delegate",
+        },
+        body: "{}",
+      });
+      const payload = await response.json() as {
+        threadCount?: number;
+        messageCount?: number;
+        message?: string;
+        error?: string;
+      };
+      if (!response.ok && response.status !== 202) {
+        throw new Error(payload.error || "扫描失败，请确认本地控制服务正在运行。");
+      }
+      setSyncMessage(payload.message || `已扫描 ${payload.threadCount ?? 0} 个会话，${payload.messageCount ?? 0} 条用户消息。`);
+      void refreshLiveData();
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : "扫描失败，请稍后重试。");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+  const selectedSessionIds = dashboard.source?.sessionSelection?.mode === "selected"
+    ? dashboard.source.sessionSelection.threadIds
+    : selectionThreads.map((thread) => asText(thread.id, ""));
+  const openSessionPicker = () => {
+    setPickerThreadIds(selectedSessionIds.filter(Boolean));
+    setShowSessionPicker(true);
+  };
+  const saveSessionSelection = async (threadIds: string[]) => {
+    setIsSavingSessionSelection(true);
+    setSyncMessage("");
+    try {
+      const mode = threadIds.length === selectionThreads.length ? "all" : "selected";
+      const response = await fetch(`${controlServerUrl}/session-selection`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
+        body: JSON.stringify({ mode, threadIds }),
+      });
+      const payload = await response.json() as { threadCount?: number; error?: string };
+      if (!response.ok) throw new Error(payload.error || "会话范围保存失败。");
+      setShowSessionPicker(false);
+      setSyncMessage(`已保存会话范围，当前纳入 ${payload.threadCount ?? threadIds.length} 个会话。`);
+      void refreshLiveData();
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : "会话范围保存失败。");
+    } finally {
+      setIsSavingSessionSelection(false);
+    }
+  };
+  const removeSessionGroup = (sessionIds: string[]) => {
+    void saveSessionSelection(selectedSessionIds.filter((id) => !sessionIds.includes(id)));
+  };
+  const selectThread = (threadId: string) => setSelectedThread(threadId);
+
+  return (
+    <main className="app-shell">
+      <div className="grain" aria-hidden="true" />
+      <header className="masthead">
+        <div className="brand-lockup">
+          <div className="brand-mark" aria-hidden="true">
+            <span>T</span>
+            <span>C</span>
+          </div>
+          <div>
+            <p className="eyebrow">LOCAL / CODEX MEMORY</p>
+          <p className="brand-name">TASK<span>CENTER</span></p>
+          </div>
+        </div>
+        <div className="masthead-note">
+          <span className="live-dot" />
+          <span>本地会话看板</span>
+          <span className="separator">·</span>
+          <span>自动同步看板</span>
+        </div>
+      </header>
+
+      <section className="hero-section">
+        <div className="hero-copy">
+          <p className="eyebrow orange">任务记录台 / {new Date().getFullYear()}</p>
+          <h1>把每次执行，<em>变成可追踪的任务记录。</em></h1>
+          <p className="hero-description">
+            以 Session 主动登记的任务账本为唯一工作记录，跟踪计划、进度、证据与验收状态。
+          </p>
+        </div>
+        <div className="hero-stamp">
+          <span>READ</span>
+          <strong>ONLY</strong>
+          <small>LOCAL JSONL</small>
+        </div>
+      </section>
+
+      <div className="content-layout">
+        <aside className="thread-rail">
+          <div className="rail-heading">
+            <div>
+              <p className="eyebrow">SOURCES</p>
+              <h2>Codex 任务</h2>
+            </div>
+            <div className="rail-actions">
+              <button className="manage-sessions-button" onClick={openSessionPicker}>
+                添加会话
+              </button>
+              <button className="scan-button" onClick={scanCodexSessions} disabled={isSyncing}>
+                {isSyncing ? "扫描中…" : "手动扫描"}
+              </button>
+              <button className="refresh-button" onClick={() => void refreshLiveData(true)} disabled={isRefreshing}>
+                {isRefreshing ? "刷新中…" : "刷新数据"}
+              </button>
+              <span className="count-pill" aria-label={`当前 ${mergedThreads.length} 个会话`}>
+                <strong>{mergedThreads.length}</strong><small>会话</small>
+              </span>
+            </div>
+          </div>
+          {syncMessage && <p className="sync-message" role="status">{syncMessage}</p>}
+          {refreshMessage && <p className="refresh-message" role="status" aria-live="polite">{refreshMessage}</p>}
+          {showSessionPicker && (
+            <section className="session-picker" aria-label="选择需要记录的会话">
+              <div className="session-picker-heading">
+                <strong>选择要记录的会话</strong>
+                <button onClick={() => setShowSessionPicker(false)}>关闭</button>
+              </div>
+              <p>未勾选的会话不会出现在任务来源列表，但原始会话文件不会被删除。</p>
+              <div className="session-picker-list">
+                {selectionGroups.map((group) => {
+                  const sessionIds = group.sessionIds;
+                  const selectedCount = sessionIds.filter((id) => pickerThreadIds.includes(id)).length;
+                  const checked = sessionIds.length > 0 && selectedCount === sessionIds.length;
+                  return (
+                    <label className="session-option" key={group.id}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => setPickerThreadIds((current) => checked
+                          ? current.filter((item) => !sessionIds.includes(item))
+                          : [...current, ...sessionIds.filter((id) => !current.includes(id))])}
+                      />
+                      <span><strong>{asText(group.title, "未命名会话")}</strong><small>{group.sessionCount} 个会话 · 已选 {selectedCount}</small></span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="session-picker-actions">
+                <button onClick={() => setPickerThreadIds(selectionThreads.map((thread) => asText(thread.id, "")).filter(Boolean))}>全选</button>
+                <button onClick={() => setPickerThreadIds([])}>清空</button>
+                <button className="session-save-button" onClick={() => void saveSessionSelection(pickerThreadIds)} disabled={isSavingSessionSelection}>
+                  {isSavingSessionSelection ? "保存中…" : `保存（${pickerThreadIds.length}）`}
+                </button>
+              </div>
+            </section>
+          )}
+          <button
+            className={`thread-item ${selectedThread === "全部任务" ? "selected" : ""}`}
+            onClick={() => selectThread("全部任务")}
+          >
+            <span className="thread-number">00</span>
+            <span className="thread-content">
+              <strong>全部任务</strong>
+              <small>{tasks.length} 条任务记录</small>
+            </span>
+            <span className="thread-arrow">↗</span>
+          </button>
+          {mergedThreads.map((thread, index) => {
+            const id = asText(thread.id, `thread-${index}`);
+            const sessionIds = thread.sessionIds ?? [id];
+            const registeredSession = sessionIds.map((sessionId) => sessionStatuses[sessionId]).find((session) => session?.status === "registered");
+            const sessionStatus = registeredSession ?? sessionIds.map((sessionId) => sessionStatuses[sessionId]).find(Boolean);
+            const threadCount = tasks.filter((task) => sessionIds.includes(task.sessionId)).length;
+            return (
+              <div className="thread-row" key={id}>
+                <button
+                  className={`thread-item ${selectedThread === id ? "selected" : ""}`}
+                  onClick={() => selectThread(id)}
+                >
+                <span className="thread-number">{String(index + 1).padStart(2, "0")}</span>
+                <span className="thread-content">
+                  <strong>{asText(thread.title, "未命名任务")}</strong>
+                  <small>
+                    {threadCount} 条任务 · {normalizeDate(thread.updatedAt ?? thread.lastActivity)} · {" "}
+                    <span className={`session-health session-health-${sessionStatus?.status ?? "unknown"}`}>
+                      {sessionStatus?.status === "registered" ? `${sessionStatus.agent} 已登记` : "未登记"}
+                    </span>
+                  </small>
+                </span>
+                <span className="thread-arrow">↗</span>
+                </button>
+                <button
+                  className="thread-remove-button"
+                  onClick={() => removeSessionGroup(thread.sessionIds ?? [id])}
+                  disabled={isSavingSessionSelection || thread.sessionSource === "task-ledger"}
+                  title={thread.sessionSource === "task-ledger" ? "该 Session 来自任务登记，不属于 Codex 扫描范围" : "移除会话"}
+                >
+                  {thread.sessionSource === "task-ledger" ? "已登记" : "移除"}
+                </button>
+              </div>
+            );
+          })}
+          {!mergedThreads.length && <div className="empty-rail">等待第一次 Codex 会话同步</div>}
+          <div className="privacy-note">
+            <span className="lock-icon">⌁</span>
+            <p><strong>本地隐私边界</strong>只读取会话 JSONL，不读取认证文件，不上传远端。</p>
+          </div>
+        </aside>
+
+        <section className="board-area">
+          <TaskLedger
+            tasks={tasks}
+            availableThreads={mergedThreads}
+            sessionGroups={mergedThreads}
+            selectedSessionId={selectedThread}
+            sessionStatuses={sessionStatuses}
+            serviceHealthy={health.ok && health.watcher?.healthy !== false}
+            onTaskUpdated={(updatedTask) => {
+              setTasks((current) => current.map((task) => task.id === updatedTask.id ? updatedTask : task));
+            }}
+          />
+        </section>
+      </div>
+
+      <footer className="footer-bar">
+        <span>TaskCenter · 独立项目管理工具</span>
+        <span>最近同步：{normalizeDate(dashboard.generatedAt)}</span>
+        <span>源：{dashboard.source?.mode ?? "read-only local JSONL"}</span>
+      </footer>
+    </main>
+  );
+}
+
+const taskStatusMeta: Record<TaskStatus, { label: string; tone: string }> = {
+  planned: { label: "已登记", tone: "planned" },
+  in_progress: { label: "进行中", tone: "in-progress" },
+  blocked: { label: "已阻塞", tone: "blocked" },
+  done_claimed: { label: "已完成", tone: "done-claimed" },
+  verified: { label: "已验收", tone: "verified" },
+  cancelled: { label: "已取消", tone: "cancelled" },
+};
+
+const TASKS_PER_PAGE = 40;
+
+function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, onTaskUpdated }: { tasks: TaskRecord[]; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; onTaskUpdated: (task: TaskRecord) => void }) {
+  // 筛选逻辑：全部任务显示全局，具体 Session 优先精确 session_id，不可用时按显式项目标识回退
+  const selectedSessionIds = sessionIdsForGroup(selectedSessionId, sessionGroups);
+  const filteredTasks = selectedSessionId === "全部任务"
+    ? tasks
+    : tasks.filter((task) => taskMatchesSession(task, {
+      selectedSessionIds,
+      availableSessionIds: threadsForTask.flatMap((thread) => [thread.id, ...(thread.sessionIds ?? [])]).filter((id): id is string => Boolean(id)),
+      selectedThread: sessionGroups.find((thread) => thread.id === selectedSessionId),
+    }));
+  const [page, setPage] = useState(1);
+  const [reviewOnly, setReviewOnly] = useState(false);
+  const [attention, setAttention] = useState<"all" | "blocked" | "overdue" | "done_claimed" | "service">("all");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | TaskStatus>("all");
+  const [agentFilter, setAgentFilter] = useState("all");
+  const [timeFilter, setTimeFilter] = useState<"all" | "stale" | "overdue">("all");
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  const [showArchived, setShowArchived] = useState(false);
+  const reviewCount = filteredTasks.filter((task) => (showArchived || !task.archivedAt) && task.status === "done_claimed").length;
+  const agents: string[] = [...new Set(filteredTasks.map((task) => task.agent || "unknown"))];
+  const attentionTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt);
+  const attentionCounts = { blocked: attentionTasks.filter((task) => task.status === "blocked").length, overdue: attentionTasks.filter((task) => taskTimeState(task).overdue).length, done_claimed: attentionTasks.filter((task) => task.status === "done_claimed").length, service: serviceHealthy ? 0 : 1 };
+  const searchedTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt).filter((task) => statusFilter === "all" || task.status === statusFilter).filter((task) => agentFilter === "all" || (task.agent || "unknown") === agentFilter).filter((task) => timeFilter === "all" || taskTimeState(task)[timeFilter]).filter((task) => attention === "all" || (attention === "service" ? false : attention === "blocked" ? task.status === "blocked" : attention === "done_claimed" ? task.status === "done_claimed" : taskTimeState(task).overdue)).filter((task) => !query || `${task.title} ${task.id} ${task.sessionId}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => (Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || "")) * (sortOrder === "newest" ? 1 : -1));
+  const shownTasks = reviewOnly ? searchedTasks.filter((task) => task.status === "done_claimed") : searchedTasks;
+  const pageCount = Math.max(1, Math.ceil(shownTasks.length / TASKS_PER_PAGE));
+  const effectivePage = Math.min(page, pageCount);
+  const visibleTasks = shownTasks.slice((effectivePage - 1) * TASKS_PER_PAGE, effectivePage * TASKS_PER_PAGE);
+
+  return (
+    <section className="task-ledger" aria-label="会话主动任务">
+      <div className={`session-health-bar ${serviceHealthy ? "healthy" : "unhealthy"}`} role="status">{serviceHealthy ? "● 控制服务正常 · 同步 watcher 正常" : "! 控制服务或同步 watcher 异常，正在重试"} · 最近数据生成时间以 dashboard 为准</div>
+      <div className="ledger-heading">
+        <p className="eyebrow orange">SESSION TASK GATE</p>
+        <h2>会话主动任务<span>{filteredTasks.length}</span></h2>
+        <button type="button" className="task-filter-button" onClick={() => setReviewOnly((value) => !value)}>{reviewOnly ? "全部任务" : `待验收 ${reviewCount}`}</button>
+        <span className="attention-summary">需要关注：</span>{(["blocked", "overdue", "done_claimed", "service"] as const).map((key) => <button type="button" key={key} className="task-filter-button" onClick={() => setAttention(attention === key ? "all" : key)}>{key === "blocked" ? "阻塞" : key === "overdue" ? "逾期" : key === "done_claimed" ? "待验收" : "服务"} {attentionCounts[key]}</button>)}
+        <input aria-label="搜索任务" placeholder="标题 / ID / Session" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <select aria-label="任务状态" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | TaskStatus)}><option value="all">全部状态</option>{Object.keys(taskStatusMeta).map((status) => <option key={status} value={status}>{taskStatusMeta[status as TaskStatus].label}</option>)}</select>
+        <select aria-label="任务 Agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}><option value="all">全部 Agent</option>{agents.map((agent) => <option key={agent}>{agent}</option>)}</select>
+        <select aria-label="时间筛选" value={timeFilter} onChange={(event) => setTimeFilter(event.target.value as "all" | "stale" | "overdue")}><option value="all">全部时间</option><option value="stale">陈旧</option><option value="overdue">逾期</option></select>
+        <select aria-label="更新时间排序" value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")}><option value="newest">更新时间：最新</option><option value="oldest">更新时间：最早</option></select>
+        <label><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> 显示归档</label>
+      </div>
+      {shownTasks.length === 0 ? (
+        <p className="ledger-empty">
+          {reviewOnly
+            ? "当前没有待验收任务。"
+            : selectedSessionId === "全部任务"
+            ? "还没有已登记的会话主动任务。会话开始写代码前应先调用 taskcenter_session_register 与 taskcenter_task_create，取得 accepted=true 和 task_id 后再实施。"
+            : "当前会话没有关联任务。"}
+        </p>
+      ) : (
+        <>
+          <div className="task-table-wrapper">
+            <table className="task-table">
+            <thead>
+              <tr>
+                <th>标题</th>
+                <th>关联 ID</th>
+                <th>状态</th>
+                <th>目标 / 步骤</th>
+                <th>阻塞</th>
+                <th className="task-count-header">假设 / 风险 / 取舍 / 待确认 / 复盘</th>
+                <th>Session</th>
+                <th>时间 / 工具</th>
+                <th>人工操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleTasks.map((task) => <TaskRow key={task.id} task={task} availableThreads={threadsForTask} sessionStatuses={sessionStatuses} onTaskUpdated={onTaskUpdated} />)}
+            </tbody>
+          </table>
+          </div>
+          {pageCount > 1 && (
+            <nav className="task-pagination" aria-label="任务分页">
+              <button type="button" onClick={() => setPage(effectivePage - 1)} disabled={effectivePage === 1}>上一页</button>
+              <span>第 {effectivePage} / {pageCount} 页 · 每页 {TASKS_PER_PAGE} 条</span>
+              <button type="button" onClick={() => setPage(effectivePage + 1)} disabled={effectivePage === pageCount}>下一页</button>
+            </nav>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTaskUpdated }: { task: TaskRecord; availableThreads: Thread[]; sessionStatuses: Record<string, SessionStatus>; onTaskUpdated: (task: TaskRecord) => void }) {
+  const [actionState, setActionState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [actionError, setActionError] = useState("");
+  const [scheduleEditing, setScheduleEditing] = useState(false);
+  const [scheduleValue, setScheduleValue] = useState("");
+  const [idCopyState, setIdCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [events, setEvents] = useState<Array<Record<string, string>> | null>(null);
+  const [eventsError, setEventsError] = useState("");
+  useEffect(() => { if (!detailsOpen || events) return; void fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/events`).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "事件加载失败"); setEvents(payload.events ?? []); }).catch((error) => setEventsError(error instanceof Error ? error.message : "事件加载失败")); }, [detailsOpen, events, task.id]);
+  const meta = taskStatusMeta[task.status] ?? taskStatusMeta.planned;
+  const detailItems = [
+    { label: "审核理由", items: task.reviewReason ? [`${task.reviewReason}${task.reviewedAt ? ` · ${normalizeDate(task.reviewedAt)}` : ""}`] : [] },
+    { label: "假设", items: task.assumptions ?? [] },
+    { label: "风险", items: task.risks ?? [] },
+    { label: "取舍", items: task.tradeoffs ?? [] },
+    { label: "待确认", items: task.openQuestions ?? [] },
+    { label: "复盘", items: task.retrospective ? [task.retrospective] : [] },
+  ];
+  const nonEmptyDetails = detailItems.filter((item) => item.items.length > 0);
+  const stepText = task.currentStep ?? task.nextAction;
+  const goalOrStep = task.goal || stepText ? `${asText(task.goal)}${stepText ? ` · ${asText(stepText)}` : ""}` : "—";
+  const isDemo = task.id.startsWith("ui-demo-");
+  const timeState = taskTimeState(task);
+
+  const sessionInfo = useMemo(
+    () => resolveTaskSessionDisplay(task, threadsForTask.find((thread) => thread.id === task.sessionId || thread.sessionIds?.includes(task.sessionId))),
+    [task, threadsForTask],
+  );
+
+  const handleAction = async (action: "start" | "block" | "done" | "cancel" | "remove" | "verify" | "reject" | "archive" | "unarchive" | "schedule") => {
+    if (actionState === "loading") return;
+    const reason = action === "reject" ? window.prompt("请输入打回理由", "人工打回，需补充证据") : "";
+    if (action === "reject" && reason === null) return;
+    if (action === "schedule") return;
+    setActionState("loading");
+    setActionError("");
+    try {
+      const response = await fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/actions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
+        body: JSON.stringify({ action, ...(action === "reject" ? { reason } : {}) }),
+      });
+      const payload = await response.json() as { error?: string; task?: TaskRecord | null };
+      if (!response.ok) throw new Error(payload.error || "操作失败");
+      if (!payload.task) throw new Error("操作成功但服务端未返回任务状态");
+      onTaskUpdated(payload.task);
+      setActionState("done");
+    } catch (error) {
+      setActionState("error");
+      setActionError(error instanceof Error ? error.message : "操作失败");
+    }
+  };
+
+  const handleSchedule = async (value: string) => {
+    if (!value || Number.isNaN(Date.parse(value))) return;
+    setActionState("loading");
+    try {
+      const response = await fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/actions`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" }, body: JSON.stringify({ action: "schedule", expectedAt: new Date(value).toISOString() }) });
+      const payload = await response.json() as { error?: string; task?: TaskRecord | null };
+      if (!response.ok || !payload.task) throw new Error(payload.error || "操作失败");
+      onTaskUpdated(payload.task);
+      setScheduleEditing(false);
+      setActionState("done");
+    } catch (error) {
+      setActionState("error");
+      setActionError(error instanceof Error ? error.message : "操作失败");
+    }
+  };
+
+  const copyTaskId = async () => {
+    try {
+      await copyToClipboard(task.id);
+      setIdCopyState("copied");
+      window.setTimeout(() => setIdCopyState("idle"), 1200);
+    } catch {
+      setIdCopyState("error");
+    }
+  };
+
+  return (
+    <>
+      <tr className={`task-row status-task-${meta.tone}`}>
+      <td data-label="标题" className="task-cell task-title-cell" title={asText(task.title, "未命名任务")}>
+        <strong>{asText(task.title, "未命名任务")}</strong>
+        <span className="task-id-line">
+          <code title="任务独立 ID">{task.id}</code>
+          <button
+            type="button"
+            className="task-id-copy-button"
+            onClick={() => void copyTaskId()}
+            disabled={idCopyState === "copied"}
+            aria-label={`复制任务 ID ${task.id}`}
+          >
+            {idCopyState === "copied" ? "已复制" : "复制 ID"}
+          </button>
+        </span>
+        {idCopyState === "error" && <small className="task-id-copy-error">复制失败，请手动选择 ID</small>}
+      </td>
+      <td data-label="关联 ID" className="task-cell"><code>{task.requirementId || "—"}</code></td>
+      <td data-label="状态" className="task-cell"><span className={`task-status status-${meta.tone}`}>{meta.label}</span>{timeState.stale && <small> · 陈旧</small>}{timeState.overdue && <small> · 已逾期</small>}</td>
+      <td data-label="目标 / 步骤" className="task-cell task-goal-cell" title={goalOrStep}>{goalOrStep}</td>
+      <td data-label="阻塞" className="task-cell task-blocker-cell" title={task.blocker || "—"}>{task.blocker ? asText(task.blocker) : "—"}</td>
+      <td data-label="假设 / 风险 / 取舍 / 待确认 / 复盘" className="task-cell task-count-cell">
+        {nonEmptyDetails.length > 0 ? (
+          <button
+            type="button"
+            className="task-detail-preview"
+            aria-expanded={detailsOpen}
+            aria-controls={`task-details-${task.id}`}
+            onClick={() => setDetailsOpen((open) => !open)}
+          >
+            {nonEmptyDetails.map((item) => <span key={item.label}><b>{item.label}</b> {asText(item.items[0])}{item.items.length > 1 ? ` +${item.items.length - 1}` : ""}</span>)}
+            <small>{detailsOpen ? "收起详情" : "查看详情"}</small>
+          </button>
+        ) : "—"}
+      </td>
+      <td data-label="Session" className="task-cell task-session-cell" title={sessionInfo ? `${sessionInfo.title} · ${sessionInfo.detail}` : task.sessionId}>
+        {sessionInfo ? (
+          <>
+            <strong>{sessionInfo.title}</strong>
+            <small>{task.agent ?? "unknown"} · {sessionInfo.detail} · {sessionStatuses[task.sessionId]?.status === "registered" ? "已登记" : "未登记"}</small>
+          </>
+        ) : (
+          <span className="no-session">{task.sessionId.slice(0, 8)}… 未关联会话</span>
+        )}
+      </td>
+      <td data-label="时间 / 工具" className="task-cell task-metrics-cell">
+        <div>开始：{normalizeDate(task.startedAt)}</div>
+        <div>预计：{normalizeDate(task.expectedAt)}</div>
+        <div>实际：{normalizeDate(task.actualAt)}</div>
+        <div>耗时：{formatElapsed(timeState.elapsedMs)}</div>
+        {task.archivedAt && <div>归档：{normalizeDate(task.archivedAt)}</div>}
+        <div className="task-tools">工具：{Object.entries(task.toolCalls ?? {}).length ? Object.entries(task.toolCalls ?? {}).map(([name, count]) => `${name} ×${count}`).join("、") : "—"}</div>
+      </td>
+      <td data-label="人工操作" className="task-cell task-actions-cell">
+        {task.status === "planned" && (
+          <button className="task-action-button action-start" onClick={() => handleAction("start")} disabled={actionState === "loading"}>
+            开始
+          </button>
+        )}
+        {["planned", "in_progress"].includes(task.status) && (
+          <button className="task-action-button action-block" onClick={() => handleAction("block")} disabled={actionState === "loading"}>
+            阻塞
+          </button>
+        )}
+        {["planned", "in_progress", "blocked"].includes(task.status) && (
+          <button className="task-action-button action-done" onClick={() => handleAction("done")} disabled={actionState === "loading"}>
+            完成
+          </button>
+        )}
+        {task.status === "done_claimed" && (
+          <><button className="task-action-button action-done" onClick={() => handleAction("verify")} disabled={actionState === "loading"}>验收通过</button><button className="task-action-button action-block" onClick={() => handleAction("reject")} disabled={actionState === "loading"}>打回</button></>
+        )}
+        {task.status === "verified" && <span className="task-action-note">已验收</span>}
+        {["planned", "in_progress", "blocked"].includes(task.status) && <button className="task-action-button action-block" onClick={() => handleAction("cancel")} disabled={actionState === "loading"}>取消</button>}
+        {["planned", "in_progress", "blocked"].includes(task.status) && !scheduleEditing && <button className="task-action-button" onClick={() => { setScheduleEditing(true); setScheduleValue(toLocalDateTimeValue(task.expectedAt)); }}>设置预计时间</button>}
+        {scheduleEditing && <span><input type="datetime-local" value={scheduleValue} onChange={(event) => setScheduleValue(event.target.value)} /><button className="task-action-button" onClick={() => { if (!scheduleValue || Number.isNaN(Date.parse(scheduleValue))) return; void handleSchedule(scheduleValue); }}>保存</button><button className="task-action-button" onClick={() => setScheduleEditing(false)}>取消</button></span>}
+        {!(["planned", "in_progress", "blocked"].includes(task.status)) && !task.archivedAt && <button className="task-action-button" onClick={() => handleAction("archive")} disabled={actionState === "loading"}>归档</button>}
+        {task.archivedAt && <button className="task-action-button" onClick={() => handleAction("unarchive")} disabled={actionState === "loading"}>恢复</button>}
+        {isDemo && (
+          <button className="task-action-button action-remove" onClick={() => handleAction("remove")} disabled={actionState === "loading"}>
+            移除演示
+          </button>
+        )}
+        {actionError && <span className="task-action-error">{actionError}</span>}
+      </td>
+      </tr>
+      {detailsOpen && nonEmptyDetails.length > 0 && (
+        <tr id={`task-details-${task.id}`} className="task-detail-row">
+          <td colSpan={9}>
+            <div className="task-detail-content">
+              {nonEmptyDetails.map((item) => <section key={item.label}><strong>{item.label}</strong><ul>{item.items.map((value, index) => <li key={`${item.label}-${index}`}>{value}</li>)}</ul></section>)}
+              <section><strong>事件时间线</strong>{eventsError ? <p>{eventsError}</p> : events === null ? <p>加载中…</p> : events.length === 0 ? <p>暂无事件</p> : <ul>{events.map((event, index) => <li key={`${event.event_id || index}`}>{asText(event.type)} · {asText(event.status, "未标状态")} · {normalizeDate(event.created_at)} · {asText(event.current_step || event.tool_name || event.review_reason, "无摘要")}</li>)}</ul>}</section>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function toLocalDateTimeValue(value?: string) {
+  const time = Date.parse(value || "");
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatElapsed(duration: number) {
+  if (!Number.isFinite(duration) || duration < 0) return "—";
+  const seconds = Math.floor(duration / 1000);
+  return seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+}

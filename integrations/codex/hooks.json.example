@@ -1,0 +1,31 @@
+{
+  "description": "TaskCenter session registration and write gate",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^(startup|resume|clear|compact)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node '__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs' session-start --agent codex",
+            "timeout": 10,
+            "statusMessage": "Registering TaskCenter session"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch|exec_command|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node '__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs' pre-tool-use --agent codex",
+            "timeout": 10,
+            "statusMessage": "Checking TaskCenter task gate"
+          }
+        ]
+      }
+    ]
+  }
+}

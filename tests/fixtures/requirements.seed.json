@@ -1,0 +1,43 @@
+[
+  {
+    "id": "req-test-1",
+    "title": "测试需求一",
+    "category": "功能",
+    "priority": "高",
+    "status": "in_progress",
+    "summary": "这是一个测试需求，关键词为 alpha",
+    "keywords": ["alpha"],
+    "evidence": []
+  },
+  {
+    "id": "req-test-2",
+    "title": "测试需求二",
+    "category": "功能",
+    "priority": "中",
+    "status": "verified",
+    "summary": "这是一个测试需求，关键词为 beta",
+    "keywords": ["beta"],
+    "evidence": []
+  },
+  {
+    "id": "req-test-3",
+    "title": "无来源需求",
+    "category": "功能",
+    "priority": "低",
+    "status": "missing",
+    "summary": "这个需求在 selected 模式下应被过滤",
+    "keywords": ["nonexistent-keyword-xyz"],
+    "evidence": []
+  },
+  {
+    "id": "req-atlas-1",
+    "title": "职业需求项",
+    "category": "职业",
+    "priority": "高",
+    "status": "in_progress",
+    "summary": "职业需求，无关键词",
+    "keywords": [],
+    "sourceKind": "professional_requirement",
+    "evidence": []
+  }
+]

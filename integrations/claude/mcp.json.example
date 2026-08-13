@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "taskcenter": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["__TASKCENTER_ROOT__/scripts/taskcenter-mcp.mjs"],
+      "env": {}
+    }
+  }
+}

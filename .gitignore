@@ -1,0 +1,65 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.vinext/
+/out/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+next-env.d.ts
+*.tsbuildinfo
+/dist/
+/.wrangler/
+/outputs/
+/work/
+/.local/
+/data/dispatches.json
+/data/dashboard.json
+/data/logs/
+/data/task-events.jsonl
+/data/task-ledger.json
+/data/task-event-ids.json
+/data/task-reconcile.jsonl
+/data/session-registry.json
+/data/session-selection.json
+/data/context-task-map.json
+/data/context-sync-events.jsonl
+/data/requirement-overrides.json
+/data/inbox-decisions.json
+
+# local agent/runtime state
+/.delegate/
+/.planning/
+/.runs/
+/context-project.local.yaml
+/project-context/.claudian/
+/project-context/.obsidian/
