@@ -12,6 +12,7 @@ const taskFields = {
   model: z.string().max(120).optional(),
   workspace: z.string().max(4_096).optional(),
   task_id: z.string().max(200).optional(),
+  context_task_id: z.string().max(200).optional(),
   requirement_id: z.string().max(200).optional(),
   event_id: z.string().max(200).optional(),
   title: z.string().max(200).optional(),
@@ -43,7 +44,7 @@ server.registerTool("reqradar_session_register", {
 
 server.registerTool("reqradar_task_create", {
   title: "创建 ReqRadar 任务",
-  description: "在修改代码前创建正式任务。必须先获得 task_id 和 accepted=true；建议填写 expected_at。",
+  description: "在修改代码前创建正式任务。必须先获得 task_id 和 accepted=true；当前 Turn 已绑定 Context semantic task 时必须传 context_task_id，以接管内部影子任务并保持完成状态闭环；建议填写 expected_at。",
   inputSchema: z.object({ ...taskFields, title: z.string().min(1).max(200), goal: z.string().min(1).max(1_000), acceptance_criteria: z.array(z.string().min(1).max(500)).min(1).max(20), plan: z.array(z.string().min(1).max(500)).min(1).max(20) }).strict(),
 }, async (input) => report("task.create", input));
 

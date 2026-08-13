@@ -19,7 +19,21 @@ import {
   inspectSessionState,
   resumeSession,
 } from "./session-cli.mjs";
-import { getSessionStatuses, loadTasks, reconcileTasks, recordTaskEvent, taskEventsPath, taskLedgerPath, TaskLedgerError } from "./task-ledger.mjs";
+import {
+  completeContextTasks,
+  completeTasksByReconciliation,
+  ensureContextTask,
+  getSessionStatuses,
+  loadTasks,
+  loadVisibleTasks,
+  reconcileContextShadowTasks,
+  reconcileTasks,
+  recordTaskEvent,
+  supersedeContextShadowTask,
+  taskEventsPath,
+  taskLedgerPath,
+  TaskLedgerError,
+} from "./task-ledger.mjs";
 import { syncContextEvent } from "./context-bridge.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
@@ -49,6 +63,10 @@ let syncing = null;
 
 mkdirSync(dirname(dispatchesPath), { recursive: true });
 migrateLegacyDispatches();
+const startupContextReconciliation = reconcileContextShadowTasks();
+if (startupContextReconciliation.reconciled.length) {
+  console.log(`[ReqRadar] 已收敛 ${startupContextReconciliation.reconciled.length} 条 Context 影子任务。`);
+}
 const queueTimer = setInterval(() => void processQueue(), 5_000);
 queueTimer.unref();
 void processQueue();
@@ -82,7 +100,7 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/session-status") {
       if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
-      sendJson(response, 200, { sessions: getSessionStatuses(availableSessionIds(), loadTasks()) });
+      sendJson(response, 200, { sessions: getSessionStatuses(availableSessionIds(), loadVisibleTasks()) });
       return;
     }
     if (request.method === "POST" && request.url === "/session-selection") {
@@ -104,7 +122,44 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/tasks") {
       if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
-      sendJson(response, 200, { tasks: loadTasks().slice().reverse() });
+      sendJson(response, 200, { tasks: loadVisibleTasks().slice().reverse() });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/context-tasks/ensure") {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      const result = ensureContextTask(body);
+      sendJson(response, result.created ? 201 : 200, { accepted: true, ...result });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/context-tasks/complete") {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      const result = completeContextTasks(body);
+      sendJson(response, 200, { accepted: true, ...result });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/maintenance/context-tasks/reconcile") {
+      verifyManualTaskAction(request);
+      const body = await readJsonBody(request);
+      if (body.confirm !== true) throw new TaskLedgerError(400, "生命周期清理需要显式 confirm=true。");
+      const replacements = Array.isArray(body.shadowReplacements) ? body.shadowReplacements.slice(0, 50) : [];
+      const superseded = replacements.map((item) => supersedeContextShadowTask(
+        String(item?.shadowTaskId || ""),
+        String(item?.replacementTaskId || ""),
+        String(item?.reason || "人工确认内部影子任务已被正式任务接管。"),
+      ).task);
+      const automatic = reconcileContextShadowTasks();
+      const completed = completeTasksByReconciliation(
+        Array.isArray(body.completeTaskIds) ? body.completeTaskIds.slice(0, 50) : [],
+        String(body.completionEvidence || "人工核对本地 Session final_answer 与 task_complete 后补齐完成上报。"),
+      );
+      sendJson(response, 200, {
+        accepted: true,
+        superseded,
+        automaticallySuperseded: automatic.reconciled,
+        completed: completed.completed,
+      });
       return;
     }
     const taskEventsMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/events(?:\?limit=(\d+))?$/) : null;
@@ -127,6 +182,8 @@ const server = createServer(async (request, response) => {
         ...(reconcileLiveSessions ? { availableSessionIds: sessionIds } : {}),
         requireRegistered: true,
       });
+      // 本地账本事件幂等不等于外部同步已成功。重复投递仍使用同一派生 event_id
+      // 重试 Context MCP，由 Context 侧幂等键消除已成功的副作用并补偿超时/失败。
       const contextSync = await syncContextEvent(result.event, result.task);
       // 幂等重投递（重复 event_id）返回 200，只有真正新建任务时才用 201。
       sendJson(response, body.type === "task.create" && !result.idempotent ? 201 : 200, {

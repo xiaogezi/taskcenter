@@ -39,6 +39,59 @@ test("SessionStart Hook 登记真实会话且可幂等重放", async () => {
   assert.equal(status.agent, "claude");
 });
 
+test("Context task ensure 跨 Turn 幂等复用，complete 后可按仍活跃语义重新进入", async () => {
+  const body = {
+    context_task_id: "context-hook-semantic",
+    session_id: "context-hook-session",
+    workspace: "/work",
+    semantic_label: "多环境数据生命周期设计",
+    agent: "codex",
+  };
+  const first = await fetch(`${base}/context-tasks/ensure`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-ReqRadar-Task": "hook" },
+    body: JSON.stringify(body),
+  });
+  const firstPayload = await first.json();
+  assert.equal(first.status, 201);
+  assert.equal(firstPayload.task.contextTaskId, body.context_task_id);
+  const visibleTasks = await (await fetch(`${base}/tasks`)).json();
+  assert.equal(visibleTasks.tasks.some((task) => task.id === firstPayload.task.id), false);
+  const shadowOnlyWrite = await runHook("pre-tool-use", "codex", {
+    session_id: body.session_id,
+    cwd: body.workspace,
+    tool_name: "exec_command",
+    tool_use_id: "shadow-only-write",
+  });
+  assert.equal(shadowOnlyWrite.code, 2);
+
+  const second = await fetch(`${base}/context-tasks/ensure`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-ReqRadar-Task": "hook" },
+    body: JSON.stringify(body),
+  });
+  const secondPayload = await second.json();
+  assert.equal(second.status, 200);
+  assert.equal(secondPayload.task.id, firstPayload.task.id);
+
+  const completed = await fetch(`${base}/context-tasks/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-ReqRadar-Task": "hook" },
+    body: JSON.stringify({ context_task_id: body.context_task_id, summary: "语义目标完成" }),
+  });
+  assert.equal((await completed.json()).completed[0].status, "done_claimed");
+
+  const resumed = await fetch(`${base}/context-tasks/ensure`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-ReqRadar-Task": "hook" },
+    body: JSON.stringify(body),
+  });
+  const resumedPayload = await resumed.json();
+  assert.equal(resumedPayload.reactivated, true);
+  assert.equal(resumedPayload.task.id, firstPayload.task.id);
+  assert.equal(resumedPayload.task.status, "in_progress");
+});
+
 test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async () => {
   const missing = await runHook("pre-tool-use", "codex", { session_id: "unknown-session", cwd: "/work" });
   assert.equal(missing.code, 2);

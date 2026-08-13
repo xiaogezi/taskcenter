@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { taskTimeState, STALE_TASK_MS } from "../app/task-time-state.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
@@ -13,12 +13,22 @@ export const sessionMergesPath = resolve(process.env.REQRADAR_SESSION_MERGES_PAT
 
 const statuses = new Set(["planned", "in_progress", "blocked", "done_claimed", "verified", "cancelled", "removed"]);
 const demoPattern = /^ui-demo-/;
+const contextShadowPattern = /^context-[0-9a-f]{24}$/;
 export { taskTimeState, STALE_TASK_MS };
 
 export function loadTasks() {
   return readLedger()
     .filter((task) => task.status !== "removed")
     .map((task) => ({ ...task, sessionId: canonicalSessionId(task.sessionId) }));
+}
+
+export function isContextShadowTask(taskOrId) {
+  const taskId = typeof taskOrId === "string" ? taskOrId : taskOrId?.id;
+  return contextShadowPattern.test(String(taskId || ""));
+}
+
+export function loadVisibleTasks() {
+  return loadTasks().filter((task) => !isContextShadowTask(task));
 }
 
 export function loadSessionMerges() {
@@ -166,8 +176,22 @@ export function recordTaskEvent(input, options = {}) {
   const current = event.task_id ? tasks.find((task) => task.id === event.task_id) : null;
   const processed = loadProcessedEventIds();
   if (processed.has(event.event_id)) {
-    // 事件幂等：同一 event_id 重复投递时直接返回已有状态，不再写入或重放副作用。
-    return { event, task: current ?? null, idempotent: true };
+    const original = findStoredTaskEvent(event.event_id);
+    if (!original) {
+      throw new TaskLedgerError(409, "event_id 已处理，但找不到原始事件，拒绝不安全重放。");
+    }
+    // task.create 未显式传 task_id 时由首次请求生成；重试仍应命中首次生成的任务。
+    if (event.type === "task.create" && !String(input.task_id || "")) {
+      event.task_id = original.task_id;
+    }
+    if (!sameIdempotentEvent(original, event)) {
+      throw new TaskLedgerError(409, "event_id 已被不同事件使用，拒绝重放。");
+    }
+    const originalTask = original.task_id
+      ? tasks.find((task) => task.id === original.task_id) ?? null
+      : null;
+    // 返回首次持久化的事件，确保外部补偿同步不能被重投 payload 篡改。
+    return { event: original, task: originalTask, idempotent: true };
   }
   // 对已存在的任务，先校验 session 归属，再决定幂等或拒绝。
   if (current) {
@@ -185,17 +209,278 @@ export function recordTaskEvent(input, options = {}) {
       throw new TaskLedgerError(404, "任务不存在，请先创建任务。");
     }
   }
-  const next = event.type === "session.register" ? null : applyEvent(current, event);
-  const nextTasks = next
+  let next = event.type === "session.register" ? null : applyEvent(current, event);
+  let nextTasks = next
     ? current ? tasks.map((task) => task.id === next.id ? next : task) : [...tasks, next]
     : tasks;
+  const supersededTaskIds = next && event.type === "task.create"
+    ? contextShadowsAdoptedBy(next, tasks)
+    : [];
+  if (supersededTaskIds.length) {
+    event.superseded_task_ids = supersededTaskIds;
+    next = {
+      ...next,
+      adoptedTaskIds: [...new Set([...(next.adoptedTaskIds || []), ...supersededTaskIds])],
+    };
+    nextTasks = tasks
+      .map((task) => supersededTaskIds.includes(task.id) ? supersedeShadow(task, next.id, event) : task)
+      .concat(next);
+  }
   mkdirSync(dirname(taskEventsPath), { recursive: true });
   appendFileSync(taskEventsPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
   persistTasks(nextTasks);
   touchSession(event);
   processed.add(event.event_id);
   persistProcessedEventIds(processed);
-  return { event, task: next };
+  return { event, task: next, supersededTaskIds };
+}
+
+const activeTaskStatuses = new Set(["planned", "in_progress", "blocked"]);
+
+const idempotentEventFields = [
+  "event_id", "type", "task_id", "context_task_id", "requirement_id", "session_id",
+  "agent", "provider", "model", "workspace", "title", "goal", "status", "priority",
+  "plan", "current_step", "next_action", "blocker", "acceptance_criteria", "changed_files",
+  "tests", "evidence", "assumptions", "risks", "tradeoffs", "open_questions", "retrospective",
+  "expected_at", "archived_at", "superseded_by", "review_reason", "reviewed_at", "tool_name",
+  "tool_use_id",
+];
+
+function findStoredTaskEvent(eventId) {
+  if (!existsSync(taskEventsPath)) return null;
+  const lines = readFileSync(taskEventsPath, "utf8").split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!lines[index].includes(eventId)) continue;
+    try {
+      const candidate = JSON.parse(lines[index]);
+      if (candidate.event_id === eventId) return candidate;
+    } catch {
+      // 忽略其他损坏行，继续寻找精确 event_id。
+    }
+  }
+  return null;
+}
+
+function sameIdempotentEvent(left, right) {
+  const pick = (event) => Object.fromEntries(idempotentEventFields.map((field) => [field, event[field]]));
+  return JSON.stringify(pick(left)) === JSON.stringify(pick(right));
+}
+
+function contextIdentity(value) {
+  return createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
+}
+
+function contextShadowsAdoptedBy(task, tasks) {
+  if (isContextShadowTask(task) || !task.contextTaskId) return [];
+  const sessionId = canonicalSessionId(task.sessionId);
+  return tasks
+    .filter((candidate) => (
+      isContextShadowTask(candidate)
+      && canonicalSessionId(candidate.sessionId) === sessionId
+      && candidate.contextTaskId === task.contextTaskId
+      && !candidate.supersededBy
+    ))
+    .map((candidate) => candidate.id);
+}
+
+function supersedeShadow(task, replacementTaskId, event) {
+  const active = activeTaskStatuses.has(task.status);
+  return {
+    ...task,
+    status: active ? "cancelled" : task.status,
+    currentStep: active ? "内部 Context 影子任务已由正式 ReqRadar 任务接管。" : task.currentStep,
+    nextAction: active ? "" : task.nextAction,
+    blocker: active ? "" : task.blocker,
+    archivedAt: task.archivedAt || event.created_at,
+    actualAt: active ? event.created_at : task.actualAt,
+    supersededBy: replacementTaskId,
+    supersededAt: event.created_at,
+    updatedAt: event.created_at,
+    lastEventId: event.event_id,
+  };
+}
+
+export function supersedeContextShadowTask(shadowTaskId, replacementTaskId, reason = "") {
+  const tasks = loadTasks();
+  const shadow = tasks.find((task) => task.id === shadowTaskId);
+  const replacement = tasks.find((task) => task.id === replacementTaskId);
+  if (!shadow || !isContextShadowTask(shadow)) {
+    throw new TaskLedgerError(404, "未找到可接管的 Context 影子任务。");
+  }
+  if (!replacement || isContextShadowTask(replacement)) {
+    throw new TaskLedgerError(404, "未找到用于接管的正式 ReqRadar 任务。");
+  }
+  if (canonicalSessionId(shadow.sessionId) !== canonicalSessionId(replacement.sessionId)) {
+    throw new TaskLedgerError(409, "影子任务与正式任务不属于同一个 Session。");
+  }
+  if (shadow.contextTaskId && replacement.contextTaskId && shadow.contextTaskId !== replacement.contextTaskId) {
+    throw new TaskLedgerError(409, "影子任务与正式任务不属于同一个 Context semantic task。");
+  }
+  if (shadow.supersededBy === replacement.id) {
+    return { task: shadow, replacement, idempotent: true };
+  }
+  const eventId = `manual-reconcile-shadow-${contextIdentity(`${shadow.id}:${replacement.id}`)}`;
+  const result = recordTaskEvent({
+    type: "task.review",
+    event_id: eventId,
+    task_id: shadow.id,
+    context_task_id: shadow.contextTaskId,
+    session_id: shadow.sessionId,
+    status: activeTaskStatuses.has(shadow.status) ? "cancelled" : shadow.status,
+    archived_at: shadow.archivedAt || new Date().toISOString(),
+    superseded_by: replacement.id,
+    current_step: "内部 Context 影子任务已由正式 ReqRadar 任务接管。",
+    retrospective: cleanText(reason, 2_000) || `由正式任务 ${replacement.id} 接管。`,
+  });
+  return { ...result, replacement };
+}
+
+export function reconcileContextShadowTasks() {
+  const tasks = loadTasks();
+  const reconciled = [];
+  for (const shadow of tasks.filter((task) => isContextShadowTask(task) && !task.supersededBy)) {
+    if (!shadow.contextTaskId) continue;
+    const shadowCreatedAt = Date.parse(shadow.createdAt || "");
+    if (!Number.isFinite(shadowCreatedAt)) continue;
+    const replacement = tasks
+      .filter((task) => (
+        !isContextShadowTask(task)
+        && canonicalSessionId(task.sessionId) === canonicalSessionId(shadow.sessionId)
+        && task.contextTaskId === shadow.contextTaskId
+        && Number.isFinite(Date.parse(task.createdAt || ""))
+        && Date.parse(task.createdAt) >= shadowCreatedAt
+      ))
+      .sort((left, right) => Date.parse(right.createdAt || "") - Date.parse(left.createdAt || ""))[0];
+    if (!replacement) continue;
+    reconciled.push(supersedeContextShadowTask(
+      shadow.id,
+      replacement.id,
+      "同 Session、同 Context semantic task 已存在正式 ReqRadar 任务，自动收敛内部影子记录。",
+    ).task);
+  }
+  return { reconciled };
+}
+
+export function completeTasksByReconciliation(taskIds, evidence = "") {
+  const completed = [];
+  for (const taskId of [...new Set(taskIds || [])]) {
+    const task = loadTasks().find((item) => item.id === taskId);
+    if (!task || isContextShadowTask(task)) {
+      throw new TaskLedgerError(404, `未找到可完成的正式任务: ${taskId}`);
+    }
+    if (!activeTaskStatuses.has(task.status)) {
+      completed.push(task);
+      continue;
+    }
+    const result = recordTaskEvent({
+      type: "task.report",
+      event_id: `manual-reconcile-complete-${contextIdentity(`${task.id}:${task.lastEventId || task.updatedAt}`)}`,
+      task_id: task.id,
+      context_task_id: task.contextTaskId,
+      session_id: task.sessionId,
+      agent: "system",
+      provider: "local",
+      model: "reconciliation",
+      status: "done_claimed",
+      current_step: "根据本机会话终止证据补齐完成上报。",
+      evidence: [cleanText(evidence, 1_000)].filter(Boolean),
+    });
+    completed.push(result.task);
+  }
+  return { completed };
+}
+
+/**
+ * 确保一个 Context semantic task 在当前客户端 Session 中有且只有一个活跃执行任务。
+ * 正式任务不会被 Context ensure 重新激活；仅内部影子任务允许按 semantic task 新建执行代次。
+ * 这样 follow-up 可先获得影子记录，再由本轮显式创建的正式 ReqRadar 任务接管。
+ */
+export function ensureContextTask(input) {
+  const contextTaskId = cleanText(input?.context_task_id, 200);
+  const sessionId = canonicalSessionId(String(input?.session_id || ""));
+  const workspace = String(input?.workspace || "");
+  if (!contextTaskId) throw new TaskLedgerError(400, "缺少 context_task_id。");
+  if (!sessionId) throw new TaskLedgerError(400, "缺少 session_id。");
+
+  if (!loadSessionRegistry()[sessionId]) {
+    recordTaskEvent({
+      type: "session.register",
+      event_id: `context-session-${contextIdentity(sessionId)}`,
+      session_id: sessionId,
+      workspace,
+      agent: input.agent || "unknown",
+      provider: input.provider || "unknown",
+      model: input.model || "unknown",
+    });
+  }
+
+  const mapped = loadTasks()
+    .filter((task) => task.sessionId === sessionId && task.contextTaskId === contextTaskId)
+    .sort((left, right) => Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || ""));
+  const activeFormal = mapped.find((task) => !isContextShadowTask(task) && activeTaskStatuses.has(task.status));
+  if (activeFormal) {
+    return { task: activeFormal, created: false, resumed: true, reactivated: false };
+  }
+  const shadows = mapped.filter((task) => isContextShadowTask(task) && !task.supersededBy);
+  const activeShadow = shadows.find((task) => activeTaskStatuses.has(task.status));
+  if (activeShadow) {
+    return { task: activeShadow, created: false, resumed: true, reactivated: false };
+  }
+  const completedShadow = shadows.find((task) => task.status === "done_claimed");
+  if (completedShadow) {
+    const result = recordTaskEvent({
+      type: "task.update",
+      event_id: `context-reactivate-${contextIdentity(`${completedShadow.id}:${completedShadow.lastEventId || completedShadow.updatedAt}`)}`,
+      task_id: completedShadow.id,
+      context_task_id: contextTaskId,
+      session_id: sessionId,
+      status: "in_progress",
+      current_step: "Context semantic task 仍在进行，继续复用执行任务。",
+    });
+    return { task: result.task, created: false, resumed: true, reactivated: true };
+  }
+
+  const generation = mapped.filter((task) => isContextShadowTask(task)).length + 1;
+  const taskId = `context-${contextIdentity(`${sessionId}:${contextTaskId}:${generation}`)}`;
+  const result = recordTaskEvent({
+    type: "task.create",
+    event_id: `context-create-${taskId}`,
+    task_id: taskId,
+    context_task_id: contextTaskId,
+    session_id: sessionId,
+    workspace,
+    agent: input.agent || "unknown",
+    provider: input.provider || "unknown",
+    model: input.model || "unknown",
+    title: cleanText(input.semantic_label, 200) || `Context 任务 ${contextTaskId}`,
+    goal: cleanText(input.semantic_label, 1_000) || `跟踪 ProjectContext semantic task ${contextTaskId}`,
+    status: "in_progress",
+    priority: "P1",
+  });
+  return { task: result.task, created: true, resumed: false, reactivated: false };
+}
+
+/** 仅由 context.complete_task 调用；commit_turn / SessionEnd 不应进入此路径。 */
+export function completeContextTasks(input) {
+  const contextTaskId = cleanText(input?.context_task_id, 200);
+  if (!contextTaskId) throw new TaskLedgerError(400, "缺少 context_task_id。");
+  const completed = [];
+  for (const task of loadTasks().filter(
+    (item) => item.contextTaskId === contextTaskId && activeTaskStatuses.has(item.status)
+  )) {
+    const result = recordTaskEvent({
+      type: "task.report",
+      event_id: `context-complete-${contextIdentity(`${contextTaskId}:${task.id}:${task.lastEventId || task.updatedAt}`)}`,
+      task_id: task.id,
+      context_task_id: contextTaskId,
+      session_id: task.sessionId,
+      status: "done_claimed",
+      current_step: "ProjectContext semantic task 已完成。",
+      evidence: [cleanText(input.summary, 1_000)].filter(Boolean),
+    });
+    completed.push(result.task);
+  }
+  return { contextTaskId, completed };
 }
 
 function loadProcessedEventIds() {
@@ -230,6 +515,7 @@ function normalizeEvent(input) {
     event_id: String(input.event_id || randomUUID()),
     type,
     task_id: String(input.task_id || (type === "task.create" ? `task-${randomUUID()}` : "")),
+    context_task_id: cleanText(input.context_task_id, 200),
     requirement_id: cleanText(input.requirement_id, 200),
     session_id: sessionId,
     agent: cleanText(input.agent, 40) || "unknown",
@@ -255,6 +541,7 @@ function normalizeEvent(input) {
     retrospective: cleanText(input.retrospective, 2_000),
     expected_at: cleanText(input.expected_at, 80),
     archived_at: cleanText(input.archived_at, 80),
+    superseded_by: cleanText(input.superseded_by, 200),
     review_reason: cleanText(input.review_reason, 1_000),
     reviewed_at: cleanText(input.reviewed_at, 80),
     tool_name: cleanText(input.tool_name, 120),
@@ -268,7 +555,9 @@ function normalizeEvent(input) {
 }
 
 function applyEvent(current, event) {
-  if (event.archived_at && event.archived_at !== "__UNARCHIVE__" && current && !["done_claimed", "verified", "cancelled"].includes(current.status)) {
+  const alreadyTerminal = ["done_claimed", "verified", "cancelled"].includes(current?.status);
+  const supersedingActiveShadow = event.status === "cancelled" && Boolean(event.superseded_by);
+  if (event.archived_at && event.archived_at !== "__UNARCHIVE__" && current && !alreadyTerminal && !supersedingActiveShadow) {
     throw new TaskLedgerError(409, "只有已完成、已验收或已取消任务可以归档。");
   }
   // 会话不能自行把任务标成"已验收"。验收必须由 ReqRadar 基于代码/测试证据单独判定，
@@ -303,6 +592,7 @@ function applyEvent(current, event) {
     title: event.title || "未命名任务",
     goal: event.goal || "未记录目标",
     requirementId: event.requirement_id || undefined,
+    contextTaskId: event.context_task_id || undefined,
     status: "planned",
     priority: event.priority || "P1",
     plan: [],
@@ -326,6 +616,7 @@ function applyEvent(current, event) {
     title: event.title || base.title,
     goal: event.goal || base.goal,
     requirementId: event.requirement_id || base.requirementId,
+    contextTaskId: event.context_task_id || base.contextTaskId,
     priority: event.priority || base.priority,
     status: event.status || (event.type === "task.blocked" ? "blocked" : event.type === "task.done_claimed" ? "done_claimed" : event.type === "task.create" ? "planned" : base.status),
     plan: event.plan.length ? event.plan : base.plan,
@@ -346,7 +637,11 @@ function applyEvent(current, event) {
     startedAt: base.startedAt || (event.type === "task.create" ? now : ""),
     expectedAt: event.expected_at || base.expectedAt || "",
     archivedAt: event.archived_at === "__UNARCHIVE__" ? "" : (event.archived_at || base.archivedAt || ""),
-    actualAt: event.type === "task.done_claimed" || event.status === "done_claimed" ? now : (base.actualAt || ""),
+    supersededBy: event.superseded_by || base.supersededBy,
+    supersededAt: event.superseded_by ? now : (base.supersededAt || ""),
+    actualAt: event.status === "in_progress"
+      ? ""
+      : event.type === "task.done_claimed" || event.status === "done_claimed" || event.status === "cancelled" ? (base.actualAt || now) : (base.actualAt || ""),
     reviewReason: event.review_reason || base.reviewReason || "",
     reviewedAt: event.reviewed_at || base.reviewedAt || "",
     toolCalls: { ...(base.toolCalls || {}) },

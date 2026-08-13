@@ -4,35 +4,44 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const projectRoot = resolve(import.meta.dirname, "..");
-const contextRoot = resolve(process.env.REQRADAR_CONTEXT_ROOT || "/Users/liuyuge/Documents/ProjectContextAgent");
+const contextRoot = resolve(process.env.REQRADAR_CONTEXT_ROOT || join(projectRoot, "..", "ProjectContextAgent"));
 const contextServer = resolve(process.env.REQRADAR_CONTEXT_SERVER || join(contextRoot, "mcp", "server.mjs"));
-const nodeCommand = process.env.REQRADAR_CONTEXT_NODE || "/Users/liuyuge/.workbuddy/binaries/node/versions/22.22.2/bin/node";
+const nodeCommand = process.env.REQRADAR_CONTEXT_NODE || process.execPath;
 const mapPath = resolve(process.env.REQRADAR_CONTEXT_TASK_MAP_PATH || join(projectRoot, "data", "context-task-map.json"));
 const auditPath = resolve(process.env.REQRADAR_CONTEXT_AUDIT_PATH || join(projectRoot, "data", "context-sync-events.jsonl"));
 const timeoutMs = Number(process.env.REQRADAR_CONTEXT_TIMEOUT_MS || 10_000);
 
-export async function syncContextEvent(event, task) {
-  if (process.env.REQRADAR_CONTEXT_BRIDGE_ENABLED !== "true") {
+export async function syncContextEvent(event, task, options = {}) {
+  const explicitContextTaskId = task?.contextTaskId || event?.context_task_id || "";
+  const enabled = options.enabled ?? Boolean(explicitContextTaskId || process.env.REQRADAR_CONTEXT_BRIDGE_ENABLED === "true");
+  if (!enabled) {
     return { status: "disabled" };
   }
   if (!task?.id || !event?.event_id) return { status: "skipped", reason: "missing_task_or_event" };
 
   try {
-    const result = await withTimeout(sync(event, task), timeoutMs);
-    appendAudit({ event, task, status: "synced", contextTaskId: result.contextTaskId });
+    const result = await withTimeout(sync(event, task, {
+      callTool: options.callTool || callTool,
+      loadMap: options.loadMap || loadMap,
+      saveMap: options.saveMap || saveMap,
+    }), options.timeoutMs || timeoutMs);
+    if (options.audit !== false) appendAudit({ event, task, status: "synced", contextTaskId: result.contextTaskId });
     return { status: "synced", contextTaskId: result.contextTaskId };
   } catch (error) {
     const message = String(error?.message || error).slice(0, 500);
-    appendAudit({ event, task, status: "failed", error: message });
+    if (options.audit !== false) appendAudit({ event, task, status: "failed", error: message });
     return { status: "failed", error: message };
   }
 }
 
-async function sync(event, task) {
-  const mapped = loadMap()[task.id];
-  let contextTaskId = mapped?.workspace === task.workspace ? mapped.contextTaskId : undefined;
+async function sync(event, task, dependencies) {
+  const map = dependencies.loadMap();
+  const mapped = map[task.id];
+  const explicitContextTaskId = task.contextTaskId || event.context_task_id || "";
+  let contextTaskId = explicitContextTaskId
+    || (mapped?.workspace === task.workspace ? mapped.contextTaskId : undefined);
   if (!contextTaskId) {
-    const started = await callTool("context.start_task", {
+    const started = await dependencies.callTool("context.start_task", {
       workspace: task.workspace,
       goal: task.goal || task.title,
       keywords: [task.title].filter(Boolean),
@@ -40,21 +49,24 @@ async function sync(event, task) {
     });
     contextTaskId = started.task_id;
     if (!contextTaskId) throw new Error("Context MCP 未返回 task_id。");
-    saveMap({
-      ...loadMap(),
+  }
+  if (!mapped || mapped.contextTaskId !== contextTaskId || mapped.workspace !== task.workspace) {
+    dependencies.saveMap({
+      ...map,
       [task.id]: {
         contextTaskId,
         workspace: task.workspace,
         reqradarTaskId: task.id,
-        startedAt: new Date().toISOString(),
+        startedAt: mapped?.startedAt || new Date().toISOString(),
       },
     });
   }
 
   if (event.type === "task.create") return { contextTaskId };
 
-  const observationType = event.status === "blocked" ? "risk" : event.type === "task.report" ? "test_result" : "code_evidence";
-  await callTool("context.report_observation", {
+  const completion = event.status === "done_claimed" || event.type === "task.done_claimed";
+  const observationType = event.status === "blocked" ? "risk" : completion || event.type === "task.report" ? "test_result" : "code_evidence";
+  await dependencies.callTool("context.report_observation", {
     task_id: contextTaskId,
     observation_type: observationType,
     content: formatObservation(event, task),
@@ -62,8 +74,8 @@ async function sync(event, task) {
     event_id: `reqradar-context-observation-${event.event_id}`,
   });
 
-  if (event.type === "task.report" && event.status === "done_claimed") {
-    await callTool("context.complete_task", {
+  if (completion) {
+    await dependencies.callTool("context.complete_task", {
       task_id: contextTaskId,
       summary: task.goal || task.title,
       outcomes: [...(task.changedFiles || []), ...(task.tests || [])],

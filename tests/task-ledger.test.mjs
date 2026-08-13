@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -17,12 +17,26 @@ const envPaths = {
   REQRADAR_TASK_EVENT_IDS_PATH: join(tempDir, "task-event-ids.json"),
   REQRADAR_TASK_RECONCILE_PATH: join(tempDir, "task-reconcile.jsonl"),
   REQRADAR_SESSION_REGISTRY_PATH: join(tempDir, "session-registry.json"),
+  REQRADAR_CONTEXT_TASK_MAP_PATH: join(tempDir, "context-task-map.json"),
+  REQRADAR_CONTEXT_AUDIT_PATH: join(tempDir, "context-sync-events.jsonl"),
 };
 for (const [key, value] of Object.entries(envPaths)) {
   process.env[key] = value;
 }
 
-const { recordTaskEvent, loadTasks, reconcileTasks, TaskLedgerError, taskTimeState } = await import("../scripts/task-ledger.mjs");
+const {
+  completeContextTasks,
+  ensureContextTask,
+  isContextShadowTask,
+  loadTasks,
+  loadVisibleTasks,
+  reconcileContextShadowTasks,
+  reconcileTasks,
+  recordTaskEvent,
+  supersedeContextShadowTask,
+  TaskLedgerError,
+  taskTimeState,
+} = await import("../scripts/task-ledger.mjs");
 
 async function resetLedger() {
   for (const path of Object.values(envPaths)) {
@@ -62,6 +76,42 @@ async function registerHttpSession(base, session_id, identity = {}) {
     }),
   });
   assert.equal(response.status, 200);
+}
+
+async function writeTransientContextServer(path) {
+  const mcpUrl = new URL("node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js", root).href;
+  const stdioUrl = new URL("node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js", root).href;
+  const zodUrl = new URL("node_modules/zod/index.js", root).href;
+  await writeFile(path, `
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { McpServer } from ${JSON.stringify(mcpUrl)};
+import { StdioServerTransport } from ${JSON.stringify(stdioUrl)};
+import { z } from ${JSON.stringify(zodUrl)};
+
+const statePath = process.env.FAKE_CONTEXT_STATE_PATH;
+const load = () => existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : { observationAttempts: 0, calls: [] };
+const save = (state) => writeFileSync(statePath, JSON.stringify(state));
+const result = (payload, isError = false) => ({ isError, content: [{ type: "text", text: JSON.stringify(payload) }] });
+const schema = z.object({}).passthrough();
+const server = new McpServer({ name: "transient-context-test", version: "0.0.0" });
+
+server.registerTool("context.start_task", { inputSchema: schema }, async (input) => result({ task_id: input.task_id || "context-created" }));
+server.registerTool("context.report_observation", { inputSchema: schema }, async (input) => {
+  const state = load();
+  state.observationAttempts += 1;
+  state.calls.push({ name: "context.report_observation", eventId: input.event_id });
+  save(state);
+  return state.observationAttempts === 1 ? result({ error: "TEMPORARY", message: "temporary timeout" }, true) : result({ accepted: true });
+});
+server.registerTool("context.complete_task", { inputSchema: schema }, async (input) => {
+  const state = load();
+  state.calls.push({ name: "context.complete_task", eventId: input.event_id });
+  save(state);
+  return result({ accepted: true });
+});
+
+await server.connect(new StdioServerTransport());
+`);
 }
 
 test("session.register 不误创建任务", async () => {
@@ -140,6 +190,173 @@ test("task.create 返回 accepted 与 task_id 并持久化", async () => {
   assert.equal(result.task.title, "实现闸门");
   assert.equal(result.task.goal, "完成会话任务闸门");
   assert.equal(loadTasks().length, 1);
+});
+
+test("Context semantic task 跨 Turn 复用同一执行任务，只有 complete 才结束", async () => {
+  await resetLedger();
+  const first = ensureContextTask({
+    context_task_id: "context-semantic-1",
+    session_id: "context-session-1",
+    workspace: "/work",
+    semantic_label: "多环境数据生命周期设计",
+    agent: "codex",
+  });
+  const second = ensureContextTask({
+    context_task_id: "context-semantic-1",
+    session_id: "context-session-1",
+    workspace: "/work",
+    semantic_label: "多环境数据生命周期设计",
+  });
+  assert.equal(first.created, true);
+  assert.equal(second.created, false);
+  assert.equal(second.task.id, first.task.id);
+  assert.equal(second.task.contextTaskId, "context-semantic-1");
+  assert.equal(second.task.status, "in_progress");
+
+  const completed = completeContextTasks({ context_task_id: "context-semantic-1", summary: "设计完成" });
+  assert.equal(completed.completed.length, 1);
+  assert.equal(completed.completed[0].status, "done_claimed");
+
+  const resumed = ensureContextTask({
+    context_task_id: "context-semantic-1",
+    session_id: "context-session-1",
+    workspace: "/work",
+  });
+  assert.equal(resumed.reactivated, true);
+  assert.equal(resumed.task.id, first.task.id);
+  assert.equal(resumed.task.status, "in_progress");
+  assert.equal(resumed.task.actualAt, "");
+
+  const completedAgain = completeContextTasks({ context_task_id: "context-semantic-1", summary: "补充工作完成" });
+  assert.equal(completedAgain.completed.length, 1);
+  assert.equal(completedAgain.completed[0].status, "done_claimed");
+});
+
+test("正式任务原子接管同 Session、同 Context 的内部影子且不会被重新激活", async () => {
+  await resetLedger();
+  const shadow = ensureContextTask({
+    context_task_id: "context-semantic-adopt",
+    session_id: "session-adopt",
+    workspace: "/work",
+    semantic_label: "内部占位",
+  }).task;
+  assert.equal(isContextShadowTask(shadow), true);
+
+  const created = recordTaskEvent({
+    type: "task.create",
+    event_id: "formal-create",
+    task_id: "task-formal",
+    context_task_id: "context-semantic-adopt",
+    session_id: "session-adopt",
+    title: "正式业务任务",
+    goal: "完成业务目标",
+    status: "in_progress",
+  });
+  assert.deepEqual(created.supersededTaskIds, [shadow.id]);
+  assert.deepEqual(created.task.adoptedTaskIds, [shadow.id]);
+
+  const shadowAfterAdoption = loadTasks().find((task) => task.id === shadow.id);
+  assert.equal(shadowAfterAdoption.status, "cancelled");
+  assert.equal(shadowAfterAdoption.supersededBy, "task-formal");
+  assert.ok(shadowAfterAdoption.archivedAt);
+  assert.deepEqual(loadVisibleTasks().map((task) => task.id), ["task-formal"]);
+
+  const ensured = ensureContextTask({
+    context_task_id: "context-semantic-adopt",
+    session_id: "session-adopt",
+    workspace: "/work",
+  });
+  assert.equal(ensured.task.id, "task-formal");
+  assert.equal(ensured.created, false);
+
+  recordTaskEvent({
+    type: "task.report",
+    event_id: "formal-done",
+    task_id: "task-formal",
+    context_task_id: "context-semantic-adopt",
+    session_id: "session-adopt",
+    status: "done_claimed",
+  });
+  const nextTurn = ensureContextTask({
+    context_task_id: "context-semantic-adopt",
+    session_id: "session-adopt",
+    workspace: "/work",
+  });
+  assert.equal(isContextShadowTask(nextTurn.task), true);
+  assert.notEqual(nextTurn.task.id, shadow.id);
+  assert.equal(loadTasks().find((task) => task.id === "task-formal").status, "done_claimed");
+
+  const beforeRestartReconciliation = reconcileContextShadowTasks();
+  assert.deepEqual(beforeRestartReconciliation.reconciled, []);
+  assert.equal(loadTasks().find((task) => task.id === nextTurn.task.id).status, "in_progress");
+
+  const followUp = recordTaskEvent({
+    type: "task.create",
+    event_id: "formal-follow-up-create",
+    task_id: "task-formal-follow-up",
+    context_task_id: "context-semantic-adopt",
+    session_id: "session-adopt",
+    title: "正式后续任务",
+    goal: "完成后续业务目标",
+    status: "in_progress",
+  });
+  assert.deepEqual(followUp.supersededTaskIds, [nextTurn.task.id]);
+  assert.equal(loadTasks().find((task) => task.id === "task-formal").status, "done_claimed");
+  assert.equal(loadTasks().find((task) => nextTurn.task.id === task.id).supersededBy, "task-formal-follow-up");
+  assert.deepEqual(loadVisibleTasks().map((task) => [task.id, task.status]), [
+    ["task-formal", "done_claimed"],
+    ["task-formal-follow-up", "in_progress"],
+  ]);
+  const ensuredFollowUp = ensureContextTask({
+    context_task_id: "context-semantic-adopt",
+    session_id: "session-adopt",
+    workspace: "/work",
+  });
+  assert.equal(ensuredFollowUp.task.id, "task-formal-follow-up");
+});
+
+test("影子接管严格校验生成 ID、Session 和人工指定的正式替代任务", async () => {
+  await resetLedger();
+  const shadow = ensureContextTask({
+    context_task_id: "context-legacy-link",
+    session_id: "session-legacy",
+    workspace: "/work",
+  }).task;
+  recordTaskEvent({
+    type: "task.create",
+    task_id: "context-not-a-generated-shadow",
+    session_id: "session-legacy",
+    title: "历史正式任务",
+    goal: "历史目标",
+    status: "done_claimed",
+  });
+  assert.equal(isContextShadowTask("context-not-a-generated-shadow"), false);
+
+  const reconciled = supersedeContextShadowTask(shadow.id, "context-not-a-generated-shadow", "人工确认历史映射");
+  assert.equal(reconciled.task.status, "cancelled");
+  assert.equal(reconciled.task.supersededBy, "context-not-a-generated-shadow");
+  assert.throws(
+    () => supersedeContextShadowTask(shadow.id, "missing-task"),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 404,
+  );
+
+  const mismatchedShadow = ensureContextTask({
+    context_task_id: "context-mismatch-a",
+    session_id: "session-mismatch",
+    workspace: "/work",
+  }).task;
+  recordTaskEvent({
+    type: "task.create",
+    task_id: "task-mismatch-b",
+    context_task_id: "context-mismatch-b",
+    session_id: "session-mismatch",
+    title: "不同 semantic task",
+    goal: "验证误链防护",
+  });
+  assert.throws(
+    () => supersedeContextShadowTask(mismatchedShadow.id, "task-mismatch-b"),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 409,
+  );
 });
 
 test("未创建任务就 update/report 返回 404", async () => {
@@ -425,6 +642,154 @@ test("控制服务任务闸门 HTTP 协议：register→create→update→report
   assert.equal(task.assumptions.length, 1);
   assert.equal(task.risks.length, 1);
   assert.ok(task.updatedAt);
+});
+
+test("控制服务只允许相同 event_id 的同事件补偿重放", async (context) => {
+  await resetLedger();
+  const fakeServerPath = join(tempDir, "transient-context-server.mjs");
+  const fakeStatePath = join(tempDir, "transient-context-state.json");
+  await rm(fakeStatePath, { force: true });
+  await writeTransientContextServer(fakeServerPath);
+  const { base, child } = await startControlServer({
+    REQRADAR_CONTEXT_ROOT: tempDir,
+    REQRADAR_CONTEXT_SERVER: fakeServerPath,
+    REQRADAR_CONTEXT_NODE: process.execPath,
+    REQRADAR_CONTEXT_TIMEOUT_MS: "2000",
+    FAKE_CONTEXT_STATE_PATH: fakeStatePath,
+  });
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "session-retry");
+
+  const createResponse = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      event_id: "retry-create",
+      task_id: "task-retry",
+      context_task_id: "context-retry",
+      session_id: "session-retry",
+      workspace: "/work",
+      title: "验证补偿重放",
+      goal: "Context 首次失败后可安全重试",
+      status: "in_progress",
+    }),
+  });
+  assert.equal(createResponse.status, 201);
+
+  const reportBody = {
+    type: "task.report",
+    event_id: "retry-report",
+    task_id: "task-retry",
+    context_task_id: "context-retry",
+    session_id: "session-retry",
+    status: "done_claimed",
+    changed_files: ["a.mjs"],
+    tests: ["node --test"],
+  };
+  const firstReport = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify(reportBody),
+  });
+  const firstPayload = await firstReport.json();
+  assert.equal(firstReport.status, 200);
+  assert.equal(firstPayload.contextSync.status, "failed");
+  assert.equal(firstPayload.task.status, "done_claimed");
+
+  const retryReport = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify(reportBody),
+  });
+  const retryPayload = await retryReport.json();
+  assert.equal(retryReport.status, 200);
+  assert.equal(retryPayload.idempotent, true);
+  assert.equal(retryPayload.contextSync.status, "synced");
+  assert.equal(retryPayload.event.type, "task.report");
+  assert.equal(retryPayload.event.status, "done_claimed");
+
+  const stateAfterRetry = JSON.parse(await readFile(fakeStatePath, "utf8"));
+  assert.deepEqual(stateAfterRetry.calls, [
+    { name: "context.report_observation", eventId: "reqradar-context-observation-retry-report" },
+    { name: "context.report_observation", eventId: "reqradar-context-observation-retry-report" },
+    { name: "context.complete_task", eventId: "reqradar-context-complete-retry-report" },
+  ]);
+
+  const mutations = [
+    { type: "task.update" },
+    { status: "in_progress" },
+    { task_id: "other-task" },
+    { session_id: "other-session" },
+    { context_task_id: "other-context" },
+  ];
+  for (const mutation of mutations) {
+    const response = await fetch(`${base}/task-events`, {
+      method: "POST",
+      headers: taskHeaders(),
+      body: JSON.stringify({ ...reportBody, ...mutation }),
+    });
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /event_id 已被不同事件使用/);
+  }
+  const stateAfterTampering = JSON.parse(await readFile(fakeStatePath, "utf8"));
+  assert.equal(stateAfterTampering.calls.length, stateAfterRetry.calls.length);
+  assert.equal(loadTasks().find((task) => task.id === "task-retry").status, "done_claimed");
+});
+
+test("Context 生命周期维护端点显式接管影子并补齐完成状态", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  const taskHeaders = { "Content-Type": "application/json", "X-ReqRadar-Task": "hook" };
+  const manualHeaders = { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-ReqRadar-Action": "delegate" };
+
+  const shadowResponse = await fetch(`${base}/context-tasks/ensure`, {
+    method: "POST",
+    headers: taskHeaders,
+    body: JSON.stringify({
+      context_task_id: "context-maintenance",
+      session_id: "session-maintenance",
+      workspace: "/work",
+    }),
+  });
+  const shadow = (await shadowResponse.json()).task;
+  await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-ReqRadar-Task": "mcp" },
+    body: JSON.stringify({
+      type: "task.create",
+      task_id: "formal-maintenance",
+      session_id: "session-maintenance",
+      title: "历史正式任务",
+      goal: "验证安全清理",
+      status: "in_progress",
+    }),
+  });
+
+  const missingConfirmation = await fetch(`${base}/maintenance/context-tasks/reconcile`, {
+    method: "POST",
+    headers: manualHeaders,
+    body: "{}",
+  });
+  assert.equal(missingConfirmation.status, 400);
+
+  const reconciledResponse = await fetch(`${base}/maintenance/context-tasks/reconcile`, {
+    method: "POST",
+    headers: manualHeaders,
+    body: JSON.stringify({
+      confirm: true,
+      shadowReplacements: [{ shadowTaskId: shadow.id, replacementTaskId: "formal-maintenance" }],
+      completeTaskIds: ["formal-maintenance"],
+      completionEvidence: "测试中的 final_answer 与 task_complete 已核对。",
+    }),
+  });
+  assert.equal(reconciledResponse.status, 200);
+  const payload = await reconciledResponse.json();
+  assert.equal(payload.superseded[0].supersededBy, "formal-maintenance");
+  assert.equal(payload.completed[0].status, "done_claimed");
+  const visible = await (await fetch(`${base}/tasks`)).json();
+  assert.deepEqual(visible.tasks.map((task) => [task.id, task.status]), [["formal-maintenance", "done_claimed"]]);
 });
 
 test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id", async (context) => {
