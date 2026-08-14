@@ -2,6 +2,14 @@
 
 All notable changes to TaskCenter are documented here.
 
+## 0.1.2 - 2026-08-14
+
+- Removes `git grep` from the Hook read-only allowlist because its pager options can execute external commands.
+- Uses the canonical Codex `Bash` Hook payload and rejects known stdin-driven shell/REPL launch forms while documenting the guardrail boundary.
+- Retries Context observation idempotency conflicts with the exact `543cf19` payload shape and keeps tests off the runtime map.
+- Reads MCP and Context client versions from the package version and reports `0.1.2` consistently.
+- Compares the empty tree to `HEAD` when the CI base is zero, missing, or disconnected.
+
 ## 0.1.1 - 2026-08-14
 
 - Withdraws the affected `0.1.0` release and publishes the reviewed open-source tree under a new version.

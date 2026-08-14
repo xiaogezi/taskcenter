@@ -27,8 +27,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-            git diff-tree --check --root HEAD
+          EMPTY_TREE="$(git hash-object -t tree /dev/null)"
+          if [[ -z "$BASE_SHA" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || ! git merge-base "$BASE_SHA" HEAD >/dev/null; then
+            git diff --check "$EMPTY_TREE" HEAD
           else
             git diff --check "$BASE_SHA...HEAD"
           fi

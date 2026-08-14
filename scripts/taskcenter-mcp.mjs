@@ -2,9 +2,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { TASKCENTER_VERSION } from "./version.mjs";
 
 const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001";
-const server = new McpServer({ name: "taskcenter-task-server", version: "0.1.0" });
+const server = new McpServer({ name: "taskcenter-task-server", version: TASKCENTER_VERSION });
 const taskFields = {
   session_id: z.string().min(1).max(200),
   agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(),

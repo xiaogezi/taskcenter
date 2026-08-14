@@ -157,17 +157,11 @@ test("同一 TaskCenter event 重投时复用稳定 Context 幂等键完成补�
 
 test("升级补偿保留 ReqRadar observation 的完整幂等请求", async () => {
   const calls = [];
+  const savedMaps = [];
   const result = await syncContextEvent(
     { type: "task.update", event_id: "legacy-payload" },
     { id: "task-legacy", contextTaskId: "context-legacy", workspace: "/work", status: "in_progress" },
-    {
-      enabled: true,
-      audit: false,
-      callTool: async (name, arguments_) => {
-        calls.push({ name, arguments: arguments_ });
-        return { accepted: true };
-      },
-    },
+    bridgeOptions(calls, savedMaps),
   );
   assert.equal(result.status, "synced");
   const observation = calls.find((call) => call.name === "context.report_observation");
@@ -175,4 +169,34 @@ test("升级补偿保留 ReqRadar observation 的完整幂等请求", async () =
   const content = JSON.parse(observation.arguments.content);
   assert.equal(content.reqradar_task_id, "task-legacy");
   assert.equal("taskcenter_task_id" in content, false);
+  assert.equal(savedMaps.length, 1);
+});
+
+test("543 observation 已存在时以同一 event_id 回退到旧 payload", async () => {
+  const calls = [];
+  const options = bridgeOptions(calls, []);
+  options.callTool = async (name, arguments_) => {
+    calls.push({ name, arguments: arguments_ });
+    if (name !== "context.report_observation") return { accepted: true };
+    const content = JSON.parse(arguments_.content);
+    if (content.reqradar_task_id) {
+      const error = new Error("same event id has different arguments");
+      error.code = "IDEMPOTENCY_CONFLICT";
+      throw error;
+    }
+    return { accepted: true, idempotent: true };
+  };
+
+  const result = await syncContextEvent(
+    { type: "task.update", event_id: "from-543" },
+    { id: "task-from-543", contextTaskId: "context-from-543", workspace: "/work", status: "in_progress" },
+    options,
+  );
+
+  assert.equal(result.status, "synced");
+  const observations = calls.filter((call) => call.name === "context.report_observation");
+  assert.equal(observations.length, 2);
+  assert.ok(observations.every((call) => call.arguments.event_id === "reqradar-context-observation-from-543"));
+  assert.equal(JSON.parse(observations[0].arguments.content).reqradar_task_id, "task-from-543");
+  assert.equal(JSON.parse(observations[1].arguments.content).taskcenter_task_id, "task-from-543");
 });

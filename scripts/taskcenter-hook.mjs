@@ -47,7 +47,7 @@ function isReadOnlyInspection(payload) {
   if (/\brg\b[^\n]*\s--pre(?:-glob)?\b/.test(command)) return false;
   if (/^git\s+(?:diff|show|log)\b/.test(command) && /(?:^|\s)--output(?:=|\s|$)/.test(command)) return false;
   return /^(?:(?:\/[^\s/]+)*\/)?(?:rg|grep|ls|pwd|head|tail|wc|stat|file|ps|pgrep|lsof)\b/.test(command)
-    || /^git\s+(?:status|diff|log|show|grep|rev-parse)\b/.test(command)
+    || /^git\s+(?:status|diff|log|show|rev-parse)\b/.test(command)
     || /^git\s+branch\s+--show-current\b/.test(command);
 }
 
@@ -57,10 +57,94 @@ function isInteractiveExec(payload) {
   const input = payload.tool_input && typeof payload.tool_input === "object"
     ? payload.tool_input
     : {};
-  const command = String(input.cmd || input.command || payload.command || "").trim();
+  const command = String(input.command || input.cmd || payload.command || "").trim();
+  // tty 不是 Codex Bash Hook 的 canonical 字段，只把它作为其他客户端的附加信号。
   if (input.tty === true) return true;
-  // 即使未显式申请 PTY，裸 shell/REPL 也会保持 stdin，随后可被 write_stdin 续写。
-  return /^(?:(?:\/usr\/bin\/env\s+)?(?:\/[^\s/]+)*\/)?(?:bash|dash|fish|sh|zsh|node|python|python3)(?:\s+-(?:i|l|il|li))?\s*$/.test(command);
+  const invocation = interpreterInvocation(command);
+  if (!invocation) return false;
+  const { executable, args } = invocation;
+  if (["bash", "dash", "fish", "sh", "zsh"].includes(executable)) return !hasShellProgram(args);
+  if (executable === "node") return !hasNodeProgram(args);
+  return !hasPythonProgram(args);
+}
+
+function interpreterInvocation(command) {
+  const tokens = splitCommandWords(command);
+  let index = 0;
+  while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) index += 1;
+  if (basename(tokens[index]) === "env") {
+    index += 1;
+    while (index < tokens.length) {
+      const token = tokens[index];
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+        index += 1;
+      } else if (["-u", "--unset", "-C", "--chdir"].includes(token)) {
+        index += 2;
+      } else if (token.startsWith("--unset=") || token.startsWith("--chdir=") || token === "-i" || token === "--ignore-environment") {
+        index += 1;
+      } else {
+        break;
+      }
+    }
+  }
+  const executable = basename(tokens[index]);
+  if (!["bash", "dash", "fish", "sh", "zsh", "node", "python", "python3"].includes(executable)) return null;
+  return { executable, args: tokens.slice(index + 1) };
+}
+
+function hasShellProgram(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === "-c" || (/^-[^-]*c/.test(token) && token !== "-")) return Boolean(args[index + 1]);
+    if (["-O", "+O", "--rcfile", "--init-file"].includes(token)) {
+      index += 1;
+      continue;
+    }
+    if (token === "--") return Boolean(args[index + 1] && args[index + 1] !== "-");
+    if (token === "-" || token.startsWith("-") || token.startsWith("+")) continue;
+    return true;
+  }
+  return false;
+}
+
+function hasNodeProgram(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (["-e", "--eval", "-p", "--print"].includes(token)) return Boolean(args[index + 1]);
+    if (token.startsWith("--eval=") || token.startsWith("--print=")) return true;
+    if (["-r", "--require", "--import", "--loader"].includes(token)) {
+      index += 1;
+      continue;
+    }
+    if (token === "--") return Boolean(args[index + 1] && args[index + 1] !== "-");
+    if (token === "-" || token.startsWith("-")) continue;
+    return true;
+  }
+  return false;
+}
+
+function hasPythonProgram(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (["-c", "-m"].includes(token)) return Boolean(args[index + 1]);
+    if (["-W", "-X"].includes(token)) {
+      index += 1;
+      continue;
+    }
+    if (token === "--") return Boolean(args[index + 1] && args[index + 1] !== "-");
+    if (token === "-" || token.startsWith("-")) continue;
+    return true;
+  }
+  return false;
+}
+
+function splitCommandWords(command) {
+  return (command.match(/(?:[^\s"'\\]+|"(?:\\.|[^"])*"|'[^']*')+/g) || [])
+    .map((word) => word.replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2"));
+}
+
+function basename(value = "") {
+  return value.slice(value.lastIndexOf("/") + 1);
 }
 
 async function recordToolCall(task) {

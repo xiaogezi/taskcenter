@@ -100,7 +100,8 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     session_id: "unknown-session",
     cwd: "/work",
     tool_name: "Bash",
-    tool_input: { cmd: "rg -n TODO src" },
+    hook_event_name: "PreToolUse",
+    tool_input: { command: "rg -n TODO src" },
   });
   assert.equal(readOnly.code, 0);
   assert.match(readOnly.stdout, /只读检查放行/);
@@ -111,12 +112,15 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     "sed -n '1w leak.txt' README.md",
     "git diff --output=leak.patch",
     "git show --output leak.txt HEAD:README.md",
+    "git grep --open-files-in-pager=touch TaskCenter",
+    "git grep -Otouch TaskCenter",
   ]) {
     const disguisedWrite = await runHook("pre-tool-use", "codex", {
       session_id: "unknown-session",
       cwd: "/work",
       tool_name: "Bash",
-      tool_input: { cmd },
+      hook_event_name: "PreToolUse",
+      tool_input: { command: cmd },
     });
     assert.equal(disguisedWrite.code, 2, `${cmd} 不得作为只读命令放行`);
   }
@@ -150,14 +154,36 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     }),
   });
   assert.equal(created.status, 201);
-  const interactive = await runHook("pre-tool-use", "codex", {
-    session_id: "gate-session",
-    cwd: "/work",
-    tool_name: "exec_command",
-    tool_input: { cmd: "zsh", tty: true },
-  });
-  assert.equal(interactive.code, 2);
-  assert.match(interactive.stderr, /不允许启动.*交互式命令/);
+  for (const command of [
+    "zsh",
+    "bash -s",
+    "bash --noprofile",
+    "python3 -q",
+    "node --interactive",
+    "/usr/bin/env -i zsh",
+  ]) {
+    const interactive = await runHook("pre-tool-use", "codex", {
+      session_id: "gate-session",
+      cwd: "/work",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_use_id: `interactive-${command}`,
+      tool_input: { command },
+    });
+    assert.equal(interactive.code, 2, `${command} 不得建立可由 write_stdin 延续的会话`);
+    assert.match(interactive.stderr, /不允许启动.*交互式命令/);
+  }
+  for (const command of ["bash -lc 'printf ok'", "node -e 'console.log(1)'", "python3 -m json.tool fixture.json", "node scripts/sync-codex.mjs"]) {
+    const oneShot = await runHook("pre-tool-use", "codex", {
+      session_id: "gate-session",
+      cwd: "/work",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_use_id: `one-shot-${command}`,
+      tool_input: { command },
+    });
+    assert.equal(oneShot.code, 0, `${command} 是一次性程序，应在活跃任务下放行`);
+  }
   const allowed = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "stable-call-1" });
   assert.equal(allowed.code, 0);
   const tasks = await (await fetch(`${base}/tasks`)).json();

@@ -2,6 +2,7 @@ import { accessSync, constants, mkdirSync, readFileSync, renameSync, writeFileSy
 import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { TASKCENTER_VERSION } from "./version.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const contextRoot = resolve(process.env.TASKCENTER_CONTEXT_ROOT || join(projectRoot, "..", "ProjectContextAgent"));
@@ -83,13 +84,23 @@ async function sync(event, task, dependencies) {
 
   const completion = event.status === "done_claimed" || event.type === "task.done_claimed";
   const observationType = event.status === "blocked" ? "risk" : completion || event.type === "task.report" ? "test_result" : "code_evidence";
-  await dependencies.callTool("context.report_observation", {
+  const observation = {
     task_id: contextTaskId,
     observation_type: observationType,
     content: formatObservation(event, task),
     evidence_path: task.evidence?.[0] || undefined,
     event_id: `reqradar-context-observation-${event.event_id}`,
-  });
+  };
+  try {
+    await dependencies.callTool("context.report_observation", observation);
+  } catch (error) {
+    if (!isIdempotencyConflict(error)) throw error;
+    // 543cf19 已经使用相同 event_id 和 taskcenter_task_id；只在精确冲突时重放该历史形态。
+    await dependencies.callTool("context.report_observation", {
+      ...observation,
+      content: formatObservation(event, task, "taskcenter_task_id"),
+    });
+  }
 
   if (completion) {
     await dependencies.callTool("context.complete_task", {
@@ -103,7 +114,7 @@ async function sync(event, task, dependencies) {
 }
 
 async function callTool(name, arguments_) {
-  const client = new Client({ name: "taskcenter-context-bridge", version: "0.1.0" });
+  const client = new Client({ name: "taskcenter-context-bridge", version: TASKCENTER_VERSION });
   const transport = new StdioClientTransport({
     command: nodeCommand,
     args: [contextServer],
@@ -114,9 +125,14 @@ async function callTool(name, arguments_) {
   try {
     await client.connect(transport);
     const result = await client.callTool({ name, arguments: arguments_ });
-    if (result?.isError) throw new Error(textOf(result) || `${name} 失败。`);
-    const payload = JSON.parse(textOf(result) || "{}");
-    if (payload.error) throw new Error(payload.message || payload.error);
+    const text = textOf(result);
+    let payload;
+    try { payload = JSON.parse(text || "{}"); } catch { payload = {}; }
+    if (result?.isError || payload.error) {
+      const error = new Error(payload.message || payload.error || text || `${name} 失败。`);
+      error.code = payload.error || payload.code || "";
+      throw error;
+    }
     return payload;
   } finally {
     await client.close().catch(() => {});
@@ -127,10 +143,9 @@ function textOf(result) {
   return (result?.content || []).filter((item) => item.type === "text").map((item) => item.text).join("\n");
 }
 
-function formatObservation(event, task) {
+function formatObservation(event, task, taskIdField = "reqradar_task_id") {
   return JSON.stringify({
-    // 该字段参与下游幂等请求哈希；与 event_id 一样必须保持旧协议形态。
-    reqradar_task_id: task.id,
+    [taskIdField]: task.id,
     event_type: event.type,
     status: event.status || task.status,
     current_step: task.currentStep,
@@ -141,6 +156,10 @@ function formatObservation(event, task) {
     evidence: task.evidence,
     risks: task.risks,
   });
+}
+
+function isIdempotencyConflict(error) {
+  return error?.code === "IDEMPOTENCY_CONFLICT" || /\bIDEMPOTENCY_CONFLICT\b/.test(String(error?.message || error));
 }
 
 function loadMap() {
