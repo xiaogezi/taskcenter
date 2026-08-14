@@ -2,7 +2,7 @@
 
 TaskCenter 是一个本地优先的 Agent 任务治理看板。Codex、Claude Code 等客户端通过本地 MCP 登记真实 Session、创建任务、更新进度并提交证据；TaskCenter 将“Agent 声称完成”和“人工验收通过”分开记录。
 
-> 当前版本：`v0.1.4`，macOS-first。核心 Web 服务与 MCP 使用 Node.js，桌面快捷入口仅支持 macOS。
+> 当前版本：`v0.1.5`，macOS-first。核心 Web 服务与 MCP 使用 Node.js，桌面快捷入口仅支持 macOS。
 
 ## 核心能力
 
@@ -82,7 +82,7 @@ claude mcp list
 
 将生成的 Hook 配置合并到 `~/.claude/settings.json`。如需项目共享 MCP，可将 `integrations/claude/mcp.json.example` 复制为目标项目的 `.mcp.json`，替换路径后由使用者审核授权。
 
-配置变更只对新启动或重新加载的 Session 生效。Hook 依赖本机控制服务，因此使用 Agent 前应保持 `npm run dev:live` 正在运行。
+配置变更只对新启动或重新加载的 Session 生效。Hook 会在本机控制服务意外退出时尝试一次自动恢复；恢复失败仍会阻断普通写操作，并只允许在项目根目录执行固定的 break-glass 命令：`/bin/bash scripts/taskcenter-control.sh start`（启动）或 `/bin/bash scripts/taskcenter-control.sh status`（诊断）。
 
 ## Agent 任务协议
 

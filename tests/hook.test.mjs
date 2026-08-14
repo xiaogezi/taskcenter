@@ -4,8 +4,10 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
+const rootPath = fileURLToPath(root).replace(/\/$/, "");
 const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-hook-"));
 const paths = {
   TASKCENTER_TASK_EVENTS_PATH: join(tempDir, "task-events.jsonl"),
@@ -21,6 +23,60 @@ const server = spawn(process.execPath, ["scripts/control-server.mjs"], {
   cwd: root,
   env: { ...process.env, ...paths, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" },
   stdio: ["ignore", "pipe", "pipe"],
+});
+
+test("控制服务离线时只放行固定恢复命令", async () => {
+  for (const command of [
+    "/bin/bash scripts/taskcenter-control.sh start",
+    "/bin/bash scripts/taskcenter-control.sh status",
+  ]) {
+    const allowed = await runHook("pre-tool-use", "codex", {
+      session_id: "",
+      cwd: rootPath,
+      tool_name: "Bash",
+      hook_event_name: "PreToolUse",
+      tool_input: { command },
+    });
+    assert.equal(allowed.code, 0, `${command} 应作为固定恢复命令放行`);
+    assert.match(allowed.stdout, /固定恢复命令放行/);
+  }
+
+  for (const command of [
+    "bash scripts/taskcenter-control.sh start",
+    "/usr/bin/env bash scripts/taskcenter-control.sh start",
+    "bash scripts/taskcenter-control.sh restart",
+    "bash scripts/taskcenter-control.sh stop",
+    "bash scripts/taskcenter-control.sh start extra",
+    "bash scripts/taskcenter-control.sh start && touch /tmp/bypass",
+    "bash ./scripts/taskcenter-control.sh start",
+    "bash /tmp/scripts/taskcenter-control.sh start",
+  ]) {
+    const blocked = await runHook("pre-tool-use", "codex", {
+      session_id: "",
+      cwd: rootPath,
+      tool_name: "Bash",
+      hook_event_name: "PreToolUse",
+      tool_input: { command },
+    });
+    assert.equal(blocked.code, 2, `${command} 不得进入恢复白名单`);
+  }
+
+  const wrongWorkspace = await runHook("pre-tool-use", "codex", {
+    session_id: "",
+    cwd: "/tmp",
+    tool_name: "Bash",
+    hook_event_name: "PreToolUse",
+    tool_input: { command: "/bin/bash scripts/taskcenter-control.sh start" },
+  });
+  assert.equal(wrongWorkspace.code, 2);
+
+  const missingWorkspace = await runHook("pre-tool-use", "codex", {
+    session_id: "",
+    tool_name: "Bash",
+    hook_event_name: "PreToolUse",
+    tool_input: { command: "/bin/bash scripts/taskcenter-control.sh start" },
+  });
+  assert.equal(missingWorkspace.code, 2);
 });
 
 await waitForReady();
