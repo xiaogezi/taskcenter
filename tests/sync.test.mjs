@@ -10,7 +10,7 @@ const fixturesDir = join(projectRoot, "tests", "fixtures");
 
 test("sync 在 all 模式下输出所有种子需求", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "taskcenter-sync-test-"));
-  const dashboardPath = join(tempDir, "dashboard.json");
+  const dashboardPath = join(tempDir, "nested", "dashboard.json");
 
   try {
     execSync(`node ${join(projectRoot, "scripts", "sync-codex.mjs")}`, {
@@ -26,15 +26,14 @@ test("sync 在 all 模式下输出所有种子需求", () => {
 
     const dashboard = JSON.parse(readFileSync(dashboardPath, "utf8"));
 
-    // 4 seed items, all should appear in "all" mode
-    assert.equal(dashboard.requirements.length, 4, "all 模式应包含所有 4 个种子需求");
+    assert.equal(dashboard.requirements.length, 8, "all 模式应包含所有 8 个种子需求");
 
     // Check specific items exist
     const ids = dashboard.requirements.map((r) => r.id);
     assert.ok(ids.includes("req-test-1"), "应包含 req-test-1");
     assert.ok(ids.includes("req-test-2"), "应包含 req-test-2");
     assert.ok(ids.includes("req-test-3"), "应包含 req-test-3");
-    assert.ok(ids.includes("req-atlas-1"), "应包含 req-atlas-1");
+    assert.ok(ids.includes("atlas-engineering-governance"), "应包含 Atlas Epic");
 
     // Check thread count
     assert.equal(dashboard.source.threadCount, 1, "应识别 1 个会话");
@@ -68,14 +67,14 @@ test("sync 在 selected 模式下过滤无来源需求", () => {
     // - req-test-1 has keyword "alpha", matches session → sources.length > 0 → included
     // - req-test-2 has keyword "beta", matches session → sources.length > 0 → included
     // - req-test-3 has nonexistent keyword → no match → filtered out
-    // - req-atlas-1 has empty keywords → no match → filtered out
+    // - Atlas fixture items have empty keywords → no match → filtered out
     assert.equal(dashboard.requirements.length, 2, "selected 模式应过滤无来源需求，仅保留 2 个");
 
     const ids = dashboard.requirements.map((r) => r.id);
     assert.ok(ids.includes("req-test-1"), "应包含有来源的 req-test-1");
     assert.ok(ids.includes("req-test-2"), "应包含有来源的 req-test-2");
     assert.ok(!ids.includes("req-test-3"), "应过滤无来源的 req-test-3");
-    assert.ok(!ids.includes("req-atlas-1"), "应过滤无关键词的 req-atlas-1");
+    assert.ok(!ids.includes("atlas-engineering-governance"), "应过滤无关键词的 Atlas Epic");
 
     assert.equal(dashboard.source.sessionSelection.mode, "selected");
   } finally {

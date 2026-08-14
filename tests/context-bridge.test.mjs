@@ -149,8 +149,8 @@ test("同一 TaskCenter event 重投时复用稳定 Context 幂等键完成补�
   assert.equal((await syncContextEvent(event, task, options)).status, "failed");
   assert.equal((await syncContextEvent(event, task, options)).status, "synced");
   assert.deepEqual(attempts, [
-    { name: "context.report_observation", eventId: "taskcenter-context-observation-stable-retry" },
-    { name: "context.report_observation", eventId: "taskcenter-context-observation-stable-retry" },
-    { name: "context.complete_task", eventId: "taskcenter-context-complete-stable-retry" },
+    { name: "context.report_observation", eventId: "reqradar-context-observation-stable-retry" },
+    { name: "context.report_observation", eventId: "reqradar-context-observation-stable-retry" },
+    { name: "context.complete_task", eventId: "reqradar-context-complete-stable-retry" },
   ]);
 });

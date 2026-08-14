@@ -26,8 +26,8 @@ TaskCenter 不读取 `~/.codex/auth.json`、API Key、Cookie 或其他认证材�
 要求 Node.js `>=22.13.0`。
 
 ```bash
-git clone https://github.com/<owner>/TaskCenter.git
-cd TaskCenter
+git clone https://github.com/xiaogezi/taskcenter.git
+cd taskcenter
 npm ci
 npm run dev:live
 ```
@@ -55,7 +55,7 @@ npm run integrations:print
 注册本地 STDIO MCP：
 
 ```bash
-codex mcp add taskcenter -- node "/absolute/path/to/TaskCenter/scripts/taskcenter-mcp.mjs"
+codex mcp add taskcenter -- node "/absolute/path/to/taskcenter/scripts/taskcenter-mcp.mjs"
 codex mcp list
 ```
 
@@ -74,7 +74,7 @@ hooks = true
 
 ```bash
 claude mcp add --scope user --transport stdio taskcenter -- \
-  node "/absolute/path/to/TaskCenter/scripts/taskcenter-mcp.mjs"
+  node "/absolute/path/to/taskcenter/scripts/taskcenter-mcp.mjs"
 claude mcp list
 ```
 
@@ -116,7 +116,7 @@ npm audit --omit=dev
 npm pack --dry-run
 ```
 
-`npm test` 会执行同步、生产构建和 `tests/*.test.mjs`。Chrome 长期稳定性和真实 Hook 生命周期仍需要本机持续运行验证。
+`npm test` 使用隔离 fixture 输出执行同步、生产构建和 `tests/*.test.mjs`，不会覆盖本机 `data/dashboard.json`。Chrome 长期稳定性和真实 Hook 生命周期仍需要本机持续运行验证。
 
 ## 许可证
 

@@ -61,7 +61,8 @@ async function sync(event, task, dependencies) {
       workspace: task.workspace,
       goal: task.goal || task.title,
       keywords: [task.title].filter(Boolean),
-      event_id: `taskcenter-context-start-${task.id}`,
+      // 外部幂等键属于持久化协议，品牌改名后仍保留旧前缀以兼容补偿重放。
+      event_id: `reqradar-context-start-${task.id}`,
     });
     contextTaskId = started.task_id;
     if (!contextTaskId) throw new Error("Context MCP 未返回 task_id。");
@@ -87,7 +88,7 @@ async function sync(event, task, dependencies) {
     observation_type: observationType,
     content: formatObservation(event, task),
     evidence_path: task.evidence?.[0] || undefined,
-    event_id: `taskcenter-context-observation-${event.event_id}`,
+    event_id: `reqradar-context-observation-${event.event_id}`,
   });
 
   if (completion) {
@@ -95,7 +96,7 @@ async function sync(event, task, dependencies) {
       task_id: contextTaskId,
       summary: task.goal || task.title,
       outcomes: [...(task.changedFiles || []), ...(task.tests || [])],
-      event_id: `taskcenter-context-complete-${event.event_id}`,
+      event_id: `reqradar-context-complete-${event.event_id}`,
     });
   }
   return { contextTaskId };

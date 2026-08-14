@@ -711,9 +711,9 @@ test("控制服务只允许相同 event_id 的同事件补偿重放", async (con
 
   const stateAfterRetry = JSON.parse(await readFile(fakeStatePath, "utf8"));
   assert.deepEqual(stateAfterRetry.calls, [
-    { name: "context.report_observation", eventId: "taskcenter-context-observation-retry-report" },
-    { name: "context.report_observation", eventId: "taskcenter-context-observation-retry-report" },
-    { name: "context.complete_task", eventId: "taskcenter-context-complete-retry-report" },
+    { name: "context.report_observation", eventId: "reqradar-context-observation-retry-report" },
+    { name: "context.report_observation", eventId: "reqradar-context-observation-retry-report" },
+    { name: "context.complete_task", eventId: "reqradar-context-complete-retry-report" },
   ]);
 
   const mutations = [
