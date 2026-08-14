@@ -5,6 +5,7 @@ import { classifyMessage } from "../scripts/classify-message.mjs";
 
 const root = new URL("../", import.meta.url);
 const dashboardPath = process.env.TASKCENTER_DASHBOARD_PATH || ".local/test-dashboard.json";
+const integrationMode = process.env.TASKCENTER_TEST_MODE === "integration";
 
 async function readDashboard() {
   return JSON.parse(await readFile(new URL(dashboardPath, root), "utf8"));
@@ -23,23 +24,27 @@ async function render() {
 
 test("同步结果包含需求、状态和多个 Codex 任务", async () => {
   const dashboard = await readDashboard();
-  assert.ok(dashboard.requirements.length >= 1, `requirements: ${dashboard.requirements.length}`);
-  assert.ok(dashboard.threads.length >= 1, `threads: ${dashboard.threads.length}`);
+  assert.ok(Array.isArray(dashboard.requirements));
+  assert.ok(Array.isArray(dashboard.threads));
+  if (!integrationMode) {
+    assert.ok(dashboard.requirements.length >= 1, `requirements: ${dashboard.requirements.length}`);
+    assert.ok(dashboard.threads.length >= 1, `threads: ${dashboard.threads.length}`);
+  }
   // 状态分布验证：至少存在不同状态
   const statusKeys = ["verified", "in_progress", "partial", "missing", "needs_validation", "untriaged"];
   const hasAnyStatus = statusKeys.some((status) => (dashboard.summary.statusCounts[status] ?? 0) > 0);
-  assert.ok(hasAnyStatus, "应存在至少一种状态");
+  if (!integrationMode) assert.ok(hasAnyStatus, "fixture 应存在至少一种状态");
   assert.equal(dashboard.source.mode, "read-only local JSONL");
   // 分类计数验证
   assert.ok(typeof dashboard.summary.excludedCount === "number");
   assert.ok(typeof dashboard.source.classificationCounts.operation === "number");
 });
 
-test("Atlas 工程治理需求按专业需求和父子层级同步", async () => {
+test("中性示例需求按专业需求和父子层级同步", { skip: integrationMode ? "集成模式读取本机数据，不使用测试 fixture" : false }, async () => {
   const dashboard = await readDashboard();
-  const epic = dashboard.requirements.find((item) => item.id === "atlas-engineering-governance");
-  assert.ok(epic, "fixture 必须包含 atlas-engineering-governance");
-  assert.equal(epic.project, "Atlas");
+  const epic = dashboard.requirements.find((item) => item.id === "example-platform-governance");
+  assert.ok(epic, "fixture 必须包含 example-platform-governance");
+  assert.equal(epic.project, "ExampleProject");
   assert.equal(epic.kind, "epic");
   assert.ok(["in_progress", "needs_validation", "verified"].includes(epic.status));
   assert.ok(Array.isArray(epic.acceptanceCriteria));
@@ -47,15 +52,15 @@ test("Atlas 工程治理需求按专业需求和父子层级同步", async () =>
   assert.ok(Array.isArray(epic.evidencePaths));
 
   const childIds = [
-    "atlas-web-api-db-boundary",
-    "atlas-remove-fastapi-uvicorn",
-    "atlas-boss-selector-reliability",
-    "atlas-company-intelligence-inbox",
+    "example-api-storage-boundary",
+    "example-remove-legacy-runtime",
+    "example-query-reliability",
+    "example-notification-inbox",
   ];
   for (const id of childIds) {
     const requirement = dashboard.requirements.find((item) => item.id === id);
     assert.ok(requirement, `fixture 必须包含 ${id}`);
-    assert.equal(requirement.project, "Atlas");
+    assert.equal(requirement.project, "ExampleProject");
     assert.equal(requirement.kind, "requirement");
     assert.equal(requirement.parentId, epic.id);
     assert.equal(requirement.sourceKind, "professional_requirement");

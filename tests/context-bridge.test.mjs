@@ -154,3 +154,25 @@ test("同一 TaskCenter event 重投时复用稳定 Context 幂等键完成补�
     { name: "context.complete_task", eventId: "reqradar-context-complete-stable-retry" },
   ]);
 });
+
+test("升级补偿保留 ReqRadar observation 的完整幂等请求", async () => {
+  const calls = [];
+  const result = await syncContextEvent(
+    { type: "task.update", event_id: "legacy-payload" },
+    { id: "task-legacy", contextTaskId: "context-legacy", workspace: "/work", status: "in_progress" },
+    {
+      enabled: true,
+      audit: false,
+      callTool: async (name, arguments_) => {
+        calls.push({ name, arguments: arguments_ });
+        return { accepted: true };
+      },
+    },
+  );
+  assert.equal(result.status, "synced");
+  const observation = calls.find((call) => call.name === "context.report_observation");
+  assert.equal(observation.arguments.event_id, "reqradar-context-observation-legacy-payload");
+  const content = JSON.parse(observation.arguments.content);
+  assert.equal(content.reqradar_task_id, "task-legacy");
+  assert.equal("taskcenter_task_id" in content, false);
+});

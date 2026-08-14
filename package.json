@@ -1,6 +1,6 @@
 {
   "name": "taskcenter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first task governance dashboard for Codex and Claude Code agents.",
   "private": true,
   "license": "Apache-2.0",
@@ -54,7 +54,7 @@
     "integrations:print": "node scripts/print-integrations.mjs",
     "desktop:install": "bash scripts/macos/build-taskcenter-app.sh",
     "test": "npm run sync:test && npm run build && TASKCENTER_DASHBOARD_PATH=.local/test-dashboard.json node --test tests/*.test.mjs",
-    "test:integration": "npm run sync && npm run build && node --test tests/dashboard.test.mjs",
+    "test:integration": "npm run sync && npm run build && TASKCENTER_DASHBOARD_PATH=data/dashboard.json TASKCENTER_TEST_MODE=integration node --test tests/dashboard.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .vinext --ignore-pattern .wrangler --ignore-pattern .local --ignore-pattern .delegate --ignore-pattern .planning --ignore-pattern .runs --ignore-pattern project-context/.obsidian --ignore-pattern project-context/.claudian",
     "db:generate": "drizzle-kit generate"
   },

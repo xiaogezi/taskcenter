@@ -26,6 +26,11 @@ jobs:
       - name: Check committed whitespace
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: git diff --check "$BASE_SHA...HEAD"
+        run: |
+          if [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git diff-tree --check --root HEAD
+          else
+            git diff --check "$BASE_SHA...HEAD"
+          fi
       - run: npm audit --omit=dev --audit-level=high
       - run: npm pack --dry-run

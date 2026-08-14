@@ -16,6 +16,9 @@ try {
     await registerSession();
     console.log(`TaskCenter Session 已登记: ${sessionId}`);
   } else if (action === "pre-tool-use") {
+    if (isInteractiveExec(event)) {
+      throw new Error("TaskCenter 不允许启动可由 write_stdin 续写的交互式命令；请使用一次性命令。Hook 是生命周期守卫，不是进程级安全沙箱。");
+    }
     if (isReadOnlyInspection(event)) {
       console.log("TaskCenter 只读检查放行");
       process.exit(0);
@@ -42,13 +45,22 @@ function isReadOnlyInspection(payload) {
   // 只接受单条、无重定向/管道/命令替换的检查命令。不能证明只读时继续走任务门禁。
   if (/[\n\r;<>`]/.test(command) || /&&|\|\||\||\$\(/.test(command)) return false;
   if (/\brg\b[^\n]*\s--pre(?:-glob)?\b/.test(command)) return false;
-  // 部分看似只读的命令支持直接写文件；这些参数必须回到任务门禁。
-  if (/^sed\b/.test(command) && /(?:^|\s)-i(?:\S*)?(?=\s|$)/.test(command)) return false;
   if (/^git\s+(?:diff|show|log)\b/.test(command) && /(?:^|\s)--output(?:=|\s|$)/.test(command)) return false;
   return /^(?:(?:\/[^\s/]+)*\/)?(?:rg|grep|ls|pwd|head|tail|wc|stat|file|ps|pgrep|lsof)\b/.test(command)
     || /^git\s+(?:status|diff|log|show|grep|rev-parse)\b/.test(command)
-    || /^git\s+branch\s+--show-current\b/.test(command)
-    || /^sed\s+-n\b/.test(command);
+    || /^git\s+branch\s+--show-current\b/.test(command);
+}
+
+function isInteractiveExec(payload) {
+  const toolName = String(payload.tool_name || payload.tool || payload.name || "");
+  if (!["Bash", "exec_command"].includes(toolName)) return false;
+  const input = payload.tool_input && typeof payload.tool_input === "object"
+    ? payload.tool_input
+    : {};
+  const command = String(input.cmd || input.command || payload.command || "").trim();
+  if (input.tty === true) return true;
+  // 即使未显式申请 PTY，裸 shell/REPL 也会保持 stdin，随后可被 write_stdin 续写。
+  return /^(?:(?:\/usr\/bin\/env\s+)?(?:\/[^\s/]+)*\/)?(?:bash|dash|fish|sh|zsh|node|python|python3)(?:\s+-(?:i|l|il|li))?\s*$/.test(command);
 }
 
 async function recordToolCall(task) {

@@ -129,7 +129,8 @@ function textOf(result) {
 
 function formatObservation(event, task) {
   return JSON.stringify({
-    taskcenter_task_id: task.id,
+    // 该字段参与下游幂等请求哈希；与 event_id 一样必须保持旧协议形态。
+    reqradar_task_id: task.id,
     event_type: event.type,
     status: event.status || task.status,
     current_step: task.currentStep,
