@@ -2,6 +2,12 @@
 
 All notable changes to TaskCenter are documented here.
 
+## 0.1.4 - 2026-08-14
+
+- Removes the vulnerable `image-size` development dependency by temporarily pinning `vinext` to the last compatible release before it was introduced.
+- Overrides Drizzle Kit's deprecated loader chain to use patched `esbuild` 0.25 or newer.
+- Restores a clean full `npm audit` while keeping production dependencies unchanged.
+
 ## 0.1.3 - 2026-08-14
 
 - Rejects single `&` and the remaining shell control operators before the Hook read-only fast path.

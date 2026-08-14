@@ -2,7 +2,7 @@
 
 TaskCenter 是一个本地优先的 Agent 任务治理看板。Codex、Claude Code 等客户端通过本地 MCP 登记真实 Session、创建任务、更新进度并提交证据；TaskCenter 将“Agent 声称完成”和“人工验收通过”分开记录。
 
-> 当前版本：`v0.1.3`，macOS-first。核心 Web 服务与 MCP 使用 Node.js，桌面快捷入口仅支持 macOS。
+> 当前版本：`v0.1.4`，macOS-first。核心 Web 服务与 MCP 使用 Node.js，桌面快捷入口仅支持 macOS。
 
 ## 核心能力
 
