@@ -105,6 +105,21 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
   assert.equal(readOnly.code, 0);
   assert.match(readOnly.stdout, /只读检查放行/);
 
+  for (const cmd of [
+    "sed -n -i backup '1p' README.md",
+    "sed -n -i.bak '1p' README.md",
+    "git diff --output=leak.patch",
+    "git show --output leak.txt HEAD:README.md",
+  ]) {
+    const disguisedWrite = await runHook("pre-tool-use", "codex", {
+      session_id: "unknown-session",
+      cwd: "/work",
+      tool_name: "Bash",
+      tool_input: { cmd },
+    });
+    assert.equal(disguisedWrite.code, 2, `${cmd} 不得作为只读命令放行`);
+  }
+
   const shellWrite = await runHook("pre-tool-use", "codex", {
     session_id: "unknown-session",
     cwd: "/work",

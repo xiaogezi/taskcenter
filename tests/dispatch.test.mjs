@@ -11,7 +11,7 @@ import {
 } from "../scripts/dispatch-core.mjs";
 import { inspectSessionState } from "../scripts/session-cli.mjs";
 
-const threadId = "019f6f27-d228-7af0-b32b-c2daeed14030";
+const threadId = "00000000-0000-4000-8000-000000000001";
 
 async function createFixture() {
   const directory = await mkdtemp(join(tmpdir(), "taskcenter-dispatch-"));

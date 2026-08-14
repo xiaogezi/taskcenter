@@ -90,6 +90,10 @@ const server = createServer(async (request, response) => {
       sendJson(response, syncing ? 202 : 200, await syncNow());
       return;
     }
+    if (request.method === "GET" && request.url === "/dashboard") {
+      sendJson(response, 200, loadDashboard());
+      return;
+    }
     if (request.method === "GET" && request.url === "/session-selection") {
       const dashboard = loadDashboard();
       sendJson(response, 200, {

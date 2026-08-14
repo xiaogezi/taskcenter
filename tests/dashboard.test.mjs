@@ -4,6 +4,11 @@ import test from "node:test";
 import { classifyMessage } from "../scripts/classify-message.mjs";
 
 const root = new URL("../", import.meta.url);
+const dashboardPath = process.env.TASKCENTER_DASHBOARD_PATH || ".local/test-dashboard.json";
+
+async function readDashboard() {
+  return JSON.parse(await readFile(new URL(dashboardPath, root), "utf8"));
+}
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -17,8 +22,7 @@ async function render() {
 }
 
 test("同步结果包含需求、状态和多个 Codex 任务", async () => {
-  const dashboard = JSON.parse(await readFile(new URL("data/dashboard.json", root), "utf8"));
-  // 基本结构验证：数量依赖真实数据，使用宽松断言
+  const dashboard = await readDashboard();
   assert.ok(dashboard.requirements.length >= 1, `requirements: ${dashboard.requirements.length}`);
   assert.ok(dashboard.threads.length >= 1, `threads: ${dashboard.threads.length}`);
   // 状态分布验证：至少存在不同状态
@@ -32,13 +36,9 @@ test("同步结果包含需求、状态和多个 Codex 任务", async () => {
 });
 
 test("Atlas 工程治理需求按专业需求和父子层级同步", async () => {
-  const dashboard = JSON.parse(await readFile(new URL("data/dashboard.json", root), "utf8"));
+  const dashboard = await readDashboard();
   const epic = dashboard.requirements.find((item) => item.id === "atlas-engineering-governance");
-  // 若真实数据不存在此需求，跳过测试
-  if (!epic) {
-    assert.ok(true, "当前数据不包含 atlas-engineering-governance，跳过验证");
-    return;
-  }
+  assert.ok(epic, "fixture 必须包含 atlas-engineering-governance");
   assert.equal(epic.project, "Atlas");
   assert.equal(epic.kind, "epic");
   assert.ok(["in_progress", "needs_validation", "verified"].includes(epic.status));
@@ -54,7 +54,7 @@ test("Atlas 工程治理需求按专业需求和父子层级同步", async () =>
   ];
   for (const id of childIds) {
     const requirement = dashboard.requirements.find((item) => item.id === id);
-    if (!requirement) continue;
+    assert.ok(requirement, `fixture 必须包含 ${id}`);
     assert.equal(requirement.project, "Atlas");
     assert.equal(requirement.kind, "requirement");
     assert.equal(requirement.parentId, epic.id);
@@ -82,7 +82,7 @@ test("只把持续能力和缺陷反馈识别为需求", () => {
     ["总的来说我希望通过系统提高求职命中率", "business_goal"],
     ["确认队列是干嘛的有点不太明白", "question"],
     ["这啥意思啊", "question"],
-    ["探索 LegacyProject 项目", "operation"],
+    ["探索示例项目", "operation"],
     ["1 2 4在我看来是需求啊 怎么没有了", "feedback"],
   ];
   for (const [message, expected] of samples) {

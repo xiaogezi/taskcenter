@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22.13.0
@@ -21,6 +23,9 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
-      - run: git diff --check
+      - name: Check committed whitespace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: git diff --check "$BASE_SHA...HEAD"
       - run: npm audit --omit=dev --audit-level=high
       - run: npm pack --dry-run

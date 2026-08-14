@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import dashboardJson from "../data/dashboard.json";
 import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
 import { taskTimeState } from "./task-time-state.mjs";
@@ -89,9 +88,6 @@ type Dashboard = {
   threads?: Thread[];
 };
 
-const dashboard = dashboardJson as Dashboard;
-const threads = dashboard.threads ?? [];
-const availableThreads = dashboard.source?.availableThreads ?? threads;
 // 控制服务 URL：优先使用环境变量，默认 IPv4 localhost
 const controlServerUrl = typeof process !== "undefined" && process.env?.TASKCENTER_CONTROL_URL
   ? process.env.TASKCENTER_CONTROL_URL
@@ -142,6 +138,7 @@ export default function Home() {
   const [pickerThreadIds, setPickerThreadIds] = useState<string[]>([]);
   const [isSavingSessionSelection, setIsSavingSessionSelection] = useState(false);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [dashboard, setDashboard] = useState<Dashboard>({ source: {}, threads: [] });
   const [liveAvailableThreads, setLiveAvailableThreads] = useState<Thread[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, SessionStatus>>({});
   const [health, setHealth] = useState<HealthState>({ ok: false });
@@ -154,7 +151,8 @@ export default function Home() {
       setRefreshMessage("");
     }
     try {
-      const [tasksResponse, sessionStatusResponse, threadsResponse] = await Promise.all([
+      const [dashboardResponse, tasksResponse, sessionStatusResponse, threadsResponse] = await Promise.all([
+        fetch(`${controlServerUrl}/dashboard`),
         fetch(`${controlServerUrl}/tasks`),
         fetch(`${controlServerUrl}/session-status`),
         fetch(`${controlServerUrl}/session-selection`),
@@ -162,14 +160,16 @@ export default function Home() {
       const healthResponse = await fetch(`${controlServerUrl}/health`);
       if (!healthResponse.ok) throw new Error("本地控制服务健康检查失败");
       setHealth(await healthResponse.json() as HealthState);
-      if (!tasksResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok) {
+      if (!dashboardResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok) {
         throw new Error("本地控制服务返回异常");
       }
-      const [tasksPayload, sessionStatusPayload, threadsPayload] = await Promise.all([
+      const [dashboardPayload, tasksPayload, sessionStatusPayload, threadsPayload] = await Promise.all([
+        dashboardResponse.json() as Promise<Dashboard>,
         tasksResponse.json() as Promise<{ tasks?: TaskRecord[] }>,
         sessionStatusResponse.json() as Promise<{ sessions?: SessionStatus[] }>,
         threadsResponse.json() as Promise<{ availableThreads?: Thread[] }>,
       ]);
+      setDashboard(dashboardPayload);
       setTasks(tasksPayload.tasks ?? []);
       setSessionStatuses(Object.fromEntries((sessionStatusPayload.sessions ?? []).map((session) => [session.sessionId, session])));
       setLiveAvailableThreads(threadsPayload.availableThreads ?? []);
@@ -192,7 +192,8 @@ export default function Home() {
     };
   }, []);
 
-  const selectionThreads = liveAvailableThreads.length > 0 ? liveAvailableThreads : availableThreads;
+  const dashboardThreads = dashboard.source?.availableThreads ?? dashboard.threads ?? [];
+  const selectionThreads = liveAvailableThreads.length > 0 ? liveAvailableThreads : dashboardThreads;
   const taskBackedThreads = mergeTaskSessions(selectionThreads, tasks, sessionStatuses);
   const threadsWithTasks = filterThreadsWithTasks(taskBackedThreads, tasks);
   const selectionGroups = useMemo(() => groupSessions(threadsWithTasks), [threadsWithTasks]);

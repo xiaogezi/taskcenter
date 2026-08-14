@@ -32,10 +32,7 @@ function readSessionSelection() {
 
 const ignoreMessages = /^(继续|可以|可以的|做吧|执行吧|ok|okok|好的|一允许|继续吧)[。！!,.，\s]*$/i;
 const completionSignals = /已完成|已经完成|已上线|已经补上|已通过|实现了|已经接入|已落地/;
-const defaultThreadNames = new Map([
-  ["019f6f27-d228-7af0-b32b-c2daeed14030", "boss广进计划"],
-  ["019e698a-392b-7521-b782-ea3dd00c1a42", "探索 LegacyProject 项目"],
-]);
+const defaultThreadNames = new Map();
 
 function findSessionFiles(directory) {
   if (!existsSync(directory)) return [];

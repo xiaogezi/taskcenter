@@ -61,5 +61,4 @@ next-env.d.ts
 /.planning/
 /.runs/
 /context-project.local.yaml
-/project-context/.claudian/
-/project-context/.obsidian/
+/project-context/
