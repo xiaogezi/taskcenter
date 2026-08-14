@@ -1,6 +1,6 @@
 {
   "name": "taskcenter",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Local-first task governance dashboard for Codex and Claude Code agents.",
   "private": true,
   "license": "Apache-2.0",

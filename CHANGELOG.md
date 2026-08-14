@@ -2,6 +2,13 @@
 
 All notable changes to TaskCenter are documented here.
 
+## 0.1.3 - 2026-08-14
+
+- Rejects single `&` and the remaining shell control operators before the Hook read-only fast path.
+- Blocks additional stdin/interactive interpreter forms, including `env --`, script-plus-interactive flags, and `-` stdin markers.
+- Restores terminating interpreter queries such as `--version` and `--help`.
+- Treats non-JSON or non-object Context MCP success responses as protocol failures so compensation remains eligible.
+
 ## 0.1.2 - 2026-08-14
 
 - Removes `git grep` from the Hook read-only allowlist because its pager options can execute external commands.

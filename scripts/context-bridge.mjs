@@ -125,18 +125,30 @@ async function callTool(name, arguments_) {
   try {
     await client.connect(transport);
     const result = await client.callTool({ name, arguments: arguments_ });
-    const text = textOf(result);
-    let payload;
-    try { payload = JSON.parse(text || "{}"); } catch { payload = {}; }
-    if (result?.isError || payload.error) {
-      const error = new Error(payload.message || payload.error || text || `${name} 失败。`);
-      error.code = payload.error || payload.code || "";
-      throw error;
-    }
-    return payload;
+    return parseContextToolResult(result, name);
   } finally {
     await client.close().catch(() => {});
   }
+}
+
+export function parseContextToolResult(result, name = "Context MCP") {
+  const text = textOf(result);
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    if (result?.isError) throw new Error(text || `${name} 失败。`);
+    throw new Error(`${name} 返回非 JSON 成功响应。`);
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`${name} 返回的成功响应不是 JSON object。`);
+  }
+  if (result?.isError || payload.error) {
+    const error = new Error(payload.message || payload.error || text || `${name} 失败。`);
+    error.code = payload.error || payload.code || "";
+    throw error;
+  }
+  return payload;
 }
 
 function textOf(result) {

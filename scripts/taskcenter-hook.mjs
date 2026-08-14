@@ -43,7 +43,7 @@ function isReadOnlyInspection(payload) {
   const command = String(input.cmd || input.command || payload.command || "").trim();
   if (!command) return false;
   // 只接受单条、无重定向/管道/命令替换的检查命令。不能证明只读时继续走任务门禁。
-  if (/[\n\r;<>`]/.test(command) || /&&|\|\||\||\$\(/.test(command)) return false;
+  if (/[\n\r;&<>`]/.test(command) || /\|\||\||\$\(/.test(command)) return false;
   if (/\brg\b[^\n]*\s--pre(?:-glob)?\b/.test(command)) return false;
   if (/^git\s+(?:diff|show|log)\b/.test(command) && /(?:^|\s)--output(?:=|\s|$)/.test(command)) return false;
   return /^(?:(?:\/[^\s/]+)*\/)?(?:rg|grep|ls|pwd|head|tail|wc|stat|file|ps|pgrep|lsof)\b/.test(command)
@@ -63,9 +63,14 @@ function isInteractiveExec(payload) {
   const invocation = interpreterInvocation(command);
   if (!invocation) return false;
   const { executable, args } = invocation;
-  if (["bash", "dash", "fish", "sh", "zsh"].includes(executable)) return !hasShellProgram(args);
-  if (executable === "node") return !hasNodeProgram(args);
-  return !hasPythonProgram(args);
+  if (isTerminalQuery(executable, args)) return false;
+  if (["bash", "dash", "fish", "sh", "zsh"].includes(executable)) {
+    return hasShortFlag(args, "i") || hasShortFlag(args, "s") || args.includes("--interactive") || !hasShellProgram(args);
+  }
+  if (executable === "node") {
+    return hasShortFlag(args, "i") || args.includes("--interactive") || args.includes("-") || !hasNodeProgram(args);
+  }
+  return hasShortFlag(args, "i") || args.includes("-") || !hasPythonProgram(args);
 }
 
 function interpreterInvocation(command) {
@@ -82,6 +87,9 @@ function interpreterInvocation(command) {
         index += 2;
       } else if (token.startsWith("--unset=") || token.startsWith("--chdir=") || token === "-i" || token === "--ignore-environment") {
         index += 1;
+      } else if (token === "--") {
+        index += 1;
+        break;
       } else {
         break;
       }
@@ -90,6 +98,19 @@ function interpreterInvocation(command) {
   const executable = basename(tokens[index]);
   if (!["bash", "dash", "fish", "sh", "zsh", "node", "python", "python3"].includes(executable)) return null;
   return { executable, args: tokens.slice(index + 1) };
+}
+
+function isTerminalQuery(executable, args) {
+  if (args.length !== 1) return false;
+  const option = args[0];
+  if (["--version", "--help"].includes(option)) return true;
+  if (executable === "node") return ["-v", "-h"].includes(option);
+  if (["python", "python3"].includes(executable)) return ["-V", "-h"].includes(option);
+  return false;
+}
+
+function hasShortFlag(args, flag) {
+  return args.some((token) => /^-[^-]+$/.test(token) && token.slice(1).includes(flag));
 }
 
 function hasShellProgram(args) {

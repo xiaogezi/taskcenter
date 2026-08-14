@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { resolveContextCommand, syncContextEvent } from "../scripts/context-bridge.mjs";
+import { parseContextToolResult, resolveContextCommand, syncContextEvent } from "../scripts/context-bridge.mjs";
 
 function bridgeOptions(calls, savedMaps, initialMap = {}) {
   return {
@@ -36,6 +36,28 @@ test("Context bridge 优先使用项目自带的 ABI 兼容启动器", async () 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Context MCP 成功响应必须是 JSON object", () => {
+  assert.throws(
+    () => parseContextToolResult({ content: [{ type: "text", text: "not-json" }] }, "context.report_observation"),
+    /返回非 JSON 成功响应/,
+  );
+  assert.throws(
+    () => parseContextToolResult({ content: [{ type: "text", text: "null" }] }, "context.complete_task"),
+    /不是 JSON object/,
+  );
+  assert.deepEqual(
+    parseContextToolResult({ content: [{ type: "text", text: '{"accepted":true}' }] }, "context.report_observation"),
+    { accepted: true },
+  );
+});
+
+test("Context MCP 非 JSON 错误响应保留原始错误", () => {
+  assert.throws(
+    () => parseContextToolResult({ isError: true, content: [{ type: "text", text: "IDEMPOTENCY_CONFLICT" }] }, "context.report_observation"),
+    /IDEMPOTENCY_CONFLICT/,
+  );
 });
 
 test("显式 contextTaskId 优先于旧映射且不会新建 Context 任务", async () => {
