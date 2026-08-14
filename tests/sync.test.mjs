@@ -33,7 +33,7 @@ test("sync 在 all 模式下输出所有种子需求", () => {
     assert.ok(ids.includes("req-test-1"), "应包含 req-test-1");
     assert.ok(ids.includes("req-test-2"), "应包含 req-test-2");
     assert.ok(ids.includes("req-test-3"), "应包含 req-test-3");
-    assert.ok(ids.includes("atlas-engineering-governance"), "应包含 Atlas Epic");
+    assert.ok(ids.includes("example-platform-governance"), "应包含中性示例 Epic");
 
     // Check thread count
     assert.equal(dashboard.source.threadCount, 1, "应识别 1 个会话");
@@ -67,14 +67,14 @@ test("sync 在 selected 模式下过滤无来源需求", () => {
     // - req-test-1 has keyword "alpha", matches session → sources.length > 0 → included
     // - req-test-2 has keyword "beta", matches session → sources.length > 0 → included
     // - req-test-3 has nonexistent keyword → no match → filtered out
-    // - Atlas fixture items have empty keywords → no match → filtered out
+    // - 中性示例 fixture items have empty keywords → no match → filtered out
     assert.equal(dashboard.requirements.length, 2, "selected 模式应过滤无来源需求，仅保留 2 个");
 
     const ids = dashboard.requirements.map((r) => r.id);
     assert.ok(ids.includes("req-test-1"), "应包含有来源的 req-test-1");
     assert.ok(ids.includes("req-test-2"), "应包含有来源的 req-test-2");
     assert.ok(!ids.includes("req-test-3"), "应过滤无来源的 req-test-3");
-    assert.ok(!ids.includes("atlas-engineering-governance"), "应过滤无关键词的 Atlas Epic");
+    assert.ok(!ids.includes("example-platform-governance"), "应过滤无关键词的示例 Epic");
 
     assert.equal(dashboard.source.sessionSelection.mode, "selected");
   } finally {

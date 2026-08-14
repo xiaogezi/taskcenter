@@ -108,6 +108,7 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
   for (const cmd of [
     "sed -n -i backup '1p' README.md",
     "sed -n -i.bak '1p' README.md",
+    "sed -n '1w leak.txt' README.md",
     "git diff --output=leak.patch",
     "git show --output leak.txt HEAD:README.md",
   ]) {
@@ -149,6 +150,14 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     }),
   });
   assert.equal(created.status, 201);
+  const interactive = await runHook("pre-tool-use", "codex", {
+    session_id: "gate-session",
+    cwd: "/work",
+    tool_name: "exec_command",
+    tool_input: { cmd: "zsh", tty: true },
+  });
+  assert.equal(interactive.code, 2);
+  assert.match(interactive.stderr, /不允许启动.*交互式命令/);
   const allowed = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "stable-call-1" });
   assert.equal(allowed.code, 0);
   const tasks = await (await fetch(`${base}/tasks`)).json();

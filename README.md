@@ -8,7 +8,7 @@ TaskCenter 是一个本地优先的 Agent 任务治理看板。Codex、Claude Co
 
 - 按真实 Session 展示 Agent 创建的正式任务。
 - 跟踪目标、计划、当前步骤、阻塞、预计时间、测试和证据。
-- 通过 Hook 在写操作前检查 Session 是否已登记且存在活跃任务。
+- 通过 Hook 在受支持工具调用前检查 Session 是否已登记且存在活跃任务。
 - 只读发现本机 Codex Session，用于来源筛选和状态展示。
 - 所有任务账本和运行状态仅保存在本机。
 
@@ -20,6 +20,8 @@ TaskCenter 只读访问：
 - `~/.codex/session_index.jsonl`
 
 TaskCenter 不读取 `~/.codex/auth.json`、API Key、Cookie 或其他认证材料，不会修改 Codex 会话，也不会将聊天内容上传到远端。项目默认只监听本机地址，不支持未经重新设计的数据脱敏、多用户鉴权和远程部署。
+
+Hook 是任务生命周期守卫，不是操作系统安全沙箱。Codex 的 `write_stdin` 不会再次触发 `PreToolUse`，因此 TaskCenter 会拒绝交互式 PTY 和裸 shell/REPL；需要强安全边界时仍应使用 Codex sandbox、最小文件权限和隔离运行环境。
 
 ## 快速开始
 

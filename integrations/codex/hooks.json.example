@@ -1,5 +1,5 @@
 {
-  "description": "TaskCenter session registration and write gate",
+  "description": "TaskCenter session registration and task lifecycle guardrail",
   "hooks": {
     "SessionStart": [
       {
@@ -22,7 +22,7 @@
             "type": "command",
             "command": "node '__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs' pre-tool-use --agent codex",
             "timeout": 10,
-            "statusMessage": "Checking TaskCenter task gate"
+            "statusMessage": "Checking TaskCenter task lifecycle"
           }
         ]
       }

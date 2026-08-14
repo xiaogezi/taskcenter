@@ -13,3 +13,6 @@ Include affected versions, impact, reproduction steps, and a minimal sanitized p
 ## Security model
 
 TaskCenter is designed for a single user on a local machine. The control service binds to `127.0.0.1`; the application is not hardened for public-network exposure, multi-user authorization, or remote storage. Deploying it remotely requires a new threat model, authentication, authorization, and session-data redaction design.
+## Hook boundary
+
+TaskCenter Hook is a workflow guardrail, not a process-level security sandbox. Codex does not emit a second `PreToolUse` event for `write_stdin` on an existing unified-exec session, so the integration rejects interactive PTYs and bare shells/REPLs. Use Codex sandboxing and operating-system permissions for enforcement against a malicious or already-running process.

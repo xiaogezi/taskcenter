@@ -12,7 +12,7 @@ export function shellQuote(value) {
 export function codexHooks(root = defaultRoot) {
   const script = shellQuote(resolve(root, "scripts", "taskcenter-hook.mjs"));
   return {
-    description: "TaskCenter session registration and write gate",
+    description: "TaskCenter session registration and task lifecycle guardrail",
     hooks: {
       SessionStart: [
         {
@@ -35,7 +35,7 @@ export function codexHooks(root = defaultRoot) {
               type: "command",
               command: `node ${script} pre-tool-use --agent codex`,
               timeout: 10,
-              statusMessage: "Checking TaskCenter task gate",
+              statusMessage: "Checking TaskCenter task lifecycle",
             },
           ],
         },
