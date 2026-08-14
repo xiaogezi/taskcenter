@@ -2,7 +2,7 @@
 
 TaskCenter 是一个本地优先的 Agent 任务治理看板。Codex、Claude Code 等客户端通过本地 MCP 登记真实 Session、创建任务、更新进度并提交证据；TaskCenter 将“Agent 声称完成”和“人工验收通过”分开记录。
 
-> 当前版本：`v0.1.0`，macOS-first。核心 Web 服务与 MCP 使用 Node.js，桌面快捷入口仅支持 macOS。
+> 当前版本：`v0.1.2`，macOS-first。核心 Web 服务与 MCP 使用 Node.js，桌面快捷入口仅支持 macOS。
 
 ## 核心能力
 
@@ -21,7 +21,7 @@ TaskCenter 只读访问：
 
 TaskCenter 不读取 `~/.codex/auth.json`、API Key、Cookie 或其他认证材料，不会修改 Codex 会话，也不会将聊天内容上传到远端。项目默认只监听本机地址，不支持未经重新设计的数据脱敏、多用户鉴权和远程部署。
 
-Hook 是任务生命周期守卫，不是操作系统安全沙箱。Codex 的 `write_stdin` 不会再次触发 `PreToolUse`，因此 TaskCenter 会拒绝交互式 PTY 和裸 shell/REPL；需要强安全边界时仍应使用 Codex sandbox、最小文件权限和隔离运行环境。
+Hook 是有限的任务生命周期守卫，不是操作系统安全沙箱。Codex 的 `write_stdin` 不会再次触发 `PreToolUse`，TaskCenter 会拒绝已知的 stdin 交互式 shell/REPL 启动形态，但无法证明任意命令都不会转为长期进程；需要强安全边界时必须使用 Codex sandbox、最小文件权限和隔离运行环境。
 
 ## 快速开始
 
