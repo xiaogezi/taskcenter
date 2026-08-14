@@ -8,7 +8,8 @@ import {
 } from "node:fs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import {
   DispatchError,
@@ -418,7 +419,8 @@ server.listen(port, host, () => {
 
 async function sendToCodex(mode, threadId, prompt, workingDirectory) {
   const moduleName = process.env.TASKCENTER_CODEX_SDK_MODULE || "@openai/codex-sdk";
-  const { Codex } = await import(moduleName);
+  const moduleSpecifier = isAbsolute(moduleName) ? pathToFileURL(moduleName).href : moduleName;
+  const { Codex } = await import(moduleSpecifier);
   const codex = new Codex();
   const options = {
     workingDirectory: validCwd(workingDirectory),
