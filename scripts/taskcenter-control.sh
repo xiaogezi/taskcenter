@@ -111,8 +111,7 @@ start_service() {
     rotate_log
     (
         cd "$PROJECT_DIR"
-        nohup "$node" scripts/dev-live.mjs >>"$LOG_FILE" 2>&1 </dev/null &
-        echo "$!" >"$PID_FILE"
+        "$node" scripts/taskcenter-detached-launch.mjs
     )
 
     for _ in {1..40}; do

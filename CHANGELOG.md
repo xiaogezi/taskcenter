@@ -2,6 +2,12 @@
 
 All notable changes to TaskCenter are documented here.
 
+## 0.1.5 - 2026-08-14
+
+- Automatically restarts the local control service once when a Hook request finds it offline, then retries the original governance check.
+- Adds an exact, project-root-only break-glass allowlist for the fixed `start` and `status` commands while continuing to block arbitrary writes.
+- Launches the managed service in a detached process group so it survives the shell session that started it.
+
 ## 0.1.4 - 2026-08-14
 
 - Removes the vulnerable `image-size` development dependency by temporarily pinning `vinext` to the last compatible release before it was introduced.

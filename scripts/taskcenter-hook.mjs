@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 
-const controlUrl = (process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001").replace(/\/$/, "");
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import { promisify } from "node:util";
+
+class ControlUnavailableError extends Error {}
+
+const defaultControlUrl = "http://127.0.0.1:3001";
+const controlUrl = (process.env.TASKCENTER_CONTROL_URL || defaultControlUrl).replace(/\/$/, "");
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const execFileAsync = promisify(execFile);
+let recoveryAttempted = false;
 const input = await readStdin();
 const event = parseInput(input);
 const action = process.argv[2] || "";
@@ -11,6 +22,10 @@ const sessionId = String(event.session_id || process.env.CLAUDE_SESSION_ID || pr
 const workspace = String(event.cwd || process.env.CLAUDE_PROJECT_DIR || process.env.PWD || "").trim();
 
 try {
+  if (action === "pre-tool-use" && isTrustedRecoveryCommand(event)) {
+    console.log("TaskCenter 固定恢复命令放行");
+    process.exit(0);
+  }
   if (!sessionId) throw new Error("Hook 输入缺少真实 session_id，拒绝猜测会话身份。");
   if (action === "session-start") {
     await registerSession();
@@ -32,6 +47,18 @@ try {
 } catch (error) {
   console.error(`TaskCenter Hook: ${error.message}`);
   process.exitCode = action === "pre-tool-use" ? 2 : 1;
+}
+
+function isTrustedRecoveryCommand(payload) {
+  if (payload.tool_name !== "Bash") return false;
+  if (typeof payload.cwd !== "string" || !payload.cwd) return false;
+  if (resolve(payload.cwd) !== projectRoot) return false;
+  const toolInput = payload.tool_input;
+  if (!toolInput || typeof toolInput !== "object" || typeof toolInput.command !== "string") return false;
+  return new Set([
+    "/bin/bash scripts/taskcenter-control.sh start",
+    "/bin/bash scripts/taskcenter-control.sh status",
+  ]).has(toolInput.command);
 }
 
 function isReadOnlyInspection(payload) {
@@ -217,6 +244,17 @@ async function requireTask() {
 }
 
 async function request(method, path, body) {
+  try {
+    return await requestOnce(method, path, body);
+  } catch (error) {
+    if (!(error instanceof ControlUnavailableError) || recoveryAttempted || controlUrl !== defaultControlUrl) throw error;
+    recoveryAttempted = true;
+    await recoverControlService(error);
+    return requestOnce(method, path, body);
+  }
+}
+
+async function requestOnce(method, path, body) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8_000);
   try {
@@ -237,10 +275,23 @@ async function request(method, path, body) {
     return value;
   } catch (error) {
     if (error.name === "AbortError") throw new Error("TaskCenter 请求超时，写操作已阻断。");
-    if (error instanceof TypeError) throw new Error("TaskCenter 控制服务不可用，写操作已阻断。");
+    if (error instanceof TypeError) throw new ControlUnavailableError("TaskCenter 控制服务不可用。");
     throw error;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function recoverControlService(originalError) {
+  try {
+    await execFileAsync("/bin/bash", [resolve(projectRoot, "scripts/taskcenter-control.sh"), "start"], {
+      cwd: projectRoot,
+      env: { ...process.env, BASH_ENV: "", ENV: "", TASKCENTER_NO_OPEN: "1" },
+      timeout: 30_000,
+    });
+  } catch (error) {
+    const detail = String(error.stderr || error.stdout || error.message || "未知错误").trim();
+    throw new Error(`${originalError.message} 自动恢复失败，写操作已阻断。${detail ? ` ${detail}` : ""} 可在项目目录运行：/bin/bash scripts/taskcenter-control.sh start`);
   }
 }
 
