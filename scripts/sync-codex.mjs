@@ -1,7 +1,7 @@
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { classifyMessage, messageClasses } from "./classify-message.mjs";
 
@@ -338,6 +338,7 @@ async function main() {
     console.log("TaskCenter checked Codex tasks; dashboard data is unchanged.");
     return;
   }
+  mkdirSync(dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, `${JSON.stringify(dashboard, null, 2)}\n`);
   console.log(`TaskCenter synced ${all.length} requirements from ${threads.length} Codex thread(s).`);
 }

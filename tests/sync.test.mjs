@@ -10,7 +10,7 @@ const fixturesDir = join(projectRoot, "tests", "fixtures");
 
 test("sync 在 all 模式下输出所有种子需求", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "taskcenter-sync-test-"));
-  const dashboardPath = join(tempDir, "dashboard.json");
+  const dashboardPath = join(tempDir, "nested", "dashboard.json");
 
   try {
     execSync(`node ${join(projectRoot, "scripts", "sync-codex.mjs")}`, {
