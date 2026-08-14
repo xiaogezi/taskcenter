@@ -2,7 +2,7 @@
 
 TaskCenter 是一个本地优先的 Agent 任务治理看板。Codex、Claude Code 等客户端通过本地 MCP 登记真实 Session、创建任务、更新进度并提交证据；TaskCenter 将“Agent 声称完成”和“人工验收通过”分开记录。
 
-> 当前版本：`v0.1.5`，macOS-first。核心 Web 服务与 MCP 使用 Node.js，桌面快捷入口仅支持 macOS。
+> 当前版本：`v0.1.5`。核心 Web、MCP、Hook 与服务控制支持 macOS、Linux/WSL2 和原生 Windows；桌面快捷入口仅支持 macOS。
 
 ## 核心能力
 
@@ -35,6 +35,16 @@ npm run dev:live
 ```
 
 打开 <http://localhost:3000>。`dev:live` 同时启动页面、Codex 会话监听器，以及只监听 `127.0.0.1:3001` 的本地控制服务。
+
+如需后台启停，可以在 macOS、Linux、WSL2 或 PowerShell 中使用同一组命令：
+
+```bash
+npm run service:start
+npm run service:status
+npm run service:stop
+```
+
+Windows 原生环境要求 Node.js 与 Git 在 `PATH` 中。使用 WSL2 时建议把仓库放在 Linux 文件系统（例如 `~/code/taskcenter`），不要放在 `/mnt/c`；这能避免跨文件系统的权限、符号链接和监听性能问题。Windows 当前不提供 GUI 桌面壳。
 
 macOS 可安装桌面快捷入口：
 
@@ -82,7 +92,9 @@ claude mcp list
 
 将生成的 Hook 配置合并到 `~/.claude/settings.json`。如需项目共享 MCP，可将 `integrations/claude/mcp.json.example` 复制为目标项目的 `.mcp.json`，替换路径后由使用者审核授权。
 
-配置变更只对新启动或重新加载的 Session 生效。Hook 会在本机控制服务意外退出时尝试一次自动恢复；恢复失败仍会阻断普通写操作，并只允许在项目根目录执行固定的 break-glass 命令：`/bin/bash scripts/taskcenter-control.sh start`（启动）或 `/bin/bash scripts/taskcenter-control.sh status`（诊断）。
+配置变更只对新启动或重新加载的 Session 生效。Hook 会在本机控制服务意外退出时尝试一次自动恢复；恢复失败仍会阻断普通写操作，并只允许在项目根目录执行固定的跨平台 break-glass 命令：`node scripts/taskcenter-control.mjs start`（启动）或 `node scripts/taskcenter-control.mjs status`（诊断）。旧的 `/bin/bash scripts/taskcenter-control.sh ...` 入口继续作为 macOS/Linux 兼容薄封装。
+
+在 Windows 上，TaskCenter 会安全解析标准 npm 安装生成的 `codex.cmd` 并直接调用其 Node 入口，避免把 Session prompt 拼进 shell。非标准批处理启动器应通过 `TASKCENTER_CODEX_COMMAND` 指向 `codex.exe`，或配合 `TASKCENTER_CODEX_PREFIX_ARGS` 显式配置。
 
 ## Agent 任务协议
 
@@ -92,7 +104,8 @@ claude mcp list
 2. `taskcenter_task_create`：提交目标、计划和验收标准。
 3. 收到 `accepted=true` 与独立 `task_id` 后才能执行写操作。
 4. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
-5. Agent 的 `done_claimed` 只表示实现声明，不能自动升级为人工验收通过。
+5. 需要审计模型选择时，使用 `taskcenter_routing_record` 记录直接执行、原生派发、CLI 兜底或有理由偏离；该记录不阻断执行。
+6. Agent 的 `done_claimed` 只表示实现声明，不能自动升级为人工验收通过。
 
 MCP 工具：
 
@@ -102,6 +115,7 @@ MCP 工具：
 - `taskcenter_task_query`
 - `taskcenter_task_update`
 - `taskcenter_task_report`
+- `taskcenter_routing_record`
 
 ## 数据文件
 
@@ -118,7 +132,7 @@ npm audit --omit=dev
 npm pack --dry-run
 ```
 
-`npm test` 使用隔离 fixture 输出执行同步、生产构建和 `tests/*.test.mjs`，不会覆盖本机 `data/dashboard.json`。Chrome 长期稳定性和真实 Hook 生命周期仍需要本机持续运行验证。
+`npm test` 使用隔离 fixture 输出执行同步、生产构建和全部测试文件，不会覆盖本机 `data/dashboard.json`。CI 同时覆盖 Ubuntu 与 Windows；Chrome 长期稳定性和真实 Hook 生命周期仍需要本机持续运行验证。
 
 ## 许可证
 

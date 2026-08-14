@@ -27,6 +27,7 @@ for (const [key, value] of Object.entries(envPaths)) {
 const {
   completeContextTasks,
   ensureContextTask,
+  getSessionStatuses,
   isContextShadowTask,
   loadTasks,
   loadVisibleTasks,
@@ -145,6 +146,80 @@ test("任务聚合真实时间和工具调用次数", async () => {
   assert.ok(task.startedAt);
   assert.equal(task.toolCalls.exec_command, 2);
   assert.equal(task.actualAt, "");
+});
+
+test("模型路由决定只追加审计记录，不改变任务状态", async () => {
+  await resetLedger();
+  recordTaskEvent({
+    type: "session.register",
+    session_id: "sess-routing",
+    event_id: "routing-register",
+    agent: "codex",
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    workspace: "/work",
+  });
+  recordTaskEvent({
+    type: "task.create",
+    session_id: "sess-routing",
+    task_id: "task-routing",
+    event_id: "routing-create",
+    status: "blocked",
+    blocker: "等待外部依赖。",
+  });
+  const executionState = loadTasks()[0];
+  const firstInput = {
+    type: "routing.decision",
+    session_id: "sess-routing",
+    task_id: "task-routing",
+    event_id: "routing-native",
+    routing_action: "delegate_native",
+    orchestrator_model: "gpt-5.6-sol",
+    preferred_executor_model: "gpt-5.3-codex-spark",
+    selected_executor_model: "gpt-5.3-codex-spark",
+    dispatch_channel: "native",
+    routing_reason: "任务边界清晰，可独立验证。",
+  };
+  const first = recordTaskEvent(firstInput);
+  assert.equal(first.task.status, "blocked");
+  assert.equal(first.task.blocker, "等待外部依赖。");
+  assert.equal(first.task.updatedAt, executionState.updatedAt);
+  assert.equal(first.task.lastEventId, executionState.lastEventId);
+  assert.equal(first.task.routing.action, "delegate_native");
+  assert.equal(first.task.routing.outcome, "selected");
+  assert.equal(first.task.routing.policyVersion, "soft-routing-v1");
+  assert.equal(first.task.routingHistory.length, 1);
+  assert.ok(first.task.routingRecordedAt);
+  const session = getSessionStatuses().find((item) => item.sessionId === "sess-routing");
+  assert.equal(session.agent, "codex");
+  assert.equal(session.provider, "openai");
+  assert.equal(session.model, "gpt-5.6-sol");
+
+  const replay = recordTaskEvent(firstInput);
+  assert.equal(replay.idempotent, true);
+  assert.equal(replay.task.routingHistory.length, 1);
+  assert.throws(
+    () => recordTaskEvent({ ...firstInput, routing_reason: "尝试篡改既有路由原因。" }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 409,
+  );
+
+  const fallback = recordTaskEvent({
+    ...firstInput,
+    event_id: "routing-cli",
+    routing_action: "fallback_cli",
+    dispatch_channel: "cli",
+    routing_reason: "原生派发不可用，改用 CLI 兜底。",
+    routing_outcome: "started",
+  });
+  assert.equal(fallback.task.status, "blocked");
+  assert.equal(fallback.task.blocker, "等待外部依赖。");
+  assert.equal(fallback.task.updatedAt, executionState.updatedAt);
+  assert.equal(fallback.task.routing.action, "fallback_cli");
+  assert.equal(fallback.task.routingHistory.length, 2);
+  assert.throws(
+    () => recordTaskEvent({ ...firstInput, event_id: "routing-invalid", dispatch_channel: "cli" }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 400,
+  );
 });
 
 test("已登记的外部 Session 不被 Codex 会话清理误删", async () => {
@@ -809,7 +884,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
 
   const tools = await client.listTools();
   const toolNames = tools.tools.map((tool) => tool.name);
-  for (const expected of ["taskcenter_session_register", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report", "taskcenter_task_query", "taskcenter_session_status"]) {
+  for (const expected of ["taskcenter_session_register", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report", "taskcenter_routing_record", "taskcenter_task_query", "taskcenter_session_status"]) {
     assert.ok(toolNames.includes(expected), `MCP 应暴露 ${expected}`);
   }
 
@@ -842,9 +917,28 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(createPayload.task.status, "planned");
   assert.equal(createPayload.task.expectedAt, "2026-08-10T12:00:00.000Z");
 
+  const routing = await client.callTool({
+    name: "taskcenter_routing_record",
+    arguments: {
+      session_id: "sess-mcp",
+      task_id: "task-mcp",
+      event_id: "mcp-routing-native",
+      routing_action: "delegate_native",
+      orchestrator_model: "gpt-5.6-sol",
+      preferred_executor_model: "gpt-5.3-codex-spark",
+      selected_executor_model: "gpt-5.3-codex-spark",
+      dispatch_channel: "native",
+      routing_reason: "边界清晰，优先原生派发。",
+    },
+  });
+  const routingPayload = JSON.parse(textOf(routing));
+  assert.equal(routingPayload.accepted, true);
+  assert.equal(routingPayload.task.status, "planned");
+  assert.equal(routingPayload.task.routing.selectedExecutorModel, "gpt-5.3-codex-spark");
+
   const query = await client.callTool({ name: "taskcenter_task_query", arguments: { session_id: "sess-mcp" } });
   const queryPayload = JSON.parse(textOf(query));
-  assert.ok(queryPayload.tasks.find((task) => task.id === "task-mcp"));
+  assert.equal(queryPayload.tasks.find((task) => task.id === "task-mcp").routing.dispatchChannel, "native");
 
   const update = await client.callTool({ name: "taskcenter_task_update", arguments: { session_id: "sess-mcp", task_id: "task-mcp", current_step: "已更新" } });
   assert.equal(JSON.parse(textOf(update)).accepted, true);

@@ -16,12 +16,13 @@ export function resolveContextCommand(options = {}) {
   const root = resolve(options.contextRoot || contextRoot);
   const explicitCommand = options.explicitCommand ?? process.env.TASKCENTER_CONTEXT_NODE;
   if (explicitCommand) return resolve(explicitCommand);
+  if ((options.platform || process.platform) !== "darwin") return process.execPath;
 
   // ProjectContext 自带的启动器会探测能加载当前 better-sqlite3 的 Node ABI。
   // TaskCenter 自身可能运行在更高版本 Node 上，不能直接假设 process.execPath 兼容。
   const projectLauncher = join(root, "scripts", "mac-node.sh");
   try {
-    accessSync(projectLauncher, constants.X_OK);
+    (options.assertExecutable || ((path) => accessSync(path, constants.X_OK)))(projectLauncher);
     return projectLauncher;
   } catch {
     return process.execPath;
@@ -29,6 +30,9 @@ export function resolveContextCommand(options = {}) {
 }
 
 export async function syncContextEvent(event, task, options = {}) {
+  if (event?.type === "routing.decision") {
+    return { status: "skipped", reason: "routing_audit" };
+  }
   const explicitContextTaskId = task?.contextTaskId || event?.context_task_id || "";
   const enabled = options.enabled ?? Boolean(explicitContextTaskId || process.env.TASKCENTER_CONTEXT_BRIDGE_ENABLED === "true");
   if (!enabled) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { parseContextToolResult, resolveContextCommand, syncContextEvent } from "../scripts/context-bridge.mjs";
@@ -28,11 +28,10 @@ test("Context bridge 优先使用项目自带的 ABI 兼容启动器", async () 
     const launcher = join(scripts, "mac-node.sh");
     await mkdir(scripts);
     await writeFile(launcher, "#!/bin/sh\nexec node \"$@\"\n");
-    await chmod(launcher, 0o755);
-    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "" }), launcher);
-    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "/custom/node" }), "/custom/node");
-    await chmod(launcher, 0o644);
-    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "" }), process.execPath);
+    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "", platform: "darwin", assertExecutable: () => {} }), launcher);
+    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "/custom/node" }), resolve("/custom/node"));
+    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "", platform: "win32" }), process.execPath);
+    assert.equal(resolveContextCommand({ contextRoot: root, explicitCommand: "", platform: "darwin", assertExecutable: () => { throw new Error("not executable"); } }), process.execPath);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -99,6 +98,21 @@ test("无显式关联且 bridge 未开启时不会创建 Context 任务", async 
     },
   );
   assert.equal(result.status, "disabled");
+  assert.deepEqual(calls, []);
+});
+
+test("模型路由审计不会同步为 ProjectContext 代码证据", async () => {
+  const calls = [];
+  const result = await syncContextEvent(
+    { type: "routing.decision", event_id: "routing-audit" },
+    { id: "routing-task", contextTaskId: "context-routing", workspace: "/work" },
+    {
+      enabled: true,
+      audit: false,
+      callTool: async (...args) => calls.push(args),
+    },
+  );
+  assert.deepEqual(result, { status: "skipped", reason: "routing_audit" });
   assert.deepEqual(calls, []);
 });
 

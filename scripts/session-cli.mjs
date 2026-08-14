@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveSpawnCommand } from "./platform-command.mjs";
 
 const terminalEvents = new Set([
   "task_complete",
@@ -56,9 +57,10 @@ export function resumeSession({
   return new Promise((resolve, reject) => {
     const command = process.env.TASKCENTER_CODEX_COMMAND || "codex";
     const prefixArgs = parsePrefixArgs(process.env.TASKCENTER_CODEX_PREFIX_ARGS);
-    const args = [...prefixArgs, "exec", "resume", threadId, prompt, "--json"];
+    const resolved = resolveSpawnCommand(command);
+    const args = [...resolved.argsPrefix, ...prefixArgs, "exec", "resume", threadId, prompt, "--json"];
     const startedAt = new Date().toISOString();
-    const child = spawn(command, args, {
+    const child = spawn(resolved.command, args, {
       cwd: workingDirectory,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],

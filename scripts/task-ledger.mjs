@@ -12,6 +12,10 @@ export const sessionRegistryPath = resolve(process.env.TASKCENTER_SESSION_REGIST
 export const sessionMergesPath = resolve(process.env.TASKCENTER_SESSION_MERGES_PATH || join(projectRoot, "data", "session-merges.json"));
 
 const statuses = new Set(["planned", "in_progress", "blocked", "done_claimed", "verified", "cancelled", "removed"]);
+const routingActions = new Set(["direct_execute", "delegate_native", "fallback_cli", "reasoned_override"]);
+const dispatchChannels = new Set(["direct", "native", "cli", "other"]);
+const routingOutcomes = new Set(["selected", "started", "succeeded", "failed"]);
+const routingHistoryLimit = 20;
 const demoPattern = /^ui-demo-/;
 const contextShadowPattern = /^context-[0-9a-f]{24}$/;
 export { taskTimeState, STALE_TASK_MS };
@@ -243,7 +247,8 @@ const idempotentEventFields = [
   "plan", "current_step", "next_action", "blocker", "acceptance_criteria", "changed_files",
   "tests", "evidence", "assumptions", "risks", "tradeoffs", "open_questions", "retrospective",
   "expected_at", "archived_at", "superseded_by", "review_reason", "reviewed_at", "tool_name",
-  "tool_use_id",
+  "tool_use_id", "routing_action", "orchestrator_model", "preferred_executor_model",
+  "selected_executor_model", "dispatch_channel", "routing_reason", "routing_outcome", "policy_version",
 ];
 
 function findStoredTaskEvent(eventId) {
@@ -505,7 +510,7 @@ function normalizeEvent(input) {
   if (!input || typeof input !== "object") throw new TaskLedgerError(400, "任务事件必须是 JSON 对象。");
   const type = String(input.type || "");
   const sessionId = String(input.session_id || "");
-  const allowedTypes = new Set(["session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.review", "tool.call"]);
+  const allowedTypes = new Set(["session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.review", "tool.call", "routing.decision"]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
   if (!sessionId) throw new TaskLedgerError(400, "任务事件缺少 session_id。");
   if (type !== "session.register" && type !== "task.create" && !String(input.task_id || "")) {
@@ -546,10 +551,43 @@ function normalizeEvent(input) {
     reviewed_at: cleanText(input.reviewed_at, 80),
     tool_name: cleanText(input.tool_name, 120),
     tool_use_id: cleanText(input.tool_use_id, 200),
+    routing_action: cleanText(input.routing_action, 40),
+    orchestrator_model: cleanText(input.orchestrator_model, 120),
+    preferred_executor_model: cleanText(input.preferred_executor_model, 120),
+    selected_executor_model: cleanText(input.selected_executor_model, 120),
+    dispatch_channel: cleanText(input.dispatch_channel, 40),
+    routing_reason: cleanText(input.routing_reason, 1_000),
+    routing_outcome: cleanText(input.routing_outcome, 40),
+    policy_version: cleanText(input.policy_version, 80),
     created_at: new Date().toISOString(),
   };
   if (event.expected_at && !Number.isFinite(Date.parse(event.expected_at))) {
     throw new TaskLedgerError(400, "expected_at 必须是可解析的 ISO 时间。");
+  }
+  if (type === "routing.decision") {
+    if (!routingActions.has(event.routing_action)) throw new TaskLedgerError(400, "routing_action 无效。");
+    if (!dispatchChannels.has(event.dispatch_channel)) throw new TaskLedgerError(400, "dispatch_channel 无效。");
+    if (event.routing_outcome && !routingOutcomes.has(event.routing_outcome)) throw new TaskLedgerError(400, "routing_outcome 无效。");
+    if (!event.orchestrator_model || !event.preferred_executor_model || !event.selected_executor_model || !event.routing_reason) {
+      throw new TaskLedgerError(400, "路由决定缺少模型或原因字段。");
+    }
+    const expectedChannel = {
+      direct_execute: "direct",
+      delegate_native: "native",
+      fallback_cli: "cli",
+    }[event.routing_action];
+    if (expectedChannel && event.dispatch_channel !== expectedChannel) {
+      throw new TaskLedgerError(400, `${event.routing_action} 必须使用 ${expectedChannel} 通道；特殊路由请使用 reasoned_override。`);
+    }
+    if (event.routing_action === "direct_execute" && event.selected_executor_model !== event.orchestrator_model) {
+      throw new TaskLedgerError(400, "direct_execute 的执行模型必须与编排模型一致；特殊路由请使用 reasoned_override。");
+    }
+    if (["delegate_native", "fallback_cli"].includes(event.routing_action)
+      && event.selected_executor_model !== event.preferred_executor_model) {
+      throw new TaskLedgerError(400, `${event.routing_action} 默认使用首选执行模型；特殊路由请使用 reasoned_override。`);
+    }
+    event.routing_outcome ||= "selected";
+    event.policy_version ||= "soft-routing-v1";
   }
   return event;
 }
@@ -581,6 +619,26 @@ function applyEvent(current, event) {
     }
     return { ...current, status: "removed", updatedAt: event.created_at, lastEventId: event.event_id };
   }
+  if (event.type === "routing.decision") {
+    const routing = {
+      action: event.routing_action,
+      orchestratorModel: event.orchestrator_model,
+      preferredExecutorModel: event.preferred_executor_model,
+      selectedExecutorModel: event.selected_executor_model,
+      dispatchChannel: event.dispatch_channel,
+      reason: event.routing_reason,
+      outcome: event.routing_outcome,
+      policyVersion: event.policy_version,
+      recordedAt: event.created_at,
+      eventId: event.event_id,
+    };
+    return {
+      ...current,
+      routing,
+      routingHistory: [...(current.routingHistory || []), routing].slice(-routingHistoryLimit),
+      routingRecordedAt: event.created_at,
+    };
+  }
   const now = event.created_at;
   const base = current || {
     id: event.task_id,
@@ -604,6 +662,8 @@ function applyEvent(current, event) {
     risks: [],
     tradeoffs: [],
     openQuestions: [],
+    routing: null,
+    routingHistory: [],
     createdAt: now,
   };
   const next = {
@@ -659,9 +719,9 @@ function touchSession(event) {
     registry[event.session_id] = {
       ...(current || {}),
       sessionId: event.session_id,
-      agent: event.agent || current?.agent || "unknown",
-      provider: event.provider || current?.provider || "unknown",
-      model: event.model || current?.model || "unknown",
+      agent: event.agent !== "unknown" ? event.agent : (current?.agent || "unknown"),
+      provider: event.provider !== "unknown" ? event.provider : (current?.provider || "unknown"),
+      model: event.model !== "unknown" ? event.model : (current?.model || "unknown"),
       workspace: event.workspace || current?.workspace || "",
       registeredAt: current?.registeredAt || now,
       lastSeenAt: now,

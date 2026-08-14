@@ -8,6 +8,8 @@ Thanks for improving TaskCenter.
 2. Run `npm ci`.
 3. Start the local stack with `npm run dev:live`.
 
+The supported development shells are macOS/Linux shells, WSL2, and native Windows PowerShell or Command Prompt. Keep lifecycle and test scripts in Node.js; do not add POSIX-only environment assignment or shell dependencies to cross-platform npm scripts.
+
 Keep all session handling local and preserve the privacy boundary documented in `README.md` and `AGENTS.md`.
 
 ## Pull requests

@@ -10,7 +10,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -26,12 +30,6 @@ jobs:
       - name: Check committed whitespace
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          EMPTY_TREE="$(git hash-object -t tree /dev/null)"
-          if [[ -z "$BASE_SHA" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || ! git merge-base "$BASE_SHA" HEAD >/dev/null; then
-            git diff --check "$EMPTY_TREE" HEAD
-          else
-            git diff --check "$BASE_SHA...HEAD"
-          fi
+        run: node scripts/check-whitespace.mjs
       - run: npm audit --omit=dev --audit-level=high
       - run: npm pack --dry-run

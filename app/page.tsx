@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
+import { hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
 import { taskTimeState } from "./task-time-state.mjs";
 
 type SessionGroup = Thread & {
@@ -60,6 +61,12 @@ type TaskRecord = {
   reviewReason?: string;
   reviewedAt?: string;
   toolCalls?: Record<string, number>;
+  routing?: {
+    orchestratorModel?: string;
+    selectedExecutorModel?: string;
+    dispatchChannel?: string;
+  };
+  routingRecordedAt?: string;
 };
 
 type SessionStatus = {
@@ -561,6 +568,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
     { label: "复盘", items: task.retrospective ? [task.retrospective] : [] },
   ];
   const nonEmptyDetails = detailItems.filter((item) => item.items.length > 0);
+  const hasEventDetails = hasTaskEventDetails(task, nonEmptyDetails.length > 0);
   const stepText = task.currentStep ?? task.nextAction;
   const goalOrStep = task.goal || stepText ? `${asText(task.goal)}${stepText ? ` · ${asText(stepText)}` : ""}` : "—";
   const isDemo = task.id.startsWith("ui-demo-");
@@ -645,7 +653,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
       <td data-label="目标 / 步骤" className="task-cell task-goal-cell" title={goalOrStep}>{goalOrStep}</td>
       <td data-label="阻塞" className="task-cell task-blocker-cell" title={task.blocker || "—"}>{task.blocker ? asText(task.blocker) : "—"}</td>
       <td data-label="假设 / 风险 / 取舍 / 待确认 / 复盘" className="task-cell task-count-cell">
-        {nonEmptyDetails.length > 0 ? (
+        {hasEventDetails ? (
           <button
             type="button"
             className="task-detail-preview"
@@ -654,6 +662,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
             onClick={() => setDetailsOpen((open) => !open)}
           >
             {nonEmptyDetails.map((item) => <span key={item.label}><b>{item.label}</b> {asText(item.items[0])}{item.items.length > 1 ? ` +${item.items.length - 1}` : ""}</span>)}
+            {task.routing && <span><b>模型路由</b> {asText(task.routing.orchestratorModel)} → {asText(task.routing.selectedExecutorModel)} · {asText(task.routing.dispatchChannel)}</span>}
             <small>{detailsOpen ? "收起详情" : "查看详情"}</small>
           </button>
         ) : "—"}
@@ -709,12 +718,12 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         {actionError && <span className="task-action-error">{actionError}</span>}
       </td>
       </tr>
-      {detailsOpen && nonEmptyDetails.length > 0 && (
+      {detailsOpen && hasEventDetails && (
         <tr id={`task-details-${task.id}`} className="task-detail-row">
           <td colSpan={9}>
             <div className="task-detail-content">
               {nonEmptyDetails.map((item) => <section key={item.label}><strong>{item.label}</strong><ul>{item.items.map((value, index) => <li key={`${item.label}-${index}`}>{value}</li>)}</ul></section>)}
-              <section><strong>事件时间线</strong>{eventsError ? <p>{eventsError}</p> : events === null ? <p>加载中…</p> : events.length === 0 ? <p>暂无事件</p> : <ul>{events.map((event, index) => <li key={`${event.event_id || index}`}>{asText(event.type)} · {asText(event.status, "未标状态")} · {normalizeDate(event.created_at)} · {asText(event.current_step || event.tool_name || event.review_reason, "无摘要")}</li>)}</ul>}</section>
+              <section><strong>事件时间线</strong>{eventsError ? <p>{eventsError}</p> : events === null ? <p>加载中…</p> : events.length === 0 ? <p>暂无事件</p> : <ul>{events.map((event, index) => <li key={`${event.event_id || index}`}>{asText(event.type)} · {taskEventStatus(event)} · {normalizeDate(event.created_at)} · {taskEventSummary(event)}</li>)}</ul>}</section>
             </div>
           </td>
         </tr>

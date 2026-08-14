@@ -61,6 +61,24 @@ server.registerTool("taskcenter_task_report", {
   inputSchema: z.object(taskFields).extend({ task_id: z.string().min(1).max(200), status: z.enum(["in_progress", "blocked", "done_claimed"]).optional() }).strict(),
 }, async (input) => report("task.report", input));
 
+server.registerTool("taskcenter_routing_record", {
+  title: "记录 TaskCenter 模型路由",
+  description: "记录直接执行、原生派发、CLI 兜底或有理由偏离的模型路由决定。该记录仅用于审计，不改变任务状态，也不作为执行门禁。",
+  inputSchema: z.object({
+    session_id: z.string().min(1).max(200),
+    task_id: z.string().min(1).max(200),
+    event_id: z.string().max(200).optional(),
+    routing_action: z.enum(["direct_execute", "delegate_native", "fallback_cli", "reasoned_override"]),
+    orchestrator_model: z.string().min(1).max(120),
+    preferred_executor_model: z.string().min(1).max(120),
+    selected_executor_model: z.string().min(1).max(120),
+    dispatch_channel: z.enum(["direct", "native", "cli", "other"]),
+    routing_reason: z.string().min(1).max(1_000),
+    routing_outcome: z.enum(["selected", "started", "succeeded", "failed"]).optional(),
+    policy_version: z.string().min(1).max(80).optional(),
+  }).strict(),
+}, async (input) => report("routing.decision", input));
+
 server.registerTool("taskcenter_task_query", {
   title: "查询 TaskCenter 任务",
   description: "查询当前 Session 的任务账本，获取 TaskCenter 的下一步上下文。",

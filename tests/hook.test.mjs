@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
-const rootPath = fileURLToPath(root).replace(/\/$/, "");
+const rootPath = resolve(fileURLToPath(root));
 const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-hook-"));
 const paths = {
   TASKCENTER_TASK_EVENTS_PATH: join(tempDir, "task-events.jsonl"),
@@ -18,7 +18,7 @@ const paths = {
 };
 const port = 39_000 + (process.pid % 1_000);
 const base = `http://127.0.0.1:${port}`;
-const hook = join(root.pathname, "scripts", "taskcenter-hook.mjs");
+const hook = join(rootPath, "scripts", "taskcenter-hook.mjs");
 const server = spawn(process.execPath, ["scripts/control-server.mjs"], {
   cwd: root,
   env: { ...process.env, ...paths, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" },
@@ -223,6 +223,13 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     "node --interactive script.js",
     "python3 -i script.py",
     "node - placeholder",
+    "powershell",
+    "powershell.exe -NoProfile",
+    "pwsh -NoExit -Command 'Get-ChildItem'",
+    "cmd.exe",
+    "cmd /k dir",
+    "cmd --version",
+    "powershell --version",
   ]) {
     const interactive = await runHook("pre-tool-use", "codex", {
       session_id: "gate-session",
@@ -246,6 +253,9 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     "node --help",
     "python3 --help",
     "bash --help",
+    "powershell.exe -NoProfile -Command 'Get-ChildItem'",
+    "pwsh -File script.ps1",
+    "cmd.exe /d /c echo ok",
   ]) {
     const oneShot = await runHook("pre-tool-use", "codex", {
       session_id: "gate-session",
@@ -269,6 +279,66 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
   const noActive = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "stable-call-2" });
   assert.equal(noActive.code, 2);
   assert.match(noActive.stderr, /无活跃任务/);
+});
+
+test("控制服务离线时只放行固定恢复命令", async () => {
+  for (const command of [
+    "node scripts/taskcenter-control.mjs start",
+    "node scripts/taskcenter-control.mjs status",
+    "/bin/bash scripts/taskcenter-control.sh start",
+    "/bin/bash scripts/taskcenter-control.sh status",
+  ]) {
+    const allowed = await runHook("pre-tool-use", "codex", {
+      session_id: "",
+      cwd: rootPath,
+      tool_name: "Bash",
+      hook_event_name: "PreToolUse",
+      tool_input: { command },
+    });
+    assert.equal(allowed.code, 0, `${command} 应作为固定恢复命令放行`);
+    assert.match(allowed.stdout, /固定恢复命令放行/);
+  }
+
+  for (const command of [
+    "bash scripts/taskcenter-control.sh start",
+    "/usr/bin/env bash scripts/taskcenter-control.sh start",
+    "bash scripts/taskcenter-control.sh restart",
+    "bash scripts/taskcenter-control.sh stop",
+    "bash scripts/taskcenter-control.sh start extra",
+    "bash scripts/taskcenter-control.sh start && touch /tmp/bypass",
+    "bash ./scripts/taskcenter-control.sh start",
+    "bash /tmp/scripts/taskcenter-control.sh start",
+    "node scripts/taskcenter-control.mjs restart",
+    "node scripts/taskcenter-control.mjs stop",
+    "node ./scripts/taskcenter-control.mjs start",
+    "node scripts/taskcenter-control.mjs start && echo bypass",
+  ]) {
+    const blocked = await runHook("pre-tool-use", "codex", {
+      session_id: "",
+      cwd: rootPath,
+      tool_name: "Bash",
+      hook_event_name: "PreToolUse",
+      tool_input: { command },
+    });
+    assert.equal(blocked.code, 2, `${command} 不得进入恢复白名单`);
+  }
+
+  const wrongWorkspace = await runHook("pre-tool-use", "codex", {
+    session_id: "",
+    cwd: "/tmp",
+    tool_name: "Bash",
+    hook_event_name: "PreToolUse",
+    tool_input: { command: "node scripts/taskcenter-control.mjs start" },
+  });
+  assert.equal(wrongWorkspace.code, 2);
+
+  const missingWorkspace = await runHook("pre-tool-use", "codex", {
+    session_id: "",
+    tool_name: "Bash",
+    hook_event_name: "PreToolUse",
+    tool_input: { command: "node scripts/taskcenter-control.mjs start" },
+  });
+  assert.equal(missingWorkspace.code, 2);
 });
 
 async function runHook(action, agent, payload) {

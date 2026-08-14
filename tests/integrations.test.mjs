@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { join, resolve } from "node:path";
 import {
   claudeMcp,
   claudeSettings,
@@ -9,13 +10,13 @@ import {
   shellQuote,
 } from "../scripts/print-integrations.mjs";
 
-const root = "/tmp/Task Center";
+const root = resolve("Task Center");
 
 test("integration config generators use the selected absolute root", () => {
-  assert.match(codexToml(root), /\/tmp\/Task Center\/scripts\/taskcenter-mcp\.mjs/);
+  assert.ok(codexToml(root).includes(join(root, "scripts", "taskcenter-mcp.mjs").replaceAll("\\", "\\\\")));
   assert.equal(
     claudeMcp(root).mcpServers.taskcenter.args[0],
-    "/tmp/Task Center/scripts/taskcenter-mcp.mjs",
+    join(root, "scripts", "taskcenter-mcp.mjs"),
   );
   assert.match(
     codexHooks(root).hooks.SessionStart[0].hooks[0].command,

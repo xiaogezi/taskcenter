@@ -9,8 +9,13 @@ export function shellQuote(value) {
   return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
 }
 
+export function commandQuote(value, platform = process.platform) {
+  if (platform === "win32") return `"${String(value).replaceAll('"', '""')}"`;
+  return shellQuote(value);
+}
+
 export function codexHooks(root = defaultRoot) {
-  const script = shellQuote(resolve(root, "scripts", "taskcenter-hook.mjs"));
+  const script = commandQuote(resolve(root, "scripts", "taskcenter-hook.mjs"));
   return {
     description: "TaskCenter session registration and task lifecycle guardrail",
     hooks: {
@@ -45,7 +50,7 @@ export function codexHooks(root = defaultRoot) {
 }
 
 export function claudeSettings(root = defaultRoot) {
-  const script = shellQuote(resolve(root, "scripts", "taskcenter-hook.mjs"));
+  const script = commandQuote(resolve(root, "scripts", "taskcenter-hook.mjs"));
   return {
     hooks: {
       SessionStart: [
@@ -103,7 +108,7 @@ export function claudeMcp(root = defaultRoot) {
 }
 
 export function cliCommands(root = defaultRoot) {
-  const mcp = shellQuote(resolve(root, "scripts", "taskcenter-mcp.mjs"));
+  const mcp = commandQuote(resolve(root, "scripts", "taskcenter-mcp.mjs"));
   return {
     codex: `codex mcp add taskcenter -- node ${mcp}`,
     claude: `claude mcp add --scope user --transport stdio taskcenter -- node ${mcp}`,

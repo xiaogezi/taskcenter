@@ -2,6 +2,14 @@
 
 All notable changes to TaskCenter are documented here.
 
+## Unreleased
+
+- Adds a Node-based cross-platform service controller with managed heartbeats and graceful stop requests for macOS, Linux/WSL2, and native Windows.
+- Removes POSIX environment assignments and shell glob expansion from build and test scripts.
+- Moves Hook recovery to the Node controller and covers PowerShell and Command Prompt interactive-process forms.
+- Resolves standard Windows npm `codex.cmd` shims without interpolating prompts through a command shell.
+- Adds `windows-latest` CI coverage and platform-neutral Context launcher tests.
+
 ## 0.1.5 - 2026-08-14
 
 - Automatically restarts the local control service once when a Hook request finds it offline, then retries the original governance check.

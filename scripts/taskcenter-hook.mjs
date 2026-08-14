@@ -52,10 +52,12 @@ try {
 function isTrustedRecoveryCommand(payload) {
   if (payload.tool_name !== "Bash") return false;
   if (typeof payload.cwd !== "string" || !payload.cwd) return false;
-  if (resolve(payload.cwd) !== projectRoot) return false;
+  if (!samePath(resolve(payload.cwd), projectRoot)) return false;
   const toolInput = payload.tool_input;
   if (!toolInput || typeof toolInput !== "object" || typeof toolInput.command !== "string") return false;
   return new Set([
+    "node scripts/taskcenter-control.mjs start",
+    "node scripts/taskcenter-control.mjs status",
     "/bin/bash scripts/taskcenter-control.sh start",
     "/bin/bash scripts/taskcenter-control.sh status",
   ]).has(toolInput.command);
@@ -91,6 +93,14 @@ function isInteractiveExec(payload) {
   if (!invocation) return false;
   const { executable, args } = invocation;
   if (isTerminalQuery(executable, args)) return false;
+  if (["powershell", "pwsh"].includes(executable)) {
+    if (hasPowerShellFlag(args, ["-noexit"])) return true;
+    return !hasPowerShellProgram(args);
+  }
+  if (executable === "cmd") {
+    if (args.some((token) => token.toLowerCase() === "/k")) return true;
+    return !hasCmdProgram(args);
+  }
   if (["bash", "dash", "fish", "sh", "zsh"].includes(executable)) {
     return hasShortFlag(args, "i") || hasShortFlag(args, "s") || args.includes("--interactive") || !hasShellProgram(args);
   }
@@ -123,17 +133,45 @@ function interpreterInvocation(command) {
     }
   }
   const executable = basename(tokens[index]);
-  if (!["bash", "dash", "fish", "sh", "zsh", "node", "python", "python3"].includes(executable)) return null;
+  if (!["bash", "dash", "fish", "sh", "zsh", "node", "python", "python3", "powershell", "pwsh", "cmd"].includes(executable)) return null;
   return { executable, args: tokens.slice(index + 1) };
 }
 
 function isTerminalQuery(executable, args) {
   if (args.length !== 1) return false;
   const option = args[0];
-  if (["--version", "--help"].includes(option)) return true;
-  if (executable === "node") return ["-v", "-h"].includes(option);
-  if (["python", "python3"].includes(executable)) return ["-V", "-h"].includes(option);
+  if (["bash", "dash", "fish", "sh", "zsh"].includes(executable)) return ["--version", "--help"].includes(option);
+  if (executable === "node") return ["-v", "-h", "--version", "--help"].includes(option);
+  if (["python", "python3"].includes(executable)) return ["-V", "-h", "--version", "--help"].includes(option);
+  if (["powershell", "pwsh"].includes(executable)) {
+    if (["-h", "-help", "--help", "-?", "/?"].includes(option.toLowerCase())) return true;
+    return executable === "pwsh" && option === "--version";
+  }
+  if (executable === "cmd") return ["/?"].includes(option.toLowerCase());
   return false;
+}
+
+function hasPowerShellFlag(args, flags) {
+  const expected = new Set(flags.map((flag) => flag.toLowerCase()));
+  return args.some((token) => expected.has(token.toLowerCase()));
+}
+
+function hasPowerShellProgram(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index].toLowerCase();
+    if (["-command", "-commandwithargs", "-c", "/command", "/c", "-encodedcommand", "-e", "/encodedcommand", "-file", "-f", "/file"].includes(token)) {
+      return Boolean(args[index + 1]);
+    }
+    if (["-executionpolicy", "-ep", "-inputformat", "-outputformat", "-windowstyle", "-workingdirectory"].includes(token)) {
+      index += 1;
+    }
+  }
+  return false;
+}
+
+function hasCmdProgram(args) {
+  const index = args.findIndex((token) => token.toLowerCase() === "/c");
+  return index >= 0 && Boolean(args[index + 1]);
 }
 
 function hasShortFlag(args, flag) {
@@ -192,7 +230,14 @@ function splitCommandWords(command) {
 }
 
 function basename(value = "") {
-  return value.slice(value.lastIndexOf("/") + 1);
+  const name = value.slice(Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\")) + 1).toLowerCase();
+  return name.replace(/\.(?:exe|cmd|bat|com)$/i, "");
+}
+
+function samePath(left, right) {
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
 }
 
 async function recordToolCall(task) {
@@ -284,14 +329,14 @@ async function requestOnce(method, path, body) {
 
 async function recoverControlService(originalError) {
   try {
-    await execFileAsync("/bin/bash", [resolve(projectRoot, "scripts/taskcenter-control.sh"), "start"], {
+    await execFileAsync(process.execPath, [resolve(projectRoot, "scripts/taskcenter-control.mjs"), "start"], {
       cwd: projectRoot,
-      env: { ...process.env, BASH_ENV: "", ENV: "", TASKCENTER_NO_OPEN: "1" },
+      env: { ...process.env, TASKCENTER_NO_OPEN: "1" },
       timeout: 30_000,
     });
   } catch (error) {
     const detail = String(error.stderr || error.stdout || error.message || "未知错误").trim();
-    throw new Error(`${originalError.message} 自动恢复失败，写操作已阻断。${detail ? ` ${detail}` : ""} 可在项目目录运行：/bin/bash scripts/taskcenter-control.sh start`);
+    throw new Error(`${originalError.message} 自动恢复失败，写操作已阻断。${detail ? ` ${detail}` : ""} 可在项目目录运行：node scripts/taskcenter-control.mjs start`);
   }
 }
 
