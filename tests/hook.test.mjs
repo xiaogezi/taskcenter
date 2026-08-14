@@ -114,6 +114,7 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     "git show --output leak.txt HEAD:README.md",
     "git grep --open-files-in-pager=touch TaskCenter",
     "git grep -Otouch TaskCenter",
+    "rg TaskCenter README.md & touch /tmp/taskcenter-review-sentinel",
   ]) {
     const disguisedWrite = await runHook("pre-tool-use", "codex", {
       session_id: "unknown-session",
@@ -161,6 +162,11 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     "python3 -q",
     "node --interactive",
     "/usr/bin/env -i zsh",
+    "/usr/bin/env -- zsh",
+    "bash -s placeholder",
+    "node --interactive script.js",
+    "python3 -i script.py",
+    "node - placeholder",
   ]) {
     const interactive = await runHook("pre-tool-use", "codex", {
       session_id: "gate-session",
@@ -173,7 +179,18 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     assert.equal(interactive.code, 2, `${command} 不得建立可由 write_stdin 延续的会话`);
     assert.match(interactive.stderr, /不允许启动.*交互式命令/);
   }
-  for (const command of ["bash -lc 'printf ok'", "node -e 'console.log(1)'", "python3 -m json.tool fixture.json", "node scripts/sync-codex.mjs"]) {
+  for (const command of [
+    "bash -lc 'printf ok'",
+    "node -e 'console.log(1)'",
+    "python3 -m json.tool fixture.json",
+    "node scripts/sync-codex.mjs",
+    "node --version",
+    "python3 --version",
+    "bash --version",
+    "node --help",
+    "python3 --help",
+    "bash --help",
+  ]) {
     const oneShot = await runHook("pre-tool-use", "codex", {
       session_id: "gate-session",
       cwd: "/work",
