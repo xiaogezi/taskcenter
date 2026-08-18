@@ -955,6 +955,17 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         <tr id={`task-details-${task.id}`} className="task-detail-row">
           <td colSpan={9}>
             <div className="task-detail-content">
+              <div className="task-detail-toolbar">
+                <strong>任务详情</strong>
+                <button
+                  type="button"
+                  className="task-detail-close"
+                  onClick={() => setDetailsOpen(false)}
+                  aria-label={`收起 ${asText(task.title, "任务")} 的详情`}
+                >
+                  收起详情
+                </button>
+              </div>
               {nonEmptyDetails.map((item) => <section key={item.label}><strong>{item.label}</strong><ul>{item.items.map((value, index) => <li key={`${item.label}-${index}`}>{value}</li>)}</ul></section>)}
               {routingAdvisory?.triggered && (
                 <section className="task-routing-advisory">

@@ -470,6 +470,10 @@ button { cursor: pointer; }
 .task-detail-preview small { color: var(--cyan); font-size: 10px; margin-top: 3px; }
 .task-detail-preview:hover b, .task-detail-preview:focus-visible b { color: var(--orange); }
 .task-detail-row td { background: rgba(255,255,255,.58); border-bottom: 1px solid var(--line); padding: 12px 16px 16px; }
+.task-detail-toolbar { align-items: center; background: rgba(255,255,255,.94); border-bottom: 1px solid var(--line); display: flex; grid-column: 1 / -1; justify-content: space-between; margin: -12px -16px 0; padding: 10px 16px; position: sticky; top: 0; z-index: 2; }
+.task-detail-toolbar > strong { color: var(--ink); font-size: 12px; }
+.task-detail-close { background: transparent; border: 1px solid var(--cyan); color: var(--cyan); cursor: pointer; font: inherit; font-size: 11px; padding: 5px 9px; }
+.task-detail-close:hover, .task-detail-close:focus-visible { background: var(--cyan); color: white; }
 .task-detail-content { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .task-detail-content section { min-width: 0; }
 .task-detail-content strong { color: var(--ink); display: block; font-size: 11px; margin-bottom: 5px; }
@@ -576,6 +580,7 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
   .task-actions-cell .task-action-button { margin-bottom: 6px; }
   .task-detail-row { display: block; }
   .task-detail-row td { padding: 12px 0; }
+  .task-detail-toolbar { margin: -12px 0 0; padding: 10px 0; }
   .task-pagination { margin-bottom: 4px; }
   .reflection-heading { align-items: flex-start; flex-direction: column; }
   .reflection-controls { align-items: flex-start; width: 100%; }
