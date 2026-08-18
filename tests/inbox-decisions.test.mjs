@@ -9,7 +9,7 @@ test("Inbox 决策支持单项、批量、校验和重启读取", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "taskcenter-inbox-"));
   const path = join(dir, "decisions.json");
   const port = 3500 + Math.floor(Math.random() * 200);
-  const env = { ...process.env, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_INBOX_DECISIONS_PATH: path, TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" };
+  const env = { ...process.env, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_INBOX_DECISIONS_PATH: path, TASKCENTER_DELEGATIONS_PATH: join(dir, "delegations.json"), TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" };
   const start = () => spawn(process.execPath, ["scripts/control-server.mjs"], { cwd: process.cwd(), env, stdio: "ignore" });
   let child = start();
   t.after(async () => { child.kill(); await rm(dir, { recursive: true, force: true }); });

@@ -103,6 +103,7 @@ test("本地控制服务 dry-run 会记录操作但不会启动 Codex", async (c
     env: {
       ...process.env,
       TASKCENTER_CONTROL_PORT: String(port),
+      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_LOCAL_DIR: join(fixture.directory, "local"),
@@ -146,6 +147,7 @@ test("原 Session 忙碌时进入安全队列", async (context) => {
     env: {
       ...process.env,
       TASKCENTER_CONTROL_PORT: String(port),
+      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_SESSIONS_ROOT: sessionsRoot,
@@ -210,6 +212,7 @@ test("等待中的自动投递可以人工取消", async (context) => {
     env: {
       ...process.env,
       TASKCENTER_CONTROL_PORT: String(port),
+      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_SESSIONS_ROOT: sessionsRoot,
@@ -245,6 +248,7 @@ test("人工完成、移除和恢复会持久化需求覆盖", async (context) =
     env: {
       ...process.env,
       TASKCENTER_CONTROL_PORT: String(port),
+      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_OVERRIDES_PATH: overridesPath,
@@ -303,6 +307,7 @@ console.log(JSON.stringify({ type: "turn.completed" }));
     env: {
       ...process.env,
       TASKCENTER_CONTROL_PORT: String(port),
+      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_SESSIONS_ROOT: sessionsRoot,
@@ -367,6 +372,7 @@ export class Codex {
     env: {
       ...process.env,
       TASKCENTER_CONTROL_PORT: String(port),
+      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_CODEX_SDK_MODULE: fakeSdk,

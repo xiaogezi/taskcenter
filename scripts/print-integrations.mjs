@@ -32,6 +32,18 @@ export function codexHooks(root = defaultRoot) {
           ],
         },
       ],
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: `node ${script} user-prompt-submit --agent codex`,
+              timeout: 10,
+              statusMessage: "Preparing TaskCenter task lifecycle",
+            },
+          ],
+        },
+      ],
       PreToolUse: [
         {
           matcher: "^(Bash|apply_patch|exec_command|Edit|Write)$",

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
-import { hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
+import { detectSparkRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
 import { taskTimeState } from "./task-time-state.mjs";
 
 type SessionGroup = Thread & {
@@ -28,7 +28,41 @@ type Thread = {
   sessionSource?: "codex" | "task-ledger";
 };
 
-type SessionSelection = { mode: "all" | "selected"; threadIds: string[] };
+type SessionSelection = { mode: "allowlist"; threadIds: string[] };
+type ReflectionProposal = {
+  id: string;
+  kind: string;
+  executionPolicy?: "agent_task" | "manual_only";
+  title: string;
+  summary: string;
+  recommendation: string;
+  risk: string;
+  status: "proposed" | "accepted" | "rejected" | "resolved";
+  evidence: Array<{ metric: string; count: number; taskIds: string[] }>;
+  generatedAt: string;
+  decidedAt?: string;
+  resolvedAt?: string;
+  executions?: ReflectionExecution[];
+};
+type ReflectionExecution = {
+  id: string;
+  requestId: string;
+  taskId: string;
+  dispatchId: string;
+  mode: "new_session" | "existing_session";
+  sessionId: string;
+  status: string;
+  taskStatus?: TaskStatus | "";
+  dispatchStatus?: string;
+  dispatchError?: string;
+  createdAt: string;
+};
+type ReflectionState = {
+  version: number;
+  generatedAt: string;
+  dataBoundary: { sessionMode: "allowlist"; allowedSessionCount: number; taskCount: number };
+  proposals: ReflectionProposal[];
+};
 type TaskStatus = "planned" | "in_progress" | "blocked" | "done_claimed" | "verified" | "cancelled";
 type TaskRecord = {
   id: string;
@@ -55,7 +89,16 @@ type TaskRecord = {
   evidence?: string[];
   updatedAt?: string;
   startedAt?: string;
+  firstStartedAt?: string;
+  dueAt?: string;
   expectedAt?: string;
+  estimatedEffortMs?: number;
+  timingModelVersion?: string;
+  activeDurationMs?: number;
+  blockedDurationMs?: number;
+  activeStartedAt?: string;
+  blockedStartedAt?: string;
+  estimateHistory?: Array<{ dueAt?: string; previousDueAt?: string; estimatedEffortMs?: number | null; previousEstimatedEffortMs?: number | null; reason?: string; recordedAt?: string }>;
   actualAt?: string;
   archivedAt?: string;
   reviewReason?: string;
@@ -66,7 +109,33 @@ type TaskRecord = {
     selectedExecutorModel?: string;
     dispatchChannel?: string;
   };
+  routingHistory?: {
+    action?: string;
+    orchestratorModel?: string;
+    selectedExecutorModel?: string;
+    preferredExecutorModel?: string;
+    reason?: string;
+    dispatchChannel?: string;
+    outcome?: string;
+    recordedAt?: string;
+  }[];
   routingRecordedAt?: string;
+  contractVersion?: "legacy" | "v2";
+  currentRevision?: string;
+  currentSubject?: { type: string; value?: string; repository?: string; branch?: string; observed_at: string } | null;
+  verificationStatus?: "not_required" | "pending" | "passed" | "failed" | "stale";
+  reviewStatus?: "not_required" | "pending" | "passed" | "changes_requested" | "rejected" | "stale";
+  acceptanceStatus?: "pending" | "ready" | "accepted" | "rejected" | "stale";
+  completionReadiness?: { ready: boolean; reasons: string[]; missingRequirements: string[]; failedRequirements: string[]; staleEvidence: string[]; unresolvedFindings: string[]; currentSubject?: { type: string; value?: string } | null };
+  cliRuns?: Array<{
+    id: string;
+    status: string;
+    delegateSessionId?: string;
+    executorModel?: string;
+    scope?: string[];
+    toolCalls?: Record<string, number>;
+    completedAt?: string;
+  }>;
 };
 
 type SessionStatus = {
@@ -74,6 +143,7 @@ type SessionStatus = {
   agent: "codex" | "claude" | "workbuddy" | "unknown";
   provider: string;
   model: string;
+  workspace?: string;
   registeredAt: string;
   lastSeenAt: string;
   status: "registered" | "unregistered";
@@ -81,7 +151,8 @@ type SessionStatus = {
   taskCount: number;
   lastTaskAt: string;
 };
-type HealthState = { ok: boolean; dashboard?: { generatedAt?: string; readable?: boolean }; watcher?: { healthy?: boolean; updatedAt?: string } };
+type RoutingHealth = { model: string; state: "closed" | "open" | "half_open"; consecutive_failures: number; active_executors: number; concurrency_limit: number; retry_after_at?: string | null };
+type HealthState = { ok: boolean; dashboard?: { generatedAt?: string; readable?: boolean }; watcher?: { healthy?: boolean; updatedAt?: string }; routing?: { models?: RoutingHealth[] } };
 
 type Dashboard = {
   generatedAt?: string;
@@ -142,13 +213,16 @@ export default function Home() {
   const [refreshMessage, setRefreshMessage] = useState("");
   const refreshInFlight = useRef(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [sessionPickerKind, setSessionPickerKind] = useState<"read" | "gate">("read");
   const [pickerThreadIds, setPickerThreadIds] = useState<string[]>([]);
+  const [gateAllowlistIds, setGateAllowlistIds] = useState<string[]>([]);
   const [isSavingSessionSelection, setIsSavingSessionSelection] = useState(false);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard>({ source: {}, threads: [] });
   const [liveAvailableThreads, setLiveAvailableThreads] = useState<Thread[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, SessionStatus>>({});
   const [health, setHealth] = useState<HealthState>({ ok: false });
+  const [reflections, setReflections] = useState<ReflectionState>({ version: 1, generatedAt: "", dataBoundary: { sessionMode: "allowlist", allowedSessionCount: 0, taskCount: 0 }, proposals: [] });
 
   const refreshLiveData = async (manual = false) => {
     if (refreshInFlight.current) return;
@@ -158,28 +232,34 @@ export default function Home() {
       setRefreshMessage("");
     }
     try {
-      const [dashboardResponse, tasksResponse, sessionStatusResponse, threadsResponse] = await Promise.all([
+      const [dashboardResponse, tasksResponse, sessionStatusResponse, threadsResponse, reflectionsResponse, gateAllowlistResponse] = await Promise.all([
         fetch(`${controlServerUrl}/dashboard`),
         fetch(`${controlServerUrl}/tasks`),
         fetch(`${controlServerUrl}/session-status`),
         fetch(`${controlServerUrl}/session-selection`),
+        fetch(`${controlServerUrl}/reflections`),
+        fetch(`${controlServerUrl}/gate-session-allowlist`),
       ]);
       const healthResponse = await fetch(`${controlServerUrl}/health`);
       if (!healthResponse.ok) throw new Error("本地控制服务健康检查失败");
       setHealth(await healthResponse.json() as HealthState);
-      if (!dashboardResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok) {
+      if (!dashboardResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok || !reflectionsResponse.ok || !gateAllowlistResponse.ok) {
         throw new Error("本地控制服务返回异常");
       }
-      const [dashboardPayload, tasksPayload, sessionStatusPayload, threadsPayload] = await Promise.all([
+      const [dashboardPayload, tasksPayload, sessionStatusPayload, threadsPayload, reflectionsPayload, gateAllowlistPayload] = await Promise.all([
         dashboardResponse.json() as Promise<Dashboard>,
         tasksResponse.json() as Promise<{ tasks?: TaskRecord[] }>,
         sessionStatusResponse.json() as Promise<{ sessions?: SessionStatus[] }>,
         threadsResponse.json() as Promise<{ availableThreads?: Thread[] }>,
+        reflectionsResponse.json() as Promise<ReflectionState>,
+        gateAllowlistResponse.json() as Promise<{ selection?: SessionSelection }>,
       ]);
       setDashboard(dashboardPayload);
       setTasks(tasksPayload.tasks ?? []);
       setSessionStatuses(Object.fromEntries((sessionStatusPayload.sessions ?? []).map((session) => [session.sessionId, session])));
       setLiveAvailableThreads(threadsPayload.availableThreads ?? []);
+      setReflections(reflectionsPayload);
+      setGateAllowlistIds(gateAllowlistPayload.selection?.threadIds ?? []);
       if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
     } catch (error) {
       setHealth({ ok: false });
@@ -201,7 +281,10 @@ export default function Home() {
 
   const dashboardThreads = dashboard.source?.availableThreads ?? dashboard.threads ?? [];
   const selectionThreads = liveAvailableThreads.length > 0 ? liveAvailableThreads : dashboardThreads;
-  const taskBackedThreads = mergeTaskSessions(selectionThreads, tasks, sessionStatuses);
+  const allowlistIds = dashboard.source?.sessionSelection?.threadIds ?? [];
+  const whitelistedThreads = selectionThreads.filter((thread) => allowlistIds.includes(asText(thread.id, "")));
+  const pickerGroups = useMemo(() => groupSessions(selectionThreads), [selectionThreads]);
+  const taskBackedThreads = mergeTaskSessions(whitelistedThreads, tasks, sessionStatuses);
   const threadsWithTasks = filterThreadsWithTasks(taskBackedThreads, tasks);
   const selectionGroups = useMemo(() => groupSessions(threadsWithTasks), [threadsWithTasks]);
   const mergedThreads = selectionGroups;
@@ -244,22 +327,25 @@ export default function Home() {
       setIsSyncing(false);
     }
   };
-  const selectedSessionIds = dashboard.source?.sessionSelection?.mode === "selected"
-    ? dashboard.source.sessionSelection.threadIds
-    : selectionThreads.map((thread) => asText(thread.id, ""));
+  const selectedSessionIds = allowlistIds;
   const openSessionPicker = () => {
+    setSessionPickerKind("read");
     setPickerThreadIds(selectedSessionIds.filter(Boolean));
+    setShowSessionPicker(true);
+  };
+  const openGateSessionPicker = () => {
+    setSessionPickerKind("gate");
+    setPickerThreadIds(gateAllowlistIds.filter(Boolean));
     setShowSessionPicker(true);
   };
   const saveSessionSelection = async (threadIds: string[]) => {
     setIsSavingSessionSelection(true);
     setSyncMessage("");
     try {
-      const mode = threadIds.length === selectionThreads.length ? "all" : "selected";
       const response = await fetch(`${controlServerUrl}/session-selection`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
-        body: JSON.stringify({ mode, threadIds }),
+        body: JSON.stringify({ mode: "allowlist", threadIds }),
       });
       const payload = await response.json() as { threadCount?: number; error?: string };
       if (!response.ok) throw new Error(payload.error || "会话范围保存失败。");
@@ -268,6 +354,26 @@ export default function Home() {
       void refreshLiveData();
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : "会话范围保存失败。");
+    } finally {
+      setIsSavingSessionSelection(false);
+    }
+  };
+  const saveGateSessionAllowlist = async (threadIds: string[]) => {
+    setIsSavingSessionSelection(true);
+    setSyncMessage("");
+    try {
+      const response = await fetch(`${controlServerUrl}/gate-session-allowlist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
+        body: JSON.stringify({ threadIds }),
+      });
+      const payload = await response.json() as { selection?: SessionSelection; error?: string };
+      if (!response.ok) throw new Error(payload.error || "门禁豁免白名单保存失败。");
+      setGateAllowlistIds(payload.selection?.threadIds ?? threadIds);
+      setShowSessionPicker(false);
+      setSyncMessage(`已保存门禁豁免白名单，当前 ${payload.selection?.threadIds.length ?? threadIds.length} 个 Session 无需活跃任务。`);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : "门禁豁免白名单保存失败。");
     } finally {
       setIsSavingSessionSelection(false);
     }
@@ -323,7 +429,10 @@ export default function Home() {
             </div>
             <div className="rail-actions">
               <button className="manage-sessions-button" onClick={openSessionPicker}>
-                添加会话
+                读取白名单
+              </button>
+              <button className="manage-sessions-button" onClick={openGateSessionPicker}>
+                门禁豁免
               </button>
               <button className="scan-button" onClick={scanCodexSessions} disabled={isSyncing}>
                 {isSyncing ? "扫描中…" : "手动扫描"}
@@ -339,14 +448,16 @@ export default function Home() {
           {syncMessage && <p className="sync-message" role="status">{syncMessage}</p>}
           {refreshMessage && <p className="refresh-message" role="status" aria-live="polite">{refreshMessage}</p>}
           {showSessionPicker && (
-            <section className="session-picker" aria-label="选择需要记录的会话">
+            <section className="session-picker" aria-label="管理允许读取的会话白名单">
               <div className="session-picker-heading">
-                <strong>选择要记录的会话</strong>
+                <strong>{sessionPickerKind === "read" ? "Session 内容读取白名单" : "Session Hook 门禁豁免白名单"}</strong>
                 <button onClick={() => setShowSessionPicker(false)}>关闭</button>
               </div>
-              <p>未勾选的会话不会出现在任务来源列表，但原始会话文件不会被删除。</p>
+              <p>{sessionPickerKind === "read"
+                ? "只有勾选的 Session 才会读取 JSONL 正文。未勾选项仅使用本地索引中的 ID、标题和文件时间供你选择，不删除原始文件。"
+                : "勾选的 Session 在非只读工具调用前不再强制登记活跃任务。命令安全检查仍然生效；默认不豁免。"}</p>
               <div className="session-picker-list">
-                {selectionGroups.map((group) => {
+                {pickerGroups.map((group) => {
                   const sessionIds = group.sessionIds;
                   const selectedCount = sessionIds.filter((id) => pickerThreadIds.includes(id)).length;
                   const checked = sessionIds.length > 0 && selectedCount === sessionIds.length;
@@ -367,7 +478,7 @@ export default function Home() {
               <div className="session-picker-actions">
                 <button onClick={() => setPickerThreadIds(selectionThreads.map((thread) => asText(thread.id, "")).filter(Boolean))}>全选</button>
                 <button onClick={() => setPickerThreadIds([])}>清空</button>
-                <button className="session-save-button" onClick={() => void saveSessionSelection(pickerThreadIds)} disabled={isSavingSessionSelection}>
+                <button className="session-save-button" onClick={() => void (sessionPickerKind === "read" ? saveSessionSelection(pickerThreadIds) : saveGateSessionAllowlist(pickerThreadIds))} disabled={isSavingSessionSelection}>
                   {isSavingSessionSelection ? "保存中…" : `保存（${pickerThreadIds.length}）`}
                 </button>
               </div>
@@ -434,9 +545,17 @@ export default function Home() {
             selectedSessionId={selectedThread}
             sessionStatuses={sessionStatuses}
             serviceHealthy={health.ok && health.watcher?.healthy !== false}
+            routingModels={health.routing?.models ?? []}
             onTaskUpdated={(updatedTask) => {
               setTasks((current) => current.map((task) => task.id === updatedTask.id ? updatedTask : task));
             }}
+          />
+          <ReflectionPanel
+            reflections={reflections}
+            availableThreads={selectionThreads}
+            onChange={setReflections}
+            onExecuted={() => void refreshLiveData()}
+            onConfigureAllowlist={openSessionPicker}
           />
         </section>
       </div>
@@ -461,7 +580,108 @@ const taskStatusMeta: Record<TaskStatus, { label: string; tone: string }> = {
 
 const TASKS_PER_PAGE = 40;
 
-function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, onTaskUpdated }: { tasks: TaskRecord[]; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; onTaskUpdated: (task: TaskRecord) => void }) {
+function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, onConfigureAllowlist }: { reflections: ReflectionState; availableThreads: Thread[]; onChange: (state: ReflectionState) => void; onExecuted: () => void; onConfigureAllowlist: () => void }) {
+  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [message, setMessage] = useState("");
+  const [executionProposalId, setExecutionProposalId] = useState("");
+  const [executionMode, setExecutionMode] = useState<"new_session" | "existing_session">("new_session");
+  const [executionThreadId, setExecutionThreadId] = useState("");
+
+  const request = async (url: string, body = {}) => {
+    setState("loading");
+    setMessage("");
+    try {
+      const response = await fetch(`${controlServerUrl}${url}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json() as ReflectionState & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "反思操作失败");
+      onChange(payload);
+      setState("idle");
+      return true;
+    } catch (error) {
+      setState("error");
+      setMessage(error instanceof Error ? error.message : "反思操作失败");
+      return false;
+    }
+  };
+
+  const execute = async (proposalId: string) => {
+    if (executionMode === "existing_session" && !executionThreadId) {
+      setState("error");
+      setMessage("请选择一个已有 Session。");
+      return;
+    }
+    const succeeded = await request(`/reflections/${encodeURIComponent(proposalId)}/execute`, {
+      requestId: crypto.randomUUID(),
+      mode: executionMode,
+      ...(executionMode === "existing_session" ? { threadId: executionThreadId } : {}),
+    });
+    if (!succeeded) return;
+    setExecutionProposalId("");
+    onExecuted();
+  };
+
+  return (
+    <section className="reflection-section" aria-label="数据反思与改进提案">
+      <div className="reflection-heading">
+        <div><p className="eyebrow orange">LOCAL REFLECTION LOOP</p><h2>数据反思与改进提案<span>{reflections.proposals.length}</span></h2></div>
+        <div className="reflection-controls">
+          <small>仅读取 {reflections.dataBoundary.allowedSessionCount} 个白名单 Session 的聚合结果与 {reflections.dataBoundary.taskCount} 条任务记录</small>
+          <button type="button" onClick={() => void request("/reflections/run")} disabled={state === "loading"}>{state === "loading" ? "分析中…" : "运行反思"}</button>
+        </div>
+      </div>
+      <p className="reflection-boundary">人工配置提示只引导本机操作，不创建任务；Agent 改进提案采纳后才会选择 Session、建立正式任务并派发。</p>
+      {message && <p className="reflection-error" role="alert">{message}</p>}
+      {reflections.proposals.length === 0 ? <p className="reflection-empty">尚未生成改进提案。点击“运行反思”分析当前本地治理数据。</p> : (
+        <div className="reflection-list">
+          {reflections.proposals.map((proposal) => {
+            const latestExecution = proposal.executions?.at(-1);
+            const executionSession = availableThreads.find((thread) => thread.id === latestExecution?.sessionId);
+            const executionLabel = latestExecution?.taskStatus === "done_claimed"
+              ? "Agent 已声明完成，可再次反思复查"
+              : latestExecution?.taskStatus === "verified"
+              ? "历史任务已人工验收，可再次运行反思"
+              : latestExecution?.taskStatus === "blocked"
+              ? "执行受阻，请查看任务详情"
+              : latestExecution
+              ? `任务 ${latestExecution.taskStatus || "准备中"} · 派发 ${latestExecution.dispatchStatus || latestExecution.status}`
+              : "";
+            return (
+            <article key={proposal.id} className={`reflection-card reflection-${proposal.status}`}>
+              <div className="reflection-card-title"><strong>{proposal.title}</strong><span>{proposal.executionPolicy === "manual_only" ? "待配置" : proposal.status === "accepted" ? "已采纳" : proposal.status === "rejected" ? "已忽略" : proposal.status === "resolved" ? "复查已解决" : "待审核"}</span></div>
+              <p>{proposal.summary}</p>
+              <dl><div><dt>建议</dt><dd>{proposal.recommendation}</dd></div><div><dt>风险</dt><dd>{proposal.risk}</dd></div></dl>
+              <small>证据：{proposal.evidence.map((item) => `${item.metric}=${item.count}${item.taskIds.length ? ` · ${item.taskIds.join("、")}` : ""}`).join("；")}</small>
+              {proposal.executionPolicy === "manual_only" && <div className="reflection-execution-state"><strong>这是本机配置提示，不是 Agent 任务</strong><small>保存至少一个 Session 后提示会自动消失。</small><button type="button" onClick={onConfigureAllowlist}>打开会话白名单</button></div>}
+              {latestExecution && <div className="reflection-execution-state"><strong>{executionLabel}</strong><small>正式任务：{latestExecution.taskId}</small><small>执行 Session：{asText(executionSession?.title, latestExecution.sessionId || "正在创建")}</small>{latestExecution.dispatchError && <small className="reflection-execution-error">{latestExecution.dispatchError}</small>}</div>}
+              {proposal.status === "accepted" && !latestExecution && executionProposalId === proposal.id && (
+                <fieldset className="reflection-executor-picker">
+                  <legend>选择执行方式</legend>
+                  <label><input type="radio" name={`execution-${proposal.id}`} checked={executionMode === "new_session"} onChange={() => setExecutionMode("new_session")} /> 新建独立 Session</label>
+                  <label><input type="radio" name={`execution-${proposal.id}`} checked={executionMode === "existing_session"} onChange={() => setExecutionMode("existing_session")} /> 使用已有 Session</label>
+                  {executionMode === "existing_session" && <select aria-label="选择改进任务执行 Session" value={executionThreadId} onChange={(event) => setExecutionThreadId(event.target.value)}><option value="">请选择 Session</option>{availableThreads.filter((thread) => thread.id).map((thread) => <option key={thread.id} value={thread.id}>{asText(thread.title, "未命名会话")} · {thread.id?.slice(0, 8)}</option>)}</select>}
+                  <div><button type="button" onClick={() => void execute(proposal.id)} disabled={state === "loading"}>{state === "loading" ? "创建中…" : "创建正式任务并执行"}</button><button type="button" onClick={() => setExecutionProposalId("")}>取消</button></div>
+                </fieldset>
+              )}
+              <div className="reflection-actions">
+                {proposal.status === "proposed" && proposal.executionPolicy === "agent_task" && <button type="button" onClick={() => void request(`/reflections/${encodeURIComponent(proposal.id)}/actions`, { decision: "accepted" })} disabled={state === "loading"}>采纳为改进项</button>}
+                {proposal.status === "accepted" && proposal.executionPolicy === "agent_task" && !latestExecution && executionProposalId !== proposal.id && <button type="button" onClick={() => setExecutionProposalId(proposal.id)} disabled={state === "loading"}>选择 Session 并执行</button>}
+                {proposal.status === "proposed" && proposal.executionPolicy === "agent_task" && <button type="button" onClick={() => void request(`/reflections/${encodeURIComponent(proposal.id)}/actions`, { decision: "rejected" })} disabled={state === "loading"}>忽略</button>}
+                {proposal.executionPolicy === "agent_task" && ["accepted", "rejected"].includes(proposal.status) && !latestExecution && <button type="button" onClick={() => void request(`/reflections/${encodeURIComponent(proposal.id)}/actions`, { decision: "proposed" })} disabled={state === "loading"}>重新审核</button>}
+                {["done_claimed", "verified"].includes(latestExecution?.taskStatus || "") && <button type="button" onClick={() => void request("/reflections/run")} disabled={state === "loading"}>再次反思验证效果</button>}
+              </div>
+            </article>
+          );})}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, routingModels, onTaskUpdated }: { tasks: TaskRecord[]; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; routingModels: RoutingHealth[]; onTaskUpdated: (task: TaskRecord) => void }) {
   // 筛选逻辑：全部任务显示全局，具体 Session 优先精确 session_id，不可用时按显式项目标识回退
   const selectedSessionIds = sessionIdsForGroup(selectedSessionId, sessionGroups);
   const filteredTasks = selectedSessionId === "全部任务"
@@ -472,20 +692,17 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
       selectedThread: sessionGroups.find((thread) => thread.id === selectedSessionId),
     }));
   const [page, setPage] = useState(1);
-  const [reviewOnly, setReviewOnly] = useState(false);
-  const [attention, setAttention] = useState<"all" | "blocked" | "overdue" | "done_claimed" | "service">("all");
+  const [attention, setAttention] = useState<"all" | "blocked" | "overdue" | "service">("all");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | TaskStatus>("all");
   const [agentFilter, setAgentFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState<"all" | "stale" | "overdue">("all");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
   const [showArchived, setShowArchived] = useState(false);
-  const reviewCount = filteredTasks.filter((task) => (showArchived || !task.archivedAt) && task.status === "done_claimed").length;
   const agents: string[] = [...new Set(filteredTasks.map((task) => task.agent || "unknown"))];
   const attentionTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt);
-  const attentionCounts = { blocked: attentionTasks.filter((task) => task.status === "blocked").length, overdue: attentionTasks.filter((task) => taskTimeState(task).overdue).length, done_claimed: attentionTasks.filter((task) => task.status === "done_claimed").length, service: serviceHealthy ? 0 : 1 };
-  const searchedTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt).filter((task) => statusFilter === "all" || task.status === statusFilter).filter((task) => agentFilter === "all" || (task.agent || "unknown") === agentFilter).filter((task) => timeFilter === "all" || taskTimeState(task)[timeFilter]).filter((task) => attention === "all" || (attention === "service" ? false : attention === "blocked" ? task.status === "blocked" : attention === "done_claimed" ? task.status === "done_claimed" : taskTimeState(task).overdue)).filter((task) => !query || `${task.title} ${task.id} ${task.sessionId}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => (Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || "")) * (sortOrder === "newest" ? 1 : -1));
-  const shownTasks = reviewOnly ? searchedTasks.filter((task) => task.status === "done_claimed") : searchedTasks;
+  const attentionCounts = { blocked: attentionTasks.filter((task) => task.status === "blocked").length, overdue: attentionTasks.filter((task) => taskTimeState(task).overdue).length, service: serviceHealthy ? 0 : 1 };
+  const shownTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt).filter((task) => statusFilter === "all" || task.status === statusFilter).filter((task) => agentFilter === "all" || (task.agent || "unknown") === agentFilter).filter((task) => timeFilter === "all" || taskTimeState(task)[timeFilter]).filter((task) => attention === "all" || (attention === "service" ? false : attention === "blocked" ? task.status === "blocked" : taskTimeState(task).overdue)).filter((task) => !query || `${task.title} ${task.id} ${task.sessionId}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => (Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || "")) * (sortOrder === "newest" ? 1 : -1));
   const pageCount = Math.max(1, Math.ceil(shownTasks.length / TASKS_PER_PAGE));
   const effectivePage = Math.min(page, pageCount);
   const visibleTasks = shownTasks.slice((effectivePage - 1) * TASKS_PER_PAGE, effectivePage * TASKS_PER_PAGE);
@@ -493,11 +710,11 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
   return (
     <section className="task-ledger" aria-label="会话主动任务">
       <div className={`session-health-bar ${serviceHealthy ? "healthy" : "unhealthy"}`} role="status">{serviceHealthy ? "● 控制服务正常 · 同步 watcher 正常" : "! 控制服务或同步 watcher 异常，正在重试"} · 最近数据生成时间以 dashboard 为准</div>
+      {routingModels.length > 0 && <div className="session-health-bar healthy" aria-label="模型路由健康">模型路由：{routingModels.map((item) => `${item.model.replace("gpt-5.3-codex-", "").replace("gpt-5.6-", "")} ${item.state} ${item.active_executors}/${item.concurrency_limit}`).join(" · ")}</div>}
       <div className="ledger-heading">
         <p className="eyebrow orange">SESSION TASK GATE</p>
         <h2>会话主动任务<span>{filteredTasks.length}</span></h2>
-        <button type="button" className="task-filter-button" onClick={() => setReviewOnly((value) => !value)}>{reviewOnly ? "全部任务" : `待验收 ${reviewCount}`}</button>
-        <span className="attention-summary">需要关注：</span>{(["blocked", "overdue", "done_claimed", "service"] as const).map((key) => <button type="button" key={key} className="task-filter-button" onClick={() => setAttention(attention === key ? "all" : key)}>{key === "blocked" ? "阻塞" : key === "overdue" ? "逾期" : key === "done_claimed" ? "待验收" : "服务"} {attentionCounts[key]}</button>)}
+        <span className="attention-summary">需要关注：</span>{(["blocked", "overdue", "service"] as const).map((key) => <button type="button" key={key} className="task-filter-button" onClick={() => setAttention(attention === key ? "all" : key)}>{key === "blocked" ? "阻塞" : key === "overdue" ? "逾期" : "服务"} {attentionCounts[key]}</button>)}
         <input aria-label="搜索任务" placeholder="标题 / ID / Session" value={query} onChange={(event) => setQuery(event.target.value)} />
         <select aria-label="任务状态" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | TaskStatus)}><option value="all">全部状态</option>{Object.keys(taskStatusMeta).map((status) => <option key={status} value={status}>{taskStatusMeta[status as TaskStatus].label}</option>)}</select>
         <select aria-label="任务 Agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}><option value="all">全部 Agent</option>{agents.map((agent) => <option key={agent}>{agent}</option>)}</select>
@@ -507,9 +724,7 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
       </div>
       {shownTasks.length === 0 ? (
         <p className="ledger-empty">
-          {reviewOnly
-            ? "当前没有待验收任务。"
-            : selectedSessionId === "全部任务"
+          {selectedSessionId === "全部任务"
             ? "还没有已登记的会话主动任务。会话开始写代码前应先调用 taskcenter_session_register 与 taskcenter_task_create，取得 accepted=true 和 task_id 后再实施。"
             : "当前会话没有关联任务。"}
         </p>
@@ -553,6 +768,8 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   const [actionError, setActionError] = useState("");
   const [scheduleEditing, setScheduleEditing] = useState(false);
   const [scheduleValue, setScheduleValue] = useState("");
+  const [estimatedEffortHours, setEstimatedEffortHours] = useState("");
+  const [estimateReason, setEstimateReason] = useState("");
   const [idCopyState, setIdCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [events, setEvents] = useState<Array<Record<string, string>> | null>(null);
@@ -560,15 +777,19 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   useEffect(() => { if (!detailsOpen || events) return; void fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/events`).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "事件加载失败"); setEvents(payload.events ?? []); }).catch((error) => setEventsError(error instanceof Error ? error.message : "事件加载失败")); }, [detailsOpen, events, task.id]);
   const meta = taskStatusMeta[task.status] ?? taskStatusMeta.planned;
   const detailItems = [
+    { label: "完成就绪", items: task.contractVersion === "v2" && task.completionReadiness && !task.completionReadiness.ready ? task.completionReadiness.reasons : [] },
     { label: "审核理由", items: task.reviewReason ? [`${task.reviewReason}${task.reviewedAt ? ` · ${normalizeDate(task.reviewedAt)}` : ""}`] : [] },
     { label: "假设", items: task.assumptions ?? [] },
     { label: "风险", items: task.risks ?? [] },
     { label: "取舍", items: task.tradeoffs ?? [] },
     { label: "待确认", items: task.openQuestions ?? [] },
     { label: "复盘", items: task.retrospective ? [task.retrospective] : [] },
+    { label: "估时调整", items: (task.estimateHistory ?? []).slice(-3).reverse().map((item) => `${item.previousDueAt ? normalizeDate(item.previousDueAt) : "未设置"} → ${item.dueAt ? normalizeDate(item.dueAt) : "不变"} · ${item.estimatedEffortMs ? formatElapsed(item.estimatedEffortMs) : "工时不变"} · ${item.reason || "未说明"}`) },
+    { label: "CLI 执行", items: (task.cliRuns ?? []).slice().reverse().map((run) => `${run.executorModel || "unknown"} · ${run.status} · Session ${run.delegateSessionId ? run.delegateSessionId.slice(0, 12) : "待领取"} · scope ${(run.scope ?? []).join(", ") || "未声明"}${run.completedAt ? ` · ${normalizeDate(run.completedAt)}` : ""}`) },
   ];
+  const routingAdvisory = detectSparkRoutingAdvisory(task);
   const nonEmptyDetails = detailItems.filter((item) => item.items.length > 0);
-  const hasEventDetails = hasTaskEventDetails(task, nonEmptyDetails.length > 0);
+  const hasEventDetails = hasTaskEventDetails(task, nonEmptyDetails.length > 0 || Boolean(routingAdvisory?.triggered));
   const stepText = task.currentStep ?? task.nextAction;
   const goalOrStep = task.goal || stepText ? `${asText(task.goal)}${stepText ? ` · ${asText(stepText)}` : ""}` : "—";
   const isDemo = task.id.startsWith("ui-demo-");
@@ -603,11 +824,13 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
     }
   };
 
-  const handleSchedule = async (value: string) => {
-    if (!value || Number.isNaN(Date.parse(value))) return;
+  const handleSchedule = async () => {
+    const effort = Number(estimatedEffortHours);
+    if (!scheduleValue && !(Number.isFinite(effort) && effort > 0)) return;
+    if (scheduleValue && Number.isNaN(Date.parse(scheduleValue))) return;
     setActionState("loading");
     try {
-      const response = await fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/actions`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" }, body: JSON.stringify({ action: "schedule", expectedAt: new Date(value).toISOString() }) });
+      const response = await fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/actions`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" }, body: JSON.stringify({ action: "schedule", ...(scheduleValue ? { expectedAt: new Date(scheduleValue).toISOString() } : {}), ...(Number.isFinite(effort) && effort > 0 ? { estimatedEffortMinutes: Math.round(effort * 60) } : {}), reason: estimateReason || "人工调整估时" }) });
       const payload = await response.json() as { error?: string; task?: TaskRecord | null };
       if (!response.ok || !payload.task) throw new Error(payload.error || "操作失败");
       onTaskUpdated(payload.task);
@@ -649,7 +872,10 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         {idCopyState === "error" && <small className="task-id-copy-error">复制失败，请手动选择 ID</small>}
       </td>
       <td data-label="关联 ID" className="task-cell"><code>{task.requirementId || "—"}</code></td>
-      <td data-label="状态" className="task-cell"><span className={`task-status status-${meta.tone}`}>{meta.label}</span>{timeState.stale && <small> · 陈旧</small>}{timeState.overdue && <small> · 已逾期</small>}</td>
+      <td data-label="状态" className="task-cell">
+        <span className={`task-status status-${meta.tone}`}>{meta.label}</span>{timeState.stale && <small> · 陈旧</small>}{timeState.overdue && <small> · 交付逾期</small>}{timeState.effortOverrun && <small> · 工时超预估</small>}
+        {task.contractVersion === "v2" && <small className="task-assurance-status">验证 {task.verificationStatus} · 审查 {task.reviewStatus} · 验收 {task.acceptanceStatus}</small>}
+      </td>
       <td data-label="目标 / 步骤" className="task-cell task-goal-cell" title={goalOrStep}>{goalOrStep}</td>
       <td data-label="阻塞" className="task-cell task-blocker-cell" title={task.blocker || "—"}>{task.blocker ? asText(task.blocker) : "—"}</td>
       <td data-label="假设 / 风险 / 取舍 / 待确认 / 复盘" className="task-cell task-count-cell">
@@ -678,10 +904,17 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         )}
       </td>
       <td data-label="时间 / 工具" className="task-cell task-metrics-cell">
-        <div>开始：{normalizeDate(task.startedAt)}</div>
-        <div>预计：{normalizeDate(task.expectedAt)}</div>
+        <div>创建：{normalizeDate(task.createdAt)}</div>
+        <div>首次执行：{normalizeDate(task.firstStartedAt)}</div>
+        <div>交付截止：{normalizeDate(task.dueAt)}</div>
+        {!task.dueAt && task.expectedAt && <div>历史预计完成：{normalizeDate(task.expectedAt)}</div>}
+        <div>预计工时：{timeState.estimatedEffortMs === null ? "—" : formatElapsed(timeState.estimatedEffortMs)}</div>
         <div>实际：{normalizeDate(task.actualAt)}</div>
-        <div>耗时：{formatElapsed(timeState.elapsedMs)}</div>
+        <div>墙钟周期：{formatElapsed(timeState.wallElapsedMs)}</div>
+        <div>有效执行：{timeState.activeElapsedMs === null ? "未采集" : formatElapsed(timeState.activeElapsedMs)}</div>
+        <div>阻塞等待：{timeState.blockedElapsedMs === null ? "未采集" : formatElapsed(timeState.blockedElapsedMs)}</div>
+        {timeState.scheduleOverdueMs > 0 && <div>交付延期：{formatElapsed(timeState.scheduleOverdueMs)}</div>}
+        {timeState.effortVarianceMs !== null && <div>工时偏差：{timeState.effortVarianceMs >= 0 ? "+" : "-"}{formatElapsed(Math.abs(timeState.effortVarianceMs))}</div>}
         {task.archivedAt && <div>归档：{normalizeDate(task.archivedAt)}</div>}
         <div className="task-tools">工具：{Object.entries(task.toolCalls ?? {}).length ? Object.entries(task.toolCalls ?? {}).map(([name, count]) => `${name} ×${count}`).join("、") : "—"}</div>
       </td>
@@ -702,12 +935,12 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
           </button>
         )}
         {task.status === "done_claimed" && (
-          <><button className="task-action-button action-done" onClick={() => handleAction("verify")} disabled={actionState === "loading"}>验收通过</button><button className="task-action-button action-block" onClick={() => handleAction("reject")} disabled={actionState === "loading"}>打回</button></>
+          <button className="task-action-button action-block" onClick={() => handleAction("reject")} disabled={actionState === "loading"}>打回</button>
         )}
         {task.status === "verified" && <span className="task-action-note">已验收</span>}
         {["planned", "in_progress", "blocked"].includes(task.status) && <button className="task-action-button action-block" onClick={() => handleAction("cancel")} disabled={actionState === "loading"}>取消</button>}
-        {["planned", "in_progress", "blocked"].includes(task.status) && !scheduleEditing && <button className="task-action-button" onClick={() => { setScheduleEditing(true); setScheduleValue(toLocalDateTimeValue(task.expectedAt)); }}>设置预计时间</button>}
-        {scheduleEditing && <span><input type="datetime-local" value={scheduleValue} onChange={(event) => setScheduleValue(event.target.value)} /><button className="task-action-button" onClick={() => { if (!scheduleValue || Number.isNaN(Date.parse(scheduleValue))) return; void handleSchedule(scheduleValue); }}>保存</button><button className="task-action-button" onClick={() => setScheduleEditing(false)}>取消</button></span>}
+        {["planned", "in_progress", "blocked"].includes(task.status) && !scheduleEditing && <button className="task-action-button" onClick={() => { setScheduleEditing(true); setScheduleValue(toLocalDateTimeValue(task.dueAt)); setEstimatedEffortHours(task.estimatedEffortMs ? String(task.estimatedEffortMs / 3_600_000) : ""); setEstimateReason(""); }}>设置估时</button>}
+        {scheduleEditing && <span><input aria-label="交付截止时间" type="datetime-local" value={scheduleValue} onChange={(event) => setScheduleValue(event.target.value)} /><input aria-label="预计有效工时" type="number" min="0.25" step="0.25" placeholder="有效工时（小时）" value={estimatedEffortHours} onChange={(event) => setEstimatedEffortHours(event.target.value)} /><input aria-label="估时调整原因" placeholder="调整原因" value={estimateReason} onChange={(event) => setEstimateReason(event.target.value)} /><button className="task-action-button" onClick={() => void handleSchedule()}>保存</button><button className="task-action-button" onClick={() => setScheduleEditing(false)}>取消</button></span>}
         {!(["planned", "in_progress", "blocked"].includes(task.status)) && !task.archivedAt && <button className="task-action-button" onClick={() => handleAction("archive")} disabled={actionState === "loading"}>归档</button>}
         {task.archivedAt && <button className="task-action-button" onClick={() => handleAction("unarchive")} disabled={actionState === "loading"}>恢复</button>}
         {isDemo && (
@@ -723,6 +956,15 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
           <td colSpan={9}>
             <div className="task-detail-content">
               {nonEmptyDetails.map((item) => <section key={item.label}><strong>{item.label}</strong><ul>{item.items.map((value, index) => <li key={`${item.label}-${index}`}>{value}</li>)}</ul></section>)}
+              {routingAdvisory?.triggered && (
+                <section className="task-routing-advisory">
+                  <div className="dispatch-warning">
+                    <strong>{routingAdvisory.title}</strong>
+                    <p>{routingAdvisory.message}</p>
+                    <p>{routingAdvisory.suggestion}</p>
+                  </div>
+                </section>
+              )}
               <section><strong>事件时间线</strong>{eventsError ? <p>{eventsError}</p> : events === null ? <p>加载中…</p> : events.length === 0 ? <p>暂无事件</p> : <ul>{events.map((event, index) => <li key={`${event.event_id || index}`}>{asText(event.type)} · {taskEventStatus(event)} · {normalizeDate(event.created_at)} · {taskEventSummary(event)}</li>)}</ul>}</section>
             </div>
           </td>

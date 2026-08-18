@@ -30,8 +30,8 @@ export function resolveContextCommand(options = {}) {
 }
 
 export async function syncContextEvent(event, task, options = {}) {
-  if (event?.type === "routing.decision") {
-    return { status: "skipped", reason: "routing_audit" };
+  if (["routing.decision", "task.reminder"].includes(event?.type)) {
+    return { status: "skipped", reason: event.type === "task.reminder" ? "local_overdue_reminder" : "routing_audit" };
   }
   const explicitContextTaskId = task?.contextTaskId || event?.context_task_id || "";
   const enabled = options.enabled ?? Boolean(explicitContextTaskId || process.env.TASKCENTER_CONTEXT_BRIDGE_ENABLED === "true");

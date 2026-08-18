@@ -101,6 +101,17 @@ test("无显式关联且 bridge 未开启时不会创建 Context 任务", async 
   assert.deepEqual(calls, []);
 });
 
+test("本地逾期提醒不会同步为 ProjectContext 代码证据", async () => {
+  const calls = [];
+  const result = await syncContextEvent(
+    { type: "task.reminder", event_id: "overdue-reminder" },
+    { id: "task-overdue", contextTaskId: "context-overdue", workspace: "/work" },
+    bridgeOptions(calls, []),
+  );
+  assert.deepEqual(result, { status: "skipped", reason: "local_overdue_reminder" });
+  assert.deepEqual(calls, []);
+});
+
 test("模型路由审计不会同步为 ProjectContext 代码证据", async () => {
   const calls = [];
   const result = await syncContextEvent(

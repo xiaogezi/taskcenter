@@ -7,13 +7,13 @@ import test from "node:test";
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), "taskcenter-health-"));
-  const paths = Object.fromEntries(["dashboard", "ledger", "events", "heartbeat"].map((name) => [name, join(dir, name)]));
+  const paths = Object.fromEntries(["dashboard", "ledger", "events", "heartbeat", "delegations"].map((name) => [name, join(dir, name)]));
   await writeFile(paths.dashboard, JSON.stringify({ generatedAt: "2026-08-09T05:00:00Z" }));
   await writeFile(paths.ledger, "{}");
   await writeFile(paths.events, `${JSON.stringify({ task_id: "target", type: "old" })}\n坏行\n${JSON.stringify({ task_id: "other", type: "other" })}\n${JSON.stringify({ task_id: "target", type: "new" })}\n`);
   await writeFile(paths.heartbeat, JSON.stringify({ updatedAt: new Date().toISOString() }));
   const port = 3200 + Math.floor(Math.random() * 300);
-  const child = spawn(process.execPath, ["scripts/control-server.mjs"], { cwd: process.cwd(), env: { ...process.env, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DASHBOARD_PATH: paths.dashboard, TASKCENTER_TASK_LEDGER_PATH: paths.ledger, TASKCENTER_TASK_EVENTS_PATH: paths.events, TASKCENTER_WATCHER_HEARTBEAT_PATH: paths.heartbeat, TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" }, stdio: "ignore" });
+  const child = spawn(process.execPath, ["scripts/control-server.mjs"], { cwd: process.cwd(), env: { ...process.env, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DASHBOARD_PATH: paths.dashboard, TASKCENTER_TASK_LEDGER_PATH: paths.ledger, TASKCENTER_TASK_EVENTS_PATH: paths.events, TASKCENTER_WATCHER_HEARTBEAT_PATH: paths.heartbeat, TASKCENTER_DELEGATIONS_PATH: paths.delegations, TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" }, stdio: "ignore" });
   for (let i = 0; i < 30; i++) { try { await fetch(`http://127.0.0.1:${port}/health`); break; } catch { await new Promise((resolve) => setTimeout(resolve, 50)); } }
   return { dir, paths, port, child };
 }

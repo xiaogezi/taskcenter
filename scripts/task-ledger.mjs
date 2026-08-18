@@ -2,6 +2,14 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { taskTimeState, STALE_TASK_MS } from "../app/task-time-state.mjs";
+import {
+  applyCompletionEvent,
+  buildCompletionPacket,
+  completionPacketMarkdown,
+  computeCompletionReadiness,
+  normalizeCompletionEvent,
+  withCompletionState,
+} from "./completion-state.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const taskEventsPath = resolve(process.env.TASKCENTER_TASK_EVENTS_PATH || join(projectRoot, "data", "task-events.jsonl"));
@@ -23,7 +31,72 @@ export { taskTimeState, STALE_TASK_MS };
 export function loadTasks() {
   return readLedger()
     .filter((task) => task.status !== "removed")
-    .map((task) => ({ ...task, sessionId: canonicalSessionId(task.sessionId) }));
+    .map((task) => normalizeDueAtSemantics(task))
+    .map((task) => withCompletionState({ ...task, sessionId: canonicalSessionId(task.sessionId) }));
+}
+
+function normalizeDueAtSemantics(task) {
+  if (task.dueAtExplicit === true) return task;
+  return { ...task, dueAt: "", dueAtExplicit: false };
+}
+
+export function taskCompletionReadiness(taskId, revision = "") {
+  const task = loadTasks().find((item) => item.id === taskId);
+  if (!task) throw new TaskLedgerError(404, "任务不存在。");
+  return computeCompletionReadiness(task, revision || task.currentRevision || "");
+}
+
+export function taskCompletionPacket(taskId) {
+  const task = loadTasks().find((item) => item.id === taskId);
+  if (!task) throw new TaskLedgerError(404, "任务不存在。");
+  return buildCompletionPacket(task);
+}
+
+export function taskExport(taskId, format = "json") {
+  const task = loadTasks().find((item) => item.id === taskId);
+  if (!task) throw new TaskLedgerError(404, "任务不存在。");
+  const auditSummary = taskAuditSummary(taskId);
+  const estimateCalibration = taskEstimateCalibration(task);
+  return format === "markdown"
+    ? `${completionPacketMarkdown(task)}\n## Estimate calibration\n\n- Delivery due: ${estimateCalibration.dueAt || "none"}\n- Estimated active effort: ${formatExportDuration(estimateCalibration.estimatedEffortMs)}\n- Wall elapsed: ${formatExportDuration(estimateCalibration.wallElapsedMs)}\n- Active elapsed: ${estimateCalibration.activeElapsedKnown ? formatExportDuration(estimateCalibration.activeElapsedMs) : "unknown"}\n- Blocked elapsed: ${estimateCalibration.blockedElapsedMs === null ? "unknown" : formatExportDuration(estimateCalibration.blockedElapsedMs)}\n- Schedule overdue: ${formatExportDuration(estimateCalibration.scheduleOverdueMs)}\n- Effort variance: ${estimateCalibration.effortVarianceMs === null ? "unknown" : formatExportDuration(estimateCalibration.effortVarianceMs)}\n- Estimate revisions: ${estimateCalibration.estimateHistory.length}\n\n## Audit summary\n\n- Events: ${auditSummary.eventCount}\n- First occurred: ${auditSummary.firstOccurredAt || "none"}\n- Last recorded: ${auditSummary.lastRecordedAt || "none"}\n`
+    : { ...buildCompletionPacket(task), estimateCalibration, auditSummary };
+}
+
+function taskEstimateCalibration(task) {
+  const timing = taskTimeState(task);
+  return {
+    dueAt: task.dueAt || "",
+    estimatedEffortMs: timing.estimatedEffortMs,
+    wallElapsedMs: timing.wallElapsedMs,
+    activeElapsedMs: timing.activeElapsedMs,
+    activeElapsedKnown: timing.activeElapsedKnown,
+    blockedElapsedMs: timing.blockedElapsedMs,
+    blockedRatio: timing.blockedRatio,
+    scheduleOverdueMs: timing.scheduleOverdueMs,
+    effortVarianceMs: timing.effortVarianceMs,
+    estimateHistory: timing.estimateHistory,
+  };
+}
+
+function formatExportDuration(value) {
+  if (value === null || !Number.isFinite(Number(value))) return "unknown";
+  return `${Math.round(Number(value) / 60000)} minutes`;
+}
+
+function taskAuditSummary(taskId) {
+  if (!existsSync(taskEventsPath)) return { eventCount: 0, eventTypes: {}, firstOccurredAt: "", lastRecordedAt: "" };
+  const events = readFileSync(taskEventsPath, "utf8").split("\n").flatMap((line) => {
+    if (!line.trim()) return [];
+    try { const event = JSON.parse(line); return event.task_id === taskId ? [event] : []; } catch { return []; }
+  });
+  const eventTypes = {};
+  for (const event of events) eventTypes[event.type] = (eventTypes[event.type] || 0) + 1;
+  return {
+    eventCount: events.length,
+    eventTypes,
+    firstOccurredAt: events.map((event) => event.occurred_at || event.created_at).filter(Boolean).sort()[0] || "",
+    lastRecordedAt: events.map((event) => event.recorded_at || event.created_at).filter(Boolean).sort().at(-1) || "",
+  };
 }
 
 export function isContextShadowTask(taskOrId) {
@@ -112,6 +185,7 @@ export function getSessionStatuses(availableSessionIds = [], tasks = loadTasks()
       agent: entry?.agent || "unknown",
       provider: entry?.provider || "unknown",
       model: entry?.model || "unknown",
+      workspace: entry?.workspace || "",
       registeredAt: entry?.registeredAt || "",
       lastSeenAt: entry?.lastSeenAt || "",
       status: entry ? "registered" : "unregistered",
@@ -131,6 +205,7 @@ export function reconcileTasks(availableSessionIds) {
   const stale = tasks.filter((task) => {
     if (task.status === "removed") return false;
     const sessionId = canonicalSessionId(task.sessionId);
+    if (!sessionId) return false;
     return !available.has(sessionId) && !registered.has(sessionId);
   });
   if (!stale.length) return [];
@@ -164,7 +239,7 @@ function readLedger() {
 export function recordTaskEvent(input, options = {}) {
   const event = normalizeEvent(input);
   const sessionRegistry = loadSessionRegistry();
-  const isRegistered = Boolean(sessionRegistry[event.session_id]);
+  const isRegistered = Boolean(event.session_id && sessionRegistry[event.session_id]);
 
   // 已注册的 session 始终有效，无需在 Codex dashboard 中检查
   if (event.type === "task.create" && options.availableSessionIds && !isRegistered) {
@@ -200,8 +275,11 @@ export function recordTaskEvent(input, options = {}) {
   // 对已存在的任务，先校验 session 归属，再决定幂等或拒绝。
   if (current) {
     // 人工操作事件（event_id 以 "manual-" 开头）绕过归属校验，但必须本机 UI 来源
-    if (!event.event_id.startsWith("manual-") && current.sessionId && current.sessionId !== event.session_id) {
+    if (!event.event_id.startsWith("manual-") && event.type !== "review.reported" && current.sessionId && event.session_id && current.sessionId !== event.session_id) {
       throw new TaskLedgerError(403, "当前 Session 不是该任务的登记 Session。");
+    }
+    if (options.requireRegistered && event.type === "review.reported" && !isRegistered) {
+      throw new TaskLedgerError(409, "Reviewer Session 尚未登记。");
     }
     // 任务幂等：同一 session 的 task.create 对已存在的任务视为幂等更新，不新建。
     if (event.type === "task.create") {
@@ -213,7 +291,19 @@ export function recordTaskEvent(input, options = {}) {
       throw new TaskLedgerError(404, "任务不存在，请先创建任务。");
     }
   }
-  let next = event.type === "session.register" ? null : applyEvent(current, event);
+  if (event.status === "done_claimed" && !event.event_id.startsWith("manual-") && !event.tests.length && !event.evidence.length) {
+    throw new TaskLedgerError(400, "done_claimed 需附带 tests 或 evidence，避免将未验证完成误判为已完成。");
+  }
+  let next = event.type === "session.register"
+    ? null
+    : event.type === "task.reminder"
+      ? current
+      : applyEvent(current, event);
+  if (next) {
+    event.previous_state = current ? auditState(current) : null;
+    event.new_state = auditState(next);
+    event.timestamp = event.created_at;
+  }
   let nextTasks = next
     ? current ? tasks.map((task) => task.id === next.id ? next : task) : [...tasks, next]
     : tasks;
@@ -232,11 +322,39 @@ export function recordTaskEvent(input, options = {}) {
   }
   mkdirSync(dirname(taskEventsPath), { recursive: true });
   appendFileSync(taskEventsPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+  const derivedEvents = derivedCompletionEvents(current, next, event);
+  for (const derived of derivedEvents) appendFileSync(taskEventsPath, `${JSON.stringify(derived)}\n`, { mode: 0o600 });
   persistTasks(nextTasks);
   touchSession(event);
   processed.add(event.event_id);
+  for (const derived of derivedEvents) processed.add(derived.event_id);
   persistProcessedEventIds(processed);
   return { event, task: next, supersededTaskIds };
+}
+
+function derivedCompletionEvents(previous, next, source) {
+  if (!previous || !next) return [];
+  const transitions = [];
+  const add = (type, reason) => transitions.push({
+    event_id: `${source.event_id}:${type}`,
+    type,
+    task_id: next.id,
+    context_task_id: next.contextTaskId || "",
+    session_id: source.session_id,
+    timestamp: source.created_at,
+    created_at: source.created_at,
+    occurred_at: source.occurred_at || source.created_at,
+    recorded_at: source.created_at,
+    actor: source.actor || source.agent,
+    subject_ref: next.currentSubject || null,
+    reason,
+    previous_state: auditState(previous),
+    new_state: auditState(next),
+  });
+  if (previous.verificationStatus !== "stale" && next.verificationStatus === "stale") add("verification.staled", "current subject changed after verification");
+  if (previous.reviewStatus !== "stale" && next.reviewStatus === "stale") add("review.staled", "current subject changed after review");
+  if (!previous.completionReadiness?.ready && next.completionReadiness?.ready) add("acceptance.ready", "all completion requirements satisfied");
+  return transitions;
 }
 
 const activeTaskStatuses = new Set(["planned", "in_progress", "blocked"]);
@@ -247,8 +365,12 @@ const idempotentEventFields = [
   "plan", "current_step", "next_action", "blocker", "acceptance_criteria", "changed_files",
   "tests", "evidence", "assumptions", "risks", "tradeoffs", "open_questions", "retrospective",
   "expected_at", "archived_at", "superseded_by", "review_reason", "reviewed_at", "tool_name",
+  "due_at", "estimated_effort_ms", "estimate_reason",
   "tool_use_id", "routing_action", "orchestrator_model", "preferred_executor_model",
   "selected_executor_model", "dispatch_channel", "routing_reason", "routing_outcome", "policy_version",
+  "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
+  "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation",
+  "context_completion_id", "authorization_id", "reason", "actor", "subject_ref", "acceptance_record", "workspace_policy",
 ];
 
 function findStoredTaskEvent(eventId) {
@@ -510,9 +632,15 @@ function normalizeEvent(input) {
   if (!input || typeof input !== "object") throw new TaskLedgerError(400, "任务事件必须是 JSON 对象。");
   const type = String(input.type || "");
   const sessionId = String(input.session_id || "");
-  const allowedTypes = new Set(["session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.review", "tool.call", "routing.decision"]);
+  const allowedTypes = new Set([
+    "session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.review",
+    "task.reminder", "tool.call", "routing.decision", "routing.health", "requirement.reported", "verification.reported", "review.reported",
+    "acceptance.accepted", "acceptance.rejected", "subject.updated",
+  ]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
-  if (!sessionId) throw new TaskLedgerError(400, "任务事件缺少 session_id。");
+  if (input.status !== undefined && !statuses.has(input.status)) throw new TaskLedgerError(400, "任务状态无效。");
+  if (input.contract_version !== undefined && !["legacy", "v2"].includes(input.contract_version)) throw new TaskLedgerError(400, "contract_version 无效。");
+  if (type === "session.register" && !sessionId) throw new TaskLedgerError(400, "Session 登记事件缺少 session_id。");
   if (type !== "session.register" && type !== "task.create" && !String(input.task_id || "")) {
     throw new TaskLedgerError(400, "任务事件缺少 task_id。");
   }
@@ -535,7 +663,7 @@ function normalizeEvent(input) {
     current_step: cleanText(input.current_step, 500),
     next_action: cleanText(input.next_action, 500),
     blocker: cleanText(input.blocker, 1_000),
-    acceptance_criteria: cleanList(input.acceptance_criteria, 20, 500),
+    acceptance_criteria: cleanAcceptanceCriteria(input.acceptance_criteria),
     changed_files: cleanList(input.changed_files, 50, 500),
     tests: cleanList(input.tests, 30, 500),
     evidence: cleanList(input.evidence, 30, 1_000),
@@ -545,6 +673,9 @@ function normalizeEvent(input) {
     open_questions: cleanList(input.open_questions, 20, 500),
     retrospective: cleanText(input.retrospective, 2_000),
     expected_at: cleanText(input.expected_at, 80),
+    due_at: cleanText(input.due_at, 80),
+    estimated_effort_ms: normalizePositiveInteger(input.estimated_effort_ms),
+    estimate_reason: cleanText(input.estimate_reason, 1_000),
     archived_at: cleanText(input.archived_at, 80),
     superseded_by: cleanText(input.superseded_by, 200),
     review_reason: cleanText(input.review_reason, 1_000),
@@ -559,10 +690,27 @@ function normalizeEvent(input) {
     routing_reason: cleanText(input.routing_reason, 1_000),
     routing_outcome: cleanText(input.routing_outcome, 40),
     policy_version: cleanText(input.policy_version, 80),
+    route_id: cleanText(input.route_id, 200),
+    task_class: cleanText(input.task_class, 80),
+    circuit_state: cleanText(input.circuit_state, 40),
+    health_model: cleanText(input.health_model, 120),
+    health_transition: cleanText(input.health_transition, 80),
+    consecutive_failures: normalizeNonNegativeInteger(input.consecutive_failures),
+    active_executors: normalizeNonNegativeInteger(input.active_executors),
+    retry_after_at: cleanText(input.retry_after_at, 80),
+    ...normalizeCompletionEvent(input),
     created_at: new Date().toISOString(),
   };
+  event.recorded_at = event.created_at;
+  event.occurred_at ||= event.created_at;
   if (event.expected_at && !Number.isFinite(Date.parse(event.expected_at))) {
     throw new TaskLedgerError(400, "expected_at 必须是可解析的 ISO 时间。");
+  }
+  if (event.due_at && !Number.isFinite(Date.parse(event.due_at))) {
+    throw new TaskLedgerError(400, "due_at 必须是可解析的 ISO 时间。");
+  }
+  if (input.estimated_effort_ms !== undefined && event.estimated_effort_ms === undefined) {
+    throw new TaskLedgerError(400, "estimated_effort_ms 必须是正整数毫秒。");
   }
   if (type === "routing.decision") {
     if (!routingActions.has(event.routing_action)) throw new TaskLedgerError(400, "routing_action 无效。");
@@ -588,6 +736,11 @@ function normalizeEvent(input) {
     }
     event.routing_outcome ||= "selected";
     event.policy_version ||= "soft-routing-v1";
+  }
+  if (type === "routing.health") {
+    if (!event.route_id || !event.health_model || !["closed", "open", "half_open"].includes(event.circuit_state)) {
+      throw new TaskLedgerError(400, "路由健康事件缺少 route_id、model 或有效 circuit_state。");
+    }
   }
   return event;
 }
@@ -631,6 +784,9 @@ function applyEvent(current, event) {
       policyVersion: event.policy_version,
       recordedAt: event.created_at,
       eventId: event.event_id,
+      routeId: event.route_id || undefined,
+      taskClass: event.task_class || undefined,
+      circuitState: event.circuit_state || undefined,
     };
     return {
       ...current,
@@ -639,10 +795,29 @@ function applyEvent(current, event) {
       routingRecordedAt: event.created_at,
     };
   }
+  if (event.type === "routing.health") {
+    const health = {
+      routeId: event.route_id,
+      model: event.health_model,
+      state: event.circuit_state,
+      transition: event.health_transition,
+      consecutiveFailures: event.consecutive_failures ?? 0,
+      activeExecutors: event.active_executors ?? 0,
+      retryAfterAt: event.retry_after_at || "",
+      recordedAt: event.created_at,
+      eventId: event.event_id,
+    };
+    return {
+      ...current,
+      routingHealth: health,
+      routingHealthHistory: [...(current.routingHealthHistory || []), health].slice(-routingHistoryLimit),
+    };
+  }
   const now = event.created_at;
   const base = current || {
     id: event.task_id,
     sessionId: event.session_id,
+    ownerActor: event.actor,
     agent: event.agent,
     provider: event.provider,
     model: event.model,
@@ -664,15 +839,27 @@ function applyEvent(current, event) {
     openQuestions: [],
     routing: null,
     routingHistory: [],
+    routingHealth: null,
+    routingHealthHistory: [],
     createdAt: now,
+    timingModelVersion: "estimate-calibration-v1",
+    firstStartedAt: "",
+    activeStartedAt: "",
+    blockedStartedAt: "",
+    activeDurationMs: 0,
+    blockedDurationMs: 0,
+    estimateHistory: [],
+    expectedAtHistory: [],
+    dueAtExplicit: false,
   };
-  const next = {
+  let next = {
     ...base,
-    sessionId: event.session_id || base.sessionId,
-    agent: event.agent !== "unknown" ? event.agent : (base.agent || "unknown"),
-    provider: event.provider !== "unknown" ? event.provider : (base.provider || "unknown"),
-    model: event.model !== "unknown" ? event.model : (base.model || "unknown"),
-    workspace: event.workspace || base.workspace,
+    sessionId: event.type === "review.reported" ? base.sessionId : (event.session_id || base.sessionId),
+    ownerActor: event.type === "task.create" ? (event.actor || base.ownerActor) : base.ownerActor,
+    agent: event.type === "review.reported" ? base.agent : event.agent !== "unknown" ? event.agent : (base.agent || "unknown"),
+    provider: event.type === "review.reported" ? base.provider : event.provider !== "unknown" ? event.provider : (base.provider || "unknown"),
+    model: event.type === "review.reported" ? base.model : event.model !== "unknown" ? event.model : (base.model || "unknown"),
+    workspace: event.type === "review.reported" ? base.workspace : (event.workspace || base.workspace),
     title: event.title || base.title,
     goal: event.goal || base.goal,
     requirementId: event.requirement_id || base.requirementId,
@@ -695,7 +882,11 @@ function applyEvent(current, event) {
     updatedAt: now,
     lastEventId: event.event_id,
     startedAt: base.startedAt || (event.type === "task.create" ? now : ""),
+    dueAt: event.due_at || base.dueAt || "",
+    dueAtExplicit: event.due_at ? true : base.dueAtExplicit === true,
     expectedAt: event.expected_at || base.expectedAt || "",
+    estimatedEffortMs: event.estimated_effort_ms ?? base.estimatedEffortMs,
+    estimateReason: event.estimate_reason || base.estimateReason || "",
     archivedAt: event.archived_at === "__UNARCHIVE__" ? "" : (event.archived_at || base.archivedAt || ""),
     supersededBy: event.superseded_by || base.supersededBy,
     supersededAt: event.superseded_by ? now : (base.supersededAt || ""),
@@ -706,12 +897,25 @@ function applyEvent(current, event) {
     reviewedAt: event.reviewed_at || base.reviewedAt || "",
     toolCalls: { ...(base.toolCalls || {}) },
   };
+  next = applyTimingTransition(current, base, next, event, now);
   if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;
   if (event.type === "task.review") next.status = event.status || base.status;
+  next = applyCompletionEvent(next, event);
   return next;
 }
 
+function auditState(task) {
+  return {
+    execution_status: task.status,
+    verification_status: task.verificationStatus || "not_required",
+    review_status: task.reviewStatus || "not_required",
+    acceptance_status: task.acceptanceStatus || "pending",
+    current_subject: task.currentSubject || null,
+  };
+}
+
 function touchSession(event) {
+  if (!event.session_id) return;
   const registry = loadSessionRegistry();
   const current = registry[event.session_id];
   if (event.type === "session.register" || current) {
@@ -748,6 +952,110 @@ function cleanText(value, limit) {
 function cleanList(value, maxItems, maxLength) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => typeof item === "string").map((item) => cleanText(item, maxLength)).filter(Boolean).slice(0, maxItems);
+}
+
+function normalizePositiveInteger(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeNonNegativeInteger(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function applyTimingTransition(current, base, next, event, now) {
+  const migrating = base.timingModelVersion !== "estimate-calibration-v1";
+  const previousStatus = current?.status || "planned";
+  const statusChanged = previousStatus !== next.status;
+  let activeDurationMs = safeDuration(base.activeDurationMs);
+  let blockedDurationMs = safeDuration(base.blockedDurationMs);
+  let activeStartedAt = base.activeStartedAt || "";
+  let blockedStartedAt = base.blockedStartedAt || "";
+  if (statusChanged && previousStatus === "in_progress" && activeStartedAt) {
+    activeDurationMs += durationBetween(activeStartedAt, now);
+    activeStartedAt = "";
+  }
+  if (statusChanged && previousStatus === "blocked" && blockedStartedAt) {
+    blockedDurationMs += durationBetween(blockedStartedAt, now);
+    blockedStartedAt = "";
+  }
+  let firstStartedAt = base.firstStartedAt || (migrating ? base.startedAt || "" : "");
+  if (statusChanged && next.status === "in_progress") {
+    activeStartedAt = now;
+    firstStartedAt ||= now;
+  } else if (statusChanged && next.status === "blocked") {
+    blockedStartedAt = now;
+  }
+  if (migrating && next.status === "in_progress" && !activeStartedAt) activeStartedAt = now;
+  if (migrating && next.status === "blocked" && !blockedStartedAt) blockedStartedAt = now;
+  const incomingDue = event.due_at || "";
+  const dueChanged = Boolean(incomingDue) && incomingDue !== (base.dueAt || "");
+  const incomingExpectedAt = event.expected_at || "";
+  const expectedAtChanged = Boolean(incomingExpectedAt) && incomingExpectedAt !== (base.expectedAt || "");
+  const effortChanged = event.estimated_effort_ms !== undefined && event.estimated_effort_ms !== base.estimatedEffortMs;
+  const estimateHistory = [...(base.estimateHistory || [])];
+  if (dueChanged || effortChanged) {
+    estimateHistory.push({
+      eventId: event.event_id,
+      actor: event.actor || null,
+      previousDueAt: base.dueAt || "",
+      dueAt: incomingDue || base.dueAt || "",
+      previousEstimatedEffortMs: base.estimatedEffortMs ?? null,
+      estimatedEffortMs: event.estimated_effort_ms ?? base.estimatedEffortMs ?? null,
+      reason: event.estimate_reason || (current ? "未提供（兼容旧客户端）" : "初始预估"),
+      occurredAt: event.occurred_at || now,
+      recordedAt: now,
+    });
+  }
+  const expectedAtHistory = [...(base.expectedAtHistory || [])];
+  if (expectedAtChanged) {
+    expectedAtHistory.push({
+      eventId: event.event_id,
+      previousExpectedAt: base.expectedAt || "",
+      expectedAt: incomingExpectedAt,
+      reason: event.estimate_reason || "旧预计完成时间调整",
+      occurredAt: event.occurred_at || now,
+      recordedAt: now,
+    });
+  }
+  return {
+    ...next,
+    timingModelVersion: base.timingModelVersion || "estimate-calibration-v1",
+    timingTrackedSinceAt: base.timingTrackedSinceAt || now,
+    firstStartedAt,
+    activeStartedAt,
+    blockedStartedAt,
+    activeDurationMs,
+    blockedDurationMs,
+    estimateHistory: estimateHistory.slice(-50),
+    expectedAtHistory: expectedAtHistory.slice(-50),
+  };
+}
+
+function safeDuration(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function durationBetween(start, end) {
+  const startAt = Date.parse(start);
+  const endAt = Date.parse(end);
+  return Number.isFinite(startAt) && Number.isFinite(endAt) ? Math.max(0, endAt - startAt) : 0;
+}
+
+function cleanAcceptanceCriteria(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 50).flatMap((item) => {
+    if (typeof item === "string") return [cleanText(item, 500)].filter(Boolean);
+    if (!item || typeof item !== "object") return [];
+    const id = cleanText(item.id, 120);
+    const description = cleanText(item.description ?? item.title, 500);
+    if (!id || !description) return [];
+    return [{ id, description, required: item.required !== false }];
+  });
 }
 
 export class TaskLedgerError extends Error {

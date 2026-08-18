@@ -15,6 +15,8 @@ const paths = {
   TASKCENTER_TASK_EVENT_IDS_PATH: join(tempDir, "task-event-ids.json"),
   TASKCENTER_TASK_RECONCILE_PATH: join(tempDir, "task-reconcile.jsonl"),
   TASKCENTER_SESSION_REGISTRY_PATH: join(tempDir, "session-registry.json"),
+  TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(tempDir, "gate-session-allowlist.json"),
+  TASKCENTER_DELEGATIONS_PATH: join(tempDir, "delegations.json"),
 };
 const port = 39_000 + (process.pid % 1_000);
 const base = `http://127.0.0.1:${port}`;
@@ -95,6 +97,128 @@ test("SessionStart Hook 登记真实会话且可幂等重放", async () => {
   assert.equal(status.agent, "claude");
 });
 
+test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Agent 建任务", async () => {
+  const sessionId = "019f0000-0000-7000-8000-000000000090";
+  const registered = await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
+  assert.equal(registered.code, 0);
+
+  const missingTask = await runHook("user-prompt-submit", "codex", {
+    session_id: sessionId,
+    cwd: "/work",
+    hook_event_name: "UserPromptSubmit",
+    prompt: "修改一个文件",
+  });
+  assert.equal(missingTask.code, 0);
+  const context = JSON.parse(missingTask.stdout);
+  assert.equal(context.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(context.hookSpecificOutput.additionalContext, /主 Agent.*taskcenter_task_create/);
+  assert.match(context.hookSpecificOutput.additionalContext, /CLI 派发执行器.*delegation/);
+  assert.match(context.hookSpecificOutput.additionalContext, /不要要求用户手动创建任务/);
+
+  const allowlistedSessionId = "019f0000-0000-7000-8000-000000000091";
+  const allowlistedResponse = await fetch(`${base}/gate-session-allowlist`, {
+    method: "POST",
+    headers: { Origin: "http://localhost:3000", "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
+    body: JSON.stringify({ threadIds: [allowlistedSessionId] }),
+  });
+  assert.equal(allowlistedResponse.status, 200);
+  const allowlisted = await runHook("user-prompt-submit", "codex", {
+    session_id: allowlistedSessionId,
+    cwd: "/work",
+    hook_event_name: "UserPromptSubmit",
+    prompt: "修改一个文件",
+  });
+  assert.equal(allowlisted.code, 0);
+  assert.equal(allowlisted.stdout, "");
+  const resetAllowlist = await fetch(`${base}/gate-session-allowlist`, {
+    method: "POST",
+    headers: { Origin: "http://localhost:3000", "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
+    body: JSON.stringify({ threadIds: [] }),
+  });
+  assert.equal(resetAllowlist.status, 200);
+
+  const created = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({
+      type: "task.create",
+      event_id: "prompt-preparation-task-create",
+      task_id: "prompt-preparation-task",
+      session_id: sessionId,
+      agent: "codex",
+      provider: "openai",
+      model: "gpt-test",
+      title: "前置任务准备测试",
+      goal: "确认有活跃任务时不再注入提醒",
+    }),
+  });
+  assert.equal(created.status, 201);
+  const active = await runHook("user-prompt-submit", "codex", {
+    session_id: sessionId,
+    cwd: "/work",
+    hook_event_name: "UserPromptSubmit",
+    prompt: "继续修改",
+  });
+  assert.equal(active.code, 0);
+  assert.equal(active.stdout, "");
+});
+
+test("CLI Session 领取 delegation 后通过主任务门禁且不创建子任务", async () => {
+  const parentSessionId = "019f0000-0000-7000-8000-000000000092";
+  const cliSessionId = "019f0000-0000-7000-8000-000000000093";
+  assert.equal((await runHook("session-start", "codex", { session_id: parentSessionId, cwd: "/work" })).code, 0);
+  assert.equal((await runHook("session-start", "codex", { session_id: cliSessionId, cwd: "/work" })).code, 0);
+  const created = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({ type: "task.create", event_id: "hook-delegation-task-create", task_id: "hook-delegation-task", session_id: parentSessionId, title: "CLI 附着主任务", goal: "验证 delegation 门禁", workspace: "/work" }),
+  });
+  assert.equal(created.status, 201);
+  const grantResponse = await fetch(`${base}/delegations/grant`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({ parent_session_id: parentSessionId, task_id: "hook-delegation-task", event_id: "hook-delegation-grant", workspace: "/work", scope: ["."], allowed_tools: ["exec_command"], executor_model: "gpt-5.3-codex-spark", channel: "cli", ttl_seconds: 600 }),
+  });
+  assert.equal(grantResponse.status, 201);
+  const grant = await grantResponse.json();
+  const claim = await fetch(`${base}/delegations/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({ delegation_id: grant.delegation.id, claim_token: grant.claimToken, session_id: cliSessionId, workspace: "/work" }),
+  });
+  const claimPayload = await claim.json();
+  assert.equal(claim.status, 200, claimPayload.error);
+
+  const allowed = await runHook("pre-tool-use", "codex", {
+    session_id: cliSessionId,
+    cwd: "/work",
+    tool_name: "exec_command",
+    tool_use_id: "delegated-true",
+    tool_input: { cmd: "true" },
+  });
+  assert.equal(allowed.code, 0, allowed.stderr);
+  assert.match(allowed.stdout, /delegation 放行/);
+  const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+  assert.equal(tasks.filter((task) => task.id === "hook-delegation-task").length, 1);
+  assert.equal((await getStatus(cliSessionId)).taskCount, 0);
+  assert.equal(tasks.find((task) => task.id === "hook-delegation-task").cliRuns[0].toolCalls.exec_command, 1);
+
+  const revoke = await fetch(`${base}/delegations/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({ delegation_id: grant.delegation.id, parent_session_id: parentSessionId }),
+  });
+  assert.equal(revoke.status, 200);
+  const blocked = await runHook("pre-tool-use", "codex", {
+    session_id: cliSessionId,
+    cwd: "/work",
+    tool_name: "exec_command",
+    tool_input: { cmd: "true" },
+  });
+  assert.equal(blocked.code, 2);
+  assert.match(blocked.stderr, /无活跃任务或有效 delegation/);
+});
+
 test("Context task ensure 跨 Turn 幂等复用，complete 后可按仍活跃语义重新进入", async () => {
   const body = {
     context_task_id: "context-hook-semantic",
@@ -152,6 +276,38 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
   const missing = await runHook("pre-tool-use", "codex", { session_id: "unknown-session", cwd: "/work" });
   assert.equal(missing.code, 2);
 
+  const gateSessionId = "019f0000-0000-7000-8000-000000000099";
+  let gateResponse = await fetch(`${base}/gate-session-allowlist`, {
+    method: "POST",
+    headers: { Origin: "http://localhost:3000", "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
+    body: JSON.stringify({ threadIds: [gateSessionId] }),
+  });
+  assert.equal(gateResponse.status, 200);
+  const gateAllowed = await runHook("pre-tool-use", "codex", {
+    session_id: gateSessionId,
+    cwd: "/work",
+    tool_name: "exec_command",
+    tool_use_id: "gate-allowlisted-write",
+  });
+  assert.equal(gateAllowed.code, 0);
+  assert.match(gateAllowed.stdout, /门禁豁免白名单放行/);
+  const gateInteractive = await runHook("pre-tool-use", "codex", {
+    session_id: gateSessionId,
+    cwd: "/work",
+    tool_name: "Bash",
+    tool_input: { command: "zsh" },
+  });
+  assert.equal(gateInteractive.code, 2);
+  assert.match(gateInteractive.stderr, /交互式命令/);
+  gateResponse = await fetch(`${base}/gate-session-allowlist`, {
+    method: "POST",
+    headers: { Origin: "http://localhost:3000", "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
+    body: JSON.stringify({ threadIds: [] }),
+  });
+  assert.equal(gateResponse.status, 200);
+  const gateRemoved = await runHook("pre-tool-use", "codex", { session_id: gateSessionId, cwd: "/work", tool_name: "exec_command" });
+  assert.equal(gateRemoved.code, 2);
+
   const readOnly = await runHook("pre-tool-use", "codex", {
     session_id: "unknown-session",
     cwd: "/work",
@@ -162,6 +318,18 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
   assert.equal(readOnly.code, 0);
   assert.match(readOnly.stdout, /只读检查放行/);
 
+  for (const command of ["rtk rg -n TODO src", "rtk git status", "/opt/homebrew/bin/rtk git branch --show-current"]) {
+    const wrappedReadOnly = await runHook("pre-tool-use", "codex", {
+      session_id: "unknown-session",
+      cwd: "/work",
+      tool_name: "Bash",
+      hook_event_name: "PreToolUse",
+      tool_input: { command },
+    });
+    assert.equal(wrappedReadOnly.code, 0, `${command} 应按内部只读命令放行`);
+    assert.match(wrappedReadOnly.stdout, /只读检查放行/);
+  }
+
   for (const cmd of [
     "sed -n -i backup '1p' README.md",
     "sed -n -i.bak '1p' README.md",
@@ -171,6 +339,9 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     "git grep --open-files-in-pager=touch TaskCenter",
     "git grep -Otouch TaskCenter",
     "rg TaskCenter README.md & touch /tmp/taskcenter-review-sentinel",
+    "rtk rm generated.txt",
+    "rtk rg TaskCenter README.md & touch /tmp/taskcenter-review-sentinel",
+    "rtk git diff --output=leak.patch",
   ]) {
     const disguisedWrite = await runHook("pre-tool-use", "codex", {
       session_id: "unknown-session",
@@ -269,13 +440,33 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
   }
   const allowed = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "stable-call-1" });
   assert.equal(allowed.code, 0);
+  assert.doesNotMatch(allowed.stdout, /估时提醒/);
   const tasks = await (await fetch(`${base}/tasks`)).json();
   assert.equal(tasks.tasks.find((task) => task.id === "hook-gate-task").toolCalls.exec_command, 1);
   const replay = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "stable-call-1" });
   assert.equal(replay.code, 0);
   const afterReplay = await (await fetch(`${base}/tasks`)).json();
   assert.equal(afterReplay.tasks.find((task) => task.id === "hook-gate-task").toolCalls.exec_command, 1);
-  await fetch(`${base}/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify({ type: "task.report", event_id: "hook-gate-done", task_id: "hook-gate-task", session_id: "gate-session", status: "done_claimed" }) });
+  await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({
+      type: "task.update",
+      event_id: "hook-gate-overdue",
+      task_id: "hook-gate-task",
+      session_id: "gate-session",
+      due_at: "2020-01-01T00:00:00.000Z",
+    }),
+  });
+  const firstOverdue = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "overdue-call-1" });
+  assert.equal(firstOverdue.code, 0);
+  assert.match(firstOverdue.stdout, /估时提醒：交付截止已超.*调整估时或拆分任务/);
+  const repeatedOverdue = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "overdue-call-2" });
+  assert.equal(repeatedOverdue.code, 0);
+  assert.doesNotMatch(repeatedOverdue.stdout, /估时提醒/);
+  const storedEvents = await (await fetch(`${base}/tasks/hook-gate-task/events`)).json();
+  assert.equal(storedEvents.events.filter((item) => item.type === "task.reminder").length, 1);
+  await fetch(`${base}/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify({ type: "task.report", event_id: "hook-gate-done", task_id: "hook-gate-task", session_id: "gate-session", status: "done_claimed", tests: ["hook-gate"] }) });
   const noActive = await runHook("pre-tool-use", "codex", { session_id: "gate-session", cwd: "/work", tool_name: "exec_command", tool_use_id: "stable-call-2" });
   assert.equal(noActive.code, 2);
   assert.match(noActive.stderr, /无活跃任务/);

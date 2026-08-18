@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { classifyMessage, messageClasses } from "./classify-message.mjs";
+import { readSessionAllowlist } from "./session-allowlist.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
@@ -16,19 +17,6 @@ const sourceLimit = Number(process.env.TASKCENTER_SOURCE_LIMIT || 10);
 const configuredThreadIds = process.env.TASKCENTER_THREADS
   ? new Set(process.env.TASKCENTER_THREADS.split(",").map((value) => value.trim()).filter(Boolean))
   : null;
-
-function readSessionSelection() {
-  if (!existsSync(selectionPath)) return { mode: "all", threadIds: [] };
-  try {
-    const value = JSON.parse(readFileSync(selectionPath, "utf8"));
-    if (value?.mode === "selected" && Array.isArray(value.threadIds)) {
-      return { mode: "selected", threadIds: value.threadIds.filter((id) => typeof id === "string") };
-    }
-  } catch {
-    // Ignore a partially written local selection file and keep the safe default.
-  }
-  return { mode: "all", threadIds: [] };
-}
 
 const ignoreMessages = /^(继续|可以|可以的|做吧|执行吧|ok|okok|好的|一允许|继续吧)[。！!,.，\s]*$/i;
 const completionSignals = /已完成|已经完成|已上线|已经补上|已通过|实现了|已经接入|已落地/;
@@ -218,16 +206,15 @@ function analyzeUnmatched(threads, matchedExcerpts) {
 
 async function main() {
   const names = readThreadNames();
-  const sessionSelection = readSessionSelection();
-  const selectedThreadIds = sessionSelection.mode === "selected"
-    ? new Set(sessionSelection.threadIds)
-    : null;
+  const sessionSelection = readSessionAllowlist(selectionPath);
+  const selectedThreadIds = new Set(sessionSelection.threadIds);
   const candidateFiles = findSessionFiles(sessionsRoot)
     .map((path) => ({ path, threadId: threadIdFromPath(path) }))
     .filter((item) => !configuredThreadIds || configuredThreadIds.has(item.threadId))
     .sort((a, b) => statSync(a.path).mtimeMs - statSync(b.path).mtimeMs);
+  const allowedFiles = candidateFiles.filter((item) => selectedThreadIds.has(item.threadId));
   const allThreads = [];
-  for (const item of candidateFiles) {
+  for (const item of allowedFiles) {
     allThreads.push(await parseThread(
       item.path,
       item.threadId,
@@ -236,7 +223,7 @@ async function main() {
         `Codex ${item.threadId.slice(0, 8)}`,
     ));
   }
-  const threads = allThreads.filter((thread) => !selectedThreadIds || selectedThreadIds.has(thread.id));
+  const threads = allThreads;
 
   const matchedExcerpts = new Set();
   const seededItems = seed.map((requirement) => {
@@ -248,16 +235,15 @@ async function main() {
       claimedDone: threads.some((thread) => claimMatches(requirement, thread)),
     };
   });
-  const requirements = seededItems.filter(
-    (requirement) =>
-      !requirement.requiresConfirmation &&
-      (sessionSelection.mode === "all" || requirement.sources.length > 0),
-  );
+  // Curated seed requirements are repository-owned data and remain visible even
+  // when the Session allowlist is empty. Only Session-derived sources/proposals
+  // are constrained by the allowlist.
+  const requirements = seededItems.filter((requirement) => !requirement.requiresConfirmation);
   const proposals = seededItems
     .filter(
       (requirement) =>
         requirement.requiresConfirmation &&
-        (sessionSelection.mode === "all" || requirement.sources.length > 0),
+        requirement.sources.length > 0,
     )
     .map((requirement) => ({
       ...requirement,
@@ -297,16 +283,16 @@ async function main() {
     source: {
       codexHome: process.env.CODEX_HOME ? codexHome : "~/.codex",
       threadCount: threads.length,
-      availableThreadCount: allThreads.length,
+      availableThreadCount: candidateFiles.length,
       messageCount: threads.reduce((sum, thread) => sum + thread.userRequirements.length, 0),
       mode: "read-only local JSONL",
       sessionSelection,
-      availableThreads: allThreads.map((thread) => ({
-        id: thread.id,
-        title: thread.title,
-        cwd: thread.cwd,
-        updatedAt: thread.updatedAt,
-        requirementCount: thread.userRequirements.length,
+      availableThreads: candidateFiles.map((item) => ({
+        id: item.threadId,
+        title: names.get(item.threadId) || defaultThreadNames.get(item.threadId) || `Codex ${item.threadId.slice(0, 8)}`,
+        updatedAt: new Date(statSync(item.path).mtimeMs).toISOString(),
+        allowed: selectedThreadIds.has(item.threadId),
+        requirementCount: allThreads.find((thread) => thread.id === item.threadId)?.userRequirements.length || 0,
       })),
       classificationCounts,
       excludedCounts: unmatched.excludedCounts,

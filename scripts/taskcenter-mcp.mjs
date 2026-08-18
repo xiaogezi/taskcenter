@@ -5,9 +5,21 @@ import { z } from "zod";
 import { TASKCENTER_VERSION } from "./version.mjs";
 
 const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001";
+const acceptanceToken = process.env.TASKCENTER_ACCEPTANCE_TOKEN || "";
 const server = new McpServer({ name: "taskcenter-task-server", version: TASKCENTER_VERSION });
+const verificationKind = z.enum(["test", "build", "lint", "static_check", "device", "manual", "security", "performance", "other"]);
+const actorIdentity = z.object({ type: z.enum(["human", "agent", "ci", "review_platform", "task_platform", "other"]), id: z.string().min(1).max(200), display_name: z.string().max(200).optional(), provider: z.string().max(200).optional(), session_id: z.string().max(200).optional() }).strict();
+const subjectReference = z.object({ type: z.enum(["git_commit", "git_worktree_snapshot", "pull_request_head", "artifact", "document_version", "external", "none"]), value: z.string().max(500).optional(), repository: z.string().max(300).optional(), branch: z.string().max(300).optional(), observed_at: z.string().datetime({ offset: true }) }).strict();
+const acceptanceCriterion = z.union([z.string().min(1).max(500), z.object({ id: z.string().min(1).max(120), description: z.string().min(1).max(500), required: z.boolean() }).strict()]);
+const verificationRequirement = z.object({
+  id: z.string().min(1).max(120),
+  title: z.string().min(1).max(300),
+  kind: verificationKind,
+  required: z.boolean(),
+  suggested_command: z.string().max(500).optional(),
+}).strict();
 const taskFields = {
-  session_id: z.string().min(1).max(200),
+  session_id: z.string().min(1).max(200).optional(),
   agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(),
   provider: z.string().max(80).optional(),
   model: z.string().max(120).optional(),
@@ -25,7 +37,7 @@ const taskFields = {
   current_step: z.string().max(500).optional(),
   next_action: z.string().max(500).optional(),
   blocker: z.string().max(1_000).optional(),
-  acceptance_criteria: z.array(z.string().max(500)).max(20).optional(),
+  acceptance_criteria: z.array(acceptanceCriterion).max(50).optional(),
   changed_files: z.array(z.string().max(500)).max(50).optional(),
   tests: z.array(z.string().max(500)).max(30).optional(),
   evidence: z.array(z.string().max(1_000)).max(30).optional(),
@@ -34,7 +46,22 @@ const taskFields = {
   tradeoffs: z.array(z.string().max(500)).max(20).optional(),
   open_questions: z.array(z.string().max(500)).max(20).optional(),
   retrospective: z.string().max(2_000).optional(),
-  expected_at: z.string().datetime({ offset: true }).optional().describe("建议填写预计完成时间，便于任务治理和逾期提醒"),
+  expected_at: z.string().datetime({ offset: true }).optional().describe("旧预计完成时间兼容字段，仅用于历史估时校准，不触发交付逾期"),
+  due_at: z.string().datetime({ offset: true }).optional().describe("交付截止时间，用于计算 schedule overdue"),
+  estimated_effort_ms: z.number().int().positive().optional().describe("预计有效执行工时（毫秒），用于历史估时校准"),
+  estimate_reason: z.string().max(1_000).optional().describe("新增或调整截止时间/预计工时的原因"),
+  contract_version: z.enum(["legacy", "v2"]).optional(),
+  scope: z.array(z.string().min(1).max(500)).max(50).optional(),
+  non_goals: z.array(z.string().max(500)).max(50).optional(),
+  workflow_profile: z.enum(["fast", "standard", "strict"]).optional(),
+  review_policy: z.enum(["not_required", "recommended", "required"]).optional(),
+  execution_environment: z.enum(["local", "worktree", "ci", "remote", "other"]).optional(),
+  verification_plan: z.array(verificationRequirement).max(30).optional(),
+  revision: z.string().max(200).optional().describe("Git revision 或明确的工作区快照标识"),
+  subject_ref: subjectReference.optional(),
+  actor: actorIdentity.optional(),
+  occurred_at: z.string().datetime({ offset: true }).optional(),
+  workspace_policy: z.object({ version: z.string().max(80).optional(), require_independent_review: z.boolean().optional(), allowed_acceptance_sources: z.array(z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"])).optional(), allowed_acceptance_actors: z.array(z.string().max(200)).optional() }).strict().optional(),
 };
 
 server.registerTool("taskcenter_session_register", {
@@ -45,8 +72,8 @@ server.registerTool("taskcenter_session_register", {
 
 server.registerTool("taskcenter_task_create", {
   title: "创建 TaskCenter 任务",
-  description: "在修改代码前创建正式任务。必须先获得 task_id 和 accepted=true；当前 Turn 已绑定 Context semantic task 时必须传 context_task_id，以接管内部影子任务并保持完成状态闭环；建议填写 expected_at。",
-  inputSchema: z.object({ ...taskFields, title: z.string().min(1).max(200), goal: z.string().min(1).max(1_000), acceptance_criteria: z.array(z.string().min(1).max(500)).min(1).max(20), plan: z.array(z.string().min(1).max(500)).min(1).max(20) }).strict(),
+  description: "在修改代码前创建正式任务。新客户端应使用 contract_version=v2 并填写 scope、non_goals、workflow_profile；standard/strict 还必须提供 verification_plan。旧调用保持 legacy 兼容。",
+  inputSchema: z.object({ ...taskFields, title: z.string().min(1).max(200), goal: z.string().min(1).max(1_000), acceptance_criteria: z.array(acceptanceCriterion).min(1).max(50), plan: z.array(z.string().min(1).max(500)).min(1).max(20) }).strict(),
 }, async (input) => report("task.create", input));
 
 server.registerTool("taskcenter_task_update", {
@@ -60,6 +87,78 @@ server.registerTool("taskcenter_task_report", {
   description: "上报任务结果、变更文件、测试、证据和复盘；完成只记录为 done_claimed。",
   inputSchema: z.object(taskFields).extend({ task_id: z.string().min(1).max(200), status: z.enum(["in_progress", "blocked", "done_claimed"]).optional() }).strict(),
 }, async (input) => report("task.report", input));
+
+server.registerTool("taskcenter_task_requirement_report", {
+  title: "上报 TaskCenter 验收条件结果",
+  description: "追加一条验收条件结果；passed/failed 必须引用证据，not_applicable 必须说明原因。",
+  inputSchema: z.object({
+    session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
+    requirement_id: z.string().min(1).max(120), status: z.enum(["pending", "passed", "failed", "not_applicable"]),
+    evidence_refs: z.array(z.string().min(1).max(500)).max(30).default([]), checked_at: z.string().datetime({ offset: true }).optional(),
+    checked_by: z.union([actorIdentity, z.string().max(200)]).optional(), subject_ref: subjectReference.optional(), revision: z.string().max(200).optional(), note: z.string().max(1_000).optional(), occurred_at: z.string().datetime({ offset: true }).optional(),
+  }).strict(),
+}, async ({ session_id, task_id, event_id, ...requirement_result }) => report("requirement.reported", { session_id, task_id, event_id, requirement_result }));
+
+server.registerTool("taskcenter_task_verification_report", {
+  title: "上报 TaskCenter 验证证据",
+  description: "追加 Verification Claim；TaskCenter 保存证据并计算新鲜度，但不会执行命令。",
+  inputSchema: z.object({
+    session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
+    id: z.string().min(1).max(120), requirement_id: z.string().max(120).optional(), kind: verificationKind,
+    command_or_probe: z.string().max(1_000).optional(), status: z.enum(["passed", "failed", "skipped"]), exit_code: z.number().int().optional(),
+    revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), producer: z.union([actorIdentity, z.string().min(1).max(200)]),
+    producer_session_id: z.string().max(200).optional(), evidence_ref: z.string().max(500).optional(),
+    artifact_refs: z.array(z.string().max(500)).max(30).optional(), summary: z.string().max(1_000).optional(),
+  }).strict(),
+}, async ({ session_id, task_id, event_id, ...verification_claim }) => report("verification.reported", { session_id, task_id, event_id, revision: verification_claim.revision, verification_claim }));
+
+server.registerTool("taskcenter_task_review_report", {
+  title: "上报 TaskCenter 独立审查",
+  description: "追加 Review Attestation；是否要求 reviewer 与实现者独立由版本化 Workspace Policy 决定。",
+  inputSchema: z.object({
+    session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
+    id: z.string().min(1).max(120), reviewer: z.union([actorIdentity, z.string().min(1).max(200)]), reviewer_session_id: z.string().max(200).optional(),
+    revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), scope: z.string().min(1).max(1_000), verdict: z.enum(["approved", "changes_requested", "rejected"]),
+    unresolved_findings: z.number().int().min(0), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(),
+    finding_refs: z.array(z.string().max(500)).max(50).optional(), summary: z.string().max(1_000).optional(),
+  }).strict(),
+}, async ({ session_id, task_id, event_id, ...review_attestation }) => report("review.reported", { session_id, task_id, event_id, revision: review_attestation.revision, review_attestation }));
+
+server.registerTool("taskcenter_task_completion_readiness", {
+  title: "查询 TaskCenter 完成就绪度",
+  description: "返回任务是否 ready，以及缺失、失败或过期的证据。",
+  inputSchema: z.object({ task_id: z.string().min(1).max(200), revision: z.string().max(200).optional() }).strict(),
+}, async ({ task_id, revision }) => queryEndpoint(`/tasks/${encodeURIComponent(task_id)}/completion-readiness${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`));
+
+server.registerTool("taskcenter_task_completion_packet", {
+  title: "获取 TaskCenter Completion Packet",
+  description: "汇总任务契约、验收结果、验证证据、独立审查与完成就绪度，供可信 Context 完成流程使用。",
+  inputSchema: z.object({ task_id: z.string().min(1).max(200) }).strict(),
+}, async ({ task_id }) => queryEndpoint(`/tasks/${encodeURIComponent(task_id)}/completion-packet`));
+
+server.registerTool("taskcenter_task_subject_update", {
+  title: "更新 TaskCenter 工作对象",
+  description: "把任务当前工作对象更新为通用 SubjectReference；新对象会使旧验证、审查和验收自动过期。",
+  inputSchema: z.object({ task_id: z.string().min(1).max(200), session_id: z.string().min(1).max(200).optional(), event_id: z.string().max(200).optional(), subject_ref: subjectReference, actor: actorIdentity.optional(), occurred_at: z.string().datetime({ offset: true }).optional() }).strict(),
+}, async (input) => report("subject.updated", input));
+
+server.registerTool("taskcenter_task_export", {
+  title: "导出 TaskCenter 完成包",
+  description: "以 JSON 或可读 Markdown 导出任务契约、证据、审查、验收和就绪度。",
+  inputSchema: z.object({ task_id: z.string().min(1).max(200), format: z.enum(["json", "markdown"]).default("json") }).strict(),
+}, async ({ task_id, format }) => format === "markdown" ? queryText(`/tasks/${encodeURIComponent(task_id)}/export?format=markdown`) : queryEndpoint(`/tasks/${encodeURIComponent(task_id)}/export?format=json`));
+
+server.registerTool("taskcenter_task_import_evidence", {
+  title: "导入 TaskCenter 外部证据",
+  description: "导入 PR、CI、人工或其他平台产生的 Subject、Requirement、Verification、Review 事件；保留 occurred_at 与 recorded_at。",
+  inputSchema: z.object({ task_id: z.string().min(1).max(200), events: z.array(z.record(z.string(), z.unknown())).min(1).max(100) }).strict(),
+}, async (input) => postCore("/tasks/import-evidence", input));
+
+server.registerTool("taskcenter_task_acceptance_report", {
+  title: "独立上报 TaskCenter 验收",
+  description: "供已配置独立验收凭据的人工、CI、PR 或任务平台适配器上报 AcceptanceRecord；普通执行 Agent 不应配置该凭据。",
+  inputSchema: z.object({ task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), outcome: z.enum(["accepted", "rejected"]), occurred_at: z.string().datetime({ offset: true }).optional(), acceptance_record: z.object({ id: z.string().min(1).max(120), source: z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"]), actor: actorIdentity, subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(), evidence_refs: z.array(z.string().max(500)).max(30).optional(), reason: z.string().max(1_000).optional() }).strict() }).strict(),
+}, async (input) => postAcceptance(input));
 
 server.registerTool("taskcenter_routing_record", {
   title: "记录 TaskCenter 模型路由",
@@ -79,10 +178,70 @@ server.registerTool("taskcenter_routing_record", {
   }).strict(),
 }, async (input) => report("routing.decision", input));
 
+server.registerTool("taskcenter_routing_select", {
+  title: "选择 TaskCenter 执行模型",
+  description: "原子检查模型熔断、并发和 Half-Open 探测租约，返回强建议路由；TaskCenter 不会启动 CLI。OCR 独立审查不可自动降级为其他模型。",
+  inputSchema: z.object({
+    task_id: z.string().min(1).max(200),
+    preferred_model: z.string().min(1).max(120),
+    task_class: z.enum(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", "ocr", "ocr_review", "independent_review"]),
+    channel: z.enum(["direct", "native", "cli", "other"]),
+    event_id: z.string().max(200).optional(),
+    route_id: z.string().max(200).optional(),
+    lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(),
+  }).strict(),
+}, async (input) => postLocal("/routing/select", input));
+
+server.registerTool("taskcenter_routing_result", {
+  title: "上报 TaskCenter 路由结果",
+  description: "释放模型并发租约并更新 Closed/Open/Half-Open 健康状态；只记录执行事实，不授予任务验收或 OCR 审查权。",
+  inputSchema: z.object({
+    route_id: z.string().min(1).max(200),
+    outcome: z.enum(["succeeded", "failed", "cancelled", "unavailable", "overloaded"]),
+    http_status: z.number().int().min(0).max(599).optional(),
+    error_type: z.string().max(120).optional(),
+    error_code: z.string().max(160).optional(),
+    request_id: z.string().max(300).optional(),
+    event_id: z.string().max(200).optional(),
+  }).strict(),
+}, async (input) => postLocal("/routing/result", input));
+
+server.registerTool("taskcenter_delegation_grant", {
+  title: "创建 CLI Delegation",
+  description: "由主任务 Session 创建一次受 TTL、workspace 和 scope 限制的 CLI 执行授权；普通 CLI Run 不需要另建正式任务。",
+  inputSchema: z.object({
+    parent_session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), delegation_id: z.string().max(200).optional(),
+    workspace: z.string().min(1).max(4_096), scope: z.array(z.string().min(1).max(500)).min(1).max(50), allowed_tools: z.array(z.string().min(1).max(120)).max(40).optional(),
+    executor_model: z.string().min(1).max(120), channel: z.enum(["cli", "native", "other"]).default("cli"), purpose: z.string().max(1_000).optional(), ttl_seconds: z.number().int().min(60).max(28_800).default(3_600),
+  }).strict(),
+}, async (input) => postLocal("/delegations/grant", input));
+
+server.registerTool("taskcenter_delegation_claim", {
+  title: "领取 CLI Delegation",
+  description: "CLI 使用自身已登记 Session 和一次性 claim token 附着主任务，不创建正式子任务。",
+  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), claim_token: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional() }).strict(),
+}, async (input) => postLocal("/delegations/claim", input));
+
+server.registerTool("taskcenter_cli_run_report", {
+  title: "上报 CLI Run",
+  description: "上报附着主任务的 CLI 执行状态和证据；不会改变主任务状态或形成独立验收。",
+  inputSchema: z.object({
+    delegation_id: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional(),
+    status: z.enum(["started", "running", "succeeded", "failed", "cancelled"]), summary: z.string().max(1_000).optional(), changed_files: z.array(z.string().max(500)).max(100).optional(),
+    tests: z.array(z.string().max(500)).max(50).optional(), evidence: z.array(z.string().max(1_000)).max(50).optional(), error: z.string().max(1_000).optional(),
+  }).strict(),
+}, async (input) => postLocal("/delegations/report", input));
+
+server.registerTool("taskcenter_delegation_revoke", {
+  title: "撤销 CLI Delegation",
+  description: "由主任务 Session 撤销尚未结束的 CLI delegation。",
+  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), parent_session_id: z.string().min(1).max(200), event_id: z.string().max(200).optional() }).strict(),
+}, async (input) => postLocal("/delegations/revoke", input));
+
 server.registerTool("taskcenter_task_query", {
   title: "查询 TaskCenter 任务",
-  description: "查询当前 Session 的任务账本，获取 TaskCenter 的下一步上下文。",
-  inputSchema: z.object({ session_id: z.string().min(1).max(200), task_id: z.string().max(200).optional() }).strict(),
+  description: "查询任务账本；Codex 适配器可按 Session 过滤，通用客户端可省略 Session。",
+  inputSchema: z.object({ session_id: z.string().min(1).max(200).optional(), task_id: z.string().max(200).optional() }).strict(),
 }, async ({ session_id, task_id }) => {
   let response;
   try {
@@ -91,7 +250,7 @@ server.registerTool("taskcenter_task_query", {
     return result({ error: "TASKCENTER_UNAVAILABLE", message: `TaskCenter 控制服务不可用（${controlServerUrl}）。请先运行 npm run dev:live 启动 TaskCenter。`, detail: e.message });
   }
   const payload = await readJson(response);
-  const tasks = (payload.tasks || []).filter((task) => task.sessionId === session_id && (!task_id || task.id === task_id));
+  const tasks = (payload.tasks || []).filter((task) => (!session_id || task.sessionId === session_id) && (!task_id || task.id === task_id));
   return result({ tasks });
 });
 
@@ -112,7 +271,7 @@ server.registerTool("taskcenter_session_status", {
 async function report(type, input) {
   let response;
   try {
-    response = await fetch(`${controlServerUrl}/task-events`, {
+    response = await fetch(`${controlServerUrl}${input.session_id ? "/task-events" : "/core/task-events"}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
       body: JSON.stringify({ type, ...input }),
@@ -122,6 +281,53 @@ async function report(type, input) {
   }
   try {
     return result(await readJson(response));
+  } catch (e) {
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+  }
+}
+
+async function postCore(path, input) {
+  try {
+    const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(input) });
+    return result(await readJson(response));
+  } catch (e) {
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+  }
+}
+
+async function postLocal(path, input) {
+  try {
+    const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(input) });
+    return result(await readJson(response));
+  } catch (e) {
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+  }
+}
+
+async function postAcceptance(input) {
+  if (!acceptanceToken) return result({ error: "TASKCENTER_ACCEPTANCE_UNAVAILABLE", message: "当前 MCP 进程未配置独立验收凭据。" });
+  try {
+    const response = await fetch(`${controlServerUrl}/task-acceptance-report`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Acceptance-Token": acceptanceToken }, body: JSON.stringify(input) });
+    return result(await readJson(response));
+  } catch (e) {
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+  }
+}
+
+async function queryEndpoint(path) {
+  try {
+    const response = await fetch(`${controlServerUrl}${path}`);
+    return result(await readJson(response));
+  } catch (e) {
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+  }
+}
+
+async function queryText(path) {
+  try {
+    const response = await fetch(`${controlServerUrl}${path}`);
+    if (!response.ok) throw new Error(`TaskCenter 请求失败（${response.status}）。`);
+    return { content: [{ type: "text", text: await response.text() }] };
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
   }

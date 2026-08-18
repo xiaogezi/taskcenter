@@ -4,6 +4,31 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- Adds `taskcenter_routing_select` and `taskcenter_routing_result` as a local model-routing control plane with per-model concurrency leases, TTL expiry, idempotent results, and `Closed/Open/Half-Open` circuit state.
+- Keeps routing advisory and recoverable: TaskCenter never launches CLI executors, Sol can record a reasoned override, external work can use static fallback while the service is unavailable, and OCR reviewer failure cannot be auto-substituted as independent approval.
+- Stores mutable routing health in ignored `data/routing-control.json` under the single control-server writer while retaining append-only `routing.decision` and `routing.health` task audit events.
+- Opens the circuit immediately for explicit capacity, rate-limit, or model-unavailable responses and treats Codex `Bash` and desktop `exec_command` as the same delegation tool family.
+- Adds short-lived CLI delegations so ordinary executors attach their own registered Session and auditable CLI Run to one formal parent task instead of creating duplicate formal subtasks.
+- Enforces delegation workspace, TTL, optional tool allowlist, and file-tool scope boundaries; Shell execution requires explicit whole-workspace scope and never gains parent-task completion or acceptance authority.
+- Adds platform-neutral v2 task contracts with structured acceptance criteria, optional execution environments, verification plans, versioned Workspace Policy, and legacy migration without rewriting history.
+- Adds generic SubjectReference and ActorIdentity models, append-only Requirement Results, Verification Claims, Review Attestations, Acceptance Records, derived stale events, and machine-readable completion readiness.
+- Adds Session-free core events, offline evidence import with occurrence/recording timestamps, JSON/Markdown exports, and an independently token-protected generic acceptance API; Context remains a compatibility adapter and `done_claimed` never auto-promotes to `accepted`.
+- Adds MCP tools for subject updates, requirement/verification/review reporting, evidence import, readiness, export, Completion Packet, and independently authorized acceptance; TaskCenter availability is not a build/test/commit/release prerequisite.
+- Replaces implicit full-session scanning with a fail-closed Session allowlist that filters files before JSONL parsing.
+- Migrates only explicitly listed IDs from legacy `all` / `selected` selection files and keeps unapproved message bodies, cwd values, and summaries out of dashboard data.
+- Adds a local reflection loop that derives auditable improvement proposals from aggregate allowlisted data and the task ledger without copying Session text or modifying source automatically.
+- Adds manual accept, reject, and re-review actions for reflection proposals plus isolated persistence and cross-platform tests.
+- Turns accepted proposals into idempotent formal tasks, then dispatches them to a selected existing or newly created Codex Session while preserving the Hook gate.
+- Tracks proposal, task, Session, and dispatch linkage; Agent-completed improvements resolve when a new reflection pass no longer detects the signal, otherwise they reopen for review and can be manually returned when incomplete.
+- Removes the default pending-review queue and per-task approval action: `done_claimed` appears as completed, while manual reject remains available for later corrections.
+- Separates delivery deadlines (`dueAt`) from estimated active effort, tracks wall/active/blocked durations and estimate revisions, and keeps `expectedAt` as a legacy compatibility alias.
+- Stops promoting legacy `expectedAt` values into delivery deadlines; only an explicitly recorded `dueAt` can produce delivery-overdue status.
+- Emits idempotent Agent-facing calibration feedback for schedule lateness or active-effort overruns, while legacy tasks without segment evidence report active effort as unknown instead of reusing wall-clock time.
+- Adds delivery delay, active-effort variance, and blocked ratio to aggregate planning reflection evidence and turns estimation calibration into explicit improvement-task acceptance criteria.
+- Separates the empty-allowlist setup prompt from Agent improvement tasks, removes review/dispatch actions from that prompt, and dismisses it immediately after a non-empty allowlist is saved.
+- Recognizes RTK-wrapped read-only inspection commands in the Hook while continuing to reject wrapped writes, shell control operators, and output-producing Git options.
+- Adds a separate fail-closed Hook gate-exemption allowlist so explicitly selected Sessions may work without an active task while command safety checks remain enforced.
+- Adds a Codex `UserPromptSubmit` preparation hook that tells non-allowlisted Agents to create or reactivate a formal task before their first write, while keeping exact Session allowlisting as the only task-gate exemption.
 - Adds a Node-based cross-platform service controller with managed heartbeats and graceful stop requests for macOS, Linux/WSL2, and native Windows.
 - Removes POSIX environment assignments and shell glob expansion from build and test scripts.
 - Moves Hook recovery to the Node controller and covers PowerShell and Command Prompt interactive-process forms.

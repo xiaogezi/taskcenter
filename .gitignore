@@ -51,10 +51,14 @@ next-env.d.ts
 /data/task-reconcile.jsonl
 /data/session-registry.json
 /data/session-selection.json
+/data/gate-session-allowlist.json
 /data/context-task-map.json
 /data/context-sync-events.jsonl
 /data/requirement-overrides.json
 /data/inbox-decisions.json
+/data/reflection-proposals.json
+/data/delegations.json
+/data/routing-control.json
 
 # local agent/runtime state
 /.delegate/

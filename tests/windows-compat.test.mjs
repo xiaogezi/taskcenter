@@ -70,6 +70,7 @@ test("cross-platform controller starts, observes, and gracefully stops an isolat
     TASKCENTER_TASK_EVENT_IDS_PATH: join(root, "task-event-ids.json"),
     TASKCENTER_TASK_RECONCILE_PATH: join(root, "task-reconcile.jsonl"),
     TASKCENTER_SESSION_REGISTRY_PATH: join(root, "session-registry.json"),
+    TASKCENTER_DELEGATIONS_PATH: join(root, "delegations.json"),
     TASKCENTER_WATCHER_HEARTBEAT_PATH: join(root, "watcher-heartbeat.json"),
     TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1",
     TASKCENTER_NO_OPEN: "1",

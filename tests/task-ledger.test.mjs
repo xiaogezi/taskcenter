@@ -19,6 +19,8 @@ const envPaths = {
   TASKCENTER_SESSION_REGISTRY_PATH: join(tempDir, "session-registry.json"),
   TASKCENTER_CONTEXT_TASK_MAP_PATH: join(tempDir, "context-task-map.json"),
   TASKCENTER_CONTEXT_AUDIT_PATH: join(tempDir, "context-sync-events.jsonl"),
+  TASKCENTER_DELEGATIONS_PATH: join(tempDir, "delegations.json"),
+  TASKCENTER_ROUTING_CONTROL_PATH: join(tempDir, "routing-control.json"),
 };
 for (const [key, value] of Object.entries(envPaths)) {
   process.env[key] = value;
@@ -35,6 +37,8 @@ const {
   reconcileTasks,
   recordTaskEvent,
   supersedeContextShadowTask,
+  taskCompletionPacket,
+  taskCompletionReadiness,
   TaskLedgerError,
   taskTimeState,
 } = await import("../scripts/task-ledger.mjs");
@@ -148,6 +152,25 @@ test("任务聚合真实时间和工具调用次数", async () => {
   assert.equal(task.actualAt, "");
 });
 
+test("估时提醒事件幂等记录且不改变任务运行态", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", session_id: "sess-reminder", task_id: "task-reminder", event_id: "reminder-create", expected_at: "2026-08-16T00:00:00.000Z" });
+  const before = loadTasks()[0];
+  const input = {
+    type: "task.reminder",
+    session_id: "sess-reminder",
+    task_id: "task-reminder",
+    event_id: "reminder-once",
+    expected_at: before.expectedAt,
+    next_action: "复盘估时偏差并更新时间或拆分任务。",
+  };
+  const first = recordTaskEvent(input);
+  const replay = recordTaskEvent(input);
+  assert.equal(first.idempotent, undefined);
+  assert.equal(replay.idempotent, true);
+  assert.deepEqual(loadTasks()[0], before);
+});
+
 test("模型路由决定只追加审计记录，不改变任务状态", async () => {
   await resetLedger();
   recordTaskEvent({
@@ -245,7 +268,7 @@ test("已登记的外部 Session 不被 Codex 会话清理误删", async () => {
   assert.equal(loadTasks()[0].id, "external-task");
 
   recordTaskEvent({ type: "task.update", session_id: "external-session", task_id: "external-task", current_step: "已保留" });
-  recordTaskEvent({ type: "task.report", session_id: "external-session", task_id: "external-task", status: "done_claimed" });
+  recordTaskEvent({ type: "task.report", session_id: "external-session", task_id: "external-task", status: "done_claimed", tests: ["人工验证清理后结果"] });
   assert.equal(loadTasks()[0].status, "done_claimed");
 });
 
@@ -351,6 +374,7 @@ test("正式任务原子接管同 Session、同 Context 的内部影子且不会
     context_task_id: "context-semantic-adopt",
     session_id: "session-adopt",
     status: "done_claimed",
+    tests: ["npm test"],
   });
   const nextTurn = ensureContextTask({
     context_task_id: "context-semantic-adopt",
@@ -404,6 +428,7 @@ test("影子接管严格校验生成 ID、Session 和人工指定的正式替代
     title: "历史正式任务",
     goal: "历史目标",
     status: "done_claimed",
+    tests: ["历史任务完成"],
   });
   assert.equal(isContextShadowTask("context-not-a-generated-shadow"), false);
 
@@ -540,7 +565,14 @@ test("done_claimed 不会自动变 verified，会话也不能直接 set verified
     acceptance_criteria: ["a"],
     plan: ["p"],
   });
-  recordTaskEvent({ type: "task.report", session_id: "sess-1", task_id: "task-1", status: "done_claimed", changed_files: ["x.ts"] });
+  recordTaskEvent({
+    type: "task.report",
+    session_id: "sess-1",
+    task_id: "task-1",
+    status: "done_claimed",
+    changed_files: ["x.ts"],
+    tests: ["npm test"],
+  });
   assert.equal(loadTasks()[0].status, "done_claimed");
 
   assert.throws(
@@ -551,10 +583,118 @@ test("done_claimed 不会自动变 verified，会话也不能直接 set verified
   assert.equal(loadTasks()[0].status, "done_claimed");
 });
 
+test("done_claimed 未附 tests 或 evidence 时拒绝", async () => {
+  await resetLedger();
+  recordTaskEvent({
+    type: "task.create",
+    session_id: "sess-1",
+    task_id: "task-claim",
+    title: "无证据完成声明",
+    goal: "验证边界",
+    acceptance_criteria: ["a"],
+    plan: ["p"],
+  });
+  assert.throws(
+    () => recordTaskEvent({ type: "task.report", session_id: "sess-1", task_id: "task-claim", status: "done_claimed" }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 400,
+  );
+  recordTaskEvent({
+    type: "task.report",
+    session_id: "sess-1",
+    task_id: "task-claim",
+    status: "done_claimed",
+    tests: ["npm test"],
+  });
+  assert.equal(loadTasks()[0].status, "done_claimed");
+});
+
+test("v2 完成证据追加幂等、就绪度与 Completion Packet 闭环", async () => {
+  await resetLedger();
+  recordTaskEvent({
+    type: "task.create", event_id: "completion-create", session_id: "completion-session", task_id: "completion-task",
+    title: "完成闭环", goal: "验证完成闭环", acceptance_criteria: ["功能通过"], plan: ["实现"],
+    contract_version: "v2", scope: ["scripts/"], non_goals: [], workflow_profile: "standard",
+    review_policy: "not_required", execution_environment: "local",
+    verification_plan: [{ id: "tests", title: "单元测试", kind: "test", required: true }],
+  });
+  assert.throws(
+    () => recordTaskEvent({ type: "task.report", event_id: "completion-forged-accepted", session_id: "completion-session", task_id: "completion-task", status: "accepted" }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 400,
+  );
+  recordTaskEvent({
+    type: "task.report", event_id: "completion-done", session_id: "completion-session", task_id: "completion-task",
+    status: "done_claimed", tests: ["node --test"], revision: "revision-a",
+  });
+  recordTaskEvent({
+    type: "requirement.reported", event_id: "completion-requirement", session_id: "completion-session", task_id: "completion-task",
+    requirement_result: { requirement_id: "acceptance-1", status: "passed", evidence_refs: ["claim-tests"], checked_by: "codex", revision: "revision-a" },
+  });
+  const claim = {
+    type: "verification.reported", event_id: "completion-verification", session_id: "completion-session", task_id: "completion-task", revision: "revision-a",
+    verification_claim: {
+      id: "claim-tests", requirement_id: "tests", kind: "test", command_or_probe: "node --test", status: "passed", exit_code: 0,
+      revision: "revision-a", observed_at: "2026-08-17T00:00:00.000Z", producer: "codex", producer_session_id: "completion-session",
+      evidence_ref: "summary:passed", artifact_refs: [], summary: "通过",
+    },
+  };
+  const first = recordTaskEvent(claim);
+  const replay = recordTaskEvent(claim);
+  assert.equal(first.task.verificationClaims.length, 1);
+  assert.equal(replay.idempotent, true);
+  assert.equal(loadTasks()[0].verificationClaims.length, 1);
+  assert.equal(taskCompletionReadiness("completion-task").ready, true);
+  assert.equal(taskCompletionPacket("completion-task").acceptanceStatus, "ready");
+  recordTaskEvent({ type: "task.update", event_id: "completion-revision-change", session_id: "completion-session", task_id: "completion-task", revision: "revision-b" });
+  const auditTypes = (await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8")).trim().split("\n").map((line) => JSON.parse(line).type);
+  assert.ok(auditTypes.includes("acceptance.ready"));
+  assert.ok(auditTypes.includes("verification.staled"));
+  assert.equal(taskCompletionReadiness("completion-task").ready, false);
+});
+
+test("普通任务事件不能验收，可信 Context 同步才可 accepted", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer({ TASKCENTER_CONTEXT_ACCEPTANCE_TOKEN: "context-test-token" });
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "acceptance-session");
+  const createBody = {
+    type: "task.create", event_id: "acceptance-create", session_id: "acceptance-session", task_id: "acceptance-task",
+    context_task_id: "context-acceptance", title: "可信验收", goal: "验证可信验收", acceptance_criteria: ["功能通过"], plan: ["实现"],
+    contract_version: "v2", scope: ["scripts/"], non_goals: [], workflow_profile: "standard", review_policy: "not_required",
+    execution_environment: "local", verification_plan: [{ id: "tests", title: "测试", kind: "test", required: true }],
+  };
+  assert.equal((await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(createBody) })).status, 201);
+  const events = [
+    { type: "task.report", event_id: "acceptance-done", session_id: "acceptance-session", task_id: "acceptance-task", status: "done_claimed", tests: ["passed"], revision: "revision-a" },
+    { type: "requirement.reported", event_id: "acceptance-requirement", session_id: "acceptance-session", task_id: "acceptance-task", requirement_result: { requirement_id: "acceptance-1", status: "passed", evidence_refs: ["claim-tests"] } },
+    { type: "verification.reported", event_id: "acceptance-verification", session_id: "acceptance-session", task_id: "acceptance-task", revision: "revision-a", verification_claim: { id: "claim-tests", requirement_id: "tests", kind: "test", status: "passed", exit_code: 0, revision: "revision-a", observed_at: "2026-08-17T00:00:00.000Z", producer: "codex", producer_session_id: "acceptance-session", evidence_ref: "summary:passed" } },
+  ];
+  for (const event of events) assert.equal((await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(event) })).status, 200);
+
+  const forged = await fetch(`${base}/task-events`, {
+    method: "POST", headers: taskHeaders(),
+    body: JSON.stringify({ type: "acceptance.accepted", event_id: "forged-acceptance", session_id: "acceptance-session", task_id: "acceptance-task" }),
+  });
+  assert.equal(forged.status, 403);
+  const denied = await fetch(`${base}/task-acceptance-sync`, {
+    method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Context-Token": "wrong" }, body: JSON.stringify({ task_id: "acceptance-task" }),
+  });
+  assert.equal(denied.status, 403);
+  const accepted = await fetch(`${base}/task-acceptance-sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Context-Token": "context-test-token" },
+    body: JSON.stringify({
+      event_id: "trusted-acceptance", task_id: "acceptance-task", context_task_id: "context-acceptance",
+      context_completion_id: "completion-1", authorization_id: "authorization-1", revision: "revision-a", outcome: "accepted",
+    }),
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal((await accepted.json()).task.acceptanceStatus, "accepted");
+});
+
 test("需求 ID持久化且人工审核保留理由和时间", async () => {
   await resetLedger();
   recordTaskEvent({ type: "task.create", session_id: "sess-review", task_id: "task-review", requirement_id: "req-stable-1" });
-  recordTaskEvent({ type: "task.report", session_id: "sess-review", task_id: "task-review", status: "done_claimed" });
+  recordTaskEvent({ type: "task.report", session_id: "sess-review", task_id: "task-review", status: "done_claimed", evidence: ["人工评审材料已归档"] });
   const result = recordTaskEvent({ type: "task.review", session_id: "sess-review", task_id: "task-review", event_id: "manual-review-1", status: "verified", review_reason: "人工检查证据", reviewed_at: "2026-08-09T00:00:00.000Z" });
   assert.equal(result.task.requirementId, "req-stable-1");
   assert.equal(result.task.reviewReason, "人工检查证据");
@@ -564,7 +704,13 @@ test("需求 ID持久化且人工审核保留理由和时间", async () => {
 test("非人工 task.review 不能伪造 verified", async () => {
   await resetLedger();
   recordTaskEvent({ type: "task.create", session_id: "sess-security", task_id: "task-security" });
-  recordTaskEvent({ type: "task.report", session_id: "sess-security", task_id: "task-security", status: "done_claimed" });
+  recordTaskEvent({
+    type: "task.report",
+    session_id: "sess-security",
+    task_id: "task-security",
+    status: "done_claimed",
+    tests: ["安全校验"],
+  });
   assert.throws(
     () => recordTaskEvent({ type: "task.review", session_id: "sess-security", task_id: "task-security", status: "verified", event_id: "evt-forged" }),
     (error) => error instanceof TaskLedgerError && error.statusCode === 400,
@@ -575,11 +721,13 @@ test("任务时间判断覆盖 active 与终态旧数据", () => {
   const now = Date.parse("2026-08-10T12:00:00.000Z");
   const active = taskTimeState({ status: "in_progress", startedAt: "2026-08-08T12:00:00.000Z", updatedAt: "2026-08-09T10:00:00.000Z", expectedAt: "2026-08-09T12:00:00.000Z" }, now);
   assert.equal(active.stale, true);
-  assert.equal(active.overdue, true);
+  assert.equal(active.overdue, false);
   assert.equal(active.elapsedMs, 172800000);
+  assert.equal(active.activeElapsedKnown, false);
+  assert.equal(active.activeElapsedMs, null);
   const terminal = taskTimeState({ status: "cancelled", startedAt: "2026-08-08T12:00:00.000Z", updatedAt: "2026-08-09T12:00:00.000Z", expectedAt: "2026-08-09T10:00:00.000Z" }, now);
   assert.equal(terminal.elapsedMs, 86400000);
-  assert.equal(terminal.overdue, true);
+  assert.equal(terminal.overdue, false);
 });
 
 test("归档状态、预计时间校验和旧字段兼容", async () => {
@@ -589,11 +737,57 @@ test("归档状态、预计时间校验和旧字段兼容", async () => {
   assert.throws(() => recordTaskEvent({ type: "task.review", session_id: "sess-time", task_id: "task-time", event_id: "manual-archive-bad", status: "verified", archived_at: new Date().toISOString() }), (error) => error instanceof TaskLedgerError && error.statusCode === 409);
   recordTaskEvent({ type: "task.update", session_id: "sess-time", task_id: "task-time", event_id: "manual-schedule", expected_at: "2026-08-11T12:00:00.000Z" });
   assert.equal(loadTasks()[0].expectedAt, "2026-08-11T12:00:00.000Z");
-  recordTaskEvent({ type: "task.done_claimed", session_id: "sess-time", task_id: "task-time", event_id: "done-time", status: "done_claimed" });
+  assert.equal(loadTasks()[0].dueAt, "");
+  assert.equal(taskTimeState(loadTasks()[0], Date.parse("2026-08-12T12:00:00.000Z")).overdue, false);
+  recordTaskEvent({ type: "task.done_claimed", session_id: "sess-time", task_id: "task-time", event_id: "done-time", status: "done_claimed", evidence: ["时间归档"] });
   recordTaskEvent({ type: "task.review", session_id: "sess-time", task_id: "task-time", event_id: "manual-archive-ok", status: "done_claimed", archived_at: new Date().toISOString() });
   assert.ok(loadTasks()[0].archivedAt);
   recordTaskEvent({ type: "task.review", session_id: "sess-time", task_id: "task-time", event_id: "manual-unarchive", archived_at: "__UNARCHIVE__" });
   assert.equal(loadTasks()[0].archivedAt, "");
+});
+
+test("估时校准应记录交付截止、有效工时与状态分段", async () => {
+  await resetLedger();
+  recordTaskEvent({
+    type: "task.create",
+    session_id: "sess-calibration",
+    task_id: "task-calibration",
+    event_id: "calibration-create",
+    title: "校准任务",
+    due_at: "2026-08-18T12:00:00.000Z",
+    estimated_effort_ms: 7_200_000,
+    estimate_reason: "初始拆解",
+  });
+  let task = loadTasks()[0];
+  assert.equal(task.dueAt, "2026-08-18T12:00:00.000Z");
+  assert.equal(task.dueAtExplicit, true);
+  assert.equal(task.expectedAt, "");
+  assert.equal(task.estimatedEffortMs, 7_200_000);
+  assert.equal(task.estimateHistory.length, 1);
+
+  recordTaskEvent({ type: "task.update", session_id: "sess-calibration", task_id: task.id, event_id: "calibration-start", status: "in_progress" });
+  task = loadTasks()[0];
+  assert.ok(task.firstStartedAt);
+  assert.ok(task.activeStartedAt);
+
+  recordTaskEvent({ type: "task.update", session_id: "sess-calibration", task_id: task.id, event_id: "calibration-block", status: "blocked", blocked_by: "等待外部依赖" });
+  task = loadTasks()[0];
+  assert.equal(task.activeStartedAt, "");
+  assert.ok(task.blockedStartedAt);
+
+  recordTaskEvent({
+    type: "task.update",
+    session_id: "sess-calibration",
+    task_id: task.id,
+    event_id: "calibration-reestimate",
+    due_at: "2026-08-19T12:00:00.000Z",
+    estimated_effort_ms: 10_800_000,
+    estimate_reason: "发现额外兼容范围",
+  });
+  task = loadTasks()[0];
+  assert.equal(task.estimateHistory.length, 2);
+  assert.equal(task.estimateHistory.at(-1).previousEstimatedEffortMs, 7_200_000);
+  assert.equal(task.estimateHistory.at(-1).reason, "发现额外兼容范围");
 });
 
 test("控制服务任务闸门 HTTP 协议：register→create→update→report 并展示", async (context) => {
@@ -717,6 +911,118 @@ test("控制服务任务闸门 HTTP 协议：register→create→update→report
   assert.equal(task.assumptions.length, 1);
   assert.equal(task.risks.length, 1);
   assert.ok(task.updatedAt);
+});
+
+test("CLI delegation 附着单个正式主任务并独立记录 Run", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "session-main");
+  await registerHttpSession(base, "session-cli", { model: "gpt-5.3-codex-spark" });
+
+  const created = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      event_id: "delegation-http-task-create",
+      session_id: "session-main",
+      task_id: "task-delegation-http",
+      title: "单正式任务",
+      goal: "让 CLI 附着主任务",
+      workspace: "/work",
+    }),
+  });
+  assert.equal(created.status, 201);
+  const grant = await fetch(`${base}/delegations/grant`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      parent_session_id: "session-main",
+      task_id: "task-delegation-http",
+      event_id: "delegation-http-grant",
+      workspace: "/work",
+      scope: ["."],
+      allowed_tools: ["exec_command"],
+      executor_model: "gpt-5.3-codex-spark",
+      channel: "cli",
+      ttl_seconds: 600,
+    }),
+  });
+  assert.equal(grant.status, 201);
+  const grantPayload = await grant.json();
+  assert.ok(grantPayload.claimToken);
+
+  const claim = await fetch(`${base}/delegations/claim`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ delegation_id: grantPayload.delegation.id, claim_token: grantPayload.claimToken, session_id: "session-cli", workspace: "/work" }),
+  });
+  const claimPayload = await claim.json();
+  assert.equal(claim.status, 200, claimPayload.error);
+  const resolved = await (await fetch(`${base}/delegations/resolve?session_id=session-cli&workspace=${encodeURIComponent("/work")}`)).json();
+  assert.equal(resolved.task.id, "task-delegation-http");
+
+  const forbiddenParentUpdate = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ type: "task.update", event_id: "delegation-forged-parent-update", session_id: "session-cli", task_id: "task-delegation-http", status: "done_claimed" }),
+  });
+  assert.equal(forbiddenParentUpdate.status, 403);
+  const run = await fetch(`${base}/delegations/report`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ delegation_id: grantPayload.delegation.id, session_id: "session-cli", workspace: "/work", event_id: "delegation-http-run", status: "succeeded", summary: "只上报运行结果", tests: ["node --test"] }),
+  });
+  assert.equal(run.status, 200);
+  const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].id, "task-delegation-http");
+  assert.equal(tasks[0].status, "planned");
+  assert.equal(tasks[0].cliRuns.length, 1);
+  assert.equal(tasks[0].cliRuns[0].status, "succeeded");
+  const sessions = (await (await fetch(`${base}/session-status`)).json()).sessions;
+  assert.equal(sessions.find((session) => session.sessionId === "session-cli").taskCount, 0);
+});
+
+test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_3_CODEX_SPARK: "1" });
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "session-routing-control", { model: "gpt-5.6-sol" });
+  const created = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ type: "task.create", event_id: "routing-control-task-create", session_id: "session-routing-control", task_id: "task-routing-control", title: "路由控制", goal: "验证路由控制面", workspace: "/work" }),
+  });
+  assert.equal(created.status, 201);
+
+  const selectedResponse = await fetch(`${base}/routing/select`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ task_id: "task-routing-control", preferred_model: "gpt-5.3-codex-spark", task_class: "implementation", channel: "cli", event_id: "routing-control-select" }),
+  });
+  const selected = await selectedResponse.json();
+  assert.equal(selectedResponse.status, 201, selected.error);
+  assert.equal(selected.route.selected_model, "gpt-5.3-codex-spark");
+  assert.equal(selected.route.available, true);
+
+  const resultResponse = await fetch(`${base}/routing/result`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ route_id: selected.route.route_id, outcome: "succeeded", event_id: "routing-control-result", request_id: "request-routing-control" }),
+  });
+  const result = await resultResponse.json();
+  assert.equal(resultResponse.status, 200, result.error);
+  assert.equal(result.route.status, "succeeded");
+  assert.equal(result.health.find((item) => item.model === "gpt-5.3-codex-spark").active_executors, 0);
+
+  const task = (await (await fetch(`${base}/tasks`)).json()).tasks.find((item) => item.id === "task-routing-control");
+  assert.equal(task.routing.routeId, selected.route.route_id);
+  assert.equal(task.routingHistory.length, 2);
+  assert.equal(task.routingHealth.state, "closed");
+  assert.equal(task.routingHealthHistory.length, 2);
+  assert.equal(task.status, "planned");
 });
 
 test("控制服务只允许相同 event_id 的同事件补偿重放", async (context) => {
@@ -884,7 +1190,13 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
 
   const tools = await client.listTools();
   const toolNames = tools.tools.map((tool) => tool.name);
-  for (const expected of ["taskcenter_session_register", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report", "taskcenter_routing_record", "taskcenter_task_query", "taskcenter_session_status"]) {
+  for (const expected of [
+    "taskcenter_session_register", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report",
+    "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report",
+    "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
+    "taskcenter_delegation_grant", "taskcenter_delegation_claim", "taskcenter_cli_run_report", "taskcenter_delegation_revoke",
+    "taskcenter_task_query", "taskcenter_session_status",
+  ]) {
     assert.ok(toolNames.includes(expected), `MCP 应暴露 ${expected}`);
   }
 
@@ -946,6 +1258,80 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(JSON.parse(textOf(report)).accepted, true);
   const finalQuery = await client.callTool({ name: "taskcenter_task_query", arguments: { session_id: "sess-mcp", task_id: "task-mcp" } });
   assert.equal(JSON.parse(textOf(finalQuery)).tasks[0].status, "done_claimed");
+
+  await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-reviewer", agent: "codex", provider: "openai", model: "gpt-review", workspace: "/review" } });
+  const v2Create = await client.callTool({
+    name: "taskcenter_task_create",
+    arguments: {
+      session_id: "sess-mcp", task_id: "task-mcp-v2", title: "MCP v2 闭环", goal: "验证新 MCP 能力",
+      acceptance_criteria: ["功能通过"], plan: ["实现"], contract_version: "v2", scope: ["scripts/"], non_goals: [],
+      workflow_profile: "standard", review_policy: "required", execution_environment: "local",
+      verification_plan: [{ id: "tests", title: "测试", kind: "test", required: true }],
+    },
+  });
+  assert.equal(JSON.parse(textOf(v2Create)).task.contractVersion, "v2");
+  await client.callTool({ name: "taskcenter_task_report", arguments: { session_id: "sess-mcp", task_id: "task-mcp-v2", status: "done_claimed", tests: ["passed"], revision: "revision-mcp" } });
+  await client.callTool({
+    name: "taskcenter_task_requirement_report",
+    arguments: { session_id: "sess-mcp", task_id: "task-mcp-v2", event_id: "mcp-requirement", requirement_id: "acceptance-1", status: "passed", evidence_refs: ["claim-mcp"], checked_by: "codex", revision: "revision-mcp" },
+  });
+  await client.callTool({
+    name: "taskcenter_task_verification_report",
+    arguments: {
+      session_id: "sess-mcp", task_id: "task-mcp-v2", event_id: "mcp-verification", id: "claim-mcp", requirement_id: "tests",
+      kind: "test", command_or_probe: "node --test", status: "passed", exit_code: 0, revision: "revision-mcp",
+      observed_at: "2026-08-17T00:00:00.000Z", producer: "codex", producer_session_id: "sess-mcp", evidence_ref: "summary:passed",
+    },
+  });
+  const beforeReview = await client.callTool({ name: "taskcenter_task_completion_readiness", arguments: { task_id: "task-mcp-v2" } });
+  assert.equal(JSON.parse(textOf(beforeReview)).completionReadiness.ready, false);
+  await client.callTool({
+    name: "taskcenter_task_review_report",
+    arguments: {
+      session_id: "sess-reviewer", task_id: "task-mcp-v2", event_id: "mcp-review", id: "review-mcp", reviewer: "ocr",
+      reviewer_session_id: "sess-reviewer", revision: "revision-mcp", scope: "scripts/", verdict: "approved", unresolved_findings: 0,
+      observed_at: "2026-08-17T00:05:00.000Z", summary: "approved",
+    },
+  });
+  const readiness = await client.callTool({ name: "taskcenter_task_completion_readiness", arguments: { task_id: "task-mcp-v2" } });
+  assert.equal(JSON.parse(textOf(readiness)).completionReadiness.ready, true);
+  const packet = await client.callTool({ name: "taskcenter_task_completion_packet", arguments: { task_id: "task-mcp-v2" } });
+  assert.equal(JSON.parse(textOf(packet)).completionPacket.reviewStatus, "passed");
+});
+
+test("V2 通用核心 API：无 Session 创建、离线导入、独立验收与双格式导出", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer({ TASKCENTER_ACCEPTANCE_TOKEN: "acceptance-v2-token" });
+  context.after(() => child.kill("SIGTERM"));
+  const coreHeaders = { "Content-Type": "application/json", "X-TaskCenter-Task": "core" };
+  const subject = { type: "artifact", value: "artifact://taskcenter/v2", observed_at: "2026-08-16T00:00:00.000Z" };
+  const created = await fetch(`${base}/core/task-events`, {
+    method: "POST", headers: coreHeaders,
+    body: JSON.stringify({ type: "task.create", event_id: "core-v2-create", task_id: "core-v2-task", title: "Core V2", goal: "无平台依赖完成", plan: ["run"], acceptance_criteria: [{ id: "ac", description: "works", required: true }], contract_version: "v2", scope: ["core"], non_goals: [], workflow_profile: "standard", review_policy: "not_required", verification_plan: [{ id: "test", title: "test", kind: "test", required: true }], actor: { type: "human", id: "author" } }),
+  });
+  assert.equal(created.status, 201);
+  const done = await fetch(`${base}/core/task-events`, { method: "POST", headers: coreHeaders, body: JSON.stringify({ type: "task.report", event_id: "core-v2-done", task_id: "core-v2-task", status: "done_claimed", tests: ["external CI"], subject_ref: subject, actor: { type: "ci", id: "build" } }) });
+  assert.equal(done.status, 200);
+  const imported = await fetch(`${base}/tasks/import-evidence`, {
+    method: "POST", headers: coreHeaders,
+    body: JSON.stringify({ task_id: "core-v2-task", events: [
+      { type: "requirement.reported", event_id: "core-v2-ac", occurred_at: "2026-08-16T00:01:00.000Z", requirement_result: { requirement_id: "ac", status: "passed", evidence_refs: ["ci://run/42"], checked_at: "2026-08-16T00:01:00.000Z", checked_by: { type: "ci", id: "ci" }, subject_ref: subject } },
+      { type: "verification.reported", event_id: "core-v2-test", occurred_at: "2026-08-16T00:02:00.000Z", verification_claim: { id: "claim", requirement_id: "test", kind: "test", status: "passed", observed_at: "2026-08-16T00:02:00.000Z", producer: { type: "ci", id: "ci" }, subject_ref: subject, evidence_ref: "ci://run/42" } },
+    ] }),
+  });
+  assert.equal(imported.status, 200);
+  const recorded = JSON.parse((await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8")).trim().split("\n").find((line) => line.includes("core-v2-test")));
+  assert.equal(recorded.occurred_at, "2026-08-16T00:02:00.000Z");
+  assert.notEqual(recorded.recorded_at, recorded.occurred_at);
+  const accepted = await fetch(`${base}/task-acceptance-report`, {
+    method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Acceptance-Token": "acceptance-v2-token" },
+    body: JSON.stringify({ task_id: "core-v2-task", event_id: "core-v2-accept", outcome: "accepted", acceptance_record: { id: "accept-1", source: "human", actor: { type: "human", id: "owner" }, subject_ref: subject, observed_at: "2026-08-16T00:03:00.000Z" } }),
+  });
+  assert.equal(accepted.status, 200);
+  const exportedJson = await (await fetch(`${base}/tasks/core-v2-task/export?format=json`)).json();
+  assert.equal(exportedJson.completionPacket.acceptanceRecords[0].outcome, "accepted");
+  const exportedMarkdown = await (await fetch(`${base}/tasks/core-v2-task/export?format=markdown`)).text();
+  assert.match(exportedMarkdown, /accept-1: accepted via human/);
 });
 
 function textOf(result) {
@@ -1258,7 +1644,7 @@ test("控制服务 verify/reject 校验状态并写入审核结果", async (cont
   const headers = { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-TaskCenter-Action": "delegate" };
   const invalid = await fetch(`${base}/tasks/task-http-review/actions`, { method: "POST", headers, body: JSON.stringify({ action: "verify" }) });
   assert.equal(invalid.status, 409);
-  await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.report", session_id: "sess-http-review", task_id: "task-http-review", status: "done_claimed" }) });
+  await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.report", session_id: "sess-http-review", task_id: "task-http-review", status: "done_claimed", tests: ["手工验收"] }) });
   const verified = await fetch(`${base}/tasks/task-http-review/actions`, { method: "POST", headers, body: JSON.stringify({ action: "verify" }) });
   assert.equal(verified.status, 200);
   assert.equal((await verified.json()).task.status, "verified");
@@ -1285,7 +1671,9 @@ test("控制服务 schedule/archive/unarchive HTTP 闭环", async (context) => {
   assert.equal(invalidSchedule.status, 400);
   const schedule = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "schedule", expectedAt: "2026-08-11T12:00:00.000Z" }) });
   assert.equal(schedule.status, 200);
-  assert.equal((await schedule.json()).task.expectedAt, "2026-08-11T12:00:00.000Z");
+  const scheduledTask = (await schedule.json()).task;
+  assert.equal(scheduledTask.dueAt, "2026-08-11T12:00:00.000Z");
+  assert.equal(scheduledTask.expectedAt, "");
   const activeArchive = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "archive" }) });
   assert.equal(activeArchive.status, 409);
   await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "done" }) });

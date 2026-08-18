@@ -1,5 +1,6 @@
 {
-  "mode": "all",
-  "threadIds": [],
+  "version": 2,
+  "mode": "allowlist",
+  "threadIds": ["019f0000-0000-7000-8000-000000000001"],
   "updatedAt": "2024-01-15T10:00:00Z"
 }

@@ -1,6 +1,6 @@
 # TaskCenter（任务中心）
 
-TaskCenter 是一个本地优先的 Agent 任务治理看板。Codex、Claude Code 等客户端通过本地 MCP 登记真实 Session、创建任务、更新进度并提交证据；TaskCenter 将“Agent 声称完成”和“人工验收通过”分开记录。
+TaskCenter 是一个本地优先、核心协议与平台解耦的任务治理看板。人、Agent、CI、PR 审查平台和其他任务平台都可以创建任务、提交证据与独立验收；Codex、Claude Code、Context Agent、MCP 和 Hook 都只是可选适配器。
 
 > 当前版本：`v0.1.5`。核心 Web、MCP、Hook 与服务控制支持 macOS、Linux/WSL2 和原生 Windows；桌面快捷入口仅支持 macOS。
 
@@ -9,8 +9,12 @@ TaskCenter 是一个本地优先的 Agent 任务治理看板。Codex、Claude Co
 - 按真实 Session 展示 Agent 创建的正式任务。
 - 跟踪目标、计划、当前步骤、阻塞、预计时间、测试和证据。
 - 通过 Hook 在受支持工具调用前检查 Session 是否已登记且存在活跃任务。
-- 只读发现本机 Codex Session，用于来源筛选和状态展示。
+- 通过显式 Session 白名单控制哪些本机 Codex JSONL 可以读取。
+- 基于白名单聚合数据和任务账本生成可审核的本地改进提案。
 - 所有任务账本和运行状态仅保存在本机。
+- 以通用 `SubjectReference` 和 `ActorIdentity` 记录工作对象与参与者，不把 Git、Session 或单台机器作为核心前提。
+- 支持离线补录、通用验收，以及 JSON/Markdown Completion Packet 导出。
+- 作为轻量模型路由控制面保存熔断、并发租约、路由建议与审计，但不启动或管理 CLI。
 
 ## 隐私与安全边界
 
@@ -20,6 +24,14 @@ TaskCenter 只读访问：
 - `~/.codex/session_index.jsonl`
 
 TaskCenter 不读取 `~/.codex/auth.json`、API Key、Cookie 或其他认证材料，不会修改 Codex 会话，也不会将聊天内容上传到远端。项目默认只监听本机地址，不支持未经重新设计的数据脱敏、多用户鉴权和远程部署。
+
+Session 内容采用 fail-closed 白名单：缺少 `data/session-selection.json`、配置损坏或白名单为空时，不读取任何 JSONL 正文。候选列表只从允许的本机索引和文件名读取 Session ID、标题与文件时间，便于人工勾选；未入白名单的消息、cwd 和摘要不会进入 dashboard 或反思输入。旧 `all` / `selected` 配置只迁移其中显式列出的 `threadIds`，不会把隐式 `all` 扩大为全量读取。
+
+页面中的两套白名单职责独立：“读取白名单”决定哪些本机 Session JSONL 可以进入同步与反思；“门禁豁免”决定哪些 Session 在非只读工具调用前无需登记活跃任务。门禁豁免默认关闭、按 Session 显式配置，只跳过任务登记检查，不跳过交互式进程和命令形态等安全检查。
+
+“自改进”采用复查闭环：TaskCenter 从白名单后的聚合结果与本地任务账本识别证据缺口、阻塞聚集、逾期和返工，输出结构化提案。提案只包含聚合计数和任务 ID，不复制 Session 正文。采纳后可选择已有或新建 Codex Session；TaskCenter 会先登记目标 Session 并创建幂等的正式改进任务，再派发受 Hook 保护的执行提示。Agent 上报 `done_claimed` 后即可再次运行反思：问题消失则标为已解决，仍存在则重新进入审核；人工发现未完成时可直接打回。TaskCenter 不直接修改源码、Hook、MCP 或 `~/.codex`。
+
+估时用于校准计划，不作为完成判定。`dueAt` 表示显式交付截止，`estimatedEffortMs` 表示预计有效执行工时；TaskCenter 分别记录墙钟耗时、`in_progress` 有效工时和 `blocked` 等待时间，并保留每次调整的旧值、原因和时间。Hook 只在显式交付截止逾期或有效工时超预估后提供一次幂等反馈，要求区分范围变化、依赖阻塞与执行偏差，再调整估时或拆分任务。旧 `expectedAt` 只作为历史预计完成时间保留，用于估时校准，不会自动升级为 `dueAt` 或触发交付逾期。旧任务没有状态分段证据时会显示“有效工时未知”，不会把创建至今的累计时间伪装成执行工时。反思只聚合有效工时偏差、阻塞占比和显式交付延期等校准指标，不自动延期，也不因超时判定任务失败。
 
 Hook 是有限的任务生命周期守卫，不是操作系统安全沙箱。Codex 的 `write_stdin` 不会再次触发 `PreToolUse`，TaskCenter 会拒绝已知的 stdin 交互式 shell/REPL 启动形态，但无法证明任意命令都不会转为长期进程；需要强安全边界时必须使用 Codex sandbox、最小文件权限和隔离运行环境。
 
@@ -35,6 +47,8 @@ npm run dev:live
 ```
 
 打开 <http://localhost:3000>。`dev:live` 同时启动页面、Codex 会话监听器，以及只监听 `127.0.0.1:3001` 的本地控制服务。
+
+首次启动时白名单为空。打开“会话白名单”，勾选允许读取的 Session 并保存，再执行同步。空白名单只产生本机“待配置”提示，不创建任务，也不能派发给 Agent；保存非空白名单后提示自动消失。需要复盘时在“数据反思与改进提案”区域运行反思；只有 Agent 改进提案在采纳后才会选择已有 Session 或新建独立 Session、自动建任务并派发。Agent 声明完成后可直接点击“再次反思验证效果”。
 
 如需后台启停，可以在 macOS、Linux、WSL2 或 PowerShell 中使用同一组命令：
 
@@ -94,18 +108,37 @@ claude mcp list
 
 配置变更只对新启动或重新加载的 Session 生效。Hook 会在本机控制服务意外退出时尝试一次自动恢复；恢复失败仍会阻断普通写操作，并只允许在项目根目录执行固定的跨平台 break-glass 命令：`node scripts/taskcenter-control.mjs start`（启动）或 `node scripts/taskcenter-control.mjs status`（诊断）。旧的 `/bin/bash scripts/taskcenter-control.sh ...` 入口继续作为 macOS/Linux 兼容薄封装。
 
+Codex 配置中的 `UserPromptSubmit` Hook 会在非门禁豁免 Session 没有活跃正式任务时，提前向 Agent 注入任务准备指令：只读请求可继续；需要写入时由 Agent 主动登记并创建任务后再调用工具，不应要求用户代为处理。`PreToolUse` 仍保留硬阻断作为兜底。只有显式加入“门禁豁免”白名单的精确 Session ID 才会跳过任务要求，不会按项目、目录或标题自动扩大豁免。
+
 在 Windows 上，TaskCenter 会安全解析标准 npm 安装生成的 `codex.cmd` 并直接调用其 Node 入口，避免把 Session prompt 拼进 shell。非标准批处理启动器应通过 `TASKCENTER_CODEX_COMMAND` 指向 `codex.exe`，或配合 `TASKCENTER_CODEX_PREFIX_ARGS` 显式配置。
 
-## Agent 任务协议
+## 通用完成协议与 Codex 适配器
 
-每个 Session 按以下顺序执行：
+TaskCenter Core 不依赖 Codex、Context Agent、OCR、GitHub/GitLab、Worktree 或 MCP，也不能成为外部项目 build、test、commit、merge 或 release 的强制条件。服务离线时工作可以继续，恢复后通过 `taskcenter_task_import_evidence` 补录；事件同时保存原始 `occurred_at` 与账本 `recorded_at`。
+
+任务契约使用结构化 `AcceptanceCriterion { id, description, required }`。验证和审查绑定 `SubjectReference`，支持 `git_commit`、`git_worktree_snapshot`、`pull_request_head`、`artifact`、`document_version`、`external` 和 `none`。主体变化后旧证据自动 stale。参与者使用 `ActorIdentity`，审查独立性与验收身份由版本化 Workspace Policy 决定，而不是硬编码 Session 是否相同。绝对本地路径不能作为 standard/strict 的唯一跨团队证据。
+
+以下步骤是 Codex/Hook 适配器的门禁流程，不是 TaskCenter Core 的通用前置条件：
+
+默认情况下，每个 Session 按以下顺序执行：
 
 1. `taskcenter_session_register`：提交真实 `session_id`、`workspace`、`agent`、`provider` 和 `model`。
-2. `taskcenter_task_create`：提交目标、计划和验收标准。
+2. `taskcenter_task_create`：新任务使用 `contract_version=v2`，提交目标、范围、非目标、计划、结构化验收标准、工作流等级、审查策略、可选执行环境，以及 `standard/strict` 所需的验证计划。
 3. 收到 `accepted=true` 与独立 `task_id` 后才能执行写操作。
 4. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
-5. 需要审计模型选择时，使用 `taskcenter_routing_record` 记录直接执行、原生派发、CLI 兜底或有理由偏离；该记录不阻断执行。
-6. Agent 的 `done_claimed` 只表示实现声明，不能自动升级为人工验收通过。
+5. TaskCenter 可用时，Sol 在派发执行器前调用 `taskcenter_routing_select`。它会原子检查模型并发、`Closed/Open/Half-Open` 熔断状态并发放有 TTL 的执行租约；执行结束后调用 `taskcenter_routing_result` 释放租约并回报原始错误。TaskCenter 只给出强建议，不启动 CLI，也不取代 Sol 的风险判断、整合和验收。
+6. Sol 有理由偏离建议，或 TaskCenter 暂时不可用而外部项目允许继续时，按静态规则执行并用 `taskcenter_routing_record` 记录 override；服务恢复后补录执行结果。TaskCenter 不得成为外部项目 build、test、commit 或 release 的单点依赖。本仓库自身启用 Hook 门禁时仍遵循 fail-closed 维护边界。
+7. OCR 独立审查是例外：TaskCenter 可以记录 Spark reviewer 不可用，但不会自动把 Luna、Terra 或 Sol 标记为独立审查通过。
+8. Agent 的 `done_claimed` 仅代表执行声明，提交时必须附带 `tests` 或 `evidence`；随后通过验收条件结果、Verification Claim 和独立 Review Attestation 计算 `completion_readiness`。
+9. `accepted` 只能由携带 `TASKCENTER_ACCEPTANCE_TOKEN` 的独立验收适配器通过 `taskcenter_task_acceptance_report` 上报；来源可以是 human、pull_request、ci、task_platform、context_agent、manual 或 other。普通执行 Agent、`task_report` 和浏览器操作均不能直接设置最终验收。
+
+主 Agent 派发普通 CLI 执行器时不再重复创建正式子任务。主 Agent 通过 `taskcenter_delegation_grant` 为当前正式任务签发短期授权，CLI 先登记自己的真实 Session，再以一次性 token 调用 `taskcenter_delegation_claim`。授权固定绑定父任务、CLI Session、精确 workspace、声明 scope、可选工具集合、执行模型和 TTL；CLI 用 `taskcenter_cli_run_report` 上报 started/running/终态、改动、测试与证据。CLI Run 只显示在主任务详情中，不获得修改主任务状态、审查或验收的权限。只有存在独立交付物、独立生命周期、独立验收或明确交接边界时，才创建正式子任务。
+
+scope 为文件工具提供可执行的路径边界；可识别路径超出 scope 时 Hook 会阻断。任意 Shell 命令无法可靠静态证明实际写入路径，因此只有 scope 显式为整个 workspace（`.`）时才允许，同时仍受精确 workspace、Session、TTL 和 `allowed_tools` 约束。该机制是任务授权边界，不替代 Codex sandbox 或操作系统隔离。
+
+完成闭环包含四层独立状态：执行 `done_claimed`、验证 `verification_status`、审查 `review_status`、最终验收 `acceptance_status`。`CompletionReadiness` 还返回当前 subject、机器可读 reason codes、缺失/失败条件、过期证据与未解决 findings。`strict` 默认要求当前 subject 的独立审查，但 Workspace Policy 可以显式调整。历史记录只追加，不覆盖。
+
+如果 Hook 明确输出“门禁豁免白名单放行”，当前 Session 可以不执行登记和建任务步骤。该例外只来自独立的门禁豁免白名单，不能由内容读取白名单推断；命令安全检查仍然有效。
 
 MCP 工具：
 
@@ -115,11 +148,28 @@ MCP 工具：
 - `taskcenter_task_query`
 - `taskcenter_task_update`
 - `taskcenter_task_report`
+- `taskcenter_task_requirement_report`
+- `taskcenter_task_verification_report`
+- `taskcenter_task_review_report`
+- `taskcenter_task_completion_readiness`
+- `taskcenter_task_completion_packet`
+- `taskcenter_task_subject_update`
+- `taskcenter_task_import_evidence`
+- `taskcenter_task_export`
+- `taskcenter_task_acceptance_report`（仅独立验收进程配置 Token）
 - `taskcenter_routing_record`
+- `taskcenter_routing_select`
+- `taskcenter_routing_result`
+- `taskcenter_delegation_grant`
+- `taskcenter_delegation_claim`
+- `taskcenter_cli_run_report`
+- `taskcenter_delegation_revoke`
+
+控制服务提供无 Session 依赖的 `POST /core/task-events`、`POST /tasks/import-evidence`、`GET /tasks/:id/export?format=json|markdown`，以及受令牌保护的 `POST /task-acceptance-report`。旧 `POST /task-acceptance-sync` 继续作为 Context 兼容适配器。令牌只通过进程环境传递，不写入任务、事件、日志或仓库。
 
 ## 数据文件
 
-运行态写入 `data/`，并由 `.gitignore` 排除。仓库只保留空白 seed、示例数据和空的 Session 合并配置。删除运行态前请确认范围；TaskCenter 不应删除或改写 `~/.codex` 下的会话与认证数据。
+运行态写入 `data/`，并由 `.gitignore` 排除，包括内容读取白名单 `session-selection.json`、门禁豁免白名单 `gate-session-allowlist.json`、CLI 授权账本 `delegations.json`、路由派生状态 `routing-control.json` 与 `reflection-proposals.json`。`routing-control.json` 是控制服务单写者维护的可变派生状态；不可变任务事件仍是审计依据，不承担锁或租约状态源职责。仓库只保留空白 seed、示例数据和空的 Session 合并配置。删除运行态前请确认范围；TaskCenter 不应删除或改写 `~/.codex` 下的会话与认证数据。
 
 ## 开发与验证
 
