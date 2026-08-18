@@ -29,6 +29,7 @@ import {
   loadVisibleTasks,
   reconcileContextShadowTasks,
   reconcileTasks,
+  recordSessionL0Audit,
   recordTaskEvent,
   supersedeContextShadowTask,
   taskCompletionPacket,
@@ -150,6 +151,13 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/session-status") {
       if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
       sendJson(response, 200, { sessions: getSessionStatuses(availableSessionIds(), loadVisibleTasks()) });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/sessions/l0-audit") {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      const audit = recordSessionL0Audit(String(body.session_id || ""), String(body.workspace || ""));
+      sendJson(response, 200, { accepted: true, l0Audit: audit });
       return;
     }
     if (request.method === "POST" && request.url === "/session-selection") {

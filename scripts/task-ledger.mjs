@@ -188,12 +188,33 @@ export function getSessionStatuses(availableSessionIds = [], tasks = loadTasks()
       workspace: entry?.workspace || "",
       registeredAt: entry?.registeredAt || "",
       lastSeenAt: entry?.lastSeenAt || "",
+      l0Audit: entry?.l0Audit || { count: 0, lastAt: "" },
       status: entry ? "registered" : "unregistered",
       reason: entry ? "已登记 Session，等待任务或持续上报" : "未发现 session.register",
       taskCount: sessionTasks.length,
       lastTaskAt: sessionTasks.reduce((latest, task) => task.updatedAt > latest ? task.updatedAt : latest, ""),
     };
   });
+}
+
+// L0 only retains a per-session aggregate.  It deliberately creates neither a
+// task nor an append-only command log, which keeps inspection history private.
+export function recordSessionL0Audit(sessionId, workspace = "") {
+  const registry = loadSessionRegistry();
+  const current = registry[sessionId];
+  if (!current) throw new TaskLedgerError(409, "当前 Session 尚未登记，请先完成 SessionStart 登记。");
+  const now = new Date().toISOString();
+  registry[sessionId] = {
+    ...current,
+    workspace: workspace || current.workspace || "",
+    lastSeenAt: now,
+    l0Audit: { count: Number(current.l0Audit?.count || 0) + 1, lastAt: now },
+  };
+  mkdirSync(dirname(sessionRegistryPath), { recursive: true });
+  const temporaryPath = `${sessionRegistryPath}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporaryPath, sessionRegistryPath);
+  return registry[sessionId].l0Audit;
 }
 
 export function reconcileTasks(availableSessionIds) {

@@ -52,6 +52,16 @@ test("V2-04 VerificationPlan 支持 security 与 performance", () => {
   assert.deepEqual(contract.verificationPlan.map((item) => item.kind), ["security", "performance"]);
 });
 
+test("V2-04a L1/L2/L3 默认契约按风险分层", () => {
+  const common = { contract_version: "v2", goal: "g", scope: ["s"], non_goals: [], acceptance_criteria: ["done"] };
+  assert.equal(normalizeTaskContract({ ...common, workflow_profile: "fast" }).reviewPolicy, "not_required");
+  assert.equal(normalizeTaskContract({ ...common, workflow_profile: "standard", verification_plan: [{ id: "t", title: "tests", kind: "test", required: true }] }).reviewPolicy, "not_required");
+  const strict = normalizeTaskContract({ ...common, workflow_profile: "strict", verification_plan: [{ id: "t", title: "tests", kind: "test", required: true }] });
+  assert.equal(strict.reviewPolicy, "required");
+  assert.throws(() => normalizeTaskContract({ ...common, workflow_profile: "standard" }), /verification_plan/);
+  assert.throws(() => normalizeTaskContract({ ...common, workflow_profile: "strict" }), /verification_plan/);
+});
+
 test("V2-05 SubjectReference 覆盖 Git、PR、产物、文档、外部和 none", () => {
   for (const type of ["git_commit", "git_worktree_snapshot", "pull_request_head", "artifact", "document_version", "external", "none"]) assert.ok(normalizeSubjectReference({ type, ...(type === "none" ? {} : { value: "v" }), observed_at: at }));
 });

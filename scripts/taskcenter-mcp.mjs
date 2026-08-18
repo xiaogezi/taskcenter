@@ -8,6 +8,10 @@ const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1
 const acceptanceToken = process.env.TASKCENTER_ACCEPTANCE_TOKEN || "";
 const server = new McpServer({ name: "taskcenter-task-server", version: TASKCENTER_VERSION });
 const verificationKind = z.enum(["test", "build", "lint", "static_check", "device", "manual", "security", "performance", "other"]);
+const responseMode = z.enum(["summary", "full"]).default("summary");
+// 路由和 delegation 的调用方必须消费 route_id、selected_model 或 claim_token；
+// 默认压成任务摘要会破坏旧执行器，因此控制面接口保留 full 默认值。
+const operationalResponseMode = z.enum(["summary", "full"]).default("full");
 const actorIdentity = z.object({ type: z.enum(["human", "agent", "ci", "review_platform", "task_platform", "other"]), id: z.string().min(1).max(200), display_name: z.string().max(200).optional(), provider: z.string().max(200).optional(), session_id: z.string().max(200).optional() }).strict();
 const subjectReference = z.object({ type: z.enum(["git_commit", "git_worktree_snapshot", "pull_request_head", "artifact", "document_version", "external", "none"]), value: z.string().max(500).optional(), repository: z.string().max(300).optional(), branch: z.string().max(300).optional(), observed_at: z.string().datetime({ offset: true }) }).strict();
 const acceptanceCriterion = z.union([z.string().min(1).max(500), z.object({ id: z.string().min(1).max(120), description: z.string().min(1).max(500), required: z.boolean() }).strict()]);
@@ -19,6 +23,7 @@ const verificationRequirement = z.object({
   suggested_command: z.string().max(500).optional(),
 }).strict();
 const taskFields = {
+  response_mode: responseMode,
   session_id: z.string().min(1).max(200).optional(),
   agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(),
   provider: z.string().max(80).optional(),
@@ -67,7 +72,7 @@ const taskFields = {
 server.registerTool("taskcenter_session_register", {
   title: "注册 TaskCenter Session",
   description: "开始任务前登记当前 Session、工作目录和任务协议。",
-  inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional() }).strict(),
+  inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional(), response_mode: responseMode }).strict(),
 }, async (input) => report("session.register", input));
 
 server.registerTool("taskcenter_task_create", {
@@ -94,10 +99,10 @@ server.registerTool("taskcenter_task_requirement_report", {
   inputSchema: z.object({
     session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
     requirement_id: z.string().min(1).max(120), status: z.enum(["pending", "passed", "failed", "not_applicable"]),
-    evidence_refs: z.array(z.string().min(1).max(500)).max(30).default([]), checked_at: z.string().datetime({ offset: true }).optional(),
+    evidence_refs: z.array(z.string().min(1).max(500)).max(30).default([]), checked_at: z.string().datetime({ offset: true }).optional(), response_mode: responseMode,
     checked_by: z.union([actorIdentity, z.string().max(200)]).optional(), subject_ref: subjectReference.optional(), revision: z.string().max(200).optional(), note: z.string().max(1_000).optional(), occurred_at: z.string().datetime({ offset: true }).optional(),
   }).strict(),
-}, async ({ session_id, task_id, event_id, ...requirement_result }) => report("requirement.reported", { session_id, task_id, event_id, requirement_result }));
+}, async ({ session_id, task_id, event_id, response_mode, ...requirement_result }) => report("requirement.reported", { session_id, task_id, event_id, response_mode, requirement_result }));
 
 server.registerTool("taskcenter_task_verification_report", {
   title: "上报 TaskCenter 验证证据",
@@ -108,9 +113,9 @@ server.registerTool("taskcenter_task_verification_report", {
     command_or_probe: z.string().max(1_000).optional(), status: z.enum(["passed", "failed", "skipped"]), exit_code: z.number().int().optional(),
     revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), producer: z.union([actorIdentity, z.string().min(1).max(200)]),
     producer_session_id: z.string().max(200).optional(), evidence_ref: z.string().max(500).optional(),
-    artifact_refs: z.array(z.string().max(500)).max(30).optional(), summary: z.string().max(1_000).optional(),
+    artifact_refs: z.array(z.string().max(500)).max(30).optional(), summary: z.string().max(1_000).optional(), response_mode: responseMode,
   }).strict(),
-}, async ({ session_id, task_id, event_id, ...verification_claim }) => report("verification.reported", { session_id, task_id, event_id, revision: verification_claim.revision, verification_claim }));
+}, async ({ session_id, task_id, event_id, response_mode, ...verification_claim }) => report("verification.reported", { session_id, task_id, event_id, response_mode, revision: verification_claim.revision, verification_claim }));
 
 server.registerTool("taskcenter_task_review_report", {
   title: "上报 TaskCenter 独立审查",
@@ -120,9 +125,9 @@ server.registerTool("taskcenter_task_review_report", {
     id: z.string().min(1).max(120), reviewer: z.union([actorIdentity, z.string().min(1).max(200)]), reviewer_session_id: z.string().max(200).optional(),
     revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), scope: z.string().min(1).max(1_000), verdict: z.enum(["approved", "changes_requested", "rejected"]),
     unresolved_findings: z.number().int().min(0), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(),
-    finding_refs: z.array(z.string().max(500)).max(50).optional(), summary: z.string().max(1_000).optional(),
+    finding_refs: z.array(z.string().max(500)).max(50).optional(), summary: z.string().max(1_000).optional(), response_mode: responseMode,
   }).strict(),
-}, async ({ session_id, task_id, event_id, ...review_attestation }) => report("review.reported", { session_id, task_id, event_id, revision: review_attestation.revision, review_attestation }));
+}, async ({ session_id, task_id, event_id, response_mode, ...review_attestation }) => report("review.reported", { session_id, task_id, event_id, response_mode, revision: review_attestation.revision, review_attestation }));
 
 server.registerTool("taskcenter_task_completion_readiness", {
   title: "查询 TaskCenter 完成就绪度",
@@ -139,7 +144,7 @@ server.registerTool("taskcenter_task_completion_packet", {
 server.registerTool("taskcenter_task_subject_update", {
   title: "更新 TaskCenter 工作对象",
   description: "把任务当前工作对象更新为通用 SubjectReference；新对象会使旧验证、审查和验收自动过期。",
-  inputSchema: z.object({ task_id: z.string().min(1).max(200), session_id: z.string().min(1).max(200).optional(), event_id: z.string().max(200).optional(), subject_ref: subjectReference, actor: actorIdentity.optional(), occurred_at: z.string().datetime({ offset: true }).optional() }).strict(),
+  inputSchema: z.object({ task_id: z.string().min(1).max(200), session_id: z.string().min(1).max(200).optional(), event_id: z.string().max(200).optional(), subject_ref: subjectReference, actor: actorIdentity.optional(), occurred_at: z.string().datetime({ offset: true }).optional(), response_mode: responseMode }).strict(),
 }, async (input) => report("subject.updated", input));
 
 server.registerTool("taskcenter_task_export", {
@@ -151,13 +156,13 @@ server.registerTool("taskcenter_task_export", {
 server.registerTool("taskcenter_task_import_evidence", {
   title: "导入 TaskCenter 外部证据",
   description: "导入 PR、CI、人工或其他平台产生的 Subject、Requirement、Verification、Review 事件；保留 occurred_at 与 recorded_at。",
-  inputSchema: z.object({ task_id: z.string().min(1).max(200), events: z.array(z.record(z.string(), z.unknown())).min(1).max(100) }).strict(),
+  inputSchema: z.object({ task_id: z.string().min(1).max(200), events: z.array(z.record(z.string(), z.unknown())).min(1).max(100), response_mode: responseMode }).strict(),
 }, async (input) => postCore("/tasks/import-evidence", input));
 
 server.registerTool("taskcenter_task_acceptance_report", {
   title: "独立上报 TaskCenter 验收",
   description: "供已配置独立验收凭据的人工、CI、PR 或任务平台适配器上报 AcceptanceRecord；普通执行 Agent 不应配置该凭据。",
-  inputSchema: z.object({ task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), outcome: z.enum(["accepted", "rejected"]), occurred_at: z.string().datetime({ offset: true }).optional(), acceptance_record: z.object({ id: z.string().min(1).max(120), source: z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"]), actor: actorIdentity, subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(), evidence_refs: z.array(z.string().max(500)).max(30).optional(), reason: z.string().max(1_000).optional() }).strict() }).strict(),
+  inputSchema: z.object({ task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), outcome: z.enum(["accepted", "rejected"]), occurred_at: z.string().datetime({ offset: true }).optional(), acceptance_record: z.object({ id: z.string().min(1).max(120), source: z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"]), actor: actorIdentity, subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(), evidence_refs: z.array(z.string().max(500)).max(30).optional(), reason: z.string().max(1_000).optional() }).strict(), response_mode: responseMode }).strict(),
 }, async (input) => postAcceptance(input));
 
 server.registerTool("taskcenter_routing_record", {
@@ -174,7 +179,7 @@ server.registerTool("taskcenter_routing_record", {
     dispatch_channel: z.enum(["direct", "native", "cli", "other"]),
     routing_reason: z.string().min(1).max(1_000),
     routing_outcome: z.enum(["selected", "started", "succeeded", "failed"]).optional(),
-    policy_version: z.string().min(1).max(80).optional(),
+    policy_version: z.string().min(1).max(80).optional(), response_mode: responseMode,
   }).strict(),
 }, async (input) => report("routing.decision", input));
 
@@ -188,7 +193,7 @@ server.registerTool("taskcenter_routing_select", {
     channel: z.enum(["direct", "native", "cli", "other"]),
     event_id: z.string().max(200).optional(),
     route_id: z.string().max(200).optional(),
-    lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(),
+    lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input) => postLocal("/routing/select", input));
 
@@ -202,7 +207,7 @@ server.registerTool("taskcenter_routing_result", {
     error_type: z.string().max(120).optional(),
     error_code: z.string().max(160).optional(),
     request_id: z.string().max(300).optional(),
-    event_id: z.string().max(200).optional(),
+    event_id: z.string().max(200).optional(), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input) => postLocal("/routing/result", input));
 
@@ -212,14 +217,14 @@ server.registerTool("taskcenter_delegation_grant", {
   inputSchema: z.object({
     parent_session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), delegation_id: z.string().max(200).optional(),
     workspace: z.string().min(1).max(4_096), scope: z.array(z.string().min(1).max(500)).min(1).max(50), allowed_tools: z.array(z.string().min(1).max(120)).max(40).optional(),
-    executor_model: z.string().min(1).max(120), channel: z.enum(["cli", "native", "other"]).default("cli"), purpose: z.string().max(1_000).optional(), ttl_seconds: z.number().int().min(60).max(28_800).default(3_600),
+    executor_model: z.string().min(1).max(120), channel: z.enum(["cli", "native", "other"]).default("cli"), purpose: z.string().max(1_000).optional(), ttl_seconds: z.number().int().min(60).max(28_800).default(3_600), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input) => postLocal("/delegations/grant", input));
 
 server.registerTool("taskcenter_delegation_claim", {
   title: "领取 CLI Delegation",
   description: "CLI 使用自身已登记 Session 和一次性 claim token 附着主任务，不创建正式子任务。",
-  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), claim_token: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional() }).strict(),
+  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), claim_token: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional(), response_mode: operationalResponseMode }).strict(),
 }, async (input) => postLocal("/delegations/claim", input));
 
 server.registerTool("taskcenter_cli_run_report", {
@@ -228,14 +233,14 @@ server.registerTool("taskcenter_cli_run_report", {
   inputSchema: z.object({
     delegation_id: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional(),
     status: z.enum(["started", "running", "succeeded", "failed", "cancelled"]), summary: z.string().max(1_000).optional(), changed_files: z.array(z.string().max(500)).max(100).optional(),
-    tests: z.array(z.string().max(500)).max(50).optional(), evidence: z.array(z.string().max(1_000)).max(50).optional(), error: z.string().max(1_000).optional(),
+    tests: z.array(z.string().max(500)).max(50).optional(), evidence: z.array(z.string().max(1_000)).max(50).optional(), error: z.string().max(1_000).optional(), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input) => postLocal("/delegations/report", input));
 
 server.registerTool("taskcenter_delegation_revoke", {
   title: "撤销 CLI Delegation",
   description: "由主任务 Session 撤销尚未结束的 CLI delegation。",
-  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), parent_session_id: z.string().min(1).max(200), event_id: z.string().max(200).optional() }).strict(),
+  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), parent_session_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), response_mode: operationalResponseMode }).strict(),
 }, async (input) => postLocal("/delegations/revoke", input));
 
 server.registerTool("taskcenter_task_query", {
@@ -269,49 +274,73 @@ server.registerTool("taskcenter_session_status", {
 });
 
 async function report(type, input) {
+  const { response_mode: responseModeValue = "summary", ...event } = input;
   let response;
   try {
-    response = await fetch(`${controlServerUrl}${input.session_id ? "/task-events" : "/core/task-events"}`, {
+    response = await fetch(`${controlServerUrl}${event.session_id ? "/task-events" : "/core/task-events"}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
-      body: JSON.stringify({ type, ...input }),
+      body: JSON.stringify({ type, ...event }),
     });
   } catch (e) {
     return result({ error: "TASKCENTER_UNAVAILABLE", message: `TaskCenter 控制服务不可用（${controlServerUrl}）。请先运行 npm run dev:live 启动 TaskCenter。`, detail: e.message });
   }
   try {
-    return result(await readJson(response));
+    return writeResult(await readJson(response), responseModeValue);
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
   }
 }
 
 async function postCore(path, input) {
+  const { response_mode: responseModeValue = "summary", ...body } = input;
   try {
-    const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(input) });
-    return result(await readJson(response));
+    const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(body) });
+    return writeResult(await readJson(response), responseModeValue);
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
   }
 }
 
 async function postLocal(path, input) {
+  const { response_mode: responseModeValue = "summary", ...body } = input;
   try {
-    const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(input) });
-    return result(await readJson(response));
+    const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(body) });
+    return writeResult(await readJson(response), responseModeValue);
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
   }
 }
 
 async function postAcceptance(input) {
+  const { response_mode: responseModeValue = "summary", ...body } = input;
   if (!acceptanceToken) return result({ error: "TASKCENTER_ACCEPTANCE_UNAVAILABLE", message: "当前 MCP 进程未配置独立验收凭据。" });
   try {
-    const response = await fetch(`${controlServerUrl}/task-acceptance-report`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Acceptance-Token": acceptanceToken }, body: JSON.stringify(input) });
-    return result(await readJson(response));
+    const response = await fetch(`${controlServerUrl}/task-acceptance-report`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Acceptance-Token": acceptanceToken }, body: JSON.stringify(body) });
+    return writeResult(await readJson(response), responseModeValue);
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
   }
+}
+
+function writeResult(payload, responseModeValue) {
+  if (responseModeValue === "full" || payload?.error) return result(payload);
+  const task = payload?.task || {};
+  const readiness = task.completionReadiness || payload?.completionReadiness || {};
+  const missing = [
+    ...(readiness.missingRequirements || []),
+    ...(readiness.failedRequirements || []),
+    ...(readiness.staleEvidence || []),
+    ...(readiness.unresolvedFindings || []),
+  ];
+  return result({
+    accepted: Boolean(payload?.accepted),
+    task_id: task.id || payload?.task_id || payload?.taskId || "",
+    status: task.status || payload?.status || "",
+    verification_status: task.verificationStatus || readiness.verificationStatus || "not_required",
+    review_status: task.reviewStatus || readiness.reviewStatus || "not_required",
+    missing_count: missing.length || [...new Set(readiness.reasons || [])].length,
+  });
 }
 
 async function queryEndpoint(path) {

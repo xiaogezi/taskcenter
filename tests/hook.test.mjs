@@ -97,6 +97,32 @@ test("SessionStart Hook 登记真实会话且可幂等重放", async () => {
   assert.equal(status.agent, "claude");
 });
 
+test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async () => {
+  const sessionId = "019f0000-0000-7000-8000-000000000089";
+  assert.equal((await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" })).code, 0);
+  for (const command of ["pwd", "cat README.md", "sed -n '1,2p' README.md", "sed -n '/hello/p' README.md", "git status", "git diff", "git ls-files", "find . -maxdepth 1", "rtk rg TaskCenter README.md"]) {
+    const allowed = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: command } });
+    assert.equal(allowed.code, 0, command);
+    assert.match(allowed.stdout, /L0/);
+  }
+  for (const command of ["touch x", "rm x", "mv x y", "sed -i s/a/b/ x", "sed -ni s/a/b/ x", "sed -n '1w leak.txt' x", "git commit -m x", "git diff --output=leak", "npm test", "pwd; ls", "cat x | head", "cat x > y", "echo $(pwd)", "find . -delete", "find . -exec touch x ;", "find . -fprint leak", "bash -c 'pwd'", "python -c 'print(1)'"]) {
+    const blocked = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: command } });
+    assert.equal(blocked.code, 2, command);
+    assert.match(blocked.stderr, /不满足 L0 确定性只读规则/);
+  }
+  for (const tool_name of ["Read", "Grep", "Glob"]) {
+    const allowed = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name, tool_input: { path: "README.md" } });
+    assert.equal(allowed.code, 0, tool_name);
+  }
+  const patch = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "apply_patch", tool_input: { patch: "*** Begin Patch\n*** End Patch" } });
+  assert.equal(patch.code, 2);
+  const unregistered = await runHook("pre-tool-use", "codex", { session_id: "unregistered-l0", cwd: "/work", tool_name: "exec_command", tool_input: { cmd: "pwd" } });
+  assert.equal(unregistered.code, 2);
+  assert.match(unregistered.stderr, /尚未登记/);
+  const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+  assert.equal(tasks.length, 0);
+});
+
 test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Agent 建任务", async () => {
   const sessionId = "019f0000-0000-7000-8000-000000000090";
   const registered = await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
@@ -275,6 +301,7 @@ test("Context task ensure 跨 Turn 幂等复用，complete 后可按仍活跃语
 test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async () => {
   const missing = await runHook("pre-tool-use", "codex", { session_id: "unknown-session", cwd: "/work" });
   assert.equal(missing.code, 2);
+  assert.equal((await runHook("session-start", "codex", { session_id: "unknown-session", cwd: "/work" })).code, 0);
 
   const gateSessionId = "019f0000-0000-7000-8000-000000000099";
   let gateResponse = await fetch(`${base}/gate-session-allowlist`, {
@@ -316,7 +343,7 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     tool_input: { command: "rg -n TODO src" },
   });
   assert.equal(readOnly.code, 0);
-  assert.match(readOnly.stdout, /只读检查放行/);
+  assert.match(readOnly.stdout, /L0.*只读检查放行/);
 
   for (const command of ["rtk rg -n TODO src", "rtk git status", "/opt/homebrew/bin/rtk git branch --show-current"]) {
     const wrappedReadOnly = await runHook("pre-tool-use", "codex", {
@@ -327,7 +354,7 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
       tool_input: { command },
     });
     assert.equal(wrappedReadOnly.code, 0, `${command} 应按内部只读命令放行`);
-    assert.match(wrappedReadOnly.stdout, /只读检查放行/);
+    assert.match(wrappedReadOnly.stdout, /L0.*只读检查放行/);
   }
 
   for (const cmd of [

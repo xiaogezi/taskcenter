@@ -38,8 +38,9 @@ try {
     if (isInteractiveExec(event)) {
       throw new Error("TaskCenter 不允许启动可由 write_stdin 续写的交互式命令；请使用一次性命令。Hook 是生命周期守卫，不是进程级安全沙箱。");
     }
-    if (isReadOnlyInspection(event)) {
-      console.log("TaskCenter 只读检查放行");
+    if (await isL0ReadOnlyInspection(event)) {
+      await recordL0Audit();
+      console.log("TaskCenter L0 确定性只读检查放行");
       process.exit(0);
     }
     if (await isGateAllowlistedSession()) {
@@ -72,22 +73,88 @@ function isTrustedRecoveryCommand(payload) {
   ]).has(toolInput.command);
 }
 
+async function isL0ReadOnlyInspection(payload) {
+  if (!isReadOnlyInspection(payload)) return false;
+  const result = await request("GET", "/session-status");
+  const current = Array.isArray(result.sessions)
+    ? result.sessions.find((session) => session.sessionId === sessionId)
+    : null;
+  if (!current || current.status !== "registered") return false;
+  const tasks = await request("GET", "/tasks");
+  const hasActiveTask = (tasks.tasks || []).some((task) => task.sessionId === sessionId && ["in_progress", "blocked", "planned"].includes(task.status));
+  return !hasActiveTask && !(await resolveCurrentDelegation())?.task;
+}
+
 function isReadOnlyInspection(payload) {
   const toolName = String(payload.tool_name || payload.tool || payload.name || "");
+  if (["Read", "Grep", "Glob"].includes(toolName)) return true;
   if (!["Bash", "exec_command"].includes(toolName)) return false;
   const input = payload.tool_input && typeof payload.tool_input === "object"
     ? payload.tool_input
     : {};
   const command = String(input.cmd || input.command || payload.command || "").trim();
   if (!command) return false;
-  // 只接受单条、无重定向/管道/命令替换的检查命令。不能证明只读时继续走任务门禁。
+  // L0 只接受单条、无重定向/管道/命令替换的确定性检查命令。
   if (/[\n\r;&<>`]/.test(command) || /\|\||\||\$\(/.test(command)) return false;
-  const inspectedCommand = command.replace(/^(?:(?:\/[^\s/]+)*\/)?rtk\s+/, "");
-  if (/\brg\b[^\n]*\s--pre(?:-glob)?\b/.test(inspectedCommand)) return false;
-  if (/^git\s+(?:diff|show|log)\b/.test(inspectedCommand) && /(?:^|\s)--output(?:=|\s|$)/.test(inspectedCommand)) return false;
-  return /^(?:(?:\/[^\s/]+)*\/)?(?:rg|grep|ls|pwd|head|tail|wc|stat|file|ps|pgrep|lsof)\b/.test(inspectedCommand)
-    || /^git\s+(?:status|diff|log|show|rev-parse)\b/.test(inspectedCommand)
-    || /^git\s+branch\s+--show-current\b/.test(inspectedCommand);
+  const tokens = splitCommandWords(command);
+  if (basename(tokens[0]) === "rtk") tokens.shift();
+  const executable = basename(tokens[0]);
+  const args = tokens.slice(1);
+  if (["pwd", "ls", "cat", "head", "tail", "wc", "du", "stat", "file"].includes(executable)) return true;
+  if (executable === "rg") return !args.some((token) => token === "--pre" || token.startsWith("--pre="));
+  if (executable === "sed") return isReadOnlySed(args);
+  if (executable === "find") return isReadOnlyFind(args);
+  if (executable !== "git") return false;
+  return isReadOnlyGit(args);
+}
+
+function isReadOnlySed(args) {
+  if (!args.length || !args.some((token) => token === "-n" || token === "--quiet" || token === "--silent")) return false;
+  if (args.some((token) => token === "-f" || token === "--file" || token.startsWith("--file=") || token === "--in-place" || token.startsWith("--in-place=") || (/^-[^-]/.test(token) && token !== "-n" && token !== "-e"))) return false;
+  const scripts = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === "-e" || token === "--expression") {
+      if (!args[index + 1]) return false;
+      scripts.push(args[index + 1]);
+      index += 1;
+    } else if (token.startsWith("--expression=")) {
+      scripts.push(token.slice("--expression=".length));
+    } else if (!token.startsWith("-") && scripts.length === 0) {
+      scripts.push(token);
+    }
+  }
+  return scripts.length > 0 && scripts.every(isSafeSedPrintScript);
+}
+
+function isSafeSedPrintScript(script) {
+  const value = String(script).trim();
+  if (/^(?:(?:\d+|\$)(?:,(?:\d+|\$))?)?(?:p|l|=)$/.test(value)) return true;
+  if (!value.startsWith("/")) return false;
+  let escaped = false;
+  for (let index = 1; index < value.length; index += 1) {
+    if (!escaped && value[index] === "/") return /^(?:p|l|=)$/.test(value.slice(index + 1));
+    escaped = !escaped && value[index] === "\\";
+    if (value[index] !== "\\") escaped = false;
+  }
+  return false;
+}
+
+function isReadOnlyFind(args) {
+  const unsafeActions = new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]);
+  return !args.some((token) => unsafeActions.has(token));
+}
+
+function isReadOnlyGit(args) {
+  const subcommand = args[0];
+  if (["status", "check-ignore", "ls-files"].includes(subcommand)) return true;
+  if (subcommand === "branch") return args.length === 2 && args[1] === "--show-current";
+  if (!["diff", "show", "log"].includes(subcommand)) return false;
+  return !args.slice(1).some((token) => token === "--ext-diff" || token === "--textconv" || token === "--output" || token.startsWith("--output="));
+}
+
+async function recordL0Audit() {
+  await request("POST", "/sessions/l0-audit", { session_id: sessionId, workspace, command: "read_only" });
 }
 
 function isInteractiveExec(payload) {
@@ -364,7 +431,7 @@ async function requireTask() {
   if (task) return task;
   const delegated = await resolveCurrentDelegation();
   if (delegated?.task && delegated?.delegation) return { ...delegated.task, delegation: delegated.delegation };
-  throw new Error("当前 Session 无活跃任务或有效 delegation。主 Agent 应创建正式任务；CLI 执行器应先登记 Session 并领取 taskcenter_delegation_grant，不要为普通 CLI Run 重复创建正式任务。");
+  throw new Error("该命令不满足 L0 确定性只读规则，请拆成单条只读命令，或创建 fast/standard/strict 任务。当前 Session 无活跃任务或有效 delegation；CLI 执行器应先领取 taskcenter_delegation_grant，不要为普通 CLI Run 重复创建正式任务。");
 }
 
 async function provideTaskPreparationContext() {

@@ -15,7 +15,8 @@ export function normalizeTaskContract(input, current = null) {
   const scope = strings(input.scope ?? current?.scope, 50, 500);
   const nonGoals = strings(input.non_goals ?? current?.nonGoals, 50, 500);
   const workflowProfile = enumeration(input.workflow_profile ?? current?.workflowProfile, workflowProfiles, "");
-  const reviewPolicy = enumeration(input.review_policy ?? current?.reviewPolicy, reviewPolicies, "recommended");
+  // L1/L2 do not require review unless callers opt in; L3 always does.
+  const reviewPolicy = enumeration(input.review_policy ?? current?.reviewPolicy, reviewPolicies, workflowProfile === "strict" ? "required" : "not_required");
   const environment = (input.execution_environment ?? current?.executionEnvironment) === "either" ? "other" : (input.execution_environment ?? current?.executionEnvironment);
   const executionEnvironment = enumeration(environment, executionEnvironments, "");
   const verificationPlan = normalizeVerificationPlan(input.verification_plan ?? current?.verificationPlan);

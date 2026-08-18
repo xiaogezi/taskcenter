@@ -4,6 +4,10 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- Adds L0 registered-session deterministic read-only access with aggregate-only auditing, while keeping writes, composite shell forms, interpreters, redirects, and unregistered Sessions fail-closed.
+- Defines L1 `fast`, L2 `standard`, and L3 `strict` defaults: verification is required for L2/L3, independent current-Subject review for L3, and Subject changes stale prior verification and review evidence.
+- Adds `response_mode: summary|full` to task mutation/report MCP calls; summary is the compact default, while routing/delegation control calls retain full operational replies for backward compatibility.
+
 - Adds `taskcenter_routing_select` and `taskcenter_routing_result` as a local model-routing control plane with per-model concurrency leases, TTL expiry, idempotent results, and `Closed/Open/Half-Open` circuit state.
 - Keeps routing advisory and recoverable: TaskCenter never launches CLI executors, Sol can record a reasoned override, external work can use static fallback while the service is unavailable, and OCR reviewer failure cannot be auto-substituted as independent approval.
 - Stores mutable routing health in ignored `data/routing-control.json` under the single control-server writer while retaining append-only `routing.decision` and `routing.health` task audit events.

@@ -36,6 +36,7 @@ const {
   reconcileContextShadowTasks,
   reconcileTasks,
   recordTaskEvent,
+  recordSessionL0Audit,
   supersedeContextShadowTask,
   taskCompletionPacket,
   taskCompletionReadiness,
@@ -125,6 +126,16 @@ test("session.register 不误创建任务", async () => {
   assert.equal(result.task, null);
   assert.equal(result.idempotent, undefined);
   assert.equal(loadTasks().length, 0);
+});
+
+test("L0 仅聚合 Session 审计且不创建任务或事件历史", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "session.register", session_id: "sess-l0", workspace: "/work" });
+  const audit = recordSessionL0Audit("sess-l0", "/work");
+  assert.equal(audit.count, 1);
+  assert.equal(loadTasks().length, 0);
+  assert.equal(getSessionStatuses().find((item) => item.sessionId === "sess-l0").l0Audit.count, 1);
+  assert.throws(() => recordSessionL0Audit("not-registered"), /尚未登记/);
 });
 
 test("任务 session_id 不在当前会话源时拒绝创建并可清理旧记录", async () => {
@@ -1248,7 +1259,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     assert.ok(toolNames.includes(expected), `MCP 应暴露 ${expected}`);
   }
 
-  const register = await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-mcp", agent: "codex", provider: "openai", model: "gpt-test", workspace: "/work" } });
+  const register = await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-mcp", agent: "codex", provider: "openai", model: "gpt-test", workspace: "/work", response_mode: "full" } });
   const registerPayload = JSON.parse(textOf(register));
   assert.equal(registerPayload.accepted, true);
   assert.equal(registerPayload.task, null);
@@ -1269,6 +1280,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
       risks: ["风险B"],
       retrospective: "复盘C",
       expected_at: "2026-08-10T12:00:00.000Z",
+      response_mode: "full",
     },
   });
   const createPayload = JSON.parse(textOf(create));
@@ -1276,6 +1288,16 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(createPayload.task.id, "task-mcp");
   assert.equal(createPayload.task.status, "planned");
   assert.equal(createPayload.task.expectedAt, "2026-08-10T12:00:00.000Z");
+
+  const compact = await client.callTool({
+    name: "taskcenter_task_create",
+    arguments: { session_id: "sess-mcp", task_id: "task-mcp-summary", title: "紧凑回包", goal: "验证默认摘要", acceptance_criteria: ["a"], plan: ["p"] },
+  });
+  const compactText = textOf(compact);
+  const compactPayload = JSON.parse(compactText);
+  assert.deepEqual(Object.keys(compactPayload).sort(), ["accepted", "missing_count", "review_status", "status", "task_id", "verification_status"]);
+  assert.equal(compactPayload.task_id, "task-mcp-summary");
+  assert.ok(compactText.length < textOf(create).length / 2, "默认摘要应显著小于 full 回包");
 
   const routing = await client.callTool({
     name: "taskcenter_routing_record",
@@ -1289,6 +1311,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
       selected_executor_model: "gpt-5.3-codex-spark",
       dispatch_channel: "native",
       routing_reason: "边界清晰，优先原生派发。",
+      response_mode: "full",
     },
   });
   const routingPayload = JSON.parse(textOf(routing));
@@ -1296,9 +1319,17 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(routingPayload.task.status, "planned");
   assert.equal(routingPayload.task.routing.selectedExecutorModel, "gpt-5.3-codex-spark");
 
+  const selectedRoute = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_routing_select",
+    arguments: { task_id: "task-mcp", preferred_model: "gpt-5.3-codex-spark", task_class: "test", channel: "cli", route_id: "route-mcp-compat" },
+  })));
+  assert.equal(selectedRoute.route.route_id, "route-mcp-compat", "旧客户端不传 response_mode 时仍需取得路由租约");
+  assert.ok(selectedRoute.route.selected_model);
+  await client.callTool({ name: "taskcenter_routing_result", arguments: { route_id: selectedRoute.route.route_id, outcome: "succeeded" } });
+
   const query = await client.callTool({ name: "taskcenter_task_query", arguments: { session_id: "sess-mcp" } });
   const queryPayload = JSON.parse(textOf(query));
-  assert.equal(queryPayload.tasks.find((task) => task.id === "task-mcp").routing.dispatchChannel, "native");
+  assert.equal(queryPayload.tasks.find((task) => task.id === "task-mcp").routing.dispatchChannel, "cli");
 
   const update = await client.callTool({ name: "taskcenter_task_update", arguments: { session_id: "sess-mcp", task_id: "task-mcp", current_step: "已更新" } });
   assert.equal(JSON.parse(textOf(update)).accepted, true);
@@ -1313,7 +1344,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     arguments: {
       session_id: "sess-mcp", task_id: "task-mcp-v2", title: "MCP v2 闭环", goal: "验证新 MCP 能力",
       acceptance_criteria: ["功能通过"], plan: ["实现"], contract_version: "v2", scope: ["scripts/"], non_goals: [],
-      workflow_profile: "standard", review_policy: "required", execution_environment: "local",
+      workflow_profile: "standard", review_policy: "required", execution_environment: "local", response_mode: "full",
       verification_plan: [{ id: "tests", title: "测试", kind: "test", required: true }],
     },
   });
