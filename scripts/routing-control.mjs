@@ -41,8 +41,9 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const replay = state.routes.find((route) => route.selectEventId === eventId);
   if (replay) {
     if (replay.selectSignature !== signature) throw new RoutingControlError(409, "event_id 已被不同 routing_select 请求使用。");
+    const auditEvents = replayAuditEvents(state, replay, "select", now);
     persistState(state, now);
-    return { route: publicRoute(replay), health: healthSnapshot(state, now), idempotent: true, auditEvents: [] };
+    return { route: publicRoute(replay), health: healthSnapshot(state, now), idempotent: true, auditEvents };
   }
 
   const preferred = ensureHealth(state, preferredModel, now);
@@ -55,20 +56,22 @@ export function routingSelect(input, now = new Date().toISOString()) {
     if (ocrTaskClasses.has(taskClass)) {
       const route = buildUnavailableRoute({ eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now });
       state.routes.push(route);
+      route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
       persistState(state, now);
       return {
         route: publicRoute(route),
         health: healthSnapshot(state, now),
         idempotent: false,
-        auditEvents: auditEventsFor(route, preferred, "selection_unavailable"),
+        auditEvents: route.selectAuditEvents,
       };
     }
     const fallback = chooseFallback(state, taskClass, preferredModel, now);
     if (!fallback) {
       const route = buildUnavailableRoute({ eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now, reason: "no_model_capacity_available" });
       state.routes.push(route);
+      route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
       persistState(state, now);
-      return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: auditEventsFor(route, preferred, "selection_unavailable") };
+      return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: route.selectAuditEvents };
     }
     selectedModel = fallback.model;
     reason = preferred.state === "open"
@@ -107,8 +110,9 @@ export function routingSelect(input, now = new Date().toISOString()) {
   if (probe) selected.halfOpenLease = route.id;
   refreshActiveExecutors(state, now);
   selected.updatedAt = now;
+  route.selectAuditEvents = auditEventsFor(route, selected, "lease_acquired");
   persistState(state, now);
-  return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: auditEventsFor(route, selected, "lease_acquired") };
+  return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: route.selectAuditEvents };
 }
 
 export function routingResult(input, now = new Date().toISOString()) {
@@ -133,7 +137,9 @@ export function routingResult(input, now = new Date().toISOString()) {
   if (route.result) {
     if (route.resultEventId !== eventId && route.resultSignature !== signature) throw new RoutingControlError(409, "route 已上报不同结果。");
     if (route.resultSignature !== signature) throw new RoutingControlError(409, "event_id 已被不同 routing_result 使用。");
-    return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: true, auditEvents: [] };
+    const auditEvents = replayAuditEvents(state, route, "result", now);
+    persistState(state, now);
+    return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: true, auditEvents };
   }
   if (route.status !== "leased") throw new RoutingControlError(409, "route 租约已过期或不可用。");
 
@@ -160,14 +166,16 @@ export function routingResult(input, now = new Date().toISOString()) {
   }
   health.updatedAt = now;
   refreshActiveExecutors(state, now);
-  persistState(state, now);
   const transition = previousState === health.state ? "result_recorded" : `${previousState}_to_${health.state}`;
-  return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: auditEventsFor(route, health, transition) };
+  route.resultAuditEvents = auditEventsFor(route, health, transition);
+  persistState(state, now);
+  return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: route.resultAuditEvents };
 }
 
 export function routingHealth(now = new Date().toISOString()) {
   const state = readState();
   expireRoutes(state, now);
+  for (const health of Object.values(state.models)) advanceCircuit(health, now);
   persistState(state, now);
   return healthSnapshot(state, now);
 }
@@ -367,8 +375,19 @@ function auditEventsFor(route, health, transition) {
   ];
 }
 
+function replayAuditEvents(state, route, phase, now) {
+  const key = phase === "select" ? "selectAuditEvents" : "resultAuditEvents";
+  if (Array.isArray(route[key]) && route[key].length) return route[key];
+  const health = ensureHealth(state, route.selectedModel || route.preferredModel, now);
+  const transition = phase === "select"
+    ? route.available ? "lease_acquired" : "selection_unavailable"
+    : "result_recorded";
+  route[key] = auditEventsFor(route, health, transition);
+  return route[key];
+}
+
 function readState() {
-  if (!existsSync(routingControlPath)) return { version: 2, models: {}, routes: [], updatedAt: "" };
+  if (!existsSync(routingControlPath)) return { version: 3, models: {}, routes: [], updatedAt: "" };
   try {
     const value = JSON.parse(readFileSync(routingControlPath, "utf8"));
     if (!value?.models || typeof value.models !== "object" || Array.isArray(value.models) || !Array.isArray(value.routes)) throw new Error("invalid state");
@@ -381,7 +400,7 @@ function readState() {
 }
 
 function persistState(state, now) {
-  state.version = 2;
+  state.version = 3;
   state.updatedAt = now;
   state.routes = state.routes.slice(-5_000);
   mkdirSync(dirname(routingControlPath), { recursive: true });
@@ -391,19 +410,20 @@ function persistState(state, now) {
 }
 
 function migrateState(state) {
-  if (state.version >= 2) return;
-  for (const health of Object.values(state.models)) {
-    const latest = state.routes
-      .filter((route) => route.selectedModel === health.model && route.result)
-      .sort((left, right) => Date.parse(right.completedAt || "") - Date.parse(left.completedAt || ""))[0];
-    if (!latest || latest.result.outcome === "succeeded" || !immediateOpenFailureTypes.has(latest.result.errorType)) continue;
-    health.consecutiveFailures = Math.max(1, Number(health.consecutiveFailures) || 0);
-    health.lastErrorCode = latest.result.errorCode || latest.result.errorType;
-    health.lastRequestId = latest.result.requestId || "";
-    openCircuit(health, latest.completedAt || latest.createdAt);
-    health.updatedAt = latest.completedAt || latest.createdAt;
+  if (state.version < 2) {
+    for (const health of Object.values(state.models)) {
+      const latest = state.routes
+        .filter((route) => route.selectedModel === health.model && route.result)
+        .sort((left, right) => Date.parse(right.completedAt || "") - Date.parse(left.completedAt || ""))[0];
+      if (!latest || latest.result.outcome === "succeeded" || !immediateOpenFailureTypes.has(latest.result.errorType)) continue;
+      health.consecutiveFailures = Math.max(1, Number(health.consecutiveFailures) || 0);
+      health.lastErrorCode = latest.result.errorCode || latest.result.errorType;
+      health.lastRequestId = latest.result.requestId || "";
+      openCircuit(health, latest.completedAt || latest.createdAt);
+      health.updatedAt = latest.completedAt || latest.createdAt;
+    }
   }
-  state.version = 2;
+  state.version = 3;
 }
 
 function concurrencyLimit(model) {

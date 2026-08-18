@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1023,6 +1023,54 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   assert.equal(task.routingHealth.state, "closed");
   assert.equal(task.routingHealthHistory.length, 2);
   assert.equal(task.status, "planned");
+});
+
+test("路由状态已持久化但审计首次失败时，同 event_id 可补偿重放且不重复", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_3_CODEX_SPARK: "1" });
+  context.after(async () => {
+    await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o600).catch(() => {});
+    child.kill("SIGTERM");
+  });
+  await registerHttpSession(base, "session-routing-audit-retry", { model: "gpt-5.6-sol" });
+  const created = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ type: "task.create", event_id: "routing-audit-task-create", session_id: "session-routing-audit-retry", task_id: "task-routing-audit-retry", title: "路由审计补偿", goal: "验证审计补偿重放", workspace: "/work" }),
+  });
+  assert.equal(created.status, 201);
+
+  const selectBody = { task_id: "task-routing-audit-retry", preferred_model: "gpt-5.3-codex-spark", task_class: "implementation", channel: "cli", event_id: "routing-audit-select", route_id: "route-audit-retry" };
+  await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o400);
+  const failedSelect = await fetch(`${base}/routing/select`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(selectBody) });
+  assert.equal(failedSelect.status, 500);
+  await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o600);
+  const replayedSelect = await fetch(`${base}/routing/select`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(selectBody) });
+  assert.equal(replayedSelect.status, 200);
+  assert.equal((await replayedSelect.json()).idempotent, true);
+  assert.equal((await fetch(`${base}/routing/select`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(selectBody) })).status, 200);
+
+  const resultBody = { route_id: "route-audit-retry", outcome: "succeeded", event_id: "routing-audit-result", request_id: "request-audit-retry" };
+  await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o400);
+  const failedResult = await fetch(`${base}/routing/result`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(resultBody) });
+  assert.equal(failedResult.status, 500);
+  await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o600);
+  const replayedResult = await fetch(`${base}/routing/result`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(resultBody) });
+  assert.equal(replayedResult.status, 200);
+  assert.equal((await replayedResult.json()).idempotent, true);
+  assert.equal((await fetch(`${base}/routing/result`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(resultBody) })).status, 200);
+
+  const auditEvents = (await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .filter((event) => event.route_id === "route-audit-retry");
+  assert.deepEqual(auditEvents.map((event) => event.event_id).sort(), [
+    "routing-decision-route-audit-retry-leased",
+    "routing-decision-route-audit-retry-succeeded",
+    "routing-health-route-audit-retry-leased",
+    "routing-health-route-audit-retry-succeeded",
+  ]);
 });
 
 test("控制服务只允许相同 event_id 的同事件补偿重放", async (context) => {

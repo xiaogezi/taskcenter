@@ -34,6 +34,7 @@ test("routing_select 原子发放租约、幂等重放并在并发满时回退",
   const replay = routingSelect({ ...baseInput, event_id: "select-1" }, "2026-08-18T08:00:01.000Z");
   assert.equal(replay.idempotent, true);
   assert.equal(replay.route.route_id, first.route.route_id);
+  assert.deepEqual(replay.auditEvents, first.auditEvents);
 
   const second = routingSelect({ ...baseInput, event_id: "select-2" }, "2026-08-18T08:00:02.000Z");
   assert.equal(second.route.selected_model, "gpt-5.6-luna");
@@ -72,6 +73,9 @@ test("明确容量错误立即 Open，避免在同一模型重复重试", () => 
   assert.equal(failed.health.find((item) => item.model === spark).state, "open");
   const fallback = routingSelect({ ...baseInput, event_id: "capacity-fallback" }, "2026-08-18T08:00:01.500Z");
   assert.equal(fallback.route.selected_model, "gpt-5.6-luna");
+  const halfOpen = routingHealth("2026-08-18T08:00:02.100Z").find((item) => item.model === spark);
+  assert.equal(halfOpen.state, "half_open");
+  assert.equal(halfOpen.half_open_lease, null);
 });
 
 test("高风险任务优先回退 Terra，OCR 不自动伪装独立审查", () => {
@@ -90,7 +94,13 @@ test("routing_result 幂等且拒绝冲突结果，租约过期会释放并发",
   const input = { route_id: selected.route.route_id, event_id: "result-id", outcome: "succeeded", request_id: "req-ok" };
   const first = routingResult(input, "2026-08-18T08:00:01.000Z");
   assert.equal(first.idempotent, false);
-  assert.equal(routingResult(input, "2026-08-18T08:00:02.000Z").idempotent, true);
+  const replay = routingResult(input, "2026-08-18T08:00:02.000Z");
+  assert.equal(replay.idempotent, true);
+  assert.deepEqual(replay.auditEvents, first.auditEvents);
+  const selectReplayAfterResult = routingSelect({ ...baseInput, event_id: "result-select", lease_ttl_ms: 60_000 }, "2026-08-18T08:00:02.500Z");
+  assert.equal(selectReplayAfterResult.idempotent, true);
+  assert.deepEqual(selectReplayAfterResult.auditEvents, selected.auditEvents);
+  assert.ok(selectReplayAfterResult.auditEvents.every((event) => event.event_id.endsWith("-leased")));
   assert.throws(
     () => routingResult({ ...input, event_id: "result-conflict", outcome: "failed" }, "2026-08-18T08:00:03.000Z"),
     (error) => error instanceof RoutingControlError && error.statusCode === 409,
