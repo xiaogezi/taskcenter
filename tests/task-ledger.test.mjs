@@ -1345,6 +1345,35 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(JSON.parse(textOf(readiness)).completionReadiness.ready, true);
   const packet = await client.callTool({ name: "taskcenter_task_completion_packet", arguments: { task_id: "task-mcp-v2" } });
   assert.equal(JSON.parse(textOf(packet)).completionPacket.reviewStatus, "passed");
+
+  const structuredSubject = { type: "git_worktree_snapshot", value: "snapshot-mcp-structured", repository: "/work", branch: "feature/readiness", observed_at: "2026-08-17T01:00:00.000Z" };
+  await client.callTool({
+    name: "taskcenter_task_create",
+    arguments: {
+      session_id: "sess-mcp", task_id: "task-mcp-structured", title: "结构化 Subject 就绪度", goal: "验证专用 readiness 与 task_query 一致",
+      acceptance_criteria: ["功能通过"], plan: ["实现"], contract_version: "v2", scope: ["scripts/"], non_goals: [],
+      workflow_profile: "standard", review_policy: "not_required", execution_environment: "local",
+      verification_plan: [{ id: "tests", title: "测试", kind: "test", required: true }],
+    },
+  });
+  await client.callTool({ name: "taskcenter_task_report", arguments: { session_id: "sess-mcp", task_id: "task-mcp-structured", status: "done_claimed", tests: ["passed"], subject_ref: structuredSubject } });
+  await client.callTool({
+    name: "taskcenter_task_requirement_report",
+    arguments: { session_id: "sess-mcp", task_id: "task-mcp-structured", event_id: "mcp-structured-requirement", requirement_id: "acceptance-1", status: "passed", evidence_refs: ["structured-claim"], checked_by: "codex", subject_ref: structuredSubject },
+  });
+  await client.callTool({
+    name: "taskcenter_task_verification_report",
+    arguments: {
+      session_id: "sess-mcp", task_id: "task-mcp-structured", event_id: "mcp-structured-verification", id: "structured-claim", requirement_id: "tests",
+      kind: "test", command_or_probe: "node --test", status: "passed", exit_code: 0, subject_ref: structuredSubject,
+      observed_at: "2026-08-17T01:05:00.000Z", producer: "codex", producer_session_id: "sess-mcp", evidence_ref: "summary:passed",
+    },
+  });
+  const structuredQuery = await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "task-mcp-structured" } });
+  const structuredReadiness = await client.callTool({ name: "taskcenter_task_completion_readiness", arguments: { task_id: "task-mcp-structured" } });
+  assert.equal(JSON.parse(textOf(structuredQuery)).tasks[0].completionReadiness.ready, true);
+  assert.equal(JSON.parse(textOf(structuredReadiness)).completionReadiness.ready, true);
+  assert.deepEqual(JSON.parse(textOf(structuredReadiness)).completionReadiness.currentSubject, structuredSubject);
 });
 
 test("V2 通用核心 API：无 Session 创建、离线导入、独立验收与双格式导出", async (context) => {

@@ -43,7 +43,7 @@ function normalizeDueAtSemantics(task) {
 export function taskCompletionReadiness(taskId, revision = "") {
   const task = loadTasks().find((item) => item.id === taskId);
   if (!task) throw new TaskLedgerError(404, "任务不存在。");
-  return computeCompletionReadiness(task, revision || task.currentRevision || "");
+  return computeCompletionReadiness(task, revision || task.currentSubject || task.currentRevision || null);
 }
 
 export function taskCompletionPacket(taskId) {
