@@ -42,7 +42,7 @@ export function groupSessions(threads) {
   });
 }
 
-export function mergeTaskSessions(threads, tasks, sessionStatuses = {}) {
+export function mergeTaskSessions(threads, tasks, availableThreads = threads) {
   const merged = [...threads];
   const knownIds = new Set(threads.flatMap((thread) => [thread.id, ...(thread.sessionIds ?? [])]).filter(Boolean));
   const latestTaskBySession = new Map();
@@ -53,18 +53,16 @@ export function mergeTaskSessions(threads, tasks, sessionStatuses = {}) {
       latestTaskBySession.set(task.sessionId, task);
     }
   }
-  for (const [sessionId, task] of latestTaskBySession) {
+  for (const sessionId of latestTaskBySession.keys()) {
     if (knownIds.has(sessionId)) continue;
-    const status = sessionStatuses[sessionId];
+    const source = availableThreads.find((thread) => thread.id === sessionId || thread.sessionIds?.includes(sessionId));
+    if (!source) continue;
     merged.push({
+      ...source,
       id: sessionId,
-      title: task.title || `${status?.agent ?? "外部"} Session ${sessionId.slice(0, 8)}…`,
-      cwd: task.workspace,
-      updatedAt: task.updatedAt,
-      messageCount: 0,
       sessionIds: [sessionId],
       sessionCount: 1,
-      sessionSource: "task-ledger",
+      sessionSource: "codex",
     });
     knownIds.add(sessionId);
   }

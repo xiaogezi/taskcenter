@@ -284,7 +284,7 @@ export default function Home() {
   const allowlistIds = dashboard.source?.sessionSelection?.threadIds ?? [];
   const whitelistedThreads = selectionThreads.filter((thread) => allowlistIds.includes(asText(thread.id, "")));
   const pickerGroups = useMemo(() => groupSessions(selectionThreads), [selectionThreads]);
-  const taskBackedThreads = mergeTaskSessions(whitelistedThreads, tasks, sessionStatuses);
+  const taskBackedThreads = mergeTaskSessions(whitelistedThreads, tasks, selectionThreads);
   const threadsWithTasks = filterThreadsWithTasks(taskBackedThreads, tasks);
   const selectionGroups = useMemo(() => groupSessions(threadsWithTasks), [threadsWithTasks]);
   const mergedThreads = selectionGroups;
@@ -799,6 +799,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
     () => resolveTaskSessionDisplay(task, threadsForTask.find((thread) => thread.id === task.sessionId || thread.sessionIds?.includes(task.sessionId))),
     [task, threadsForTask],
   );
+  const sessionStatus = sessionStatuses[task.sessionId];
 
   const handleAction = async (action: "start" | "block" | "done" | "cancel" | "remove" | "verify" | "reject" | "archive" | "unarchive" | "schedule") => {
     if (actionState === "loading") return;
@@ -897,7 +898,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         {sessionInfo ? (
           <>
             <strong>{sessionInfo.title}</strong>
-            <small>{task.agent ?? "unknown"} · {sessionInfo.detail} · {sessionStatuses[task.sessionId]?.status === "registered" ? "已登记" : "未登记"}</small>
+            <small>{sessionStatus?.agent ?? task.agent ?? "unknown"} · {sessionInfo.detail} · {sessionStatus?.status === "registered" ? "已登记" : "未登记"}</small>
           </>
         ) : (
           <span className="no-session">{task.sessionId.slice(0, 8)}… 未关联会话</span>

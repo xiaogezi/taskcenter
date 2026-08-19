@@ -97,17 +97,24 @@ test("filterThreadsWithTasks 不因需求卡片保留无任务会话", () => {
   assert.deepEqual(filtered.map((t) => t.id), ["thread-task"]);
 });
 
-test("已登记但不在 Codex 来源中的任务 Session 会补齐到左侧来源", () => {
+test("缺少真实 Codex 来源的任务 Session 不按任务标题伪造", () => {
   const merged = mergeTaskSessions(
     [{ id: "codex-session", title: "Codex 会话" }],
     [{ id: "task-external", sessionId: "external-session", title: "Claude 文件修改", workspace: "/work", status: "in_progress", updatedAt: "2026-07-26T04:00:00Z" }],
-    { "external-session": { agent: "claude", status: "registered" } },
   );
 
-  const external = merged.find((thread) => thread.id === "external-session");
-  assert.equal(external?.title, "Claude 文件修改");
-  assert.equal(external?.sessionSource, "task-ledger");
-  assert.deepEqual(external?.sessionIds, ["external-session"]);
+  assert.equal(merged.some((thread) => thread.id === "external-session"), false);
+});
+
+test("任务 Session 使用真实 Codex 来源标题而非同 Session 的任务标题", () => {
+  const merged = mergeTaskSessions(
+    [],
+    [{ id: "task-external", sessionId: "external-session", title: "错误的任务标题", status: "in_progress", updatedAt: "2026-07-26T04:00:00Z" }],
+    [{ id: "external-session", title: "真实 Session 标题", cwd: "/work" }],
+  );
+
+  assert.equal(merged[0]?.title, "真实 Session 标题");
+  assert.equal(merged[0]?.sessionSource, "codex");
 });
 
 test("已有同一个真实 Session 时不会重复补齐", () => {
