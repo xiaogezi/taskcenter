@@ -179,6 +179,12 @@ MCP 工具：
 
 ## 开发与验证
 
+用量报告可通过 `node scripts/usage-report.mjs` 生成，默认只读取 `~/.codex/sessions/**/*.jsonl` 和本地任务账本；聚合使用每条记录的 `last_token_usage`，并按 `5h`、`24h`、`7d` 和 model/project/session/task 输出 input、cached input、output、average/P50/P95。报告支持注入 `sessionsRoot`、`ledger`、`rates`、`now`；全部未知费率时标记为 `unestimable`，混合已配置与未知费率（包括未配置的 Spark）时保留可估算部分并标记为 `partial`。
+
+费率表位于 `config/model-rates.json`，只应填写模型提供方正式公布并经操作者确认的每百万 Token Credits；禁止用相近模型价格代填 Spark。`taskcenter_usage_report`、`taskcenter_session_lifecycle` 和 `taskcenter_governance_metrics` 分别提供用量、会话建议与试点指标。生命周期建议不会强制中断，且“新建 Codex Session”不等于“新建 TaskCenter task”：同一交付继续复用原任务并携带 1–2KB handoff。
+
+普通闭环可用 `taskcenter_task_close` 一次提交最终报告、Requirement Results 与 Verification Claims，并直接取得 readiness；同一 `event_id` 重试幂等。它把典型的 verification、requirements、report、readiness 四次往返压缩为一次，同时保留原有细粒度接口和 OCR 独立 Session/attestation 路径。
+
 ```bash
 npm run sync
 npm run lint

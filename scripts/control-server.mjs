@@ -69,6 +69,9 @@ import {
   routingResult,
   routingSelect,
 } from "./routing-control.mjs";
+import { reportUsage } from "./usage-report.mjs";
+import { recommendSessionLifecycle } from "./session-lifecycle.mjs";
+import { buildGovernanceMetrics, readTaskEvents as readTaskEventFile } from "./governance-metrics.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const dashboardPath = resolve(process.env.TASKCENTER_DASHBOARD_PATH || join(projectRoot, "data", "dashboard.json"));
@@ -78,6 +81,7 @@ const inboxDecisionsPath = resolve(process.env.TASKCENTER_INBOX_DECISIONS_PATH |
 const sessionSelectionPath = resolve(process.env.TASKCENTER_SESSION_SELECTION_PATH || join(projectRoot, "data", "session-selection.json"));
 const gateSessionAllowlistPath = resolve(process.env.TASKCENTER_GATE_SESSION_ALLOWLIST_PATH || join(projectRoot, "data", "gate-session-allowlist.json"));
 const reflectionProposalsPath = resolve(process.env.TASKCENTER_REFLECTION_PROPOSALS_PATH || join(projectRoot, "data", "reflection-proposals.json"));
+const modelRatesPath = resolve(process.env.TASKCENTER_MODEL_RATES_PATH || join(projectRoot, "config", "model-rates.json"));
 const contextAcceptanceToken = String(process.env.TASKCENTER_CONTEXT_ACCEPTANCE_TOKEN || "");
 const acceptanceToken = String(process.env.TASKCENTER_ACCEPTANCE_TOKEN || "");
 const watcherHeartbeatPath = resolve(process.env.TASKCENTER_WATCHER_HEARTBEAT_PATH || join(projectRoot, ".local", "runtime", "watcher-heartbeat.json"));
@@ -98,6 +102,7 @@ const activeThreadDispatches = new Set();
 let lastDispatchAt = 0;
 let processingQueue = false;
 let syncing = null;
+let usageReportCache = null;
 
 mkdirSync(dirname(dispatchesPath), { recursive: true });
 migrateLegacyDispatches();
@@ -130,6 +135,36 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/dashboard") {
       sendJson(response, 200, loadDashboard());
+      return;
+    }
+    if (request.method === "GET" && request.url === "/usage-report") {
+      sendJson(response, 200, currentUsageReport());
+      return;
+    }
+    if (request.method === "GET" && request.url === "/governance-metrics") {
+      const usageReport = currentUsageReport();
+      const tasks = loadVisibleTasks();
+      const delegationEvents = tasks.flatMap((task) => listDelegations(task.id).flatMap((delegation) =>
+        (delegation.events || []).map((event) => ({ ...event, task_id: task.id }))));
+      sendJson(response, 200, buildGovernanceMetrics({ tasks, events: [...readTaskEventFile(taskEventsPath), ...delegationEvents], usageReport }));
+      return;
+    }
+    const lifecycleMatch = request.method === "GET" ? request.url?.match(/^\/session-lifecycle(?:\?session_id=([^&]+))?$/) : null;
+    if (lifecycleMatch) {
+      const sessionId = lifecycleMatch[1] ? decodeURIComponent(lifecycleMatch[1]) : "";
+      const tasks = loadVisibleTasks().filter((task) => !sessionId || task.sessionId === sessionId);
+      const currentTask = tasks.filter((task) => ["planned", "in_progress", "blocked"].includes(task.status)).at(-1) || tasks.at(-1) || null;
+      const workspaces = new Set(tasks.map((task) => task.workspace).filter(Boolean));
+      const usage = currentUsageReport();
+      sendJson(response, 200, recommendSessionLifecycle({
+        usage: {
+          ...usage,
+          alerts: (usage.alerts || []).filter((alert) => !sessionId || alert.sessionId === sessionId),
+          projectChanged: workspaces.size > 1,
+        },
+        tasks,
+        currentTask,
+      }));
       return;
     }
     if (request.method === "GET" && request.url === "/session-selection") {
@@ -555,6 +590,13 @@ const server = createServer(async (request, response) => {
       // 本地账本事件幂等不等于外部同步已成功。重复投递仍使用同一派生 event_id
       // 重试 Context MCP，由 Context 侧幂等键消除已成功的副作用并补偿超时/失败。
       const contextSync = await syncContextEvent(result.event, result.task);
+      const warnings = contextSync.status === "failed"
+        ? [{
+          code: "SESSION_NOTIFICATION_FAILED",
+          message: "验证事件已可靠写入本地账本，但 Session 通知失败；可使用相同 event_id 重试通知。",
+          detail: contextSync.error,
+        }]
+        : [];
       // 幂等重投递（重复 event_id）返回 200，只有真正新建任务时才用 201。
       sendJson(response, body.type === "task.create" && !result.idempotent ? 201 : 200, {
         accepted: true,
@@ -562,6 +604,7 @@ const server = createServer(async (request, response) => {
         event: result.event,
         task: result.task,
         contextSync,
+        warnings,
       });
       return;
     }
@@ -791,6 +834,14 @@ function recordRoutingAudit(events, task) {
       workspace: task.workspace,
     });
   }
+}
+
+function currentUsageReport() {
+  const now = Date.now();
+  if (usageReportCache && now - usageReportCache.cachedAt < 60_000) return usageReportCache.value;
+  const value = reportUsage({ sessionsRoot, ledger: taskLedgerPath, rates: modelRatesPath, now });
+  usageReportCache = { cachedAt: now, value };
+  return value;
 }
 
 server.listen(port, host, () => {

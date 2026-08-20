@@ -15,6 +15,7 @@
     ".openai/hosting.json",
     "app/",
     "build/",
+    "config/",
     "data/dispatches.example.json",
     "data/requirements.seed.json",
     "data/session-merges.json",

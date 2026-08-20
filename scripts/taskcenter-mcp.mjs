@@ -93,6 +93,28 @@ server.registerTool("taskcenter_task_report", {
   inputSchema: z.object(taskFields).extend({ task_id: z.string().min(1).max(200), status: z.enum(["in_progress", "blocked", "done_claimed"]).optional() }).strict(),
 }, async (input) => report("task.report", input));
 
+server.registerTool("taskcenter_task_close", {
+  title: "原子关闭 TaskCenter 任务",
+  description: "一次提交最终报告、验收条件结果与验证证据，并返回完成就绪度；同一 event_id 重试不会产生重复记录。",
+  inputSchema: z.object(taskFields).extend({
+    task_id: z.string().min(1).max(200),
+    tests: z.array(z.string().min(1).max(500)).min(1).max(30),
+    evidence: z.array(z.string().min(1).max(1_000)).min(1).max(30),
+    close_requirements: z.array(z.object({
+      requirement_id: z.string().min(1).max(120), status: z.enum(["pending", "passed", "failed", "not_applicable"]),
+      evidence_refs: z.array(z.string().min(1).max(500)).max(30).default([]), checked_at: z.string().datetime({ offset: true }).optional(),
+      checked_by: z.union([actorIdentity, z.string().max(200)]).optional(), subject_ref: subjectReference.optional(), revision: z.string().max(200).optional(), note: z.string().max(1_000).optional(),
+    }).strict()).max(50).default([]),
+    close_verifications: z.array(z.object({
+      id: z.string().min(1).max(120), requirement_id: z.string().max(120).optional(), kind: verificationKind,
+      command_or_probe: z.string().max(1_000).optional(), status: z.enum(["passed", "failed", "skipped"]), exit_code: z.number().int().optional(),
+      revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }),
+      producer: z.union([actorIdentity, z.string().min(1).max(200)]), producer_session_id: z.string().max(200).optional(),
+      evidence_ref: z.string().max(500).optional(), artifact_refs: z.array(z.string().max(500)).max(30).optional(), summary: z.string().max(1_000).optional(),
+    }).strict()).max(30).default([]),
+  }).strict(),
+}, async (input) => report("task.close", { ...input, status: "done_claimed" }));
+
 server.registerTool("taskcenter_task_requirement_report", {
   title: "上报 TaskCenter 验收条件结果",
   description: "追加一条验收条件结果；passed/failed 必须引用证据，not_applicable 必须说明原因。",
@@ -259,6 +281,24 @@ server.registerTool("taskcenter_task_query", {
   return result({ tasks });
 });
 
+server.registerTool("taskcenter_usage_report", {
+  title: "查询 TaskCenter 用量报告",
+  description: "读取本地 Codex Session Token 事件并返回 5h、24h、7d 聚合、归属、分位数和预警；不读取消息正文或认证数据。",
+  inputSchema: z.object({}).strict(),
+}, async () => queryEndpoint("/usage-report"));
+
+server.registerTool("taskcenter_session_lifecycle", {
+  title: "查询 Codex Session 生命周期建议",
+  description: "返回继续、建议换 Session 或要求先交接；建议不会强行中断，且新建 Codex Session 不等于新建 TaskCenter task。",
+  inputSchema: z.object({ session_id: z.string().min(1).max(200).optional() }).strict(),
+}, async ({ session_id }) => queryEndpoint(`/session-lifecycle${session_id ? `?session_id=${encodeURIComponent(session_id)}` : ""}`));
+
+server.registerTool("taskcenter_governance_metrics", {
+  title: "查询 TaskCenter 治理试点指标",
+  description: "返回 Credits 等价值、续调、输入分位数、往返、返工率和耗时，并按 profile、任务类别与模型分组。",
+  inputSchema: z.object({}).strict(),
+}, async () => queryEndpoint("/governance-metrics"));
+
 server.registerTool("taskcenter_session_status", {
   title: "查询 TaskCenter Session 状态",
   description: "查询当前 Session 是否已登记、执行器身份和任务数量。",
@@ -333,14 +373,17 @@ function writeResult(payload, responseModeValue) {
     ...(readiness.staleEvidence || []),
     ...(readiness.unresolvedFindings || []),
   ];
-  return result({
+  const compact = {
     accepted: Boolean(payload?.accepted),
     task_id: task.id || payload?.task_id || payload?.taskId || "",
     status: task.status || payload?.status || "",
     verification_status: task.verificationStatus || readiness.verificationStatus || "not_required",
     review_status: task.reviewStatus || readiness.reviewStatus || "not_required",
     missing_count: missing.length || [...new Set(readiness.reasons || [])].length,
-  });
+  };
+  // 通知属于账本写入后的可补偿副作用；摘要回包也必须让调用方看见失败警告。
+  if (Array.isArray(payload?.warnings) && payload.warnings.length) compact.warnings = payload.warnings;
+  return result(compact);
 }
 
 async function queryEndpoint(path) {

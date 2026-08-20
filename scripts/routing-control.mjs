@@ -110,7 +110,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
   if (probe) selected.halfOpenLease = route.id;
   refreshActiveExecutors(state, now);
   selected.updatedAt = now;
-  route.selectAuditEvents = auditEventsFor(route, selected, "lease_acquired");
+  route.selectAuditEvents = auditEventsFor(route, selected, "lease_acquired", "select");
   persistState(state, now);
   return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: route.selectAuditEvents };
 }
@@ -167,7 +167,7 @@ export function routingResult(input, now = new Date().toISOString()) {
   health.updatedAt = now;
   refreshActiveExecutors(state, now);
   const transition = previousState === health.state ? "result_recorded" : `${previousState}_to_${health.state}`;
-  route.resultAuditEvents = auditEventsFor(route, health, transition);
+  route.resultAuditEvents = auditEventsFor(route, health, transition, "result");
   persistState(state, now);
   return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: route.resultAuditEvents };
 }
@@ -333,10 +333,10 @@ function publicRoute(route) {
   };
 }
 
-function auditEventsFor(route, health, transition) {
+function auditEventsFor(route, health, transition, phase = "select") {
   const selected = route.selectedModel || route.preferredModel;
   return [
-    {
+    phase === "select" ? {
       type: "routing.decision",
       event_id: `routing-decision-${route.id}-${route.status}`,
       task_id: route.taskId,
@@ -359,6 +359,12 @@ function auditEventsFor(route, health, transition) {
       route_id: route.id,
       task_class: route.taskClass,
       circuit_state: route.circuitState,
+    } : {
+      type: "routing.result",
+      event_id: `routing-result-${route.id}-${route.status}`,
+      task_id: route.taskId,
+      route_id: route.id,
+      routing_outcome: route.status,
     },
     {
       type: "routing.health",
@@ -382,7 +388,7 @@ function replayAuditEvents(state, route, phase, now) {
   const transition = phase === "select"
     ? route.available ? "lease_acquired" : "selection_unavailable"
     : "result_recorded";
-  route[key] = auditEventsFor(route, health, transition);
+  route[key] = auditEventsFor(route, health, transition, phase);
   return route[key];
 }
 

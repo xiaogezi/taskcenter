@@ -54,7 +54,14 @@ async function startControlServer(options = {}) {
   const port = 38_000 + (process.pid % 1_000);
   const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
     cwd: root,
-    env: { ...process.env, TASKCENTER_CONTROL_PORT: String(port), ...envPaths, ...options },
+    env: {
+      ...process.env,
+      TASKCENTER_CONTROL_PORT: String(port),
+      TASKCENTER_SESSIONS_ROOT: join(tempDir, "sessions"),
+      TASKCENTER_MODEL_RATES_PATH: join(tempDir, "model-rates.json"),
+      ...envPaths,
+      ...options,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await waitForReady(child);
@@ -1030,7 +1037,8 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
 
   const task = (await (await fetch(`${base}/tasks`)).json()).tasks.find((item) => item.id === "task-routing-control");
   assert.equal(task.routing.routeId, selected.route.route_id);
-  assert.equal(task.routingHistory.length, 2);
+  assert.equal(task.routingHistory.length, 1);
+  assert.equal(task.routingResultHistory.length, 1);
   assert.equal(task.routingHealth.state, "closed");
   assert.equal(task.routingHealthHistory.length, 2);
   assert.equal(task.status, "planned");
@@ -1078,9 +1086,9 @@ test("路由状态已持久化但审计首次失败时，同 event_id 可补偿�
     .filter((event) => event.route_id === "route-audit-retry");
   assert.deepEqual(auditEvents.map((event) => event.event_id).sort(), [
     "routing-decision-route-audit-retry-leased",
-    "routing-decision-route-audit-retry-succeeded",
     "routing-health-route-audit-retry-leased",
     "routing-health-route-audit-retry-succeeded",
+    "routing-result-route-audit-retry-succeeded",
   ]);
 });
 
@@ -1136,6 +1144,7 @@ test("控制服务只允许相同 event_id 的同事件补偿重放", async (con
   assert.equal(firstReport.status, 200);
   assert.equal(firstPayload.contextSync.status, "failed");
   assert.equal(firstPayload.task.status, "done_claimed");
+  assert.deepEqual(firstPayload.warnings.map((warning) => warning.code), ["SESSION_NOTIFICATION_FAILED"]);
 
   const retryReport = await fetch(`${base}/task-events`, {
     method: "POST",
@@ -1146,6 +1155,7 @@ test("控制服务只允许相同 event_id 的同事件补偿重放", async (con
   assert.equal(retryReport.status, 200);
   assert.equal(retryPayload.idempotent, true);
   assert.equal(retryPayload.contextSync.status, "synced");
+  assert.deepEqual(retryPayload.warnings, []);
   assert.equal(retryPayload.event.type, "task.report");
   assert.equal(retryPayload.event.status, "done_claimed");
 
@@ -1232,6 +1242,54 @@ test("Context 生命周期维护端点显式接管影子并补齐完成状态", 
   assert.deepEqual(visible.tasks.map((task) => [task.id, task.status]), [["formal-maintenance", "done_claimed"]]);
 });
 
+test("MCP verification report 在 Session 通知失败后保留账本并返回 warning", async (context) => {
+  await resetLedger();
+  const fakeServerPath = join(tempDir, "verification-warning-context-server.mjs");
+  const fakeStatePath = join(tempDir, "verification-warning-context-state.json");
+  await rm(fakeStatePath, { force: true });
+  await writeTransientContextServer(fakeServerPath);
+  const { base, child } = await startControlServer({
+    TASKCENTER_CONTEXT_ROOT: tempDir,
+    TASKCENTER_CONTEXT_SERVER: fakeServerPath,
+    TASKCENTER_CONTEXT_NODE: process.execPath,
+    TASKCENTER_CONTEXT_TIMEOUT_MS: "2000",
+    FAKE_CONTEXT_STATE_PATH: fakeStatePath,
+  });
+  context.after(() => child.kill("SIGTERM"));
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["scripts/taskcenter-mcp.mjs"],
+    env: { ...process.env, TASKCENTER_CONTROL_URL: base },
+    cwd: root,
+  });
+  const client = new Client({ name: "taskcenter-verification-warning", version: "0.0.0" });
+  await client.connect(transport);
+  context.after(async () => { await client.close().catch(() => {}); });
+
+  await client.callTool({ name: "taskcenter_session_register", arguments: {
+    session_id: "verification-warning-session", agent: "codex", provider: "openai", model: "gpt-test", workspace: "/work",
+  } });
+  await client.callTool({ name: "taskcenter_task_create", arguments: {
+    session_id: "verification-warning-session", task_id: "verification-warning-task", context_task_id: "verification-warning-context",
+    title: "验证通知降级", goal: "验证事件应先落盘", acceptance_criteria: ["账本可用"], plan: ["报告验证"],
+  } });
+  const verification = {
+    session_id: "verification-warning-session", task_id: "verification-warning-task", event_id: "verification-warning-event",
+    id: "verification-warning-claim", kind: "test", status: "passed", observed_at: "2026-08-20T08:00:00.000Z",
+    producer: "codex", evidence_ref: "summary:passed",
+  };
+  const first = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_verification_report", arguments: verification })));
+  assert.equal(first.accepted, true);
+  assert.deepEqual(first.warnings.map((warning) => warning.code), ["SESSION_NOTIFICATION_FAILED"]);
+  assert.equal(loadTasks().find((task) => task.id === "verification-warning-task").verificationClaims.length, 1);
+
+  const replay = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_verification_report", arguments: verification })));
+  assert.equal(replay.accepted, true);
+  assert.equal(replay.warnings, undefined);
+  assert.equal(loadTasks().find((task) => task.id === "verification-warning-task").verificationClaims.length, 1);
+});
+
 test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id", async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer();
@@ -1251,10 +1309,11 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const toolNames = tools.tools.map((tool) => tool.name);
   for (const expected of [
     "taskcenter_session_register", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report",
+    "taskcenter_task_close",
     "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report",
     "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
     "taskcenter_delegation_grant", "taskcenter_delegation_claim", "taskcenter_cli_run_report", "taskcenter_delegation_revoke",
-    "taskcenter_task_query", "taskcenter_session_status",
+    "taskcenter_task_query", "taskcenter_session_status", "taskcenter_usage_report", "taskcenter_session_lifecycle", "taskcenter_governance_metrics",
   ]) {
     assert.ok(toolNames.includes(expected), `MCP 应暴露 ${expected}`);
   }
@@ -1298,6 +1357,43 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.deepEqual(Object.keys(compactPayload).sort(), ["accepted", "missing_count", "review_status", "status", "task_id", "verification_status"]);
   assert.equal(compactPayload.task_id, "task-mcp-summary");
   assert.ok(compactText.length < textOf(create).length / 2, "默认摘要应显著小于 full 回包");
+
+  await client.callTool({
+    name: "taskcenter_task_create",
+    arguments: {
+      session_id: "sess-mcp", task_id: "task-mcp-close", contract_version: "v2", title: "原子关闭",
+      goal: "一次上报闭环证据", scope: ["close"], non_goals: [], workflow_profile: "fast", review_policy: "not_required",
+      acceptance_criteria: [{ id: "close-criterion", description: "证据完整", required: true }], plan: ["close"], response_mode: "full",
+    },
+  });
+  const closeArguments = {
+    session_id: "sess-mcp", task_id: "task-mcp-close", event_id: "mcp-close-once",
+    tests: ["node --test"], evidence: ["summary:passed"], changed_files: ["scripts/example.mjs"],
+    close_requirements: [{ requirement_id: "close-criterion", status: "passed", evidence_refs: ["summary:passed"] }],
+    close_verifications: [{ id: "close-test", kind: "test", status: "passed", observed_at: "2026-08-20T08:30:00.000Z", producer: "codex", evidence_ref: "summary:passed" }],
+    response_mode: "full",
+  };
+  const closed = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_close", arguments: closeArguments })));
+  assert.equal(closed.accepted, true);
+  assert.equal(closed.event.type, "task.close");
+  assert.equal(closed.task.status, "done_claimed");
+  assert.equal(closed.task.requirementResults.length, 1);
+  assert.equal(closed.task.verificationClaims.length, 1);
+  assert.equal(closed.task.completionReadiness.ready, true);
+  await rm(envPaths.TASKCENTER_TASK_EVENT_IDS_PATH, { force: true });
+  const closeReplay = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_close", arguments: closeArguments })));
+  assert.equal(closeReplay.idempotent, true);
+  assert.equal(closeReplay.task.requirementResults.length, 1);
+  assert.equal(closeReplay.task.verificationClaims.length, 1);
+  assert.ok(1 <= 4 * 0.6, "原子 close 将四次闭环上报缩减为一次，下降至少 40%");
+
+  const usageReport = JSON.parse(textOf(await client.callTool({ name: "taskcenter_usage_report", arguments: {} })));
+  assert.deepEqual(Object.keys(usageReport.windows), ["5h", "24h", "7d"]);
+  const lifecycle = JSON.parse(textOf(await client.callTool({ name: "taskcenter_session_lifecycle", arguments: { session_id: "sess-mcp" } })));
+  assert.ok(["continue_current_session", "recommend_new_codex_session", "require_handoff_before_continue"].includes(lifecycle.action));
+  assert.match(lifecycle.taskSemantics, /新建 Codex Session 不等于新建 TaskCenter task/);
+  const governance = JSON.parse(textOf(await client.callTool({ name: "taskcenter_governance_metrics", arguments: {} })));
+  assert.equal(governance.schemaVersion, "taskcenter-governance-metrics-v1");
 
   const routing = await client.callTool({
     name: "taskcenter_routing_record",
@@ -1791,4 +1887,30 @@ test("控制服务 schedule/archive/unarchive HTTP 闭环", async (context) => {
   const unarchive = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "unarchive" }) });
   assert.equal(unarchive.status, 200);
   assert.equal((await unarchive.json()).task.archivedAt, "");
+});
+
+test("Session 生命周期端点会从相邻任务目标变化自动要求交接", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "sess-lifecycle-goal");
+  for (const [taskId, goal] of [["task-lifecycle-one", "完成用量报告"], ["task-lifecycle-two", "实现登录页面"]]) {
+    const response = await fetch(`${base}/task-events`, {
+      method: "POST",
+      headers: taskHeaders(),
+      body: JSON.stringify({
+        type: "task.create",
+        session_id: "sess-lifecycle-goal",
+        task_id: taskId,
+        title: goal,
+        goal,
+      }),
+    });
+    assert.equal(response.status, 201);
+  }
+  const lifecycle = await fetch(`${base}/session-lifecycle?session_id=sess-lifecycle-goal`);
+  assert.equal(lifecycle.status, 200);
+  const result = await lifecycle.json();
+  assert.equal(result.action, "require_handoff_before_continue");
+  assert.ok(result.reasons.includes("project_or_primary_goal_changed"));
 });

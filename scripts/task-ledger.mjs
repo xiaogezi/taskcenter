@@ -275,8 +275,11 @@ export function recordTaskEvent(input, options = {}) {
   const tasks = loadTasks();
   const current = event.task_id ? tasks.find((task) => task.id === event.task_id) : null;
   const processed = loadProcessedEventIds();
-  if (processed.has(event.event_id)) {
-    const original = findStoredTaskEvent(event.event_id);
+  const storedEvent = processed.has(event.event_id) || event.type === "task.close"
+    ? findStoredTaskEvent(event.event_id)
+    : null;
+  if (processed.has(event.event_id) || storedEvent) {
+    const original = storedEvent;
     if (!original) {
       throw new TaskLedgerError(409, "event_id 已处理，但找不到原始事件，拒绝不安全重放。");
     }
@@ -391,6 +394,7 @@ const idempotentEventFields = [
   "selected_executor_model", "dispatch_channel", "routing_reason", "routing_outcome", "policy_version",
   "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
   "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation",
+  "close_requirements", "close_verifications",
   "context_completion_id", "authorization_id", "reason", "actor", "subject_ref", "acceptance_record", "workspace_policy",
 ];
 
@@ -654,8 +658,8 @@ function normalizeEvent(input) {
   const type = String(input.type || "");
   const sessionId = String(input.session_id || "");
   const allowedTypes = new Set([
-    "session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.review",
-    "task.reminder", "tool.call", "routing.decision", "routing.health", "requirement.reported", "verification.reported", "review.reported",
+    "session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.close", "task.review",
+    "task.reminder", "tool.call", "routing.decision", "routing.result", "routing.health", "requirement.reported", "verification.reported", "review.reported",
     "acceptance.accepted", "acceptance.rejected", "subject.updated",
   ]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
@@ -763,6 +767,9 @@ function normalizeEvent(input) {
       throw new TaskLedgerError(400, "路由健康事件缺少 route_id、model 或有效 circuit_state。");
     }
   }
+  if (type === "routing.result" && (!event.route_id || !event.routing_outcome)) {
+    throw new TaskLedgerError(400, "routing.result 缺少 route_id 或 outcome。");
+  }
   return event;
 }
 
@@ -832,6 +839,19 @@ function applyEvent(current, event) {
       ...current,
       routingHealth: health,
       routingHealthHistory: [...(current.routingHealthHistory || []), health].slice(-routingHistoryLimit),
+    };
+  }
+  if (event.type === "routing.result") {
+    const result = {
+      routeId: event.route_id,
+      outcome: event.routing_outcome,
+      recordedAt: event.created_at,
+      eventId: event.event_id,
+    };
+    return {
+      ...current,
+      routingResult: result,
+      routingResultHistory: [...(current.routingResultHistory || []), result].slice(-routingHistoryLimit),
     };
   }
   const now = event.created_at;

@@ -63,6 +63,12 @@ export function normalizeCompletionEvent(input) {
     revision: text(input.revision, 500), subject_ref: subject,
     requirement_result: normalizeRequirementResult(input.requirement_result, occurredAt),
     verification_claim: normalizeVerificationClaim(input.verification_claim, occurredAt),
+    close_requirements: Array.isArray(input.close_requirements)
+      ? input.close_requirements.slice(0, 50).map((item) => normalizeRequirementResult(item, occurredAt))
+      : [],
+    close_verifications: Array.isArray(input.close_verifications)
+      ? input.close_verifications.slice(0, 30).map((item) => normalizeVerificationClaim(item, occurredAt))
+      : [],
     review_attestation: normalizeReview(input.review_attestation, occurredAt),
     acceptance_record: normalizeAcceptance(input.acceptance_record, occurredAt),
     context_completion_id: text(input.context_completion_id, 200), authorization_id: text(input.authorization_id, 200), reason: text(input.reason, 1_000),
@@ -73,7 +79,7 @@ export function normalizeCompletionEvent(input) {
 
 export function applyCompletionEvent(task, event) {
   let next = { ...task };
-  const taskMutation = ["task.create", "task.update", "task.report"].includes(event.type);
+  const taskMutation = ["task.create", "task.update", "task.report", "task.close"].includes(event.type);
   if (taskMutation) next = { ...next, ...normalizeTaskContract(event, next) };
   if ((taskMutation || event.type === "subject.updated") && event.subject_ref) next.currentSubject = event.subject_ref;
   if (taskMutation && event.revision) {
@@ -96,6 +102,26 @@ export function applyCompletionEvent(task, event) {
     if ((next.verificationClaims || []).some((item) => item.id === claim.id)) throw failure("Verification Claim id 已存在；请使用新 id 追加证据。", 409);
     rejectSecrets([claim.command_or_probe, claim.evidence_ref, claim.summary, ...(claim.artifact_refs || [])]);
     next.verificationClaims = [...(next.verificationClaims || []), claim];
+  }
+  if (event.type === "task.close") {
+    for (const requirementResult of event.close_requirements || []) {
+      next = applyCompletionEvent(next, {
+        ...event,
+        type: "requirement.reported",
+        requirement_result: requirementResult,
+        close_requirements: [],
+        close_verifications: [],
+      });
+    }
+    for (const verificationClaim of event.close_verifications || []) {
+      next = applyCompletionEvent(next, {
+        ...event,
+        type: "verification.reported",
+        verification_claim: verificationClaim,
+        close_requirements: [],
+        close_verifications: [],
+      });
+    }
   }
   if (event.type === "review.reported") {
     const review = normalizeReview(event.review_attestation, event.occurred_at || event.created_at);

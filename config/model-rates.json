@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "taskcenter-model-rates-v1",
+  "unit": "credits_per_million_tokens",
+  "source": "仅填写模型提供方正式公布并由操作者确认的费率；未配置即不可估算。",
+  "models": {}
+}

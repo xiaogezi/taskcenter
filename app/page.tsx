@@ -165,6 +165,17 @@ type Dashboard = {
   };
   threads?: Thread[];
 };
+type GovernanceMetrics = {
+  completedTasks: number;
+  creditsPerCompletedTask: number | null;
+  creditsEstimation: "complete" | "partial" | "unestimable";
+  modelContinuationsPerTask: number | null;
+  inputTokens: { average: number; p50: number; p95: number };
+  taskCenterCallsPerTask: number;
+  reworkRate: number;
+  durationMs: { average: number; p50: number; p95: number };
+  comparisons?: { strategy?: string; note?: string };
+};
 
 // 控制服务 URL：优先使用环境变量，默认 IPv4 localhost
 const controlServerUrl = typeof process !== "undefined" && process.env?.TASKCENTER_CONTROL_URL
@@ -223,6 +234,7 @@ export default function Home() {
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, SessionStatus>>({});
   const [health, setHealth] = useState<HealthState>({ ok: false });
   const [reflections, setReflections] = useState<ReflectionState>({ version: 1, generatedAt: "", dataBoundary: { sessionMode: "allowlist", allowedSessionCount: 0, taskCount: 0 }, proposals: [] });
+  const [governanceMetrics, setGovernanceMetrics] = useState<GovernanceMetrics | null>(null);
 
   const refreshLiveData = async (manual = false) => {
     if (refreshInFlight.current) return;
@@ -232,27 +244,29 @@ export default function Home() {
       setRefreshMessage("");
     }
     try {
-      const [dashboardResponse, tasksResponse, sessionStatusResponse, threadsResponse, reflectionsResponse, gateAllowlistResponse] = await Promise.all([
+      const [dashboardResponse, tasksResponse, sessionStatusResponse, threadsResponse, reflectionsResponse, gateAllowlistResponse, governanceResponse] = await Promise.all([
         fetch(`${controlServerUrl}/dashboard`),
         fetch(`${controlServerUrl}/tasks`),
         fetch(`${controlServerUrl}/session-status`),
         fetch(`${controlServerUrl}/session-selection`),
         fetch(`${controlServerUrl}/reflections`),
         fetch(`${controlServerUrl}/gate-session-allowlist`),
+        fetch(`${controlServerUrl}/governance-metrics`),
       ]);
       const healthResponse = await fetch(`${controlServerUrl}/health`);
       if (!healthResponse.ok) throw new Error("本地控制服务健康检查失败");
       setHealth(await healthResponse.json() as HealthState);
-      if (!dashboardResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok || !reflectionsResponse.ok || !gateAllowlistResponse.ok) {
+      if (!dashboardResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok || !reflectionsResponse.ok || !gateAllowlistResponse.ok || !governanceResponse.ok) {
         throw new Error("本地控制服务返回异常");
       }
-      const [dashboardPayload, tasksPayload, sessionStatusPayload, threadsPayload, reflectionsPayload, gateAllowlistPayload] = await Promise.all([
+      const [dashboardPayload, tasksPayload, sessionStatusPayload, threadsPayload, reflectionsPayload, gateAllowlistPayload, governancePayload] = await Promise.all([
         dashboardResponse.json() as Promise<Dashboard>,
         tasksResponse.json() as Promise<{ tasks?: TaskRecord[] }>,
         sessionStatusResponse.json() as Promise<{ sessions?: SessionStatus[] }>,
         threadsResponse.json() as Promise<{ availableThreads?: Thread[] }>,
         reflectionsResponse.json() as Promise<ReflectionState>,
         gateAllowlistResponse.json() as Promise<{ selection?: SessionSelection }>,
+        governanceResponse.json() as Promise<GovernanceMetrics>,
       ]);
       setDashboard(dashboardPayload);
       setTasks(tasksPayload.tasks ?? []);
@@ -260,6 +274,7 @@ export default function Home() {
       setLiveAvailableThreads(threadsPayload.availableThreads ?? []);
       setReflections(reflectionsPayload);
       setGateAllowlistIds(gateAllowlistPayload.selection?.threadIds ?? []);
+      setGovernanceMetrics(governancePayload);
       if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
     } catch (error) {
       setHealth({ ok: false });
@@ -538,6 +553,7 @@ export default function Home() {
         </aside>
 
         <section className="board-area">
+          <GovernancePanel metrics={governanceMetrics} />
           <TaskLedger
             tasks={tasks}
             availableThreads={mergedThreads}
@@ -566,6 +582,25 @@ export default function Home() {
         <span>源：{dashboard.source?.mode ?? "read-only local JSONL"}</span>
       </footer>
     </main>
+  );
+}
+
+function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
+  if (!metrics) return null;
+  const number = (value: number | null, digits = 1) => value === null ? "不可估算" : value.toLocaleString("zh-CN", { maximumFractionDigits: digits });
+  const duration = (value: number) => value ? `${Math.round(value / 60_000)} 分钟` : "暂无";
+  return (
+    <section aria-labelledby="governance-title">
+      <p className="eyebrow orange">GOVERNANCE PILOT</p>
+      <h2 id="governance-title">用量与交付效率</h2>
+      <div className="metrics-grid">
+        <article className="metric-card accent-orange"><p>CREDITS / 完成任务</p><strong className="metric-value">{number(metrics.creditsPerCompletedTask, 3)}</strong><span>{metrics.creditsEstimation === "complete" ? "按已配置官方费率估算" : metrics.creditsEstimation === "partial" ? "部分模型缺少官方费率" : "缺少官方费率不套用其他模型"}</span></article>
+        <article className="metric-card accent-cyan"><p>模型续调 / 任务</p><strong className="metric-value">{number(metrics.modelContinuationsPerTask)}</strong><span>完成任务 {metrics.completedTasks} 条</span></article>
+        <article className="metric-card accent-lime"><p>INPUT TOKENS</p><strong className="metric-value">{number(metrics.inputTokens.p50, 0)}</strong><span>均值 {number(metrics.inputTokens.average, 0)} · P95 {number(metrics.inputTokens.p95, 0)}</span></article>
+        <article className="metric-card"><p>TASKCENTER 往返 / 任务</p><strong className="metric-value">{number(metrics.taskCenterCallsPerTask)}</strong><span>返工率 {(metrics.reworkRate * 100).toFixed(1)}% · P50 耗时 {duration(metrics.durationMs.p50)}</span></article>
+      </div>
+      <p className="privacy-note">比较口径：按 workflow profile、任务类别和模型匹配，并支持多个交替窗口；不只比较相邻两个五小时窗口。</p>
+    </section>
   );
 }
 
