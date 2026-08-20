@@ -18,6 +18,9 @@ test("只累计 last_token_usage，区分缓存输入并按模型计费", () => 
   assert.deepEqual(total.usage, { input: 100, cachedInput: 25, output: 15 });
   assert.ok(Math.abs(total.cost - (75 + 12.5 + 30) / 1_000_000) < 1e-12);
   assert.equal(report.windows["24h"].byTask[0].id, "t1");
+  assert.equal("samples" in report.windows["24h"].byModel[0], false);
+  assert.equal("rows" in report.windows["24h"], false);
+  assert.ok(Buffer.byteLength(JSON.stringify(report)) < 20_000);
 });
 
 test("多任务 Session 不重复分摊 Token，续调按次数预警", () => {

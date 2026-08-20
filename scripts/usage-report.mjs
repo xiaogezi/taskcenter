@@ -138,7 +138,10 @@ function buildWindow(parsed, index, rates, start, end) {
     rows.push({ ...event, sessionId: session.sessionId, project: session.cwd || "unattributed", taskIds: taskIds.length ? taskIds : ["unattributed"], cost: price(event.usage, rateFor(rates, event.model)), estimable: Boolean(rateFor(rates, event.model)) });
   }
   const groups = (key) => [...rows.reduce((map, row) => { const id = row[key] || "unattributed"; const item = map.get(id) || { [key]: id, usage: { input: 0, cachedInput: 0, output: 0 }, samples: [], cost: 0, estimableCount: 0, unestimable: false, count: 0 }; mergeUsage(item.usage, row.usage); item.samples.push(row.usage.input); if (row.estimable) { item.cost += row.cost; item.estimableCount++; } item.unestimable ||= !row.estimable; item.count++; map.set(id, item); return map; }, new Map()).values()];
-  const by = (key) => groups(key).map((item) => ({ ...item, statistics: percentiles(item.samples) }));
+  const by = (key) => groups(key).map((item) => {
+    const { samples, ...summary } = item;
+    return { ...summary, statistics: percentiles(samples) };
+  });
   const byTask = [...rows.reduce((map, row) => { for (const taskId of row.taskIds) { const copy = { ...row, taskId }; const list = map.get(taskId) || []; list.push(copy); map.set(taskId, list); } return map; }, new Map())].map(([taskId, list]) => summarizeRows(taskId, list));
   return { rows, byModel: by("model"), byProject: by("project"), bySession: by("sessionId"), byTask, totals: summarizeRows("all", rows) };
 }
