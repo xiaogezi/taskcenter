@@ -139,9 +139,24 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     "--report-path", reportPath,
     "--task-mutation", "false",
     "--pca-mutation", "false",
+    "--report-mutation", "true",
     "--network", "false",
   ];
   assert.equal((await runHook("session-start", "codex", { session_id: sessionId, cwd: cyberRoleRoot }, profileArgs)).code, 0);
+  const forgedActivation = await fetch(`${base}/sessions/scheduled-readonly`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" },
+    body: JSON.stringify({ session_id: sessionId, profile: "scheduled_readonly" }),
+  });
+  assert.equal(forgedActivation.status, 404);
+  const detected = await runHook("scheduled-profile-detect", "codex", {
+    session_id: sessionId,
+    cwd: cyberRoleRoot,
+    prompt: "在 CyberRole 当前主工作区执行“夜间项目交付系统优化探索”\ntrial_id：cyberrole-context-lifecycle-20260820\n<!-- AUTO-MANAGED-BEGIN -->",
+  }, profileArgs);
+  assert.equal(detected.code, 0);
+  assert.match(detected.stdout, /scheduled_readonly Profile 已绑定/);
+  assert.match(detected.stdout, /scheduled-report-probe\.mjs/);
 
   const allowedCases = [
     { tool_name: "Read", tool_input: { file_path: join(cyberRoleRoot, "README.md") } },
@@ -150,6 +165,8 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     { tool_name: "exec_command", tool_input: { cmd: "git status --short" } },
     { tool_name: "Bash", tool_input: { command: "git rev-parse HEAD" } },
     { tool_name: "exec_command", tool_input: { cmd: `shasum -a 256 '${reportPath}'` } },
+    { tool_name: "Bash", tool_input: { command: `rtk node '${join(rootPath, "scripts", "scheduled-report-probe.mjs")}' --report '${reportPath}'` } },
+    { tool_name: "apply_patch", tool_input: { patch: `*** Begin Patch\n*** Update File: ${reportPath}\n@@\n-rolling report\n+rolling report updated\n*** End Patch` } },
     { tool_name: "mcp__context__context_capabilities", tool_input: {} },
     { tool_name: "mcp__context__context_health_check", tool_input: {} },
     { tool_name: "mcp__context__context_list_active_tasks", tool_input: { project_id: "cyberrole" } },
@@ -158,7 +175,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: sessionId } },
   ];
   for (const payload of allowedCases) {
-    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: cyberRoleRoot, ...payload }, profileArgs);
+    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: cyberRoleRoot, ...payload });
     assert.equal(result.code, 0, payload.tool_name || payload.tool_input?.cmd);
     assert.match(result.stdout, /scheduled_readonly 放行/);
   }
@@ -183,6 +200,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: "other-session" } },
     { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: sessionId, task_id: "other-task" } },
     { tool_name: "mcp__taskcenter__taskcenter_session_register", tool_input: { session_id: sessionId, workspace: join(tempDir, "Other") } },
+    { tool_name: "apply_patch", tool_input: { patch: `*** Begin Patch\n*** Update File: ${join(cyberRoleRoot, "README.md")}\n@@\n-CyberRole\n+changed\n*** End Patch` } },
     { tool_name: "apply_patch", tool_input: { patch: "*** Begin Patch\n*** End Patch" } },
   ];
   await writeFile(join(tempDir, "other.md"), "outside\n");
@@ -192,7 +210,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     blockedCases.push({ tool_name: "Read", tool_input: { file_path: outsideLink } });
   }
   for (const payload of blockedCases) {
-    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: payload.cwd || cyberRoleRoot, ...payload }, profileArgs);
+    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: payload.cwd || cyberRoleRoot, ...payload });
     assert.equal(result.code, 2, payload.tool_name || payload.tool_input?.cmd);
     assert.match(result.stderr, /scheduled_readonly/);
   }
@@ -213,11 +231,19 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     report_path: reportPath,
     task_mutation: false,
     pca_mutation: false,
+    report_mutation: true,
     network: false,
     tool_name: "Read",
     tool_input: { file_path: join(cyberRoleRoot, "README.md") },
   });
   assert.equal(payloadIdentity.code, 0);
+  const scheduledMcp = await runHook("scheduled-pre-tool-use", "codex", {
+    session_id: sessionId,
+    cwd: cyberRoleRoot,
+    tool_name: "mcp__context__context_health_check",
+    tool_input: {},
+  });
+  assert.equal(scheduledMcp.code, 0);
 
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.length, 0);
@@ -663,7 +689,7 @@ async function runHook(action, agent, payload, extraArgs = []) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [hook, action, "--agent", agent, ...extraArgs], {
       cwd: root,
-      env: { ...process.env, TASKCENTER_CONTROL_URL: base },
+      env: { ...process.env, ...paths, TASKCENTER_CONTROL_URL: base },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

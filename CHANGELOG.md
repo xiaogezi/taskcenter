@@ -4,7 +4,7 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
-- Adds a fail-closed `scheduled_readonly` Hook profile for the fixed CyberRole context automation, scoped to one workspace, one rolling report, exact read-only MCP queries, and no active-task requirement or mutation authority.
+- Adds a fail-closed, per-Session `scheduled_readonly` Hook profile for the fixed CyberRole context automation, scoped to one workspace, one rolling report, a fixed managed-payload probe, exact read-only MCP queries, and the sole ability to patch that report without TaskCenter/PCA/task mutation authority.
 - Adds L0 registered-session deterministic read-only access with aggregate-only auditing, while keeping writes, composite shell forms, interpreters, redirects, and unregistered Sessions fail-closed.
 - Defines L1 `fast`, L2 `standard`, and L3 `strict` defaults: verification is required for L2/L3, independent current-Subject review for L3, and Subject changes stale prior verification and review evidence.
 - Adds `response_mode: summary|full` to task mutation/report MCP calls; summary is the compact default, while routing/delegation control calls retain full operational replies for backward compatibility.

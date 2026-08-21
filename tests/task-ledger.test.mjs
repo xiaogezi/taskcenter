@@ -37,6 +37,7 @@ const {
   reconcileTasks,
   recordTaskEvent,
   recordSessionL0Audit,
+  setSessionScheduledReadonlyProfile,
   supersedeContextShadowTask,
   taskCompletionPacket,
   taskCompletionReadiness,
@@ -133,6 +134,23 @@ test("session.register 不误创建任务", async () => {
   assert.equal(result.task, null);
   assert.equal(result.idempotent, undefined);
   assert.equal(loadTasks().length, 0);
+});
+
+test("scheduled_readonly Profile 绑定已登记 Session 且不创建任务", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "session.register", event_id: "sess-scheduled-register", session_id: "sess-scheduled", workspace: "/work" });
+  const profile = setSessionScheduledReadonlyProfile("sess-scheduled", {
+    profile: "scheduled_readonly",
+    automation_id: "cyberrole-agent-context",
+    project_id: "cyberrole",
+    workspace_root: "/work",
+    report_path: "/work/report.md",
+    report_mutation: true,
+  });
+  assert.equal(profile.reportMutation, true);
+  assert.equal(getSessionStatuses([], [])[0].scheduledReadonly.automationId, "cyberrole-agent-context");
+  assert.equal(loadTasks().length, 0);
+  assert.throws(() => setSessionScheduledReadonlyProfile("missing", profile), /尚未登记/);
 });
 
 test("L0 仅聚合 Session 审计且不创建任务或事件历史", async () => {

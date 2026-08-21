@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { taskTimeState } from "../app/task-time-state.mjs";
+import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 
 class ControlUnavailableError extends Error {}
 
@@ -23,7 +24,7 @@ const provider = process.env.TASKCENTER_PROVIDER || (agent === "claude" ? "anthr
 const model = process.env.TASKCENTER_MODEL || event.model || "unknown";
 const sessionId = String(event.session_id || process.env.CLAUDE_SESSION_ID || process.env.CODEX_SESSION_ID || "").trim();
 const workspace = String(event.cwd || process.env.CLAUDE_PROJECT_DIR || process.env.PWD || "").trim();
-const scheduledReadonly = scheduledReadonlyConfig();
+let scheduledReadonly = scheduledReadonlyConfig();
 
 try {
   if (action === "pre-tool-use" && isTrustedRecoveryCommand(event)) {
@@ -31,6 +32,15 @@ try {
     process.exit(0);
   }
   if (!sessionId) throw new Error("Hook 输入缺少真实 session_id，拒绝猜测会话身份。");
+  if (action === "scheduled-profile-detect") {
+    if (!scheduledReadonly || !matchesScheduledReadonlyPrompt(event.prompt)) process.exit(0);
+    validateScheduledReadonlyIdentity();
+    await detectScheduledReadonlyProfile();
+    process.exit(0);
+  }
+  if (["pre-tool-use", "scheduled-pre-tool-use"].includes(action) && !scheduledReadonly) {
+    scheduledReadonly = await loadScheduledReadonlyProfile();
+  }
   if (scheduledReadonly) validateScheduledReadonlyIdentity();
   if (action === "session-start") {
     await registerSession();
@@ -38,7 +48,8 @@ try {
   } else if (action === "user-prompt-submit") {
     if (scheduledReadonly) process.exit(0);
     await provideTaskPreparationContext();
-  } else if (action === "pre-tool-use") {
+  } else if (["pre-tool-use", "scheduled-pre-tool-use"].includes(action)) {
+    if (action === "scheduled-pre-tool-use" && !scheduledReadonly) process.exit(0);
     if (isInteractiveExec(event)) {
       throw new Error("TaskCenter 不允许启动可由 write_stdin 续写的交互式命令；请使用一次性命令。Hook 是生命周期守卫，不是进程级安全沙箱。");
     }
@@ -47,10 +58,11 @@ try {
         throw new Error("scheduled_readonly 仅允许绑定项目内的确定性读取、固定报告完整性探针和只读 MCP 查询；不授予任务写入、Context 写入、网络或脚本执行权限。");
       }
       await requireRegisteredSession();
-      await recordScheduledReadonlyAudit();
+      if (action === "pre-tool-use") await recordScheduledReadonlyAudit();
       console.log(`TaskCenter scheduled_readonly 放行：${scheduledReadonly.automationId}（无需 active task）`);
       process.exit(0);
     }
+    if (action === "scheduled-pre-tool-use") process.exit(0);
     if (await isL0ReadOnlyInspection(event)) {
       await recordL0Audit();
       console.log("TaskCenter L0 确定性只读检查放行");
@@ -84,6 +96,7 @@ function scheduledReadonlyConfig() {
     reportPath: readArg("--report-path") || eventIdentityValue("report_path", "reportPath"),
     taskMutation: readArg("--task-mutation") || eventIdentityValue("task_mutation", "taskMutation"),
     pcaMutation: readArg("--pca-mutation") || eventIdentityValue("pca_mutation", "pcaMutation"),
+    reportMutation: readArg("--report-mutation") || eventIdentityValue("report_mutation", "reportMutation"),
     network: readArg("--network") || eventIdentityValue("network"),
   };
 }
@@ -100,6 +113,7 @@ function validateScheduledReadonlyIdentity() {
     projectId: "cyberrole",
     taskMutation: "false",
     pcaMutation: "false",
+    reportMutation: "true",
     network: "false",
   };
   for (const [key, value] of Object.entries(expected)) {
@@ -125,9 +139,18 @@ function validateScheduledReadonlyIdentity() {
 function isScheduledReadonlyOperation(payload) {
   const toolName = String(payload.tool_name || payload.tool || payload.name || "");
   if (isScheduledReadonlyMcp(toolName, payload.tool_input)) return true;
+  if (toolName === "apply_patch") return isScheduledReportPatch(payload);
   if (["Read", "Grep", "Glob"].includes(toolName)) return isScheduledFileInspection(toolName, payload.tool_input);
   if (!["Bash", "exec_command"].includes(toolName)) return false;
   return isScheduledReadonlyCommand(payload);
+}
+
+function isScheduledReportPatch(payload) {
+  if (scheduledReadonly.reportMutation !== "true") return false;
+  const paths = delegationPaths(payload);
+  if (paths.length !== 1) return false;
+  const canonical = canonicalExistingPath(resolveInputPath(paths[0], workspace));
+  return Boolean(canonical) && samePath(canonical, scheduledReadonly.reportPath);
 }
 
 function isScheduledReadonlyMcp(toolName, toolInput) {
@@ -188,7 +211,16 @@ function isScheduledReadonlyCommand(payload) {
   if (executable === "pwd") return args.length === 0;
   if (executable === "git") return isScheduledReadonlyGit(args);
   if (["shasum", "sha256sum"].includes(executable)) return isReportIntegrityProbe(executable, args, commandWorkspace);
+  if (executable === "node") return isFixedManagedReportProbe(args);
   return false;
+}
+
+function isFixedManagedReportProbe(args) {
+  if (args.length !== 3 || args[1] !== "--report") return false;
+  const script = canonicalExistingPath(resolveInputPath(args[0], workspace));
+  const report = canonicalExistingPath(resolveInputPath(args[2], workspace));
+  return samePath(script || "", resolve(projectRoot, "scripts", "scheduled-report-probe.mjs"))
+    && samePath(report || "", scheduledReadonly.reportPath);
 }
 
 function isScheduledReadonlyGit(args) {
@@ -243,6 +275,66 @@ async function recordScheduledReadonlyAudit() {
     automation_id: scheduledReadonly.automationId,
     project_id: scheduledReadonly.projectId,
   });
+}
+
+async function loadScheduledReadonlyProfile() {
+  const result = await request("GET", "/session-status");
+  const current = Array.isArray(result.sessions)
+    ? result.sessions.find((session) => session.sessionId === sessionId)
+    : null;
+  const profile = current?.scheduledReadonly;
+  if (!profile) return null;
+  return {
+    profile: String(profile.profile || ""),
+    automationId: String(profile.automationId || ""),
+    projectId: String(profile.projectId || ""),
+    workspaceRoot: String(profile.workspaceRoot || ""),
+    reportPath: String(profile.reportPath || ""),
+    taskMutation: String(profile.taskMutation),
+    pcaMutation: String(profile.pcaMutation),
+    reportMutation: String(profile.reportMutation),
+    network: String(profile.network),
+  };
+}
+
+async function detectScheduledReadonlyProfile() {
+  await requireRegisteredSession();
+  setSessionScheduledReadonlyProfile(sessionId, {
+    session_id: sessionId,
+    profile: scheduledReadonly.profile,
+    automation_id: scheduledReadonly.automationId,
+    project_id: scheduledReadonly.projectId,
+    workspace_root: scheduledReadonly.workspaceRoot,
+    report_path: scheduledReadonly.reportPath,
+    task_mutation: false,
+    pca_mutation: false,
+    report_mutation: true,
+    network: false,
+  });
+  const probe = `rtk node ${shellQuote(resolve(projectRoot, "scripts", "scheduled-report-probe.mjs"))} --report ${shellQuote(scheduledReadonly.reportPath)}`;
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: [
+        "TaskCenter scheduled_readonly Profile 已绑定当前自动化 Session。",
+        `完整性校验必须使用固定只读探针：${probe}`,
+        "只允许通过 apply_patch 更新绑定的唯一滚动报告；TaskCenter/PCA/task mutation、delegation、网络和其他文件写入仍为 0。",
+      ].join("\n"),
+    },
+  }));
+}
+
+function matchesScheduledReadonlyPrompt(prompt) {
+  const value = String(prompt || "");
+  return [
+    "在 CyberRole 当前主工作区执行“夜间项目交付系统优化探索”",
+    "trial_id：cyberrole-context-lifecycle-20260820",
+    "<!-- AUTO-MANAGED-BEGIN -->",
+  ].every((marker) => value.includes(marker));
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", `'\"'\"'`)}'`;
 }
 
 function isTrustedRecoveryCommand(payload) {

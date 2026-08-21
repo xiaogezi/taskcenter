@@ -189,12 +189,40 @@ export function getSessionStatuses(availableSessionIds = [], tasks = loadTasks()
       registeredAt: entry?.registeredAt || "",
       lastSeenAt: entry?.lastSeenAt || "",
       l0Audit: entry?.l0Audit || { count: 0, lastAt: "" },
+      scheduledReadonly: entry?.scheduledReadonly || null,
       status: entry ? "registered" : "unregistered",
       reason: entry ? "已登记 Session，等待任务或持续上报" : "未发现 session.register",
       taskCount: sessionTasks.length,
       lastTaskAt: sessionTasks.reduce((latest, task) => task.updatedAt > latest ? task.updatedAt : latest, ""),
     };
   });
+}
+
+export function setSessionScheduledReadonlyProfile(sessionId, profile) {
+  const registry = loadSessionRegistry();
+  const current = registry[sessionId];
+  if (!current) throw new TaskLedgerError(409, "当前 Session 尚未登记，请先完成 SessionStart 登记。");
+  const next = {
+    profile: String(profile?.profile || ""),
+    automationId: String(profile?.automation_id || profile?.automationId || ""),
+    projectId: String(profile?.project_id || profile?.projectId || ""),
+    workspaceRoot: String(profile?.workspace_root || profile?.workspaceRoot || ""),
+    reportPath: String(profile?.report_path || profile?.reportPath || ""),
+    taskMutation: false,
+    pcaMutation: false,
+    reportMutation: profile?.report_mutation === true || profile?.reportMutation === true,
+    network: false,
+    activatedAt: new Date().toISOString(),
+  };
+  if (next.profile !== "scheduled_readonly" || next.automationId !== "cyberrole-agent-context" || next.projectId !== "cyberrole") {
+    throw new TaskLedgerError(400, "scheduled_readonly Session Profile 身份无效。");
+  }
+  if (!next.workspaceRoot || !next.reportPath || !next.reportMutation) {
+    throw new TaskLedgerError(400, "scheduled_readonly Session Profile 缺少资源绑定或唯一报告写能力。");
+  }
+  registry[sessionId] = { ...current, scheduledReadonly: next, lastSeenAt: next.activatedAt };
+  persistSessionRegistry(registry);
+  return next;
 }
 
 // L0 only retains a per-session aggregate.  It deliberately creates neither a
@@ -210,11 +238,15 @@ export function recordSessionL0Audit(sessionId, workspace = "") {
     lastSeenAt: now,
     l0Audit: { count: Number(current.l0Audit?.count || 0) + 1, lastAt: now },
   };
+  persistSessionRegistry(registry);
+  return registry[sessionId].l0Audit;
+}
+
+function persistSessionRegistry(registry) {
   mkdirSync(dirname(sessionRegistryPath), { recursive: true });
   const temporaryPath = `${sessionRegistryPath}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporaryPath, sessionRegistryPath);
-  return registry[sessionId].l0Audit;
 }
 
 export function reconcileTasks(availableSessionIds) {
