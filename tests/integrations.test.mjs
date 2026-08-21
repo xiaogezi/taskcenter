@@ -42,6 +42,7 @@ test("checked-in JSON integration examples are valid", async () => {
   const { readFile } = await import("node:fs/promises");
   for (const path of [
     "integrations/codex/hooks.json.example",
+    "integrations/codex/scheduled-readonly-hooks.json.example",
     "integrations/claude/mcp.json.example",
     "integrations/claude/settings.json.example",
   ]) {

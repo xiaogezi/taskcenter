@@ -1,0 +1,43 @@
+{
+  "description": "Dedicated fail-closed Hook configuration for the CyberRole scheduled read-only automation",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^(startup|resume|clear|compact)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs\" session-start --agent codex --profile scheduled_readonly --automation-id cyberrole-agent-context --project-id cyberrole --workspace-root \"__CYBERROLE_ROOT__\" --report-path \"__ROLLING_REPORT__\" --task-mutation false --pca-mutation false --network false",
+            "timeout": 10,
+            "statusMessage": "Registering scheduled read-only TaskCenter session"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs\" user-prompt-submit --agent codex --profile scheduled_readonly --automation-id cyberrole-agent-context --project-id cyberrole --workspace-root \"__CYBERROLE_ROOT__\" --report-path \"__ROLLING_REPORT__\" --task-mutation false --pca-mutation false --network false",
+            "timeout": 10,
+            "statusMessage": "Preparing scheduled read-only TaskCenter context"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs\" pre-tool-use --agent codex --profile scheduled_readonly --automation-id cyberrole-agent-context --project-id cyberrole --workspace-root \"__CYBERROLE_ROOT__\" --report-path \"__ROLLING_REPORT__\" --task-mutation false --pca-mutation false --network false",
+            "timeout": 10,
+            "statusMessage": "Enforcing scheduled read-only TaskCenter profile"
+          }
+        ]
+      }
+    ]
+  }
+}

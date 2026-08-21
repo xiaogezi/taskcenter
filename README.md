@@ -108,6 +108,14 @@ claude mcp list
 
 配置变更只对新启动或重新加载的 Session 生效。Hook 会在本机控制服务意外退出时尝试一次自动恢复；恢复失败仍会阻断普通写操作，并只允许在项目根目录执行固定的跨平台 break-glass 命令：`node scripts/taskcenter-control.mjs start`（启动）或 `node scripts/taskcenter-control.mjs status`（诊断）。旧的 `/bin/bash scripts/taskcenter-control.sh ...` 入口继续作为 macOS/Linux 兼容薄封装。
 
+定时只读自动化可为独立 Hook 命令配置 `--profile scheduled_readonly`。当前 Profile 固定身份为 `--automation-id cyberrole-agent-context --project-id cyberrole`，并要求显式绑定绝对 `--workspace-root` 与唯一 `--report-path`，同时声明 `--task-mutation false --pca-mutation false --network false`。它只取消已登记 Session 的 active task 前置条件：仅放行绑定工作区内的 `Read/Grep/Glob`、`git status`、`git rev-parse HEAD`、固定报告的 SHA-256 探针，以及明确列出的 Context/TaskCenter 查询；其他项目、解释器、复合 Shell、网络、Task/Context 写接口和 delegation 均 fail-closed。该 Profile 是 Hook 最小权限 guardrail，不替代 Codex sandbox 或操作系统网络隔离。
+
+隔离自动化配置模板位于 [`integrations/codex/scheduled-readonly-hooks.json.example`](integrations/codex/scheduled-readonly-hooks.json.example)，其中 `PreToolUse` 必须匹配全部工具，避免 MCP 写接口从普通 Hook matcher 外绕过。该模板只用于专用自动化配置，不能直接覆盖日常 Codex Hook。占位路径必须替换为本机审核过的绝对路径：
+
+```text
+node "/absolute/path/to/taskcenter/scripts/taskcenter-hook.mjs" pre-tool-use --agent codex --profile scheduled_readonly --automation-id cyberrole-agent-context --project-id cyberrole --workspace-root "/absolute/path/to/CyberRole" --report-path "/absolute/path/to/cyberrole-agent-context.md" --task-mutation false --pca-mutation false --network false
+```
+
 Codex 配置中的 `UserPromptSubmit` Hook 会在非门禁豁免 Session 没有活跃正式任务时，提前向 Agent 注入任务准备指令。已登记且无活跃任务的 Session 可在 L0 运行单条确定性只读命令：`pwd`、`ls`、`cat`、`head`、`tail`、`wc`、`du`、`stat`、`file`、`rg`、`sed -n`、受限 `find`，以及限定的只读 `git` 子命令（可选前缀 `rtk`）。重定向、管道、命令替换、解释器和复合命令均会 fail-closed；提示会要求拆成单条只读命令，或创建任务。L0 只保留每个 Session 的计数聚合，不创建任务、验收或 Review，也不记录命令历史。未登记 Session 不享有 L0。
 
 需要写入时由 Agent 主动登记并创建或复用任务后再调用工具，不应要求用户代为处理。L1 `fast` 默认不要求 verification plan 或 review；L2 `standard` 必须声明 verification plan、默认不要求独立 review；L3 `strict` 必须有 verification plan 和当前 Subject 的独立 review。Subject 更新会使旧验证和 Review 失效。CLI 没有 Agent 的路径可直接调用 Core HTTP/导入证据接口；它不依赖 Hook 或 MCP，恢复服务后再补录 `occurred_at` 与证据即可。`PreToolUse` 仍保留硬阻断作为兜底。只有显式加入“门禁豁免”白名单的精确 Session ID 才会跳过任务要求，不会按项目、目录或标题自动扩大豁免。

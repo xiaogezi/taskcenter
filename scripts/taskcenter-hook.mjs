@@ -2,8 +2,9 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { taskTimeState } from "../app/task-time-state.mjs";
 
@@ -22,6 +23,7 @@ const provider = process.env.TASKCENTER_PROVIDER || (agent === "claude" ? "anthr
 const model = process.env.TASKCENTER_MODEL || event.model || "unknown";
 const sessionId = String(event.session_id || process.env.CLAUDE_SESSION_ID || process.env.CODEX_SESSION_ID || "").trim();
 const workspace = String(event.cwd || process.env.CLAUDE_PROJECT_DIR || process.env.PWD || "").trim();
+const scheduledReadonly = scheduledReadonlyConfig();
 
 try {
   if (action === "pre-tool-use" && isTrustedRecoveryCommand(event)) {
@@ -29,14 +31,25 @@ try {
     process.exit(0);
   }
   if (!sessionId) throw new Error("Hook 输入缺少真实 session_id，拒绝猜测会话身份。");
+  if (scheduledReadonly) validateScheduledReadonlyIdentity();
   if (action === "session-start") {
     await registerSession();
     console.log(`TaskCenter Session 已登记: ${sessionId}`);
   } else if (action === "user-prompt-submit") {
+    if (scheduledReadonly) process.exit(0);
     await provideTaskPreparationContext();
   } else if (action === "pre-tool-use") {
     if (isInteractiveExec(event)) {
       throw new Error("TaskCenter 不允许启动可由 write_stdin 续写的交互式命令；请使用一次性命令。Hook 是生命周期守卫，不是进程级安全沙箱。");
+    }
+    if (scheduledReadonly) {
+      if (!isScheduledReadonlyOperation(event)) {
+        throw new Error("scheduled_readonly 仅允许绑定项目内的确定性读取、固定报告完整性探针和只读 MCP 查询；不授予任务写入、Context 写入、网络或脚本执行权限。");
+      }
+      await requireRegisteredSession();
+      await recordScheduledReadonlyAudit();
+      console.log(`TaskCenter scheduled_readonly 放行：${scheduledReadonly.automationId}（无需 active task）`);
+      process.exit(0);
     }
     if (await isL0ReadOnlyInspection(event)) {
       await recordL0Audit();
@@ -57,6 +70,179 @@ try {
 } catch (error) {
   console.error(`TaskCenter Hook: ${error.message}`);
   process.exitCode = action === "pre-tool-use" ? 2 : 1;
+}
+
+function scheduledReadonlyConfig() {
+  const argProfile = readArg("--profile");
+  const profile = argProfile || eventIdentityValue("profile");
+  if (!profile) return null;
+  return {
+    profile,
+    automationId: readArg("--automation-id") || eventIdentityValue("automation_id", "automationId"),
+    projectId: readArg("--project-id") || eventIdentityValue("project_id", "projectId"),
+    workspaceRoot: readArg("--workspace-root") || eventIdentityValue("workspace_root", "workspaceRoot"),
+    reportPath: readArg("--report-path") || eventIdentityValue("report_path", "reportPath"),
+    taskMutation: readArg("--task-mutation") || eventIdentityValue("task_mutation", "taskMutation"),
+    pcaMutation: readArg("--pca-mutation") || eventIdentityValue("pca_mutation", "pcaMutation"),
+    network: readArg("--network") || eventIdentityValue("network"),
+  };
+}
+
+function eventIdentityValue(...keys) {
+  const key = keys.find((candidate) => Object.hasOwn(event, candidate));
+  return key ? String(event[key]).trim() : "";
+}
+
+function validateScheduledReadonlyIdentity() {
+  if (scheduledReadonly.profile !== "scheduled_readonly") throw new Error(`未知 Hook profile: ${scheduledReadonly.profile}`);
+  const expected = {
+    automationId: "cyberrole-agent-context",
+    projectId: "cyberrole",
+    taskMutation: "false",
+    pcaMutation: "false",
+    network: "false",
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (scheduledReadonly[key] !== value) throw new Error(`scheduled_readonly 身份字段 ${key} 必须为 ${value}。`);
+  }
+  if (!scheduledReadonly.workspaceRoot || !scheduledReadonly.reportPath) {
+    throw new Error("scheduled_readonly 需提供 automation-id、project-id、workspace-root、report-path、task/pca mutation 与 network 标识。");
+  }
+  if (!isAbsolute(scheduledReadonly.workspaceRoot) || !isAbsolute(scheduledReadonly.reportPath)) {
+    throw new Error("scheduled_readonly 必须绑定绝对 workspace-root 与 report-path。");
+  }
+  scheduledReadonly.workspaceRoot = canonicalExistingPath(scheduledReadonly.workspaceRoot);
+  scheduledReadonly.reportPath = canonicalExistingPath(scheduledReadonly.reportPath);
+  const canonicalWorkspace = canonicalExistingPath(workspace);
+  if (!scheduledReadonly.workspaceRoot || !scheduledReadonly.reportPath || !canonicalWorkspace) {
+    throw new Error("scheduled_readonly 绑定的 workspace-root、report-path 与当前 cwd 必须真实存在。");
+  }
+  if (!isWithinPath(canonicalWorkspace, scheduledReadonly.workspaceRoot)) {
+    throw new Error("scheduled_readonly 只能用于绑定的 CyberRole 工作区。");
+  }
+}
+
+function isScheduledReadonlyOperation(payload) {
+  const toolName = String(payload.tool_name || payload.tool || payload.name || "");
+  if (isScheduledReadonlyMcp(toolName, payload.tool_input)) return true;
+  if (["Read", "Grep", "Glob"].includes(toolName)) return isScheduledFileInspection(toolName, payload.tool_input);
+  if (!["Bash", "exec_command"].includes(toolName)) return false;
+  return isScheduledReadonlyCommand(payload);
+}
+
+function isScheduledReadonlyMcp(toolName, toolInput) {
+  const normalized = toolName.replaceAll(".", "_");
+  const matches = (allowed) => normalized === allowed || normalized.endsWith(`__${allowed}`);
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const requestedProject = String(input.project_id || input.projectId || "").trim();
+  if (requestedProject && requestedProject !== scheduledReadonly.projectId) return false;
+  if (matches("context_capabilities") || matches("context_health_check")) return true;
+  if (matches("context_list_active_tasks")) return requestedProject === scheduledReadonly.projectId;
+  if (matches("taskcenter_session_register")) {
+    const requestedSession = String(input.session_id || input.sessionId || "").trim();
+    const requestedWorkspace = String(input.workspace || "").trim();
+    if (!requestedWorkspace || !isAbsolute(requestedWorkspace)) return false;
+    return requestedSession === sessionId && samePath(canonicalExistingPath(requestedWorkspace) || "", scheduledReadonly.workspaceRoot);
+  }
+  if (matches("taskcenter_session_status") || matches("taskcenter_task_query")) {
+    const requestedSession = String(input.session_id || input.sessionId || "").trim();
+    return requestedSession === sessionId && !input.task_id && !input.taskId;
+  }
+  return false;
+}
+
+function isScheduledFileInspection(toolName, toolInput) {
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const base = canonicalExistingPath(resolveInputPath(input.cwd || input.workdir || workspace));
+  if (!base) return false;
+  if (!isWithinPath(base, scheduledReadonly.workspaceRoot)) return false;
+  const paths = [];
+  for (const key of ["path", "file_path", "filepath"]) {
+    if (typeof input[key] === "string" && input[key].trim()) paths.push(input[key].trim());
+  }
+  for (const key of ["paths", "file_paths"]) {
+    if (Array.isArray(input[key])) paths.push(...input[key].filter((item) => typeof item === "string" && item.trim()));
+  }
+  if (toolName === "Read" && paths.length === 0) return false;
+  if (toolName === "Glob" && typeof input.pattern === "string" && !isSafeRelativePattern(input.pattern)) return false;
+  if (typeof input.glob === "string" && !isSafeRelativePattern(input.glob)) return false;
+  return paths.every((path) => isAllowedScheduledPath(resolveInputPath(path, base)));
+}
+
+function isSafeRelativePattern(pattern) {
+  const value = String(pattern).replaceAll("\\", "/");
+  return !isAbsolute(value) && !value.split("/").includes("..");
+}
+
+function isScheduledReadonlyCommand(payload) {
+  const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
+  const command = String(input.command || input.cmd || payload.command || "").trim();
+  if (!command || /[\n\r;&<>`]/.test(command) || /\|\||\||\$\(/.test(command)) return false;
+  const commandWorkspace = canonicalExistingPath(resolveInputPath(input.cwd || input.workdir || workspace));
+  if (!commandWorkspace) return false;
+  if (!isWithinPath(commandWorkspace, scheduledReadonly.workspaceRoot)) return false;
+  const tokens = splitCommandWords(command);
+  if (basename(tokens[0]) === "rtk") tokens.shift();
+  const executable = basename(tokens[0]);
+  const args = tokens.slice(1);
+  if (executable === "pwd") return args.length === 0;
+  if (executable === "git") return isScheduledReadonlyGit(args);
+  if (["shasum", "sha256sum"].includes(executable)) return isReportIntegrityProbe(executable, args, commandWorkspace);
+  return false;
+}
+
+function isScheduledReadonlyGit(args) {
+  if (args[0] === "rev-parse") return args.length === 2 && args[1] === "HEAD";
+  if (args[0] !== "status") return false;
+  return args.slice(1).every((arg) => ["--short", "--porcelain", "--porcelain=v1", "--porcelain=v2", "--branch", "-b", "--untracked-files=no", "-uno"].includes(arg));
+}
+
+function isReportIntegrityProbe(executable, args, cwd) {
+  const pathArg = executable === "shasum"
+    ? (args.length === 3 && args[0] === "-a" && args[1] === "256" ? args[2] : "")
+    : (args.length === 1 ? args[0] : "");
+  return Boolean(pathArg) && samePath(canonicalExistingPath(resolveInputPath(pathArg, cwd)) || "", scheduledReadonly.reportPath);
+}
+
+function resolveInputPath(path, base = workspace) {
+  return resolve(isAbsolute(path) ? path : resolve(base, path));
+}
+
+function isAllowedScheduledPath(path) {
+  const canonical = canonicalExistingPath(path);
+  return Boolean(canonical) && (isWithinPath(canonical, scheduledReadonly.workspaceRoot) || samePath(canonical, scheduledReadonly.reportPath));
+}
+
+function canonicalExistingPath(path) {
+  try {
+    return realpathSync.native(resolve(path));
+  } catch {
+    return "";
+  }
+}
+
+function isWithinPath(path, root) {
+  const suffix = relative(root, path);
+  return suffix === "" || (!suffix.startsWith("..") && !isAbsolute(suffix));
+}
+
+async function requireRegisteredSession() {
+  const result = await request("GET", "/session-status");
+  const current = Array.isArray(result.sessions)
+    ? result.sessions.find((session) => session.sessionId === sessionId)
+    : null;
+  if (!current || current.status !== "registered") throw new Error("scheduled_readonly Session 尚未登记，请先完成 SessionStart 登记。");
+}
+
+async function recordScheduledReadonlyAudit() {
+  await request("POST", "/sessions/l0-audit", {
+    session_id: sessionId,
+    workspace,
+    command: "scheduled_readonly",
+    profile: scheduledReadonly.profile,
+    automation_id: scheduledReadonly.automationId,
+    project_id: scheduledReadonly.projectId,
+  });
 }
 
 function isTrustedRecoveryCommand(payload) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -119,6 +119,106 @@ test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async
   const unregistered = await runHook("pre-tool-use", "codex", { session_id: "unregistered-l0", cwd: "/work", tool_name: "exec_command", tool_input: { cmd: "pwd" } });
   assert.equal(unregistered.code, 2);
   assert.match(unregistered.stderr, /尚未登记/);
+  const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+  assert.equal(tasks.length, 0);
+});
+
+test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只读能力", async () => {
+  const sessionId = "019f0000-0000-7000-8000-00000000008a";
+  const cyberRoleRoot = join(tempDir, "CyberRole");
+  const reportPath = join(tempDir, "cyberrole-agent-context.md");
+  await mkdir(join(cyberRoleRoot, "project-context"), { recursive: true });
+  await writeFile(join(cyberRoleRoot, "README.md"), "CyberRole\n");
+  await writeFile(join(cyberRoleRoot, "project-context", "status.md"), "status\n");
+  await writeFile(reportPath, "rolling report\n");
+  const profileArgs = [
+    "--profile", "scheduled_readonly",
+    "--automation-id", "cyberrole-agent-context",
+    "--project-id", "cyberrole",
+    "--workspace-root", cyberRoleRoot,
+    "--report-path", reportPath,
+    "--task-mutation", "false",
+    "--pca-mutation", "false",
+    "--network", "false",
+  ];
+  assert.equal((await runHook("session-start", "codex", { session_id: sessionId, cwd: cyberRoleRoot }, profileArgs)).code, 0);
+
+  const allowedCases = [
+    { tool_name: "Read", tool_input: { file_path: join(cyberRoleRoot, "README.md") } },
+    { tool_name: "Grep", tool_input: { path: join(cyberRoleRoot, "project-context"), pattern: "status" } },
+    { tool_name: "Glob", tool_input: { path: cyberRoleRoot, pattern: "project-context/**/*.md" } },
+    { tool_name: "exec_command", tool_input: { cmd: "git status --short" } },
+    { tool_name: "Bash", tool_input: { command: "git rev-parse HEAD" } },
+    { tool_name: "exec_command", tool_input: { cmd: `shasum -a 256 '${reportPath}'` } },
+    { tool_name: "mcp__context__context_capabilities", tool_input: {} },
+    { tool_name: "mcp__context__context_health_check", tool_input: {} },
+    { tool_name: "mcp__context__context_list_active_tasks", tool_input: { project_id: "cyberrole" } },
+    { tool_name: "mcp__taskcenter__taskcenter_session_register", tool_input: { session_id: sessionId, workspace: cyberRoleRoot } },
+    { tool_name: "mcp__taskcenter__taskcenter_session_status", tool_input: { session_id: sessionId } },
+    { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: sessionId } },
+  ];
+  for (const payload of allowedCases) {
+    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: cyberRoleRoot, ...payload }, profileArgs);
+    assert.equal(result.code, 0, payload.tool_name || payload.tool_input?.cmd);
+    assert.match(result.stdout, /scheduled_readonly 放行/);
+  }
+
+  const blockedCases = [
+    { cwd: "/other", tool_name: "Read", tool_input: { file_path: "/other/private.md" } },
+    { tool_name: "Read", tool_input: { file_path: join(tempDir, "other.md") } },
+    { tool_name: "Glob", tool_input: { path: cyberRoleRoot, pattern: "../**/*" } },
+    { tool_name: "exec_command", tool_input: { cmd: "git branch --show-current" } },
+    { tool_name: "exec_command", tool_input: { cmd: "git status | cat" } },
+    { tool_name: "exec_command", tool_input: { cmd: "node probe.mjs" } },
+    { tool_name: "exec_command", tool_input: { cmd: "python3 -c 'print(1)'" } },
+    { tool_name: "exec_command", tool_input: { cmd: "git add README.md" } },
+    { tool_name: "exec_command", tool_input: { cmd: `shasum -a 256 '${join(tempDir, "other.md")}'` } },
+    { tool_name: "mcp__context__context_prepare_turn", tool_input: {} },
+    { tool_name: "mcp__context__context_commit_turn", tool_input: {} },
+    { tool_name: "mcp__context__context_list_active_tasks", tool_input: {} },
+    { tool_name: "mcp__context__context_list_active_tasks", tool_input: { project_id: "other" } },
+    { tool_name: "mcp__taskcenter__taskcenter_task_create", tool_input: {} },
+    { tool_name: "mcp__taskcenter__taskcenter_task_update", tool_input: {} },
+    { tool_name: "mcp__taskcenter__taskcenter_delegation_claim", tool_input: {} },
+    { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: "other-session" } },
+    { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: sessionId, task_id: "other-task" } },
+    { tool_name: "mcp__taskcenter__taskcenter_session_register", tool_input: { session_id: sessionId, workspace: join(tempDir, "Other") } },
+    { tool_name: "apply_patch", tool_input: { patch: "*** Begin Patch\n*** End Patch" } },
+  ];
+  await writeFile(join(tempDir, "other.md"), "outside\n");
+  if (process.platform !== "win32") {
+    const outsideLink = join(cyberRoleRoot, "outside-link.md");
+    await symlink(join(tempDir, "other.md"), outsideLink);
+    blockedCases.push({ tool_name: "Read", tool_input: { file_path: outsideLink } });
+  }
+  for (const payload of blockedCases) {
+    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: payload.cwd || cyberRoleRoot, ...payload }, profileArgs);
+    assert.equal(result.code, 2, payload.tool_name || payload.tool_input?.cmd);
+    assert.match(result.stderr, /scheduled_readonly/);
+  }
+
+  const badIdentity = [...profileArgs];
+  badIdentity[badIdentity.indexOf("cyberrole-agent-context")] = "other-automation";
+  const rejected = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: cyberRoleRoot, tool_name: "Read", tool_input: { file_path: join(cyberRoleRoot, "README.md") } }, badIdentity);
+  assert.equal(rejected.code, 2);
+  assert.match(rejected.stderr, /automationId/);
+
+  const payloadIdentity = await runHook("pre-tool-use", "codex", {
+    session_id: sessionId,
+    cwd: cyberRoleRoot,
+    profile: "scheduled_readonly",
+    automation_id: "cyberrole-agent-context",
+    project_id: "cyberrole",
+    workspace_root: cyberRoleRoot,
+    report_path: reportPath,
+    task_mutation: false,
+    pca_mutation: false,
+    network: false,
+    tool_name: "Read",
+    tool_input: { file_path: join(cyberRoleRoot, "README.md") },
+  });
+  assert.equal(payloadIdentity.code, 0);
+
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.length, 0);
 });
@@ -559,9 +659,9 @@ test("控制服务离线时只放行固定恢复命令", async () => {
   assert.equal(missingWorkspace.code, 2);
 });
 
-async function runHook(action, agent, payload) {
+async function runHook(action, agent, payload, extraArgs = []) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [hook, action, "--agent", agent], {
+    const child = spawn(process.execPath, [hook, action, "--agent", agent, ...extraArgs], {
       cwd: root,
       env: { ...process.env, TASKCENTER_CONTROL_URL: base },
       stdio: ["pipe", "pipe", "pipe"],
