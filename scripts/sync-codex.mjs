@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { sessionDisplayTitle } from "../app/session-groups.mjs";
 import { classifyMessage, messageClasses } from "./classify-message.mjs";
 import { readSessionAllowlist } from "./session-allowlist.mjs";
 
@@ -35,6 +36,64 @@ function findSessionFiles(directory) {
 
 function threadIdFromPath(path) {
   return basename(path).match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i)?.[1] || "";
+}
+
+async function readSessionFileMetadata(path) {
+  const fallbackId = threadIdFromPath(path);
+  const input = createReadStream(path, { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        break;
+      }
+      if (record.type !== "session_meta") break;
+      const payload = record.payload || {};
+      const isSubagent = payload.thread_source === "subagent" || Boolean(payload.source?.subagent);
+      const canonicalId = String(isSubagent
+        ? payload.parent_thread_id || payload.session_id || fallbackId
+        : payload.session_id || fallbackId).trim();
+      return {
+        path,
+        canonicalId,
+        rolloutId: String(payload.id || fallbackId).trim(),
+        parentThreadId: String(payload.parent_thread_id || "").trim(),
+        isSubagent,
+        cwd: String(payload.cwd || "").trim(),
+        mtimeMs: statSync(path).mtimeMs,
+      };
+    }
+  } finally {
+    lines.close();
+    input.destroy();
+  }
+  return { path, canonicalId: fallbackId, rolloutId: fallbackId, parentThreadId: "", isSubagent: false, cwd: "", mtimeMs: statSync(path).mtimeMs };
+}
+
+function groupSessionFiles(files) {
+  const groups = new Map();
+  for (const file of files) {
+    if (!file.canonicalId) continue;
+    const current = groups.get(file.canonicalId) || {
+      threadId: file.canonicalId,
+      files: [],
+      aliases: new Set([file.canonicalId]),
+      cwd: "",
+      mtimeMs: 0,
+    };
+    current.files.push(file);
+    if (file.rolloutId) current.aliases.add(file.rolloutId);
+    if (file.parentThreadId) current.aliases.add(file.parentThreadId);
+    if (!file.isSubagent && file.cwd) current.cwd = file.cwd;
+    if (!current.cwd && file.cwd) current.cwd = file.cwd;
+    current.mtimeMs = Math.max(current.mtimeMs, file.mtimeMs);
+    groups.set(file.canonicalId, current);
+  }
+  return [...groups.values()].sort((left, right) => left.mtimeMs - right.mtimeMs);
 }
 
 function readThreadNames() {
@@ -117,6 +176,26 @@ async function parseThread(path, threadId, title) {
     file: path,
     userRequirements: users,
     completionClaims: claims,
+  };
+}
+
+async function parseSessionFiles(session, title) {
+  const roots = session.files.filter((file) => !file.isSubagent).sort((left, right) => left.mtimeMs - right.mtimeMs);
+  if (!roots.length) {
+    return { id: session.threadId, title, cwd: session.cwd, updatedAt: new Date(session.mtimeMs).toISOString(), file: "", userRequirements: [], completionClaims: [] };
+  }
+  const parsed = [];
+  for (const file of roots) parsed.push(await parseThread(file.path, session.threadId, title));
+  const unique = (items) => [...new Map(items.map((item) => [`${item.timestamp}\n${item.text}`, item])).values()]
+    .sort((left, right) => String(left.timestamp).localeCompare(String(right.timestamp)));
+  return {
+    id: session.threadId,
+    title,
+    cwd: [...parsed].reverse().find((thread) => thread.cwd)?.cwd || session.cwd,
+    updatedAt: parsed.map((thread) => thread.updatedAt).filter(Boolean).sort().at(-1) || new Date(session.mtimeMs).toISOString(),
+    file: roots.at(-1)?.path || "",
+    userRequirements: unique(parsed.flatMap((thread) => thread.userRequirements)),
+    completionClaims: unique(parsed.flatMap((thread) => thread.completionClaims)),
   };
 }
 
@@ -208,20 +287,20 @@ async function main() {
   const names = readThreadNames();
   const sessionSelection = readSessionAllowlist(selectionPath);
   const selectedThreadIds = new Set(sessionSelection.threadIds);
-  const candidateFiles = findSessionFiles(sessionsRoot)
-    .map((path) => ({ path, threadId: threadIdFromPath(path) }))
-    .filter((item) => !configuredThreadIds || configuredThreadIds.has(item.threadId))
-    .sort((a, b) => statSync(a.path).mtimeMs - statSync(b.path).mtimeMs);
-  const allowedFiles = candidateFiles.filter((item) => selectedThreadIds.has(item.threadId));
+  const scannedFiles = [];
+  for (const path of findSessionFiles(sessionsRoot)) scannedFiles.push(await readSessionFileMetadata(path));
+  const candidateSessions = groupSessionFiles(scannedFiles)
+    .filter((session) => !configuredThreadIds || [...session.aliases].some((id) => configuredThreadIds.has(id)));
+  const normalizedSelectedIds = new Set();
+  for (const session of candidateSessions) {
+    if ([...session.aliases].some((id) => selectedThreadIds.has(id))) normalizedSelectedIds.add(session.threadId);
+  }
+  const effectiveSessionSelection = { ...sessionSelection, threadIds: [...normalizedSelectedIds] };
+  const allowedSessions = candidateSessions.filter((session) => normalizedSelectedIds.has(session.threadId));
   const allThreads = [];
-  for (const item of allowedFiles) {
-    allThreads.push(await parseThread(
-      item.path,
-      item.threadId,
-      names.get(item.threadId) ||
-        defaultThreadNames.get(item.threadId) ||
-        `Codex ${item.threadId.slice(0, 8)}`,
-    ));
+  for (const session of allowedSessions) {
+    const title = sessionDisplayTitle(names.get(session.threadId) || defaultThreadNames.get(session.threadId), session.threadId);
+    allThreads.push(await parseSessionFiles(session, title));
   }
   const threads = allThreads;
 
@@ -283,16 +362,16 @@ async function main() {
     source: {
       codexHome: process.env.CODEX_HOME ? codexHome : "~/.codex",
       threadCount: threads.length,
-      availableThreadCount: candidateFiles.length,
+      availableThreadCount: candidateSessions.length,
       messageCount: threads.reduce((sum, thread) => sum + thread.userRequirements.length, 0),
       mode: "read-only local JSONL",
-      sessionSelection,
-      availableThreads: candidateFiles.map((item) => ({
-        id: item.threadId,
-        title: names.get(item.threadId) || defaultThreadNames.get(item.threadId) || `Codex ${item.threadId.slice(0, 8)}`,
-        updatedAt: new Date(statSync(item.path).mtimeMs).toISOString(),
-        allowed: selectedThreadIds.has(item.threadId),
-        requirementCount: allThreads.find((thread) => thread.id === item.threadId)?.userRequirements.length || 0,
+      sessionSelection: effectiveSessionSelection,
+      availableThreads: candidateSessions.map((session) => ({
+        id: session.threadId,
+        title: sessionDisplayTitle(names.get(session.threadId) || defaultThreadNames.get(session.threadId), session.threadId),
+        updatedAt: new Date(session.mtimeMs).toISOString(),
+        allowed: normalizedSelectedIds.has(session.threadId),
+        requirementCount: allThreads.find((thread) => thread.id === session.threadId)?.userRequirements.length || 0,
       })),
       classificationCounts,
       excludedCounts: unmatched.excludedCounts,

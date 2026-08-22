@@ -2,6 +2,13 @@ function cleanTitle(title) {
   return typeof title === "string" ? title.trim().replace(/\s+/g, " ") : "";
 }
 
+export function sessionDisplayTitle(title, sessionId) {
+  const canonical = cleanTitle(title);
+  if (canonical) return canonical;
+  const suffix = typeof sessionId === "string" && sessionId ? `${sessionId.slice(0, 8)}…` : "未知 ID";
+  return `未命名会话 · ${suffix}`;
+}
+
 export function sessionGroupKey(thread) {
   const title = cleanTitle(thread.title);
   return title ? `title:${title.toLocaleLowerCase("zh-CN")}` : `session:${thread.id ?? "unknown"}`;
@@ -19,7 +26,7 @@ export function groupSessions(threads) {
         ...thread,
         id: key,
         groupKey: key,
-        title: cleanTitle(thread.title) || `Codex ${sessionId.slice(0, 8)}…`,
+        title: sessionDisplayTitle(thread.title, sessionId),
         sessionIds: [sessionId],
         sessionCount: 1,
       });
