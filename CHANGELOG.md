@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 门禁豁免支持按精确 Session 一键加入与退出，操作幂等且不会覆盖其他 Session。
+
 - Adds a fail-closed, per-Session `scheduled_readonly` Hook profile for the fixed CyberRole context automation, scoped to one workspace, one rolling report, a fixed managed-payload probe, exact read-only MCP queries, and the sole ability to patch that report without TaskCenter/PCA/task mutation authority.
 - Adds L0 registered-session deterministic read-only access with aggregate-only auditing, while keeping writes, composite shell forms, interpreters, redirects, and unregistered Sessions fail-closed.
 - Defines L1 `fast`, L2 `standard`, and L3 `strict` defaults: verification is required for L2/L3, independent current-Subject review for L3, and Subject changes stale prior verification and review evidence.

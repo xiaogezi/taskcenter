@@ -50,7 +50,7 @@ import {
   reconcileReflectionSessionSelection,
   updateReflectionExecution,
 } from "./reflection-engine.mjs";
-import { normalizeSessionAllowlist, readSessionAllowlist } from "./session-allowlist.mjs";
+import { normalizeSessionAllowlist, readSessionAllowlist, sessionIdPattern } from "./session-allowlist.mjs";
 import {
   claimDelegation,
   DelegationError,
@@ -226,6 +226,29 @@ const server = createServer(async (request, response) => {
       });
       persistJsonObject(gateSessionAllowlistPath, selection);
       sendJson(response, 200, { selection });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/gate-session-allowlist/session") {
+      verifyActionRequest(request);
+      const body = await readJsonBody(request);
+      const sessionId = String(body.session_id || "").trim();
+      if (!sessionIdPattern.test(sessionId)) throw new DispatchError(400, "Session ID 无效。");
+      if (typeof body.enabled !== "boolean") throw new DispatchError(400, "enabled 必须是 boolean。");
+      const current = readSessionAllowlist(gateSessionAllowlistPath);
+      const threadIds = body.enabled
+        ? [...new Set([...current.threadIds, sessionId])]
+        : current.threadIds.filter((id) => id !== sessionId);
+      const selection = normalizeSessionAllowlist({
+        mode: "allowlist",
+        threadIds,
+        updatedAt: new Date().toISOString(),
+      });
+      persistJsonObject(gateSessionAllowlistPath, selection);
+      sendJson(response, 200, {
+        accepted: true,
+        session: { sessionId, gateExempt: body.enabled },
+        selection,
+      });
       return;
     }
     if (request.method === "GET" && request.url === "/dispatches") {

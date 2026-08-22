@@ -21,6 +21,7 @@ const envPaths = {
   TASKCENTER_CONTEXT_AUDIT_PATH: join(tempDir, "context-sync-events.jsonl"),
   TASKCENTER_DELEGATIONS_PATH: join(tempDir, "delegations.json"),
   TASKCENTER_ROUTING_CONTROL_PATH: join(tempDir, "routing-control.json"),
+  TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(tempDir, "gate-session-allowlist.json"),
 };
 for (const [key, value] of Object.entries(envPaths)) {
   process.env[key] = value;
@@ -1642,6 +1643,53 @@ test("人工操作端点：合法 UI 操作可变更任务状态", async (contex
   assert.equal(cancel.status, 200);
   const cancelled = (await cancel.json()).task;
   assert.equal(cancelled.status, "cancelled");
+});
+
+test("门禁豁免支持单个 Session 幂等加入与退出且不覆盖其他 Session", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  const headers = {
+    "Content-Type": "application/json",
+    "Origin": "http://localhost:3000",
+    "X-TaskCenter-Action": "delegate",
+  };
+  const firstId = "019f0000-0000-7000-8000-000000000101";
+  const secondId = "019f0000-0000-7000-8000-000000000102";
+
+  const seed = await fetch(`${base}/gate-session-allowlist`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ threadIds: [firstId] }),
+  });
+  assert.equal(seed.status, 200);
+
+  for (const enabled of [true, true]) {
+    const joined = await fetch(`${base}/gate-session-allowlist/session`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ session_id: secondId, enabled }),
+    });
+    assert.equal(joined.status, 200);
+    const payload = await joined.json();
+    assert.deepEqual(payload.selection.threadIds, [firstId, secondId]);
+    assert.equal(payload.session.gateExempt, true);
+  }
+
+  const left = await fetch(`${base}/gate-session-allowlist/session`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ session_id: firstId, enabled: false }),
+  });
+  assert.equal(left.status, 200);
+  assert.deepEqual((await left.json()).selection.threadIds, [secondId]);
+
+  const invalid = await fetch(`${base}/gate-session-allowlist/session`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ session_id: "not-a-session", enabled: true }),
+  });
+  assert.equal(invalid.status, 400);
 });
 
 test("人工操作端点：缺少 UI 来源标记返回 403", async (context) => {

@@ -227,6 +227,7 @@ export default function Home() {
   const [sessionPickerKind, setSessionPickerKind] = useState<"read" | "gate">("read");
   const [pickerThreadIds, setPickerThreadIds] = useState<string[]>([]);
   const [gateAllowlistIds, setGateAllowlistIds] = useState<string[]>([]);
+  const [gateSessionSavingId, setGateSessionSavingId] = useState("");
   const [isSavingSessionSelection, setIsSavingSessionSelection] = useState(false);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard>({ source: {}, threads: [] });
@@ -373,24 +374,24 @@ export default function Home() {
       setIsSavingSessionSelection(false);
     }
   };
-  const saveGateSessionAllowlist = async (threadIds: string[]) => {
-    setIsSavingSessionSelection(true);
+  const toggleGateSession = async (sessionId: string, enabled: boolean) => {
+    if (gateSessionSavingId) return;
+    setGateSessionSavingId(sessionId);
     setSyncMessage("");
     try {
-      const response = await fetch(`${controlServerUrl}/gate-session-allowlist`, {
+      const response = await fetch(`${controlServerUrl}/gate-session-allowlist/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
-        body: JSON.stringify({ threadIds }),
+        body: JSON.stringify({ session_id: sessionId, enabled }),
       });
       const payload = await response.json() as { selection?: SessionSelection; error?: string };
-      if (!response.ok) throw new Error(payload.error || "门禁豁免白名单保存失败。");
-      setGateAllowlistIds(payload.selection?.threadIds ?? threadIds);
-      setShowSessionPicker(false);
-      setSyncMessage(`已保存门禁豁免白名单，当前 ${payload.selection?.threadIds.length ?? threadIds.length} 个 Session 无需活跃任务。`);
+      if (!response.ok) throw new Error(payload.error || "Session 门禁豁免更新失败。");
+      setGateAllowlistIds(payload.selection?.threadIds ?? []);
+      setSyncMessage(enabled ? "当前 Session 已加入任务门禁豁免。" : "当前 Session 已退出任务门禁豁免。");
     } catch (error) {
-      setSyncMessage(error instanceof Error ? error.message : "门禁豁免白名单保存失败。");
+      setSyncMessage(error instanceof Error ? error.message : "Session 门禁豁免更新失败。");
     } finally {
-      setIsSavingSessionSelection(false);
+      setGateSessionSavingId("");
     }
   };
   const removeSessionGroup = (sessionIds: string[]) => {
@@ -447,7 +448,7 @@ export default function Home() {
                 读取白名单
               </button>
               <button className="manage-sessions-button" onClick={openGateSessionPicker}>
-                门禁豁免
+                门禁豁免{gateAllowlistIds.length ? ` · ${gateAllowlistIds.length}` : ""}
               </button>
               <button className="scan-button" onClick={scanCodexSessions} disabled={isSyncing}>
                 {isSyncing ? "扫描中…" : "手动扫描"}
@@ -470,9 +471,9 @@ export default function Home() {
               </div>
               <p>{sessionPickerKind === "read"
                 ? "只有勾选的 Session 才会读取 JSONL 正文。未勾选项仅使用本地索引中的 ID、标题和文件时间供你选择，不删除原始文件。"
-                : "勾选的 Session 在非只读工具调用前不再强制登记活跃任务。命令安全检查仍然生效；默认不豁免。"}</p>
+                : "点击单个 Session 的加入或退出按钮会立即生效，不需要再次保存。加入后，非只读工具调用不再强制登记活跃任务；命令安全检查仍然生效。"}</p>
               <div className="session-picker-list">
-                {pickerGroups.map((group) => {
+                {sessionPickerKind === "read" ? pickerGroups.map((group) => {
                   const sessionIds = group.sessionIds;
                   const selectedCount = sessionIds.filter((id) => pickerThreadIds.includes(id)).length;
                   const checked = sessionIds.length > 0 && selectedCount === sessionIds.length;
@@ -488,15 +489,38 @@ export default function Home() {
                       <span><strong>{asText(group.title, "未命名会话")}</strong><small>{group.sessionCount} 个会话 · 已选 {selectedCount}</small></span>
                     </label>
                   );
+                }) : selectionThreads.map((thread) => {
+                  const sessionId = asText(thread.id, "");
+                  if (!sessionId) return null;
+                  const exempt = gateAllowlistIds.includes(sessionId);
+                  const saving = gateSessionSavingId === sessionId;
+                  return (
+                    <div className="session-option session-option-immediate" key={sessionId}>
+                      <span>
+                        <strong>{asText(thread.title, "未命名会话")}</strong>
+                        <small>{sessionId.slice(0, 8)}… · {exempt ? "已豁免任务登记" : "需要活跃任务"}</small>
+                      </span>
+                      <button
+                        className={exempt ? "gate-exit-button" : "gate-join-button"}
+                        onClick={() => void toggleGateSession(sessionId, !exempt)}
+                        disabled={Boolean(gateSessionSavingId)}
+                        aria-label={`${exempt ? "退出" : "加入"} ${asText(thread.title, sessionId)} 的任务门禁豁免`}
+                      >
+                        {saving ? "处理中…" : exempt ? "退出豁免" : "加入豁免"}
+                      </button>
+                    </div>
+                  );
                 })}
               </div>
-              <div className="session-picker-actions">
-                <button onClick={() => setPickerThreadIds(selectionThreads.map((thread) => asText(thread.id, "")).filter(Boolean))}>全选</button>
-                <button onClick={() => setPickerThreadIds([])}>清空</button>
-                <button className="session-save-button" onClick={() => void (sessionPickerKind === "read" ? saveSessionSelection(pickerThreadIds) : saveGateSessionAllowlist(pickerThreadIds))} disabled={isSavingSessionSelection}>
-                  {isSavingSessionSelection ? "保存中…" : `保存（${pickerThreadIds.length}）`}
-                </button>
-              </div>
+              {sessionPickerKind === "read" && (
+                <div className="session-picker-actions">
+                  <button onClick={() => setPickerThreadIds(selectionThreads.map((thread) => asText(thread.id, "")).filter(Boolean))}>全选</button>
+                  <button onClick={() => setPickerThreadIds([])}>清空</button>
+                  <button className="session-save-button" onClick={() => void saveSessionSelection(pickerThreadIds)} disabled={isSavingSessionSelection}>
+                    {isSavingSessionSelection ? "保存中…" : `保存（${pickerThreadIds.length}）`}
+                  </button>
+                </div>
+              )}
             </section>
           )}
           <button

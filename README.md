@@ -27,7 +27,7 @@ TaskCenter 不读取 `~/.codex/auth.json`、API Key、Cookie 或其他认证材�
 
 Session 内容采用 fail-closed 白名单：缺少 `data/session-selection.json`、配置损坏或白名单为空时，不读取任何 JSONL 正文。候选列表只从允许的本机索引和文件名读取 Session ID、标题与文件时间，便于人工勾选；未入白名单的消息、cwd 和摘要不会进入 dashboard 或反思输入。旧 `all` / `selected` 配置只迁移其中显式列出的 `threadIds`，不会把隐式 `all` 扩大为全量读取。
 
-页面中的两套白名单职责独立：“读取白名单”决定哪些本机 Session JSONL 可以进入同步与反思；“门禁豁免”决定哪些 Session 在非只读工具调用前无需登记活跃任务。门禁豁免默认关闭、按 Session 显式配置，只跳过任务登记检查，不跳过交互式进程和命令形态等安全检查。
+页面中的两套白名单职责独立：“读取白名单”决定哪些本机 Session JSONL 可以进入同步与反思；“门禁豁免”决定哪些 Session 在非只读工具调用前无需登记活跃任务。门禁豁免默认关闭、按 Session 显式配置；打开“门禁豁免”后，每个精确 Session 都可一键“加入豁免”或“退出豁免”，操作立即生效且不会覆盖其他 Session。豁免只跳过任务登记检查，不跳过交互式进程和命令形态等安全检查。
 
 “自改进”采用复查闭环：TaskCenter 从白名单后的聚合结果与本地任务账本识别证据缺口、阻塞聚集、逾期和返工，输出结构化提案。提案只包含聚合计数和任务 ID，不复制 Session 正文。采纳后可选择已有或新建 Codex Session；TaskCenter 会先登记目标 Session 并创建幂等的正式改进任务，再派发受 Hook 保护的执行提示。Agent 上报 `done_claimed` 后即可再次运行反思：问题消失则标为已解决，仍存在则重新进入审核；人工发现未完成时可直接打回。TaskCenter 不直接修改源码、Hook、MCP 或 `~/.codex`。
 

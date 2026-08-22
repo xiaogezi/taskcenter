@@ -124,6 +124,12 @@ button { cursor: pointer; }
 .session-option span { display: grid; gap: 2px; min-width: 0; }
 .session-option strong { font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-option small { color: var(--muted); font-size: 9px; }
+.session-option-immediate { align-items: center; justify-content: space-between; }
+.session-option-immediate > span { flex: 1; }
+.session-option-immediate > button { border: 1px solid var(--line); border-radius: 9px; flex: none; font-size: 9px; font-weight: 700; min-width: 72px; padding: 7px 8px; }
+.gate-join-button { background: var(--ink); border-color: var(--ink) !important; color: white; }
+.gate-exit-button { background: transparent; color: var(--rose); }
+.session-option-immediate > button:disabled { cursor: wait; opacity: .55; }
 .session-picker-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .session-save-button { background: var(--ink) !important; border-color: var(--ink) !important; color: white !important; margin-left: auto; }
 .thread-row { align-items: stretch; border-bottom: 1px solid var(--line); display: flex; }
