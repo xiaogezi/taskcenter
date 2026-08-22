@@ -34,6 +34,7 @@ import {
   reconcileTasks,
   recordSessionL0Audit,
   recordTaskEvent,
+  setSessionScheduledReadonlyScanExemption,
   supersedeContextShadowTask,
   taskCompletionPacket,
   taskCompletionReadiness,
@@ -273,6 +274,35 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         accepted: true,
         session: { sessionId, registered: true, gateExempt: body.enabled },
+      });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/scheduled-readonly-scan-exemption/status") {
+      verifyBoundMcpRequest(request);
+      const body = await readJsonBody(request);
+      const sessionId = String(body.session_id || "").trim().toLowerCase();
+      if (!sessionIdPattern.test(sessionId)) throw new DispatchError(400, "Session ID 无效。");
+      const profile = loadSessionRegistry()[sessionId]?.scheduledReadonly;
+      sendJson(response, 200, {
+        accepted: true,
+        session: {
+          sessionId,
+          scheduledReadonly: profile?.profile === "scheduled_readonly",
+          scanExempt: profile?.scanExempt === true,
+        },
+      });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/scheduled-readonly-scan-exemption/set") {
+      verifyBoundMcpRequest(request);
+      const body = await readJsonBody(request);
+      const sessionId = String(body.session_id || "").trim().toLowerCase();
+      if (!sessionIdPattern.test(sessionId)) throw new DispatchError(400, "Session ID 无效。");
+      if (typeof body.enabled !== "boolean") throw new DispatchError(400, "enabled 必须是 boolean。");
+      const profile = setSessionScheduledReadonlyScanExemption(sessionId, body.enabled);
+      sendJson(response, 200, {
+        accepted: true,
+        session: { sessionId, scheduledReadonly: true, scanExempt: profile.scanExempt === true },
       });
       return;
     }

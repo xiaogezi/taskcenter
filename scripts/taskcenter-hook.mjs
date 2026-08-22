@@ -54,12 +54,16 @@ try {
       throw new Error("TaskCenter 不允许启动可由 write_stdin 续写的交互式命令；请使用一次性命令。Hook 是生命周期守卫，不是进程级安全沙箱。");
     }
     if (scheduledReadonly) {
-      if (!isScheduledReadonlyOperation(event)) {
+      const baselineAllowed = isScheduledReadonlyOperation(event);
+      const scanAllowed = !baselineAllowed
+        && isScheduledReadonlyScanOperation(event)
+        && await hasScheduledReadonlyScanExemption();
+      if (!baselineAllowed && !scanAllowed) {
         throw new Error("scheduled_readonly 仅允许绑定项目内的确定性读取、固定报告完整性探针和只读 MCP 查询；不授予任务写入、Context 写入、网络或脚本执行权限。");
       }
       await requireRegisteredSession();
       if (action === "pre-tool-use") await recordScheduledReadonlyAudit();
-      console.log(`TaskCenter scheduled_readonly 放行：${scheduledReadonly.automationId}（无需 active task）`);
+      console.log(`TaskCenter scheduled_readonly ${scanAllowed ? "扫描豁免放行" : "放行"}：${scheduledReadonly.automationId}（无需 active task）`);
       process.exit(0);
     }
     if (action === "scheduled-pre-tool-use") process.exit(0);
@@ -171,7 +175,65 @@ function isScheduledReadonlyMcp(toolName, toolInput) {
     const requestedSession = String(input.session_id || input.sessionId || "").trim();
     return requestedSession === sessionId && !input.task_id && !input.taskId;
   }
+  if (matches("taskcenter_scheduled_readonly_scan_exemption_status")) {
+    const requestedSession = String(input.session_id || "").trim().toLowerCase();
+    return Object.keys(input).length === 1 && requestedSession === sessionId;
+  }
+  if (matches("taskcenter_scheduled_readonly_scan_exemption_set")) {
+    const requestedSession = String(input.session_id || "").trim().toLowerCase();
+    return Object.keys(input).length === 2 && requestedSession === sessionId && typeof input.enabled === "boolean";
+  }
   return false;
+}
+
+function isScheduledReadonlyScanOperation(payload) {
+  const toolName = String(payload.tool_name || payload.tool || payload.name || "");
+  if (!["Bash", "exec_command"].includes(toolName)) return false;
+  const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
+  const command = String(input.command || input.cmd || payload.command || "").trim();
+  if (!command || /[\n\r;&<>`]/.test(command) || /\|\||\||\$\(/.test(command)) return false;
+  const commandWorkspace = canonicalExistingPath(resolveInputPath(input.cwd || input.workdir || workspace));
+  if (!commandWorkspace || !isWithinPath(commandWorkspace, scheduledReadonly.workspaceRoot)) return false;
+  const tokens = splitCommandWords(command);
+  if (basename(tokens[0]) === "rtk") tokens.shift();
+  if (basename(tokens[0]) !== "git") return false;
+  const args = tokens.slice(1);
+  if (args[0] === "ls-files") return areWorkspacePathArguments(args.slice(1), commandWorkspace);
+  if (args[0] === "check-ignore") {
+    const options = new Set(["-q", "--quiet", "-v", "--verbose", "-n", "--non-matching", "--no-index"]);
+    return areWorkspacePathArguments(args.slice(1), commandWorkspace, options);
+  }
+  return args[0] === "branch" && args.length === 2 && args[1] === "--show-current";
+}
+
+function areWorkspacePathArguments(args, commandWorkspace, allowedOptions = new Set()) {
+  let afterSeparator = false;
+  for (const arg of args) {
+    if (!afterSeparator && arg === "--") {
+      afterSeparator = true;
+      continue;
+    }
+    if (!afterSeparator && arg.startsWith("-")) {
+      if (!allowedOptions.has(arg)) return false;
+      continue;
+    }
+    const candidate = resolve(commandWorkspace, arg);
+    if (!isWithinPath(candidate, scheduledReadonly.workspaceRoot)) return false;
+  }
+  return true;
+}
+
+async function hasScheduledReadonlyScanExemption() {
+  const result = await request("GET", "/session-status");
+  const current = Array.isArray(result.sessions)
+    ? result.sessions.find((session) => session.sessionId === sessionId)
+    : null;
+  const profile = current?.scheduledReadonly;
+  return profile?.profile === "scheduled_readonly"
+    && profile.scanExempt === true
+    && profile.automationId === scheduledReadonly.automationId
+    && profile.projectId === scheduledReadonly.projectId
+    && samePath(canonicalExistingPath(profile.workspaceRoot) || "", scheduledReadonly.workspaceRoot);
 }
 
 function isScheduledFileInspection(toolName, toolInput) {

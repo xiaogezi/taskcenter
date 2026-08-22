@@ -213,6 +213,8 @@ export function setSessionScheduledReadonlyProfile(sessionId, profile) {
     reportMutation: profile?.report_mutation === true || profile?.reportMutation === true,
     network: false,
     activatedAt: new Date().toISOString(),
+    scanExempt: current.scheduledReadonly?.scanExempt === true,
+    scanExemptUpdatedAt: current.scheduledReadonly?.scanExemptUpdatedAt || "",
   };
   if (next.profile !== "scheduled_readonly" || next.automationId !== "cyberrole-agent-context" || next.projectId !== "cyberrole") {
     throw new TaskLedgerError(400, "scheduled_readonly Session Profile 身份无效。");
@@ -223,6 +225,27 @@ export function setSessionScheduledReadonlyProfile(sessionId, profile) {
   registry[sessionId] = { ...current, scheduledReadonly: next, lastSeenAt: next.activatedAt };
   persistSessionRegistry(registry);
   return next;
+}
+
+export function setSessionScheduledReadonlyScanExemption(sessionId, enabled) {
+  const registry = loadSessionRegistry();
+  const current = registry[sessionId];
+  if (!current) throw new TaskLedgerError(409, "当前 Session 尚未登记，请先完成 SessionStart 登记。");
+  if (current.scheduledReadonly?.profile !== "scheduled_readonly") {
+    throw new TaskLedgerError(409, "当前 Session 未绑定 scheduled_readonly Profile。");
+  }
+  const updatedAt = new Date().toISOString();
+  registry[sessionId] = {
+    ...current,
+    lastSeenAt: updatedAt,
+    scheduledReadonly: {
+      ...current.scheduledReadonly,
+      scanExempt: enabled === true,
+      scanExemptUpdatedAt: updatedAt,
+    },
+  };
+  persistSessionRegistry(registry);
+  return registry[sessionId].scheduledReadonly;
 }
 
 // L0 only retains a per-session aggregate.  It deliberately creates neither a

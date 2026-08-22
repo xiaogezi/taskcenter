@@ -173,6 +173,8 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     { tool_name: "mcp__taskcenter__taskcenter_session_register", tool_input: { session_id: sessionId, workspace: cyberRoleRoot } },
     { tool_name: "mcp__taskcenter__taskcenter_session_status", tool_input: { session_id: sessionId } },
     { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: sessionId } },
+    { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_status", tool_input: { session_id: sessionId } },
+    { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_set", tool_input: { session_id: sessionId, enabled: true } },
   ];
   for (const payload of allowedCases) {
     const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: cyberRoleRoot, ...payload });
@@ -200,6 +202,8 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: "other-session" } },
     { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: sessionId, task_id: "other-task" } },
     { tool_name: "mcp__taskcenter__taskcenter_session_register", tool_input: { session_id: sessionId, workspace: join(tempDir, "Other") } },
+    { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_status", tool_input: { session_id: "019f0000-0000-7000-8000-000000000999" } },
+    { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_set", tool_input: { enabled: true, session_id: "019f0000-0000-7000-8000-000000000999" } },
     { tool_name: "apply_patch", tool_input: { patch: `*** Begin Patch\n*** Update File: ${join(cyberRoleRoot, "README.md")}\n@@\n-CyberRole\n+changed\n*** End Patch` } },
     { tool_name: "apply_patch", tool_input: { patch: "*** Begin Patch\n*** End Patch" } },
   ];

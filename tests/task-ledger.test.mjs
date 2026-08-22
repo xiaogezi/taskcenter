@@ -40,6 +40,7 @@ const {
   recordTaskEvent,
   recordSessionL0Audit,
   setSessionScheduledReadonlyProfile,
+  setSessionScheduledReadonlyScanExemption,
   supersedeContextShadowTask,
   taskCompletionPacket,
   taskCompletionReadiness,
@@ -166,9 +167,13 @@ test("scheduled_readonly Profile 绑定已登记 Session 且不创建任务", as
     report_mutation: true,
   });
   assert.equal(profile.reportMutation, true);
+  assert.equal(setSessionScheduledReadonlyScanExemption("sess-scheduled", true).scanExempt, true);
+  assert.equal(setSessionScheduledReadonlyScanExemption("sess-scheduled", false).scanExempt, false);
   assert.equal(getSessionStatuses([], [])[0].scheduledReadonly.automationId, "cyberrole-agent-context");
   assert.equal(loadTasks().length, 0);
   assert.throws(() => setSessionScheduledReadonlyProfile("missing", profile), /尚未登记/);
+  recordTaskEvent({ type: "session.register", session_id: "sess-normal", workspace: "/work" });
+  assert.throws(() => setSessionScheduledReadonlyScanExemption("sess-normal", true), /未绑定 scheduled_readonly/);
 });
 
 test("L0 仅聚合 Session 审计且不创建任务或事件历史", async () => {
@@ -1353,6 +1358,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
     "taskcenter_delegation_grant", "taskcenter_delegation_claim", "taskcenter_cli_run_report", "taskcenter_delegation_revoke",
     "taskcenter_task_query", "taskcenter_session_status", "taskcenter_session_gate_exemption_status", "taskcenter_session_gate_exemption_set",
+    "taskcenter_scheduled_readonly_scan_exemption_status", "taskcenter_scheduled_readonly_scan_exemption_set",
     "taskcenter_usage_report", "taskcenter_session_lifecycle", "taskcenter_governance_metrics",
   ]) {
     assert.ok(toolNames.includes(expected), `MCP 应暴露 ${expected}`);
@@ -1420,6 +1426,96 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   });
   assert.equal(gateHookBlocked.code, 2);
   assert.match(gateHookBlocked.stderr, /无活跃任务/);
+
+  const scheduledReportPath = join(tempDir, "scheduled-report.md");
+  await writeFile(scheduledReportPath, "report\n");
+  setSessionScheduledReadonlyProfile(gateSessionId, {
+    profile: "scheduled_readonly",
+    automation_id: "cyberrole-agent-context",
+    project_id: "cyberrole",
+    workspace_root: tempDir,
+    report_path: scheduledReportPath,
+    report_mutation: true,
+  });
+  const scanStatusBefore = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_scheduled_readonly_scan_exemption_status",
+    arguments: { session_id: gateSessionId },
+  })));
+  assert.equal(scanStatusBefore.session.scheduledReadonly, true);
+  assert.equal(scanStatusBefore.session.scanExempt, false);
+  const scanJoin = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_scheduled_readonly_scan_exemption_set",
+    arguments: { session_id: gateSessionId, enabled: true },
+  })));
+  assert.equal(scanJoin.session.scanExempt, true);
+  setSessionScheduledReadonlyProfile(gateSessionId, {
+    profile: "scheduled_readonly",
+    automation_id: "cyberrole-agent-context",
+    project_id: "cyberrole",
+    workspace_root: tempDir,
+    report_path: scheduledReportPath,
+    report_mutation: true,
+  });
+  const scanStatusAfterDetect = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_scheduled_readonly_scan_exemption_status",
+    arguments: { session_id: gateSessionId },
+  })));
+  assert.equal(scanStatusAfterDetect.session.scanExempt, true);
+  const scheduledIdentity = {
+    profile: "scheduled_readonly",
+    automation_id: "cyberrole-agent-context",
+    project_id: "cyberrole",
+    workspace_root: tempDir,
+    report_path: scheduledReportPath,
+    task_mutation: false,
+    pca_mutation: false,
+    report_mutation: true,
+    network: false,
+  };
+  const scanHookAllowed = await runTaskcenterHook(base, {
+    session_id: gateSessionId,
+    cwd: tempDir,
+    ...scheduledIdentity,
+    tool_name: "exec_command",
+    tool_input: { cmd: "rtk git ls-files README.md" },
+  });
+  assert.equal(scanHookAllowed.code, 0);
+  assert.match(scanHookAllowed.stdout, /扫描豁免放行/);
+  for (const command of [
+    "rtk git ls-files --exclude-from=/tmp/patterns",
+    "git check-ignore --exclude-from=/tmp/patterns /tmp/other",
+    "git check-ignore ../outside",
+  ]) {
+    const boundaryBlocked = await runTaskcenterHook(base, {
+      session_id: gateSessionId,
+      cwd: tempDir,
+      ...scheduledIdentity,
+      tool_name: "exec_command",
+      tool_input: { cmd: command },
+    });
+    assert.equal(boundaryBlocked.code, 2, command);
+  }
+  const scanPipelineBlocked = await runTaskcenterHook(base, {
+    session_id: gateSessionId,
+    cwd: tempDir,
+    ...scheduledIdentity,
+    tool_name: "exec_command",
+    tool_input: { cmd: "rtk git ls-files | cat" },
+  });
+  assert.equal(scanPipelineBlocked.code, 2);
+  const scanLeave = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_scheduled_readonly_scan_exemption_set",
+    arguments: { session_id: gateSessionId, enabled: false },
+  })));
+  assert.equal(scanLeave.session.scanExempt, false);
+  const scanHookBlocked = await runTaskcenterHook(base, {
+    session_id: gateSessionId,
+    cwd: tempDir,
+    ...scheduledIdentity,
+    tool_name: "exec_command",
+    tool_input: { cmd: "rtk git ls-files README.md" },
+  });
+  assert.equal(scanHookBlocked.code, 2);
 
   const create = await client.callTool({
     name: "taskcenter_task_create",

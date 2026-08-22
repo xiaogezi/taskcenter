@@ -333,6 +333,18 @@ server.registerTool("taskcenter_session_gate_exemption_set", {
   ? postLocal("/gate-session-exemption/set", { session_id: callerSessionId, enabled, response_mode: "full" })
   : result({ error: "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE", message: "MCP 运行时没有可信的当前 Codex Session ID。" }));
 
+server.registerTool("taskcenter_scheduled_readonly_scan_exemption_status", {
+  title: "查询 scheduled_readonly 扫描豁免",
+  description: "查询当前 scheduled_readonly Session 是否已扩大到确定性项目只读扫描。session_id 必须是当前 Hook payload 中的真实 Session，Hook 会拒绝跨 Session 调用。",
+  inputSchema: z.object({ session_id: z.string().uuid() }).strict(),
+}, async ({ session_id: sessionId }) => postLocal("/scheduled-readonly-scan-exemption/status", { session_id: sessionId, response_mode: "full" }));
+
+server.registerTool("taskcenter_scheduled_readonly_scan_exemption_set", {
+  title: "切换 scheduled_readonly 扫描豁免",
+  description: "仅为当前 Hook payload 绑定的 scheduled_readonly Session 开启或关闭确定性项目只读扫描；Hook 会拒绝跨 Session 调用，且不授予写入、网络、脚本、管道、复合命令或跨项目能力。",
+  inputSchema: z.object({ session_id: z.string().uuid(), enabled: z.boolean() }).strict(),
+}, async ({ session_id: sessionId, enabled }) => postLocal("/scheduled-readonly-scan-exemption/set", { session_id: sessionId, enabled, response_mode: "full" }));
+
 async function report(type, input) {
   const { response_mode: responseModeValue = "summary", ...event } = input;
   let response;
