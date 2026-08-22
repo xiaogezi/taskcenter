@@ -84,14 +84,31 @@ test("cross-platform controller starts, observes, and gracefully stops an isolat
     assert.equal(status.code, 0, status.stderr);
     assert.match(status.stdout, /运行中/);
 
-    const stopped = await runNode(["scripts/taskcenter-control.mjs", "stop"], env);
+    const protectedStop = await runNode(["scripts/taskcenter-control.mjs", "stop"], env);
+    assert.equal(protectedStop.code, 1);
+    assert.match(protectedStop.stderr, /运行中服务保护门禁/);
+
+    const protectedRestart = await runNode(["scripts/taskcenter-control.mjs", "restart"], env);
+    assert.equal(protectedRestart.code, 1);
+    assert.match(protectedRestart.stderr, /运行中服务保护门禁/);
+
+    const stillRunning = await runNode(["scripts/taskcenter-control.mjs", "status"], env);
+    assert.equal(stillRunning.code, 0, stillRunning.stderr);
+
+    const stopped = await runNode(["scripts/taskcenter-control.mjs", "stop"], {
+      ...env,
+      TASKCENTER_ALLOW_SERVICE_DISRUPTION: "1",
+    });
     assert.equal(stopped.code, 0, stopped.stderr);
     assert.match(stopped.stdout, /安全停止/);
 
     const finalStatus = await runNode(["scripts/taskcenter-control.mjs", "status"], env);
     assert.equal(finalStatus.code, 1);
   } finally {
-    await runNode(["scripts/taskcenter-control.mjs", "stop"], env).catch(() => {});
+    await runNode(["scripts/taskcenter-control.mjs", "stop"], {
+      ...env,
+      TASKCENTER_ALLOW_SERVICE_DISRUPTION: "1",
+    }).catch(() => {});
     await rm(root, { recursive: true, force: true });
   }
 });

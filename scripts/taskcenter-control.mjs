@@ -13,6 +13,7 @@ import {
 import { connect, createServer } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { verifyBeforeServiceCutover } from "./service-deployment-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const runtimeDir = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local/runtime"));
@@ -27,6 +28,7 @@ const healthUrl = process.env.TASKCENTER_HEALTH_URL || `http://127.0.0.1:${proce
 const dashboardPort = portOf(dashboardUrl);
 const controlPort = portOf(healthUrl);
 const action = process.argv[2] || "status";
+const disruptionOverride = process.env.TASKCENTER_ALLOW_SERVICE_DISRUPTION === "1";
 
 mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(logDir, { recursive: true });
@@ -36,10 +38,12 @@ try {
     if (action === "start") await startService();
     else if (action === "stop") await stopService();
     else if (action === "restart") {
+      await requireDisruptionAuthorization("restart");
       await stopService({ allowMissing: true });
       await sleep(500);
       await startService();
-    } else if (action === "status") await statusService();
+    } else if (action === "deploy") await deployService();
+    else if (action === "status") await statusService();
     else throw usageError();
   });
 } catch (error) {
@@ -85,6 +89,7 @@ async function startService() {
 }
 
 async function stopService(options = {}) {
+  if (!options.authorized) await requireDisruptionAuthorization("stop");
   const state = readManagedProcess();
   if (!state) {
     cleanupRuntimeFiles();
@@ -104,6 +109,76 @@ async function stopService(options = {}) {
     await sleep(200);
   }
   throw new Error("停止超时，未强制结束进程。");
+}
+
+async function deployService() {
+  const original = readManagedProcess();
+  if (!original || !(await healthCheck())) {
+    throw new Error("部署已阻止：当前 TaskCenter 未处于健康运行状态。请先恢复原服务，不要用部署流程掩盖运行故障。");
+  }
+  const revision = await gitOutput(["rev-parse", "HEAD"]);
+
+  console.log(`TaskCenter 受控部署：保持现有 PID ${original.pid} 运行并验证 ${revision.slice(0, 12)}。`);
+  await verifyBeforeServiceCutover({
+    original,
+    revision,
+    stages: ["lint", "test"],
+    runStage: runNpmScript,
+    assertOriginalService: requireOriginalService,
+    readRevision: () => gitOutput(["rev-parse", "HEAD"]),
+    readStatus: () => gitOutput(["status", "--porcelain"]),
+  });
+
+  console.log("部署前验证通过，开始切换 TaskCenter 运行实例。");
+  await stopService({ authorized: true });
+  await sleep(500);
+  await startService();
+  console.log(`TaskCenter 已部署已验证版本 ${revision.slice(0, 12)}。`);
+}
+
+async function requireDisruptionAuthorization(requestedAction) {
+  if (disruptionOverride) return;
+  if (!(await healthCheck())) return;
+  throw new Error(
+    `运行中服务保护门禁：禁止直接 ${requestedAction} 健康的 TaskCenter。`
+      + "开发或修复完成并提交后请运行 npm run service:deploy；"
+      + "人工明确停机可临时设置 TASKCENTER_ALLOW_SERVICE_DISRUPTION=1。",
+  );
+}
+
+async function requireOriginalService(original, stage) {
+  const current = readManagedProcess();
+  if (!current || current.pid !== original.pid || current.token !== original.token || !(await healthCheck())) {
+    throw new Error(`部署已中止：${stage} 验证期间原 TaskCenter 服务发生变化，未执行切换。`);
+  }
+}
+
+async function runNpmScript(script) {
+  const npmCli = process.env.npm_execpath;
+  if (!npmCli) throw new Error("部署已阻止：请通过 npm run service:deploy 执行受控部署。");
+  const child = spawn(process.execPath, [npmCli, "run", script], {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: "inherit",
+  });
+  await childResult(child, `npm run ${script}`);
+}
+
+async function gitOutput(args) {
+  const child = spawn("git", args, {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  await childResult(child, `git ${args.join(" ")}`).catch((error) => {
+    if (stderr.trim()) error.message += `：${stderr.trim()}`;
+    throw error;
+  });
+  return stdout.trim();
 }
 
 async function statusService() {
@@ -259,7 +334,7 @@ function childResult(child, label) {
 }
 
 function usageError() {
-  const error = new Error("用法：node scripts/taskcenter-control.mjs {start|stop|restart|status}");
+  const error = new Error("用法：node scripts/taskcenter-control.mjs {start|stop|restart|deploy|status}");
   error.exitCode = 2;
   return error;
 }

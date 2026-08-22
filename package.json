@@ -51,6 +51,7 @@
     "service:stop": "node scripts/taskcenter-control.mjs stop",
     "service:status": "node scripts/taskcenter-control.mjs status",
     "service:restart": "node scripts/taskcenter-control.mjs restart",
+    "service:deploy": "node scripts/taskcenter-control.mjs deploy",
     "sync": "node scripts/sync-codex.mjs",
     "sync:test": "node scripts/sync-test.mjs",
     "mcp:tasks": "node scripts/taskcenter-mcp.mjs",

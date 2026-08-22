@@ -56,7 +56,10 @@ npm run dev:live
 npm run service:start
 npm run service:status
 npm run service:stop
+npm run service:deploy
 ```
+
+运行中的健康实例默认受到保护，直接执行 `service:stop` 或 `service:restart` 会被拒绝。开发和修复期间保持原实例运行；代码完成、验证通过并提交后，使用 `npm run service:deploy`。该命令会在原 PID 持续提供服务时运行 lint、完整测试并确认 Git revision 与工作区未变化；任何切换前检查失败都保留原实例，全部通过后才进入重新部署阶段。人工明确停机可临时设置 `TASKCENTER_ALLOW_SERVICE_DISRUPTION=1`，不得把该变量用于常规 Agent 开发或部署。
 
 Windows 原生环境要求 Node.js 与 Git 在 `PATH` 中。使用 WSL2 时建议把仓库放在 Linux 文件系统（例如 `~/code/taskcenter`），不要放在 `/mnt/c`；这能避免跨文件系统的权限、符号链接和监听性能问题。Windows 当前不提供 GUI 桌面壳。
 
