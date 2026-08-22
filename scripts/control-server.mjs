@@ -1,9 +1,12 @@
 import {
   chmodSync,
+  closeSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   renameSync,
   statSync,
   writeFileSync,
@@ -73,9 +76,8 @@ import {
   routingResult,
   routingSelect,
 } from "./routing-control.mjs";
-import { reportUsage } from "./usage-report.mjs";
 import { recommendSessionLifecycle } from "./session-lifecycle.mjs";
-import { buildGovernanceMetrics, readTaskEvents as readTaskEventFile } from "./governance-metrics.mjs";
+import { buildGovernanceMetrics } from "./governance-metrics.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const dashboardPath = resolve(process.env.TASKCENTER_DASHBOARD_PATH || join(projectRoot, "data", "dashboard.json"));
@@ -86,10 +88,14 @@ const sessionSelectionPath = resolve(process.env.TASKCENTER_SESSION_SELECTION_PA
 const gateSessionAllowlistPath = resolve(process.env.TASKCENTER_GATE_SESSION_ALLOWLIST_PATH || join(projectRoot, "data", "gate-session-allowlist.json"));
 const localMcpTokenPath = resolve(process.env.TASKCENTER_MCP_TOKEN_PATH || join(projectRoot, ".local", "runtime", "mcp-token"));
 const reflectionProposalsPath = resolve(process.env.TASKCENTER_REFLECTION_PROPOSALS_PATH || join(projectRoot, "data", "reflection-proposals.json"));
-const modelRatesPath = resolve(process.env.TASKCENTER_MODEL_RATES_PATH || join(projectRoot, "config", "model-rates.json"));
 const contextAcceptanceToken = String(process.env.TASKCENTER_CONTEXT_ACCEPTANCE_TOKEN || "");
 const acceptanceToken = String(process.env.TASKCENTER_ACCEPTANCE_TOKEN || "");
 const watcherHeartbeatPath = resolve(process.env.TASKCENTER_WATCHER_HEARTBEAT_PATH || join(projectRoot, ".local", "runtime", "watcher-heartbeat.json"));
+const usageReportPath = resolve(process.env.TASKCENTER_USAGE_REPORT_PATH || join(projectRoot, ".local", "runtime", "usage-report.json"));
+const governanceMetricsPath = resolve(process.env.TASKCENTER_GOVERNANCE_METRICS_PATH || join(projectRoot, ".local", "runtime", "governance-metrics.json"));
+const taskEventIndexPath = resolve(process.env.TASKCENTER_TASK_EVENT_INDEX_PATH || join(projectRoot, ".local", "runtime", "task-event-index.json"));
+const usageHealthPath = resolve(process.env.TASKCENTER_USAGE_HEALTH_PATH || join(projectRoot, ".local", "runtime", "usage-worker-health.json"));
+const governanceHealthPath = resolve(process.env.TASKCENTER_GOVERNANCE_HEALTH_PATH || join(projectRoot, ".local", "runtime", "governance-worker-health.json"));
 const host = "127.0.0.1";
 const port = Number(process.env.TASKCENTER_CONTROL_PORT || 3001);
 const dryRun = process.env.TASKCENTER_DISPATCH_DRY_RUN === "1";
@@ -107,7 +113,7 @@ const activeThreadDispatches = new Set();
 let lastDispatchAt = 0;
 let processingQueue = false;
 let syncing = null;
-let usageReportCache = null;
+const snapshotCache = new Map();
 const localMcpToken = loadOrCreateLocalMcpToken();
 
 mkdirSync(dirname(dispatchesPath), { recursive: true });
@@ -131,7 +137,7 @@ const server = createServer(async (request, response) => {
       const dashboard = inspectFile(dashboardPath);
       const heartbeat = inspectFile(watcherHeartbeatPath, true);
       const watcherFresh = heartbeat.readable && Date.now() - Date.parse(heartbeat.updatedAt) < 30_000;
-      sendJson(response, 200, { ok: true, dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()) }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable, delegationsReadable: inspectFile(delegationsPath).readable, routingControlReadable: inspectFile(routingControlPath).readable }, routing: { models: routingHealth() }, watcher: { ...heartbeat, healthy: watcherFresh } });
+      sendJson(response, 200, { ok: true, dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()), rssBytes: process.memoryUsage().rss }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable, delegationsReadable: inspectFile(delegationsPath).readable, routingControlReadable: inspectFile(routingControlPath).readable }, metrics: { usage: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000), governance: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) }, routing: { models: routingHealth() }, watcher: { ...heartbeat, healthy: watcherFresh } });
       return;
     }
     if (request.method === "POST" && request.url === "/sync") {
@@ -144,15 +150,11 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "GET" && request.url === "/usage-report") {
-      sendJson(response, 200, currentUsageReport());
+      sendJson(response, 200, { ...currentUsageReport(), snapshotStatus: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000) });
       return;
     }
     if (request.method === "GET" && request.url === "/governance-metrics") {
-      const usageReport = currentUsageReport();
-      const tasks = loadVisibleTasks();
-      const delegationEvents = tasks.flatMap((task) => listDelegations(task.id).flatMap((delegation) =>
-        (delegation.events || []).map((event) => ({ ...event, task_id: task.id }))));
-      sendJson(response, 200, buildGovernanceMetrics({ tasks, events: [...readTaskEventFile(taskEventsPath), ...delegationEvents], usageReport }));
+      sendJson(response, 200, { ...readSnapshot(governanceMetricsPath, buildGovernanceMetrics({ usageReport: currentUsageReport() })), snapshotStatus: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) });
       return;
     }
     const lifecycleMatch = request.method === "GET" ? request.url?.match(/^\/session-lifecycle(?:\?session_id=([^&]+))?$/) : null;
@@ -310,10 +312,30 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, { dispatches: dispatches.slice(-30).reverse() });
       return;
     }
-    if (request.method === "GET" && request.url === "/tasks") {
+    if (request.method === "GET" && request.url?.startsWith("/tasks")) {
+      const url = new URL(request.url, `http://${host}:${port}`);
+      if (url.pathname !== "/tasks") {
+        // 交给下方 task 子资源路由。
+      } else {
       if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
-      sendJson(response, 200, { tasks: loadVisibleTasks().map((task) => ({ ...task, cliRuns: listDelegations(task.id) })).slice().reverse() });
-      return;
+        const tasks = loadVisibleTasks().slice().reverse();
+        if (!url.searchParams.size) {
+          sendJson(response, 200, { tasks: withDelegations(tasks) });
+          return;
+        }
+        const page = Math.max(1, Number.parseInt(url.searchParams.get("page") || "1", 10) || 1);
+        const pageSize = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("page_size") || "40", 10) || 40));
+        const start = (page - 1) * pageSize;
+        const pageTasks = withDelegations(tasks.slice(start, start + pageSize));
+        sendJson(response, 200, {
+          tasks: url.searchParams.get("view") === "summary" ? pageTasks.map(taskSummary) : pageTasks,
+          page,
+          pageSize,
+          total: tasks.length,
+          totalPages: Math.max(1, Math.ceil(tasks.length / pageSize)),
+        });
+        return;
+      }
     }
     if (request.method === "GET" && request.url === "/routing/health") {
       sendJson(response, 200, { models: routingHealth() });
@@ -915,11 +937,69 @@ function recordRoutingAudit(events, task) {
 }
 
 function currentUsageReport() {
-  const now = Date.now();
-  if (usageReportCache && now - usageReportCache.cachedAt < 60_000) return usageReportCache.value;
-  const value = reportUsage({ sessionsRoot, ledger: taskLedgerPath, rates: modelRatesPath, now });
-  usageReportCache = { cachedAt: now, value };
-  return value;
+  return readSnapshot(usageReportPath, emptyUsageReport());
+}
+
+function readSnapshot(path, fallback) {
+  try {
+    const info = statSync(path);
+    const identity = `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`;
+    const cached = snapshotCache.get(path);
+    if (cached?.identity === identity) return cached.value;
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    snapshotCache.set(path, { identity, value });
+    return value;
+  } catch {
+    return fallback;
+  }
+}
+
+function emptyUsageReport(now = Date.now()) {
+  const generatedAt = new Date(now).toISOString();
+  const window = (id, durationMs) => ({ id, durationMs, generatedAt, byModel: [], byProject: [], bySession: [], byTask: [], totals: { usage: { input: 0, cachedInput: 0, output: 0 }, statistics: { average: null, p50: null, p95: null }, cost: null, costEstimation: "unestimable" }, modelContinuations: 0 });
+  return { generatedAt, windows: { "5h": window("5h", 18_000_000), "24h": window("24h", 86_400_000), "7d": window("7d", 604_800_000) }, warnings: [], alerts: [], overall: { estimatedCredits: null, creditsEstimation: "unestimable", modelContinuations: 0, input: { average: null, p50: null, p95: null }, usage: { input: 0, cachedInput: 0, output: 0 } }, source: { mode: "snapshot_pending" } };
+}
+
+function withDelegations(tasks) {
+  const byTask = new Map();
+  for (const delegation of listDelegations()) {
+    const list = byTask.get(delegation.taskId) || [];
+    list.push(delegation);
+    byTask.set(delegation.taskId, list);
+  }
+  return tasks.map((task) => ({ ...task, cliRuns: byTask.get(task.id) || [] }));
+}
+
+function taskSummary(task) {
+  const summary = { ...task };
+  for (const key of ["requirementResults", "verificationClaims", "reviewAttestations", "acceptanceRecords", "subjectHistory", "evidence", "changedFiles", "tests"]) delete summary[key];
+  return { ...summary, estimateHistory: (task.estimateHistory || []).slice(-3), routingHistory: (task.routingHistory || []).slice(-3), cliRuns: (task.cliRuns || []).map(compactDelegationRun) };
+}
+
+function compactDelegationRun(run) {
+  return Object.fromEntries(["id", "status", "delegateSessionId", "executorModel", "scope", "toolCalls", "completedAt"].flatMap((key) => run[key] === undefined ? [] : [[key, run[key]]]));
+}
+
+function metricSnapshotStatus(snapshotPath, healthPath, maxAgeMs) {
+  const snapshot = inspectFile(snapshotPath);
+  const health = readSnapshot(healthPath, { ok: null, lastRefreshError: "" });
+  const snapshotAt = Date.parse(snapshot.generatedAt || "");
+  const healthAt = Date.parse(health.heartbeatAt || health.updatedAt || "");
+  const freshnessAt = Number.isFinite(healthAt) ? healthAt : snapshotAt;
+  const ageMs = Number.isFinite(freshnessAt) ? Math.max(0, Date.now() - freshnessAt) : null;
+  const refreshOk = health.refreshOk ?? health.ok;
+  return {
+    readable: snapshot.readable,
+    stale: !snapshot.readable || ageMs === null || ageMs > maxAgeMs || refreshOk === false,
+    ageMs,
+    snapshotAgeMs: Number.isFinite(snapshotAt) ? Math.max(0, Date.now() - snapshotAt) : null,
+    refreshOk,
+    lastRefreshError: health.lastRefreshError || "",
+    heartbeatAt: health.heartbeatAt || health.updatedAt || "",
+    lastAttemptAt: health.lastAttemptAt || "",
+    lastSuccessAt: health.lastSuccessAt || "",
+    updatedAt: health.updatedAt || snapshot.generatedAt || "",
+  };
 }
 
 server.listen(port, host, () => {
@@ -1207,15 +1287,32 @@ function inspectFile(path, parseJson = false) {
 }
 
 function readTaskEvents(taskId) {
+  const indexed = readSnapshot(taskEventIndexPath, { byTask: {} }).byTask?.[taskId] || [];
+  const recent = readTaskEventTail(taskId);
+  const merged = new Map();
+  for (const event of [...indexed, ...recent]) merged.set(event.event_id || `${event.type}:${event.recorded_at || event.created_at}`, event);
+  return [...merged.values()];
+}
+
+function readTaskEventTail(taskId, maxBytes = 2 * 1024 * 1024) {
+  let descriptor;
   try {
-    return readFileSync(taskEventsPath, "utf8").split("\n").flatMap((line) => {
+    const info = statSync(taskEventsPath);
+    const start = Math.max(0, info.size - maxBytes);
+    const buffer = Buffer.allocUnsafe(info.size - start);
+    descriptor = openSync(taskEventsPath, "r");
+    readSync(descriptor, buffer, 0, buffer.length, start);
+    const text = buffer.toString("utf8");
+    const safeText = start > 0 ? text.slice(text.indexOf("\n") + 1) : text;
+    return safeText.split("\n").flatMap((line) => {
       if (!line.trim()) return [];
-      try {
-        const event = JSON.parse(line);
-        return event.task_id === taskId ? [event] : [];
-      } catch { return []; }
+      try { const event = JSON.parse(line); return event.task_id === taskId ? [event] : []; } catch { return []; }
     });
-  } catch { return []; }
+  } catch {
+    return [];
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }
 
 function runSync() {

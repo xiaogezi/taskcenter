@@ -109,6 +109,10 @@ export function parseSession(input, options = {}) {
 export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date() } = {}) {
   const inputs = sessions || filesUnder(sessionsRoot).map((file) => ({ file, sessionId: sessionIdFromFile(file) }));
   const parsed = inputs.map((item) => parseSession(item.records || item.lines || item.file || item, { sessionId: item.sessionId })).filter((s) => s.events.length);
+  return buildUsageReportFromParsed(parsed, { ledger, rates, now });
+}
+
+export function buildUsageReportFromParsed(parsed, { ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date() } = {}) {
   const index = taskIndex(readJson(ledger, ledger));
   const rateTable = readJson(rates, rates);
   const at = new Date(now).getTime();
@@ -116,15 +120,17 @@ export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, l
   const warnings = buildWarnings(parsed, index, internalWindows, at);
   const day = internalWindows["24h"];
   const windows = Object.fromEntries(Object.entries(internalWindows).map(([name, window]) => {
-    const { rows, ...summary } = window;
-    return [name, { ...summary, modelContinuations: rows.length }];
+    const summary = { ...window, modelContinuations: window.eventCount };
+    delete summary.continuationGroups;
+    delete summary.eventCount;
+    return [name, summary];
   }));
   return {
     generatedAt: new Date(at).toISOString(), windows, warnings, alerts: warnings,
     overall: {
       estimatedCredits: day.totals.cost,
       creditsEstimation: day.totals.costEstimation,
-      modelContinuations: day.rows.length,
+      modelContinuations: day.eventCount,
       input: day.totals.statistics,
       usage: day.totals.usage,
     },
@@ -132,20 +138,38 @@ export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, l
 }
 
 function buildWindow(parsed, index, rates, start, end) {
-  const rows = [];
-  for (const session of parsed) for (const event of session.events) if (event.at >= start && event.at <= end) {
-    const taskIds = taskIdsAt(index, session.sessionId, event.at);
-    rows.push({ ...event, sessionId: session.sessionId, project: session.cwd || "unattributed", taskIds: taskIds.length ? taskIds : ["unattributed"], cost: price(event.usage, rateFor(rates, event.model)), estimable: Boolean(rateFor(rates, event.model)) });
+  const byModel = new Map();
+  const byProject = new Map();
+  const bySession = new Map();
+  const byTask = new Map();
+  const continuationGroups = new Map();
+  const totals = emptyAggregate("all", "id");
+  let eventCount = 0;
+  for (const session of parsed) for (const event of session.events) if (eventAt(event) >= start && eventAt(event) <= end) {
+    const model = eventModel(event);
+    const usage = eventUsage(event);
+    const taskIds = taskIdsAt(index, session.sessionId, eventAt(event));
+    const rate = rateFor(rates, model);
+    const row = { usage, sessionId: session.sessionId, project: session.cwd || "unattributed", cost: price(usage, rate), estimable: Boolean(rate) };
+    addAggregate(byModel, model || "unknown", "model", row);
+    addAggregate(byProject, row.project, "project", row);
+    addAggregate(bySession, session.sessionId, "sessionId", row);
+    for (const taskId of taskIds.length ? taskIds : ["unattributed"]) addAggregate(byTask, taskId, "id", row);
+    mergeAggregate(totals, row);
+    const continuationKey = `${session.sessionId}:${model}`;
+    continuationGroups.set(continuationKey, { sessionId: session.sessionId, model, count: (continuationGroups.get(continuationKey)?.count || 0) + 1 });
+    eventCount += 1;
   }
-  const groups = (key) => [...rows.reduce((map, row) => { const id = row[key] || "unattributed"; const item = map.get(id) || { [key]: id, usage: { input: 0, cachedInput: 0, output: 0 }, samples: [], cost: 0, estimableCount: 0, unestimable: false, count: 0 }; mergeUsage(item.usage, row.usage); item.samples.push(row.usage.input); if (row.estimable) { item.cost += row.cost; item.estimableCount++; } item.unestimable ||= !row.estimable; item.count++; map.set(id, item); return map; }, new Map()).values()];
-  const by = (key) => groups(key).map((item) => {
-    const { samples, ...summary } = item;
-    return { ...summary, statistics: percentiles(samples) };
-  });
-  const byTask = [...rows.reduce((map, row) => { for (const taskId of row.taskIds) { const copy = { ...row, taskId }; const list = map.get(taskId) || []; list.push(copy); map.set(taskId, list); } return map; }, new Map())].map(([taskId, list]) => summarizeRows(taskId, list));
-  return { rows, byModel: by("model"), byProject: by("project"), bySession: by("sessionId"), byTask, totals: summarizeRows("all", rows) };
+  return { eventCount, continuationGroups: [...continuationGroups.values()], byModel: finishAggregates(byModel), byProject: finishAggregates(byProject), bySession: finishAggregates(bySession), byTask: finishAggregates(byTask), totals: finishAggregate(totals) };
 }
-function summarizeRows(id, rows) { const usage = { input: 0, cachedInput: 0, output: 0 }; const samples = []; let cost = 0; let estimableCount = 0; let unestimable = false; for (const row of rows) { mergeUsage(usage, row.usage); samples.push(row.usage.input); if (row.estimable) { cost += row.cost; estimableCount++; } unestimable ||= !row.estimable; } return { id, usage, statistics: percentiles(samples), cost: estimableCount ? cost : null, unestimable, costEstimation: !estimableCount ? "unestimable" : unestimable ? "partial" : "complete" }; }
+function emptyAggregate(id, key) { return { [key]: id, usage: { input: 0, cachedInput: 0, output: 0 }, samples: [], cost: 0, estimableCount: 0, unestimable: false, count: 0 }; }
+function mergeAggregate(item, row) { mergeUsage(item.usage, row.usage); item.samples.push(row.usage.input); if (row.estimable) { item.cost += row.cost; item.estimableCount++; } item.unestimable ||= !row.estimable; item.count++; }
+function addAggregate(map, id, key, row) { const item = map.get(id) || emptyAggregate(id, key); mergeAggregate(item, row); map.set(id, item); }
+function finishAggregate(item) { const { samples, ...summary } = item; return { ...summary, statistics: percentiles(samples), cost: item.estimableCount ? item.cost : null, costEstimation: !item.estimableCount ? "unestimable" : item.unestimable ? "partial" : "complete" }; }
+function finishAggregates(map) { return [...map.values()].map(finishAggregate); }
+function eventAt(event) { return Array.isArray(event) ? Number(event[0]) : Number(event.at); }
+function eventModel(event) { return Array.isArray(event) ? String(event[1] || "unknown") : String(event.model || "unknown"); }
+function eventUsage(event) { return Array.isArray(event) ? { input: value(event[2]), cachedInput: value(event[3]), output: value(event[4]) } : event.usage; }
 function taskIdsAt(index, sessionId, eventAt) {
   const candidates = (index.sessions.get(sessionId) || []).filter((taskId, position, all) => all.indexOf(taskId) === position).filter((taskId) => {
     const task = index.tasks.get(taskId) || {};
@@ -163,12 +187,9 @@ function buildWarnings(parsed, index, windows, now) {
   const totalCredits = estimableSessions.reduce((sum, row) => sum + row.cost, 0);
   for (const row of estimableSessions) if (totalCredits > 0 && row.cost / totalCredits > .2) warnings.push({ code: "SESSION_CREDIT_SHARE_HIGH", type: "session_credits_share", sessionId: row.sessionId, share: row.cost / totalCredits, message: "单 Session 占窗口估算 Credits 超过 20%" });
   const continuations = new Map();
-  for (const row of day.rows) {
-    const key = `${row.sessionId}:${row.model}`;
-    continuations.set(key, { sessionId: row.sessionId, model: row.model, count: (continuations.get(key)?.count || 0) + 1 });
-  }
+  for (const row of day.continuationGroups) continuations.set(`${row.sessionId}:${row.model}`, row);
   for (const item of continuations.values()) if (item.count > 80) warnings.push({ code: "MODEL_CONTINUATIONS_HIGH", type: "model_continuation", ...item, message: "模型续调超过 80 次" });
-  for (const session of parsed) { const taskCount = new Set(index.sessions.get(session.sessionId) || []).size; if (taskCount > 1) warnings.push({ code: "MULTIPLE_INDEPENDENT_TASKS", type: "multiple_independent_tasks", sessionId: session.sessionId, taskCount, message: "Session 存在多个独立任务" }); if (session.compressionAfterPhase) warnings.push({ code: "COMPRESSED_AFTER_MAIN_PHASE", type: "compression_after_phase", sessionId: session.sessionId, count: session.compressionAfterPhase, message: "主要阶段结束后已经发生压缩" }); if (session.missingTimestampUsage) warnings.push({ code: "USAGE_TIMESTAMP_MISSING", type: "usage_timestamp_missing", sessionId: session.sessionId, count: session.missingTimestampUsage, message: "Token 事件缺少可解析时间戳，未纳入时间窗口" }); const samples = session.events.filter((event) => event.at >= now - WINDOWS["24h"]).map((e) => e.usage.input); if (samples.length >= 4 && percentiles(samples.slice(-Math.ceil(samples.length / 2))).average > percentiles(samples.slice(0, Math.floor(samples.length / 2))).average * 1.25) warnings.push({ code: "AVERAGE_INPUT_GROWING", type: "input_growth", sessionId: session.sessionId, message: "平均输入持续增长" }); }
+  for (const session of parsed) { const taskCount = new Set(index.sessions.get(session.sessionId) || []).size; if (taskCount > 1) warnings.push({ code: "MULTIPLE_INDEPENDENT_TASKS", type: "multiple_independent_tasks", sessionId: session.sessionId, taskCount, message: "Session 存在多个独立任务" }); if (session.compressionAfterPhase) warnings.push({ code: "COMPRESSED_AFTER_MAIN_PHASE", type: "compression_after_phase", sessionId: session.sessionId, count: session.compressionAfterPhase, message: "主要阶段结束后已经发生压缩" }); if (session.missingTimestampUsage) warnings.push({ code: "USAGE_TIMESTAMP_MISSING", type: "usage_timestamp_missing", sessionId: session.sessionId, count: session.missingTimestampUsage, message: "Token 事件缺少可解析时间戳，未纳入时间窗口" }); const samples = session.events.filter((event) => eventAt(event) >= now - WINDOWS["24h"]).map((event) => eventUsage(event).input); if (samples.length >= 4 && percentiles(samples.slice(-Math.ceil(samples.length / 2))).average > percentiles(samples.slice(0, Math.floor(samples.length / 2))).average * 1.25) warnings.push({ code: "AVERAGE_INPUT_GROWING", type: "input_growth", sessionId: session.sessionId, message: "平均输入持续增长" }); }
   return warnings;
 }
 

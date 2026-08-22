@@ -971,6 +971,12 @@ test("控制服务任务闸门 HTTP 协议：register→create→update→report
   assert.equal(task.assumptions.length, 1);
   assert.equal(task.risks.length, 1);
   assert.ok(task.updatedAt);
+  const paged = await (await fetch(`${base}/tasks?view=summary&page=1&page_size=1`)).json();
+  assert.equal(paged.page, 1);
+  assert.equal(paged.pageSize, 1);
+  assert.ok(paged.total >= 1);
+  assert.equal(paged.tasks.length, 1);
+  assert.equal("verificationClaims" in paged.tasks[0], false, "摘要列表不应携带完整验证历史");
 });
 
 test("CLI delegation 附着单个正式主任务并独立记录 Run", async (context) => {
@@ -1041,6 +1047,9 @@ test("CLI delegation 附着单个正式主任务并独立记录 Run", async (con
   assert.equal(tasks[0].status, "planned");
   assert.equal(tasks[0].cliRuns.length, 1);
   assert.equal(tasks[0].cliRuns[0].status, "succeeded");
+  const summaryTasks = (await (await fetch(`${base}/tasks?view=summary&page=1&page_size=40`)).json()).tasks;
+  assert.equal(summaryTasks[0].cliRuns[0].status, "succeeded");
+  assert.equal("events" in summaryTasks[0].cliRuns[0], false, "摘要列表不携带 delegation 完整事件历史");
   const sessions = (await (await fetch(`${base}/session-status`)).json()).sessions;
   assert.equal(sessions.find((session) => session.sessionId === "session-cli").taskCount, 0);
 });

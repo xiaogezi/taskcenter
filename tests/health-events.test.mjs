@@ -7,13 +7,17 @@ import test from "node:test";
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), "taskcenter-health-"));
-  const paths = Object.fromEntries(["dashboard", "ledger", "events", "heartbeat", "delegations"].map((name) => [name, join(dir, name)]));
+  const paths = Object.fromEntries(["dashboard", "ledger", "events", "heartbeat", "delegations", "usage", "governance", "usageHealth", "governanceHealth"].map((name) => [name, join(dir, name)]));
   await writeFile(paths.dashboard, JSON.stringify({ generatedAt: "2026-08-09T05:00:00Z" }));
   await writeFile(paths.ledger, "{}");
   await writeFile(paths.events, `${JSON.stringify({ task_id: "target", type: "old" })}\n坏行\n${JSON.stringify({ task_id: "other", type: "other" })}\n${JSON.stringify({ task_id: "target", type: "new" })}\n`);
   await writeFile(paths.heartbeat, JSON.stringify({ updatedAt: new Date().toISOString() }));
+  await writeFile(paths.usage, JSON.stringify({ generatedAt: new Date().toISOString(), windows: {}, overall: {} }));
+  await writeFile(paths.governance, JSON.stringify({ schemaVersion: "taskcenter-governance-metrics-v1" }));
+  await writeFile(paths.usageHealth, JSON.stringify({ refreshOk: false, heartbeatAt: new Date().toISOString(), lastRefreshError: "usage failed" }));
+  await writeFile(paths.governanceHealth, JSON.stringify({ refreshOk: true, heartbeatAt: new Date().toISOString(), lastRefreshError: "" }));
   const port = 3200 + Math.floor(Math.random() * 300);
-  const child = spawn(process.execPath, ["scripts/control-server.mjs"], { cwd: process.cwd(), env: { ...process.env, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DASHBOARD_PATH: paths.dashboard, TASKCENTER_TASK_LEDGER_PATH: paths.ledger, TASKCENTER_TASK_EVENTS_PATH: paths.events, TASKCENTER_WATCHER_HEARTBEAT_PATH: paths.heartbeat, TASKCENTER_DELEGATIONS_PATH: paths.delegations, TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" }, stdio: "ignore" });
+  const child = spawn(process.execPath, ["scripts/control-server.mjs"], { cwd: process.cwd(), env: { ...process.env, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DASHBOARD_PATH: paths.dashboard, TASKCENTER_TASK_LEDGER_PATH: paths.ledger, TASKCENTER_TASK_EVENTS_PATH: paths.events, TASKCENTER_WATCHER_HEARTBEAT_PATH: paths.heartbeat, TASKCENTER_DELEGATIONS_PATH: paths.delegations, TASKCENTER_USAGE_REPORT_PATH: paths.usage, TASKCENTER_GOVERNANCE_METRICS_PATH: paths.governance, TASKCENTER_USAGE_HEALTH_PATH: paths.usageHealth, TASKCENTER_GOVERNANCE_HEALTH_PATH: paths.governanceHealth, TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" }, stdio: "ignore" });
   for (let i = 0; i < 30; i++) { try { await fetch(`http://127.0.0.1:${port}/health`); break; } catch { await new Promise((resolve) => setTimeout(resolve, 50)); } }
   return { dir, paths, port, child };
 }
@@ -23,6 +27,7 @@ test("health 文件状态、heartbeat 新鲜/陈旧和事件接口边界", async
   t.after(async () => { f.child.kill(); await rm(f.dir, { recursive: true, force: true }); });
   let health = await (await fetch(`http://127.0.0.1:${f.port}/health`)).json();
   assert.equal(health.dashboard.readable, true); assert.equal(health.ledger.readable, true); assert.equal(health.ledger.eventsReadable, true); assert.equal(health.watcher.healthy, true);
+  assert.equal(health.metrics.usage.stale, true); assert.equal(health.metrics.usage.lastRefreshError, "usage failed"); assert.equal(health.metrics.governance.stale, false);
   let events = await (await fetch(`http://127.0.0.1:${f.port}/tasks/target/events?limit=1`)).json();
   assert.deepEqual(events.events.map((event) => event.type), ["new"]);
   events = await (await fetch(`http://127.0.0.1:${f.port}/tasks/target/events`)).json();

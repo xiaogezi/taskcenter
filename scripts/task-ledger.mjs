@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { taskTimeState, STALE_TASK_MS } from "../app/task-time-state.mjs";
@@ -26,6 +26,8 @@ const routingOutcomes = new Set(["selected", "started", "succeeded", "failed"]);
 const routingHistoryLimit = 20;
 const demoPattern = /^ui-demo-/;
 const contextShadowPattern = /^context-[0-9a-f]{24}$/;
+let ledgerCache = null;
+let sessionRegistryCache = null;
 export { taskTimeState, STALE_TASK_MS };
 
 export function loadTasks() {
@@ -128,6 +130,8 @@ export function canonicalSessionId(sessionId) {
 
 export function loadSessionRegistry() {
   let registry = {};
+  const registryIdentity = fileIdentity(sessionRegistryPath);
+  const mergesIdentity = fileIdentity(sessionMergesPath);
   if (existsSync(sessionRegistryPath)) {
     try {
       const value = JSON.parse(readFileSync(sessionRegistryPath, "utf8"));
@@ -136,9 +140,12 @@ export function loadSessionRegistry() {
       registry = {};
     }
   }
+  const useLegacyEvents = Object.keys(registry).length === 0;
+  const cacheIdentity = `${registryIdentity}:${mergesIdentity}:${useLegacyEvents ? fileIdentity(taskEventsPath) : "registry-primary"}`;
+  if (sessionRegistryCache?.identity === cacheIdentity) return { ...sessionRegistryCache.value };
   // 兼容注册表上线前的历史事件：已有 session.register 也应显示为已登记。
   try {
-    if (existsSync(taskEventsPath)) {
+    if (useLegacyEvents && existsSync(taskEventsPath)) {
       for (const line of readFileSync(taskEventsPath, "utf8").split("\n")) {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
@@ -167,7 +174,12 @@ export function loadSessionRegistry() {
     if (!canonical || normalized[canonical]) continue;
     normalized[canonical] = { ...entry, sessionId: canonical };
   }
+  sessionRegistryCache = { identity: cacheIdentity, value: normalized };
   return normalized;
+}
+
+function fileIdentity(path) {
+  try { const info = statSync(path); return `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`; } catch { return "missing"; }
 }
 
 export function getSessionStatuses(availableSessionIds = [], tasks = loadTasks()) {
@@ -270,6 +282,7 @@ function persistSessionRegistry(registry) {
   const temporaryPath = `${sessionRegistryPath}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporaryPath, sessionRegistryPath);
+  sessionRegistryCache = null;
 }
 
 export function reconcileTasks(availableSessionIds) {
@@ -303,10 +316,18 @@ export function reconcileTasks(availableSessionIds) {
 }
 
 function readLedger() {
-  if (!existsSync(taskLedgerPath)) return [];
+  if (!existsSync(taskLedgerPath)) {
+    ledgerCache = null;
+    return [];
+  }
   try {
+    const info = statSync(taskLedgerPath);
+    const identity = `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`;
+    if (ledgerCache?.identity === identity) return ledgerCache.tasks;
     const value = JSON.parse(readFileSync(taskLedgerPath, "utf8"));
-    return Array.isArray(value) ? value : [];
+    const tasks = Array.isArray(value) ? value : [];
+    ledgerCache = { identity, tasks };
+    return tasks;
   } catch {
     return [];
   }
@@ -1030,6 +1051,7 @@ function touchSession(event) {
     const temporaryPath = `${sessionRegistryPath}.tmp`;
     writeFileSync(temporaryPath, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
     renameSync(temporaryPath, sessionRegistryPath);
+    sessionRegistryCache = null;
   }
 }
 
@@ -1038,6 +1060,7 @@ function persistTasks(tasks) {
   const temporaryPath = `${taskLedgerPath}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(tasks.slice(-500), null, 2)}\n`, { mode: 0o600 });
   renameSync(temporaryPath, taskLedgerPath);
+  ledgerCache = null;
 }
 
 function cleanText(value, limit) {

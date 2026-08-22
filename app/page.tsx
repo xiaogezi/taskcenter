@@ -175,12 +175,27 @@ type GovernanceMetrics = {
   reworkRate: number;
   durationMs: { average: number; p50: number; p95: number };
   comparisons?: { strategy?: string; note?: string };
+  snapshotStatus?: { stale: boolean; ageMs: number | null; lastRefreshError?: string; updatedAt?: string };
 };
 
 // 控制服务 URL：优先使用环境变量，默认 IPv4 localhost
 const controlServerUrl = typeof process !== "undefined" && process.env?.TASKCENTER_CONTROL_URL
   ? process.env.TASKCENTER_CONTROL_URL
   : "http://127.0.0.1:3001";
+
+async function fetchTaskSummaries() {
+  const pageSize = 200;
+  const firstResponse = await fetch(`${controlServerUrl}/tasks?view=summary&page=1&page_size=${pageSize}`);
+  if (!firstResponse.ok) throw new Error("任务摘要加载失败");
+  const first = await firstResponse.json() as { tasks?: TaskRecord[]; totalPages?: number };
+  const totalPages = Math.max(1, Number(first.totalPages || 1));
+  const remaining = await Promise.all(Array.from({ length: totalPages - 1 }, async (_, index) => {
+    const response = await fetch(`${controlServerUrl}/tasks?view=summary&page=${index + 2}&page_size=${pageSize}`);
+    if (!response.ok) throw new Error("任务摘要分页加载失败");
+    return response.json() as Promise<{ tasks?: TaskRecord[] }>;
+  }));
+  return { tasks: [...(first.tasks || []), ...remaining.flatMap((page) => page.tasks || [])] };
+}
 
 function asText(value: unknown, fallback = "暂无记录") {
   if (typeof value === "string" && value.trim()) return value.trim();
@@ -245,9 +260,9 @@ export default function Home() {
       setRefreshMessage("");
     }
     try {
-      const [dashboardResponse, tasksResponse, sessionStatusResponse, threadsResponse, reflectionsResponse, gateAllowlistResponse, governanceResponse] = await Promise.all([
+      const [dashboardResponse, tasksPayload, sessionStatusResponse, threadsResponse, reflectionsResponse, gateAllowlistResponse, governanceResponse] = await Promise.all([
         fetch(`${controlServerUrl}/dashboard`),
-        fetch(`${controlServerUrl}/tasks`),
+        fetchTaskSummaries(),
         fetch(`${controlServerUrl}/session-status`),
         fetch(`${controlServerUrl}/session-selection`),
         fetch(`${controlServerUrl}/reflections`),
@@ -257,12 +272,11 @@ export default function Home() {
       const healthResponse = await fetch(`${controlServerUrl}/health`);
       if (!healthResponse.ok) throw new Error("本地控制服务健康检查失败");
       setHealth(await healthResponse.json() as HealthState);
-      if (!dashboardResponse.ok || !tasksResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok || !reflectionsResponse.ok || !gateAllowlistResponse.ok || !governanceResponse.ok) {
+      if (!dashboardResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok || !reflectionsResponse.ok || !gateAllowlistResponse.ok || !governanceResponse.ok) {
         throw new Error("本地控制服务返回异常");
       }
-      const [dashboardPayload, tasksPayload, sessionStatusPayload, threadsPayload, reflectionsPayload, gateAllowlistPayload, governancePayload] = await Promise.all([
+      const [dashboardPayload, sessionStatusPayload, threadsPayload, reflectionsPayload, gateAllowlistPayload, governancePayload] = await Promise.all([
         dashboardResponse.json() as Promise<Dashboard>,
-        tasksResponse.json() as Promise<{ tasks?: TaskRecord[] }>,
         sessionStatusResponse.json() as Promise<{ sessions?: SessionStatus[] }>,
         threadsResponse.json() as Promise<{ availableThreads?: Thread[] }>,
         reflectionsResponse.json() as Promise<ReflectionState>,
@@ -617,6 +631,7 @@ function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
     <section aria-labelledby="governance-title">
       <p className="eyebrow orange">GOVERNANCE PILOT</p>
       <h2 id="governance-title">用量与交付效率</h2>
+      {metrics.snapshotStatus?.stale && <p className="session-health-bar unhealthy" role="status">指标快照暂时陈旧，任务与门禁服务仍正常；最近错误：{metrics.snapshotStatus.lastRefreshError || "后台指标尚未完成刷新"}</p>}
       <div className="metrics-grid">
         <article className="metric-card accent-orange"><p>CREDITS / 完成任务</p><strong className="metric-value">{number(metrics.creditsPerCompletedTask, 3)}</strong><span>{metrics.creditsEstimation === "complete" ? "按已配置官方费率估算" : metrics.creditsEstimation === "partial" ? "部分模型缺少官方费率" : "缺少官方费率不套用其他模型"}</span></article>
         <article className="metric-card accent-cyan"><p>模型续调 / 任务</p><strong className="metric-value">{number(metrics.modelContinuationsPerTask)}</strong><span>完成任务 {metrics.completedTasks} 条</span></article>

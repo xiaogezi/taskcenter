@@ -14,7 +14,8 @@ const web = vinextInvocation("dev", webArgs);
 
 const specs = [
   { name: "watch-codex", command: process.execPath, args: ["scripts/watch-codex.mjs"] },
-  { name: "control-server", command: process.execPath, args: ["scripts/control-server.mjs"] },
+  { name: "metrics-worker", command: process.execPath, args: ["--expose-gc", "--max-old-space-size=128", "scripts/metrics-worker.mjs"] },
+  { name: "control-server", command: process.execPath, args: ["--max-old-space-size=128", "scripts/control-server.mjs"] },
   { name: "web", command: web.command, args: web.args, env: web.env },
 ];
 const children = new Map();
