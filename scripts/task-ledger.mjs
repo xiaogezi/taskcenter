@@ -27,14 +27,19 @@ const routingHistoryLimit = 20;
 const demoPattern = /^ui-demo-/;
 const contextShadowPattern = /^context-[0-9a-f]{24}$/;
 let ledgerCache = null;
+let normalizedTasksCache = null;
 let sessionRegistryCache = null;
 export { taskTimeState, STALE_TASK_MS };
 
 export function loadTasks() {
-  return readLedger()
+  const source = readLedger();
+  if (normalizedTasksCache?.source === source) return normalizedTasksCache.tasks;
+  const tasks = source
     .filter((task) => task.status !== "removed")
     .map((task) => normalizeDueAtSemantics(task))
     .map((task) => withCompletionState({ ...task, sessionId: canonicalSessionId(task.sessionId) }));
+  normalizedTasksCache = { source, tasks };
+  return tasks;
 }
 
 function normalizeDueAtSemantics(task) {
@@ -1061,6 +1066,7 @@ function persistTasks(tasks) {
   writeFileSync(temporaryPath, `${JSON.stringify(tasks.slice(-500), null, 2)}\n`, { mode: 0o600 });
   renameSync(temporaryPath, taskLedgerPath);
   ledgerCache = null;
+  normalizedTasksCache = null;
 }
 
 function cleanText(value, limit) {
