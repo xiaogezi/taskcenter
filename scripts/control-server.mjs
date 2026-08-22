@@ -1,5 +1,7 @@
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -25,6 +27,7 @@ import {
   completeTasksByReconciliation,
   ensureContextTask,
   getSessionStatuses,
+  loadSessionRegistry,
   loadTasks,
   loadVisibleTasks,
   reconcileContextShadowTasks,
@@ -50,7 +53,7 @@ import {
   reconcileReflectionSessionSelection,
   updateReflectionExecution,
 } from "./reflection-engine.mjs";
-import { normalizeSessionAllowlist, readSessionAllowlist, sessionIdPattern } from "./session-allowlist.mjs";
+import { normalizeSessionAllowlist, readSessionAllowlist, sessionIdPattern, updateSessionAllowlist } from "./session-allowlist.mjs";
 import {
   claimDelegation,
   DelegationError,
@@ -80,6 +83,7 @@ const overridesPath = resolve(process.env.TASKCENTER_OVERRIDES_PATH || join(proj
 const inboxDecisionsPath = resolve(process.env.TASKCENTER_INBOX_DECISIONS_PATH || join(projectRoot, "data", "inbox-decisions.json"));
 const sessionSelectionPath = resolve(process.env.TASKCENTER_SESSION_SELECTION_PATH || join(projectRoot, "data", "session-selection.json"));
 const gateSessionAllowlistPath = resolve(process.env.TASKCENTER_GATE_SESSION_ALLOWLIST_PATH || join(projectRoot, "data", "gate-session-allowlist.json"));
+const localMcpTokenPath = resolve(process.env.TASKCENTER_MCP_TOKEN_PATH || join(projectRoot, ".local", "runtime", "mcp-token"));
 const reflectionProposalsPath = resolve(process.env.TASKCENTER_REFLECTION_PROPOSALS_PATH || join(projectRoot, "data", "reflection-proposals.json"));
 const modelRatesPath = resolve(process.env.TASKCENTER_MODEL_RATES_PATH || join(projectRoot, "config", "model-rates.json"));
 const contextAcceptanceToken = String(process.env.TASKCENTER_CONTEXT_ACCEPTANCE_TOKEN || "");
@@ -103,6 +107,7 @@ let lastDispatchAt = 0;
 let processingQueue = false;
 let syncing = null;
 let usageReportCache = null;
+const localMcpToken = loadOrCreateLocalMcpToken();
 
 mkdirSync(dirname(dispatchesPath), { recursive: true });
 migrateLegacyDispatches();
@@ -231,23 +236,43 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/gate-session-allowlist/session") {
       verifyActionRequest(request);
       const body = await readJsonBody(request);
-      const sessionId = String(body.session_id || "").trim();
+      const sessionId = String(body.session_id || "").trim().toLowerCase();
       if (!sessionIdPattern.test(sessionId)) throw new DispatchError(400, "Session ID 无效。");
       if (typeof body.enabled !== "boolean") throw new DispatchError(400, "enabled 必须是 boolean。");
-      const current = readSessionAllowlist(gateSessionAllowlistPath);
-      const threadIds = body.enabled
-        ? [...new Set([...current.threadIds, sessionId])]
-        : current.threadIds.filter((id) => id !== sessionId);
-      const selection = normalizeSessionAllowlist({
-        mode: "allowlist",
-        threadIds,
-        updatedAt: new Date().toISOString(),
-      });
+      const selection = updateSessionAllowlist(readSessionAllowlist(gateSessionAllowlistPath), sessionId, body.enabled);
       persistJsonObject(gateSessionAllowlistPath, selection);
       sendJson(response, 200, {
         accepted: true,
         session: { sessionId, gateExempt: body.enabled },
         selection,
+      });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/gate-session-exemption/status") {
+      verifyBoundMcpRequest(request);
+      const body = await readJsonBody(request);
+      const sessionId = String(body.session_id || "").trim().toLowerCase();
+      if (!sessionIdPattern.test(sessionId)) throw new DispatchError(400, "Session ID 无效。");
+      const registered = Boolean(loadSessionRegistry()[sessionId]);
+      const selection = readSessionAllowlist(gateSessionAllowlistPath);
+      sendJson(response, 200, {
+        accepted: true,
+        session: { sessionId, registered, gateExempt: selection.threadIds.includes(sessionId) },
+      });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/gate-session-exemption/set") {
+      verifyBoundMcpRequest(request);
+      const body = await readJsonBody(request);
+      const sessionId = String(body.session_id || "").trim().toLowerCase();
+      if (!sessionIdPattern.test(sessionId)) throw new DispatchError(400, "Session ID 无效。");
+      if (typeof body.enabled !== "boolean") throw new DispatchError(400, "enabled 必须是 boolean。");
+      if (!loadSessionRegistry()[sessionId]) throw new DispatchError(409, "当前 Session 尚未登记，不能修改门禁豁免。");
+      const selection = updateSessionAllowlist(readSessionAllowlist(gateSessionAllowlistPath), sessionId, body.enabled);
+      persistJsonObject(gateSessionAllowlistPath, selection);
+      sendJson(response, 200, {
+        accepted: true,
+        session: { sessionId, registered: true, gateExempt: body.enabled },
       });
       return;
     }
@@ -1246,6 +1271,31 @@ function verifyTaskRequest(request) {
   if (!String(request.headers["content-type"] || "").startsWith("application/json")) {
     throw new TaskLedgerError(415, "任务事件必须使用 JSON。");
   }
+}
+
+function verifyBoundMcpRequest(request) {
+  verifyTaskRequest(request);
+  if (request.headers["x-taskcenter-mcp-token"] !== localMcpToken) {
+    throw new TaskLedgerError(403, "MCP 运行时身份凭据无效。");
+  }
+}
+
+function loadOrCreateLocalMcpToken() {
+  if (existsSync(localMcpTokenPath)) {
+    const metadata = lstatSync(localMcpTokenPath);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error("MCP 运行时身份凭据必须是普通文件。");
+    }
+    if ((metadata.mode & 0o077) !== 0) chmodSync(localMcpTokenPath, 0o600);
+    const token = readFileSync(localMcpTokenPath, "utf8").trim();
+    if (token.length >= 64) return token;
+  }
+  mkdirSync(dirname(localMcpTokenPath), { recursive: true });
+  const token = `${randomUUID()}${randomUUID()}`.replaceAll("-", "");
+  const temporaryPath = `${localMcpTokenPath}.tmp`;
+  writeFileSync(temporaryPath, `${token}\n`, { mode: 0o600 });
+  renameSync(temporaryPath, localMcpTokenPath);
+  return token;
 }
 
 function verifyCoreRequest(request) {

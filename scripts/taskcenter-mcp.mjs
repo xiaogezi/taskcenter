@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import { TASKCENTER_VERSION } from "./version.mjs";
 
 const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001";
 const acceptanceToken = process.env.TASKCENTER_ACCEPTANCE_TOKEN || "";
+const callerSessionId = String(process.env.TASKCENTER_CALLER_SESSION_ID || process.env.CODEX_SESSION_ID || process.env.CODEX_THREAD_ID || "").trim().toLowerCase();
+const localMcpTokenPath = resolve(process.env.TASKCENTER_MCP_TOKEN_PATH || join(import.meta.dirname, "..", ".local", "runtime", "mcp-token"));
 const server = new McpServer({ name: "taskcenter-task-server", version: TASKCENTER_VERSION });
 const verificationKind = z.enum(["test", "build", "lint", "static_check", "device", "manual", "security", "performance", "other"]);
 const responseMode = z.enum(["summary", "full"]).default("summary");
@@ -313,6 +317,22 @@ server.registerTool("taskcenter_session_status", {
   }
 });
 
+server.registerTool("taskcenter_session_gate_exemption_status", {
+  title: "查询当前 Session 门禁豁免",
+  description: "查询运行时绑定的当前 Codex Session 是否免除 active task 前置条件；不接受目标 Session 参数，也不修改白名单。",
+  inputSchema: z.object({}).strict(),
+}, async () => callerSessionId
+  ? postLocal("/gate-session-exemption/status", { session_id: callerSessionId, response_mode: "full" })
+  : result({ error: "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE", message: "MCP 运行时没有可信的当前 Codex Session ID。" }));
+
+server.registerTool("taskcenter_session_gate_exemption_set", {
+  title: "切换当前 Session 门禁豁免",
+  description: "仅为运行时绑定的当前已登记 Codex Session 加入或退出 active task 门禁豁免；不接受目标 Session 参数，不创建任务、不批量修改，命令安全检查仍然有效。",
+  inputSchema: z.object({ enabled: z.boolean() }).strict(),
+}, async ({ enabled }) => callerSessionId
+  ? postLocal("/gate-session-exemption/set", { session_id: callerSessionId, enabled, response_mode: "full" })
+  : result({ error: "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE", message: "MCP 运行时没有可信的当前 Codex Session ID。" }));
+
 async function report(type, input) {
   const { response_mode: responseModeValue = "summary", ...event } = input;
   let response;
@@ -345,10 +365,18 @@ async function postCore(path, input) {
 async function postLocal(path, input) {
   const { response_mode: responseModeValue = "summary", ...body } = input;
   try {
-    const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(body) });
+    const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": readLocalMcpToken() }, body: JSON.stringify(body) });
     return writeResult(await readJson(response), responseModeValue);
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+  }
+}
+
+function readLocalMcpToken() {
+  try {
+    return readFileSync(localMcpTokenPath, "utf8").trim();
+  } catch {
+    return "";
   }
 }
 

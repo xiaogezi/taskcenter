@@ -22,7 +22,7 @@ const action = process.argv[2] || "";
 const agent = readArg("--agent") || process.env.TASKCENTER_AGENT || "unknown";
 const provider = process.env.TASKCENTER_PROVIDER || (agent === "claude" ? "anthropic" : agent === "codex" ? "openai" : "unknown");
 const model = process.env.TASKCENTER_MODEL || event.model || "unknown";
-const sessionId = String(event.session_id || process.env.CLAUDE_SESSION_ID || process.env.CODEX_SESSION_ID || "").trim();
+const sessionId = String(event.session_id || process.env.CLAUDE_SESSION_ID || process.env.CODEX_SESSION_ID || "").trim().toLowerCase();
 const workspace = String(event.cwd || process.env.CLAUDE_PROJECT_DIR || process.env.PWD || "").trim();
 let scheduledReadonly = scheduledReadonlyConfig();
 

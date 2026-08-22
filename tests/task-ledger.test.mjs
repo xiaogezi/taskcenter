@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,6 +22,7 @@ const envPaths = {
   TASKCENTER_DELEGATIONS_PATH: join(tempDir, "delegations.json"),
   TASKCENTER_ROUTING_CONTROL_PATH: join(tempDir, "routing-control.json"),
   TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(tempDir, "gate-session-allowlist.json"),
+  TASKCENTER_MCP_TOKEN_PATH: join(tempDir, "mcp-token"),
 };
 for (const [key, value] of Object.entries(envPaths)) {
   process.env[key] = value;
@@ -75,6 +76,22 @@ function taskHeaders() {
     "Content-Type": "application/json",
     "X-TaskCenter-Task": "mcp",
   };
+}
+
+async function runTaskcenterHook(base, payload) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ["scripts/taskcenter-hook.mjs", "pre-tool-use", "--agent", "codex"], {
+      cwd: root,
+      env: { ...process.env, TASKCENTER_CONTROL_URL: base, ...envPaths },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(JSON.stringify(payload));
+  });
 }
 
 async function registerHttpSession(base, session_id, identity = {}) {
@@ -831,6 +848,7 @@ test("控制服务任务闸门 HTTP 协议：register→create→update→report
   await resetLedger();
   const { base, child } = await startControlServer();
   context.after(() => child.kill("SIGTERM"));
+  assert.equal((await stat(envPaths.TASKCENTER_MCP_TOKEN_PATH)).mode & 0o077, 0);
   const headers = taskHeaders();
 
   const register = await fetch(`${base}/task-events`, {
@@ -1314,10 +1332,12 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const { base, child } = await startControlServer();
   context.after(() => child.kill("SIGTERM"));
 
+  const gateSessionId = "019f0000-0000-7000-8000-000000000112";
+
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["scripts/taskcenter-mcp.mjs"],
-    env: { ...process.env, TASKCENTER_CONTROL_URL: base },
+    env: { ...process.env, TASKCENTER_CONTROL_URL: base, TASKCENTER_CALLER_SESSION_ID: gateSessionId },
     cwd: root,
   });
   const client = new Client({ name: "taskcenter-test", version: "0.0.0" });
@@ -1332,7 +1352,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report",
     "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
     "taskcenter_delegation_grant", "taskcenter_delegation_claim", "taskcenter_cli_run_report", "taskcenter_delegation_revoke",
-    "taskcenter_task_query", "taskcenter_session_status", "taskcenter_usage_report", "taskcenter_session_lifecycle", "taskcenter_governance_metrics",
+    "taskcenter_task_query", "taskcenter_session_status", "taskcenter_session_gate_exemption_status", "taskcenter_session_gate_exemption_set",
+    "taskcenter_usage_report", "taskcenter_session_lifecycle", "taskcenter_governance_metrics",
   ]) {
     assert.ok(toolNames.includes(expected), `MCP 应暴露 ${expected}`);
   }
@@ -1341,6 +1362,64 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const registerPayload = JSON.parse(textOf(register));
   assert.equal(registerPayload.accepted, true);
   assert.equal(registerPayload.task, null);
+
+  const gateStatusBefore = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_session_gate_exemption_status",
+    arguments: {},
+  })));
+  assert.equal(gateStatusBefore.session.registered, false);
+  assert.equal(gateStatusBefore.session.gateExempt, false);
+  const unregisteredGateSet = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_session_gate_exemption_set",
+    arguments: { enabled: true },
+  })));
+  assert.equal(unregisteredGateSet.error, "TASKCENTER_REQUEST_FAILED");
+  assert.match(unregisteredGateSet.message, /尚未登记/);
+
+  const gateRegister = await client.callTool({
+    name: "taskcenter_session_register",
+    arguments: { session_id: gateSessionId, agent: "codex", provider: "openai", model: "gpt-test", workspace: "/work" },
+  });
+  assert.equal(JSON.parse(textOf(gateRegister)).accepted, true);
+  const gateJoin = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_session_gate_exemption_set",
+    arguments: { enabled: true },
+  })));
+  assert.equal(gateJoin.session.gateExempt, true);
+  const gateHookAllowed = await runTaskcenterHook(base, {
+    session_id: gateSessionId,
+    cwd: "/work",
+    tool_name: "Bash",
+    tool_input: { command: "true" },
+  });
+  assert.equal(gateHookAllowed.code, 0);
+  assert.match(gateHookAllowed.stdout, /门禁豁免白名单放行/);
+  const gateInteractiveBlocked = await runTaskcenterHook(base, {
+    session_id: gateSessionId,
+    cwd: "/work",
+    tool_name: "Bash",
+    tool_input: { command: "zsh" },
+  });
+  assert.equal(gateInteractiveBlocked.code, 2);
+  assert.match(gateInteractiveBlocked.stderr, /交互式命令/);
+  const gateStatusJoined = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_session_gate_exemption_status",
+    arguments: {},
+  })));
+  assert.equal(gateStatusJoined.session.gateExempt, true);
+  const gateLeave = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_session_gate_exemption_set",
+    arguments: { enabled: false },
+  })));
+  assert.equal(gateLeave.session.gateExempt, false);
+  const gateHookBlocked = await runTaskcenterHook(base, {
+    session_id: gateSessionId,
+    cwd: "/work",
+    tool_name: "Bash",
+    tool_input: { command: "true" },
+  });
+  assert.equal(gateHookBlocked.code, 2);
+  assert.match(gateHookBlocked.stderr, /无活跃任务/);
 
   const create = await client.callTool({
     name: "taskcenter_task_create",
@@ -1656,6 +1735,13 @@ test("门禁豁免支持单个 Session 幂等加入与退出且不覆盖其他 S
   };
   const firstId = "019f0000-0000-7000-8000-000000000101";
   const secondId = "019f0000-0000-7000-8000-000000000102";
+
+  const forgedMcp = await fetch(`${base}/gate-session-exemption/status`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ session_id: firstId }),
+  });
+  assert.equal(forgedMcp.status, 403);
 
   const seed = await fetch(`${base}/gate-session-allowlist`, {
     method: "POST",
