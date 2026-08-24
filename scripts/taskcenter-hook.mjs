@@ -272,9 +272,44 @@ function isScheduledReadonlyCommand(payload) {
   const args = tokens.slice(1);
   if (executable === "pwd") return args.length === 0;
   if (executable === "git") return isScheduledReadonlyGit(args);
+  if (["cat", "head", "tail", "sed"].includes(executable)) {
+    return isScheduledReadonlyFileCommand(executable, args, commandWorkspace);
+  }
   if (["shasum", "sha256sum"].includes(executable)) return isReportIntegrityProbe(executable, args, commandWorkspace);
   if (executable === "node") return isFixedManagedReportProbe(args);
   return false;
+}
+
+function isScheduledReadonlyFileCommand(executable, args, cwd) {
+  let pathArg = "";
+  if (executable === "cat") {
+    pathArg = singleFileArgument(args);
+  } else if (["head", "tail"].includes(executable)) {
+    pathArg = boundedLineReadArgument(args);
+  } else if (executable === "sed") {
+    pathArg = boundedSedReadArgument(args);
+  }
+  if (!pathArg) return false;
+  return isAllowedScheduledPath(resolveInputPath(pathArg, cwd));
+}
+
+function singleFileArgument(args) {
+  if (args.length === 1 && !args[0].startsWith("-")) return args[0];
+  if (args.length === 2 && args[0] === "--") return args[1];
+  return "";
+}
+
+function boundedLineReadArgument(args) {
+  if (args.length === 1 && !args[0].startsWith("-")) return args[0];
+  if (args.length === 3 && ["-n", "--lines"].includes(args[0]) && /^\d{1,6}$/.test(args[1])) return args[2];
+  if (args.length === 2 && /^(?:-n|--lines=)\d{1,6}$/.test(args[0])) return args[1];
+  return "";
+}
+
+function boundedSedReadArgument(args) {
+  if (args.length !== 3 || args[0] !== "-n") return "";
+  if (!/^(?:\d{1,9}|\$)(?:,(?:\d{1,9}|\$))?p$/.test(args[1])) return "";
+  return args[2];
 }
 
 function isFixedManagedReportProbe(args) {
