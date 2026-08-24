@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -130,7 +131,9 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   await mkdir(join(cyberRoleRoot, "project-context"), { recursive: true });
   await writeFile(join(cyberRoleRoot, "README.md"), "CyberRole\n");
   await writeFile(join(cyberRoleRoot, "project-context", "status.md"), "status\n");
-  await writeFile(reportPath, "rolling report\n");
+  const initialReport = managedReport("rolling report");
+  const updatedReport = managedReport("rolling report updated");
+  await writeFile(reportPath, initialReport);
   const profileArgs = [
     "--profile", "scheduled_readonly",
     "--automation-id", "cyberrole-agent-context",
@@ -158,6 +161,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   assert.match(detected.stdout, /scheduled_readonly Profile 已绑定/);
   assert.match(detected.stdout, /scheduled-report-probe\.mjs/);
 
+  const reportPatch = reportUpdatePatch(reportPath, initialReport, updatedReport);
   const allowedCases = [
     { tool_name: "Read", tool_input: { file_path: join(cyberRoleRoot, "README.md") } },
     { tool_name: "Grep", tool_input: { path: join(cyberRoleRoot, "project-context"), pattern: "status" } },
@@ -170,7 +174,8 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     { tool_name: "exec_command", tool_input: { cmd: `rtk tail --lines=20 '${reportPath}'` } },
     { tool_name: "exec_command", tool_input: { cmd: `shasum -a 256 '${reportPath}'` } },
     { tool_name: "Bash", tool_input: { command: `rtk node '${join(rootPath, "scripts", "scheduled-report-probe.mjs")}' --report '${reportPath}'` } },
-    { tool_name: "apply_patch", tool_input: { patch: `*** Begin Patch\n*** Update File: ${reportPath}\n@@\n-rolling report\n+rolling report updated\n*** End Patch` } },
+    { tool_name: "apply_patch", tool_input: { command: reportPatch } },
+    { tool_name: "apply_patch", tool_input: reportPatch },
     { tool_name: "mcp__context__context_capabilities", tool_input: {} },
     { tool_name: "mcp__context__context_health_check", tool_input: {} },
     { tool_name: "mcp__context__context_list_active_tasks", tool_input: { project_id: "cyberrole" } },
@@ -185,6 +190,44 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     assert.equal(result.code, 0, payload.tool_name || payload.tool_input?.cmd);
     assert.match(result.stdout, /scheduled_readonly 放行/);
   }
+
+  const staleHashPatch = reportUpdatePatch(reportPath, initialReport, initialReport.replace("rolling report", "rolling report updated"));
+  const rewritten = await runHook("pre-tool-use", "codex", {
+    session_id: sessionId,
+    cwd: cyberRoleRoot,
+    tool_name: "apply_patch",
+    tool_input: { command: staleHashPatch },
+  });
+  assert.equal(rewritten.code, 0, rewritten.stderr);
+  const rewriteDecision = JSON.parse(rewritten.stdout);
+  assert.equal(rewriteDecision.hookSpecificOutput.permissionDecision, "allow");
+  assert.match(rewriteDecision.hookSpecificOutput.updatedInput.command, /managed_payload_sha256/);
+  assert.notEqual(rewriteDecision.hookSpecificOutput.updatedInput.command, staleHashPatch);
+
+  await writeFile(reportPath, updatedReport);
+  const postValid = await runHook("post-tool-use", "codex", {
+    session_id: sessionId,
+    cwd: cyberRoleRoot,
+    hook_event_name: "PostToolUse",
+    tool_name: "apply_patch",
+    tool_input: { command: reportPatch },
+  });
+  assert.equal(postValid.code, 0, postValid.stderr);
+  assert.match(postValid.stdout, /sha256-v1 校验通过/);
+  await writeFile(reportPath, initialReport);
+
+  const initialCrLfReport = managedReport("rolling report", "\r\n");
+  const updatedCrLfReport = managedReport("rolling report updated", "\r\n");
+  await writeFile(reportPath, initialCrLfReport);
+  const crLfPatch = reportUpdatePatch(reportPath, initialCrLfReport, updatedCrLfReport);
+  const crLfAllowed = await runHook("pre-tool-use", "codex", {
+    session_id: sessionId,
+    cwd: cyberRoleRoot,
+    tool_name: "apply_patch",
+    tool_input: { command: crLfPatch },
+  });
+  assert.equal(crLfAllowed.code, 0, crLfAllowed.stderr);
+  await writeFile(reportPath, initialReport);
 
   const blockedCases = [
     { cwd: "/other", tool_name: "Read", tool_input: { file_path: "/other/private.md" } },
@@ -216,6 +259,12 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_status", tool_input: { session_id: "019f0000-0000-7000-8000-000000000999" } },
     { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_set", tool_input: { enabled: true, session_id: "019f0000-0000-7000-8000-000000000999" } },
     { tool_name: "apply_patch", tool_input: { patch: `*** Begin Patch\n*** Update File: ${join(cyberRoleRoot, "README.md")}\n@@\n-CyberRole\n+changed\n*** End Patch` } },
+    { tool_name: "apply_patch", tool_input: { command: `${reportPatch}\n*** Begin Patch\n*** Update File: ${join(cyberRoleRoot, "README.md")}\n@@\n-CyberRole\n+changed\n*** End Patch` } },
+    { tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Add File: ${reportPath}.new\n+new\n*** End Patch` } },
+    { tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Delete File: ${reportPath}\n*** End Patch` } },
+    { tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Update File: ${reportPath}\n*** Move to: ${reportPath}.moved\n@@\n-${initialReport.split("\n")[0]}\n+changed\n*** End Patch` } },
+    { tool_name: "apply_patch", tool_input: { command: reportUpdatePatch(reportPath, initialReport, initialReport.replace("manual preface", "manual changed")) } },
+    { tool_name: "apply_patch", tool_input: { command: reportUpdatePatch(reportPath, initialReport, initialReport.replace("<!-- AUTO-MANAGED-BEGIN -->", "<!-- AUTO-MANAGED-BEGIN-CHANGED -->")) } },
     { tool_name: "apply_patch", tool_input: { patch: "*** Begin Patch\n*** End Patch" } },
   ];
   await writeFile(join(tempDir, "other.md"), "outside\n");
@@ -259,6 +308,17 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     tool_input: {},
   });
   assert.equal(scheduledMcp.code, 0);
+
+  await writeFile(reportPath, updatedReport.replace(/`[0-9a-f]{64}`/, "`" + "0".repeat(64) + "`"));
+  const postInvalid = await runHook("post-tool-use", "codex", {
+    session_id: sessionId,
+    cwd: cyberRoleRoot,
+    hook_event_name: "PostToolUse",
+    tool_name: "apply_patch",
+    tool_input: reportPatch,
+  });
+  assert.equal(postInvalid.code, 2);
+  assert.match(postInvalid.stderr, /写后 sha256-v1 校验失败/);
 
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.length, 0);
@@ -714,6 +774,26 @@ async function runHook(action, agent, payload, extraArgs = []) {
     child.on("close", (code) => resolve({ code, stdout, stderr }));
     child.stdin.end(JSON.stringify(payload));
   });
+}
+
+function managedReport(content, eol = "\n") {
+  const before = `${eol}# 夜间报告${eol}${eol}`;
+  const after = `${content}${eol}`;
+  const hash = createHash("sha256").update(`${before}${after}`).digest("hex");
+  return `manual preface${eol}<!-- AUTO-MANAGED-BEGIN -->${before}- managed_payload_sha256：\`${hash}\`${eol}${after}<!-- AUTO-MANAGED-END -->${eol}manual suffix${eol}`;
+}
+
+function reportUpdatePatch(path, before, after) {
+  const beforeLines = before.trimEnd().split(/\r?\n/);
+  const afterLines = after.trimEnd().split(/\r?\n/);
+  return [
+    "*** Begin Patch",
+    `*** Update File: ${path}`,
+    "@@",
+    ...beforeLines.map((line) => `-${line}`),
+    ...afterLines.map((line) => `+${line}`),
+    "*** End Patch",
+  ].join("\n");
 }
 
 async function getStatus(sessionId) {

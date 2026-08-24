@@ -19,7 +19,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 }
 
 export function inspectManagedReport(path) {
-  const bytes = readFileSync(path);
+  return inspectManagedReportContent(readFileSync(path), path);
+}
+
+export function inspectManagedReportContent(content, path = "") {
+  const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content));
   const begin = Buffer.from("<!-- AUTO-MANAGED-BEGIN -->");
   const end = Buffer.from("<!-- AUTO-MANAGED-END -->");
   const hashPrefix = Buffer.from("- managed_payload_sha256：");
@@ -47,7 +51,34 @@ export function inspectManagedReport(path) {
   };
 }
 
+export function repairManagedReportHash(content) {
+  const value = Buffer.isBuffer(content) ? content.toString("utf8") : String(content);
+  const begin = "<!-- AUTO-MANAGED-BEGIN -->";
+  const end = "<!-- AUTO-MANAGED-END -->";
+  const beginAt = uniqueStringIndex(value, begin, "BEGIN marker");
+  const endAt = uniqueStringIndex(value, end, "END marker");
+  if (beginAt >= endAt) throw new Error("marker_order_invalid");
+  const payloadStart = beginAt + begin.length;
+  const payload = value.slice(payloadStart, endAt);
+  const matches = [...payload.matchAll(/(^|\n)(- managed_payload_sha256：[^\n]*?)([0-9a-f]{64})([^\n]*)(?=\n)/g)];
+  if (matches.length !== 1) throw new Error("managed hash line missing or duplicated");
+  const match = matches[0];
+  const lineStart = match.index + match[1].length;
+  const lineEnd = payload.indexOf("\n", lineStart);
+  const managed = `${payload.slice(0, lineStart)}${payload.slice(lineEnd + 1)}`;
+  const actual = createHash("sha256").update(managed).digest("hex");
+  const hashAt = payloadStart + match.index + match[1].length + match[2].length;
+  return `${value.slice(0, hashAt)}${actual}${value.slice(hashAt + 64)}`;
+}
+
 function uniqueIndex(haystack, needle, label) {
+  const first = haystack.indexOf(needle);
+  if (first < 0) throw new Error(`${label} missing`);
+  if (haystack.indexOf(needle, first + needle.length) >= 0) throw new Error(`${label} duplicated`);
+  return first;
+}
+
+function uniqueStringIndex(haystack, needle, label) {
   const first = haystack.indexOf(needle);
   if (first < 0) throw new Error(`${label} missing`);
   if (haystack.indexOf(needle, first + needle.length) >= 0) throw new Error(`${label} duplicated`);

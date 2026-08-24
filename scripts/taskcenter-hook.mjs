@@ -2,11 +2,12 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { taskTimeState } from "../app/task-time-state.mjs";
+import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 
 class ControlUnavailableError extends Error {}
@@ -16,6 +17,7 @@ const controlUrl = (process.env.TASKCENTER_CONTROL_URL || defaultControlUrl).rep
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
 let recoveryAttempted = false;
+let scheduledPatchRewrite = "";
 const input = await readStdin();
 const event = parseInput(input);
 const action = process.argv[2] || "";
@@ -38,7 +40,7 @@ try {
     await detectScheduledReadonlyProfile();
     process.exit(0);
   }
-  if (["pre-tool-use", "scheduled-pre-tool-use"].includes(action) && !scheduledReadonly) {
+  if (["pre-tool-use", "scheduled-pre-tool-use", "post-tool-use"].includes(action) && !scheduledReadonly) {
     scheduledReadonly = await loadScheduledReadonlyProfile();
   }
   if (scheduledReadonly) validateScheduledReadonlyIdentity();
@@ -48,6 +50,17 @@ try {
   } else if (action === "user-prompt-submit") {
     if (scheduledReadonly) process.exit(0);
     await provideTaskPreparationContext();
+  } else if (action === "post-tool-use") {
+    if (!scheduledReadonly) process.exit(0);
+    if (String(event.tool_name || "") !== "apply_patch") process.exit(0);
+    if (!isBoundScheduledReportPatch(event)) {
+      throw new Error("scheduled_readonly 写后校验拒绝非绑定报告的 apply_patch 结果。");
+    }
+    const integrity = inspectManagedReport(scheduledReadonly.reportPath);
+    if (!integrity.valid) {
+      throw new Error(`scheduled_readonly 写后 sha256-v1 校验失败：${integrity.reason}。报告已写入但不得视为成功，请恢复有效托管区块。`);
+    }
+    console.log("TaskCenter scheduled_readonly 写后 sha256-v1 校验通过");
   } else if (["pre-tool-use", "scheduled-pre-tool-use"].includes(action)) {
     if (action === "scheduled-pre-tool-use" && !scheduledReadonly) process.exit(0);
     if (isInteractiveExec(event)) {
@@ -63,6 +76,17 @@ try {
       }
       await requireRegisteredSession();
       if (action === "pre-tool-use") await recordScheduledReadonlyAudit();
+      if (scheduledPatchRewrite) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            updatedInput: { command: scheduledPatchRewrite },
+            additionalContext: "TaskCenter 已限定补丁为绑定报告的托管区块，并补齐 sha256-v1。",
+          },
+        }));
+        process.exit(0);
+      }
       console.log(`TaskCenter scheduled_readonly ${scanAllowed ? "扫描豁免放行" : "放行"}：${scheduledReadonly.automationId}（无需 active task）`);
       process.exit(0);
     }
@@ -85,7 +109,7 @@ try {
   }
 } catch (error) {
   console.error(`TaskCenter Hook: ${error.message}`);
-  process.exitCode = action === "pre-tool-use" ? 2 : 1;
+  process.exitCode = ["pre-tool-use", "post-tool-use"].includes(action) ? 2 : 1;
 }
 
 function scheduledReadonlyConfig() {
@@ -151,10 +175,107 @@ function isScheduledReadonlyOperation(payload) {
 
 function isScheduledReportPatch(payload) {
   if (scheduledReadonly.reportMutation !== "true") return false;
-  const paths = delegationPaths(payload);
-  if (paths.length !== 1) return false;
-  const canonical = canonicalExistingPath(resolveInputPath(paths[0], workspace));
+  if (!isBoundScheduledReportPatch(payload)) return false;
+  try {
+    const current = readFileSync(scheduledReadonly.reportPath, "utf8");
+    if (!inspectManagedReportContent(current, scheduledReadonly.reportPath).valid) return false;
+    const originalPatch = extractApplyPatch(payload);
+    const updated = simulateScheduledReportPatch(current, originalPatch);
+    if (!managedEnvelopeUnchanged(current, updated)) return false;
+    const repaired = repairManagedReportHash(updated);
+    if (!managedEnvelopeUnchanged(current, repaired)) return false;
+    if (!inspectManagedReportContent(repaired, scheduledReadonly.reportPath).valid) return false;
+    scheduledPatchRewrite = repaired === updated ? "" : appendManagedHashRepair(originalPatch, updated, repaired);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function appendManagedHashRepair(patch, before, after) {
+  const hashLine = /^- managed_payload_sha256：.*$/m;
+  const beforeLine = before.match(hashLine)?.[0]?.replace(/\r$/, "");
+  const afterLine = after.match(hashLine)?.[0]?.replace(/\r$/, "");
+  if (!beforeLine || !afterLine || beforeLine === afterLine) throw new Error("managed_hash_repair_unavailable");
+  const endAt = patch.lastIndexOf("*** End Patch");
+  if (endAt < 0) throw new Error("missing_patch_end");
+  return `${patch.slice(0, endAt)}@@\n-${beforeLine}\n+${afterLine}\n${patch.slice(endAt)}`;
+}
+
+function isBoundScheduledReportPatch(payload) {
+  if (scheduledReadonly.reportMutation !== "true") return false;
+  const patch = extractApplyPatch(payload);
+  if (!patch || !/^\*\*\* Begin Patch\r?\n/.test(patch) || !/\r?\n\*\*\* End Patch\s*$/.test(patch)) return false;
+  if (/^\*\*\* (?:Add|Delete) File:/m.test(patch) || /^\*\*\* Move to:/m.test(patch)) return false;
+  const headers = [...patch.matchAll(/^\*\*\* Update File:\s*(.+)$/gm)];
+  if (headers.length !== 1) return false;
+  const canonical = canonicalExistingPath(resolveInputPath(headers[0][1].trim(), workspace));
   return Boolean(canonical) && samePath(canonical, scheduledReadonly.reportPath);
+}
+
+function extractApplyPatch(payload) {
+  const input = payload.tool_input;
+  if (typeof input === "string") return input;
+  if (!input || typeof input !== "object") return "";
+  for (const key of ["command", "patch", "input"]) {
+    if (typeof input[key] === "string") return input[key];
+  }
+  return "";
+}
+
+function simulateScheduledReportPatch(current, patch) {
+  const normalized = patch.replaceAll("\r\n", "\n");
+  const header = normalized.match(/^\*\*\* Update File:\s*.+$/m);
+  if (!header) throw new Error("missing_update_header");
+  const bodyStart = header.index + header[0].length + 1;
+  const bodyEnd = normalized.lastIndexOf("\n*** End Patch");
+  if (bodyEnd < bodyStart) throw new Error("missing_patch_end");
+  const body = normalized.slice(bodyStart, bodyEnd);
+  const sections = body.split(/^@@.*$/m).slice(1);
+  if (sections.length === 0) throw new Error("missing_hunk");
+  const usesCrLf = current.includes("\r\n");
+  if ((usesCrLf && current.replaceAll("\r\n", "").includes("\n")) || (!usesCrLf && current.includes("\r"))) {
+    throw new Error("mixed_or_invalid_line_endings");
+  }
+  const eol = usesCrLf ? "\r\n" : "\n";
+  let lines = current.replaceAll("\r\n", "\n").split("\n");
+  for (const section of sections) {
+    const rawLines = section.replace(/^\n/, "").replace(/\n$/, "").split("\n");
+    if (rawLines.length === 0 || rawLines.some((line) => !/^[ +\-]/.test(line))) throw new Error("invalid_hunk_line");
+    const before = rawLines.filter((line) => line[0] !== "+").map((line) => line.slice(1));
+    const after = rawLines.filter((line) => line[0] !== "-").map((line) => line.slice(1));
+    if (before.length === 0) throw new Error("context_required");
+    const positions = matchingLinePositions(lines, before);
+    if (positions.length !== 1) throw new Error("hunk_context_not_unique");
+    lines.splice(positions[0], before.length, ...after);
+  }
+  return lines.join(eol);
+}
+
+function matchingLinePositions(lines, expected) {
+  const positions = [];
+  for (let index = 0; index <= lines.length - expected.length; index += 1) {
+    if (expected.every((line, offset) => lines[index + offset] === line)) positions.push(index);
+  }
+  return positions;
+}
+
+function managedEnvelopeUnchanged(before, after) {
+  const begin = "<!-- AUTO-MANAGED-BEGIN -->";
+  const end = "<!-- AUTO-MANAGED-END -->";
+  const beforeBegin = uniqueMarkerIndex(before, begin);
+  const beforeEnd = uniqueMarkerIndex(before, end);
+  const afterBegin = uniqueMarkerIndex(after, begin);
+  const afterEnd = uniqueMarkerIndex(after, end);
+  if ([beforeBegin, beforeEnd, afterBegin, afterEnd].some((index) => index < 0)) return false;
+  return before.slice(0, beforeBegin + begin.length) === after.slice(0, afterBegin + begin.length)
+    && before.slice(beforeEnd) === after.slice(afterEnd);
+}
+
+function uniqueMarkerIndex(value, marker) {
+  const first = value.indexOf(marker);
+  if (first < 0 || value.indexOf(marker, first + marker.length) >= 0) return -1;
+  return first;
 }
 
 function isScheduledReadonlyMcp(toolName, toolInput) {
@@ -729,7 +850,7 @@ function delegationPaths(payload) {
   for (const key of ["paths", "file_paths"]) {
     if (Array.isArray(input[key])) paths.push(...input[key].filter((item) => typeof item === "string"));
   }
-  const patch = typeof input.patch === "string" ? input.patch : typeof input.input === "string" ? input.input : "";
+  const patch = extractApplyPatch(payload);
   for (const match of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/gm)) paths.push(match[1].trim());
   return [...new Set(paths)].slice(0, 100);
 }

@@ -57,6 +57,19 @@ export function codexHooks(root = defaultRoot) {
           ],
         },
       ],
+      PostToolUse: [
+        {
+          matcher: "^apply_patch$",
+          hooks: [
+            {
+              type: "command",
+              command: `node ${script} post-tool-use --agent codex`,
+              timeout: 10,
+              statusMessage: "Verifying scheduled report integrity",
+            },
+          ],
+        },
+      ],
     },
   };
 }
