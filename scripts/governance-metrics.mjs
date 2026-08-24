@@ -27,8 +27,10 @@ export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = 
     ? overallUsage.creditsEstimation
     : estimatedCredits === null ? "unestimable" : "complete";
   const continuations = number(overallUsage.modelContinuations);
+  const attributionCoverage = buildAttributionCoverage(usageReport?.windows?.["24h"]);
+  const diagnostics = buildDiagnosticMetrics(visible, windowStart);
   return {
-    schemaVersion: "taskcenter-governance-metrics-v1",
+    schemaVersion: "taskcenter-governance-metrics-v2",
     completedTasks: completed.length,
     creditsPerCompletedTask: estimatedCredits === null || !completed.length ? null : estimatedCredits / completed.length,
     creditsEstimation,
@@ -41,8 +43,45 @@ export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = 
     taskCenterCallsPerTask: touchedTaskIds.size ? windowEvents.filter((event) => event.task_id).length / touchedTaskIds.size : 0,
     reworkRate: completed.length ? completed.filter(hasRework).length / completed.length : 0,
     durationMs: distribution(completed.map(durationMs).filter(Number.isFinite)),
+    attributionCoverage,
+    diagnostics,
     groups,
     comparisons: buildMatchedComparisons(groups, usageReport?.windows || []),
+  };
+}
+
+function buildAttributionCoverage(window) {
+  const rows = Array.isArray(window?.byTask) ? window.byTask : [];
+  const totalEvents = number(window?.totals?.count);
+  const totalInputTokens = number(window?.totals?.usage?.input);
+  const unattributed = rows.find((item) => item.id === "unattributed") || {};
+  const unattributedEvents = number(unattributed.count);
+  const unattributedInputTokens = number(unattributed.usage?.input);
+  const attributedEvents = rows.length ? Math.max(0, totalEvents - unattributedEvents) : 0;
+  const attributedInputTokens = rows.length ? Math.max(0, totalInputTokens - unattributedInputTokens) : 0;
+  return {
+    eventRatio: totalEvents ? attributedEvents / totalEvents : 0,
+    inputTokenRatio: totalInputTokens ? attributedInputTokens / totalInputTokens : 0,
+    attributedEvents,
+    totalEvents,
+    note: "仅反映 Token 事件能否唯一归属 TaskCenter task，不作为个人或模型绩效指标。",
+  };
+}
+
+function buildDiagnosticMetrics(tasks, windowStart) {
+  const observations = tasks.flatMap((task) => (task.diagnosticObservations || []).map((item) => ({ ...item, taskId: task.id })))
+    .filter((item) => (Date.parse(item.observed_at || "") || -Infinity) >= windowStart);
+  const resolved = observations.filter((item) => item.outcome === "resolved");
+  const rootCauseDurations = resolved.map((item) => Date.parse(item.root_cause_at || "") - Date.parse(item.started_at || "")).filter((value) => Number.isFinite(value) && value >= 0);
+  return {
+    cases: observations.length,
+    resolvedCases: resolved.length,
+    medianTimeToRootCauseMs: distribution(rootCauseDurations).p50,
+    averageHypotheses: average(observations.map((item) => number(item.hypothesis_count))),
+    averageFailedFixes: average(observations.map((item) => number(item.failed_fix_count))),
+    averageRollbacks: average(observations.map((item) => number(item.rollback_count))),
+    freshVerificationPassRate: resolved.length ? resolved.filter((item) => item.fresh_verification === "passed").length / resolved.length : 0,
+    note: "观察性诊断复盘指标，仅用于寻找流程瓶颈和检验改进，不参与绩效、门禁或自动路由。",
   };
 }
 

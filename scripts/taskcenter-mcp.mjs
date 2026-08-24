@@ -26,6 +26,11 @@ const verificationRequirement = z.object({
   required: z.boolean(),
   suggested_command: z.string().max(500).optional(),
 }).strict();
+const unverifiedRequirement = z.object({
+  requirement_id: z.string().min(1).max(120),
+  reason: z.string().min(1).max(1_000),
+  required_evidence: z.string().max(500).optional(),
+}).strict();
 const taskFields = {
   response_mode: responseMode,
   session_id: z.string().min(1).max(200).optional(),
@@ -99,7 +104,7 @@ server.registerTool("taskcenter_task_report", {
 
 server.registerTool("taskcenter_task_close", {
   title: "原子关闭 TaskCenter 任务",
-  description: "一次提交最终报告、验收条件结果与验证证据，并返回完成就绪度；同一 event_id 重试不会产生重复记录。",
+  description: "一次提交最终报告、验收条件结果与验证证据，并返回完成就绪度；同一 event_id 重试不会产生重复记录。completion_claim_allowed=false 时只能报告执行已声明完成，不得向用户宣称任务真正完成。",
   inputSchema: z.object(taskFields).extend({
     task_id: z.string().min(1).max(200),
     tests: z.array(z.string().min(1).max(500)).min(1).max(30),
@@ -145,19 +150,32 @@ server.registerTool("taskcenter_task_verification_report", {
 
 server.registerTool("taskcenter_task_review_report", {
   title: "上报 TaskCenter 独立审查",
-  description: "追加 Review Attestation；是否要求 reviewer 与实现者独立由版本化 Workspace Policy 决定。",
+  description: "追加 Review Attestation；同一 reviewer 先给出规格符合性、再给出代码质量结论，总体 verdict 必须与两个分项及未决项一致。是否要求 reviewer 与实现者独立由版本化 Workspace Policy 决定。",
   inputSchema: z.object({
     session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
     id: z.string().min(1).max(120), reviewer: z.union([actorIdentity, z.string().min(1).max(200)]), reviewer_session_id: z.string().max(200).optional(),
-    revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), scope: z.string().min(1).max(1_000), verdict: z.enum(["approved", "changes_requested", "rejected"]),
+    revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), scope: z.string().min(1).max(1_000), review_contract_version: z.literal("v2").default("v2"),
+    spec_verdict: z.enum(["compliant", "issues_found", "not_evaluated"]), quality_verdict: z.enum(["approved", "needs_fixes", "not_evaluated"]), verdict: z.enum(["approved", "changes_requested", "rejected"]),
+    unverified_requirements: z.array(unverifiedRequirement).max(50).default([]),
     unresolved_findings: z.number().int().min(0), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(),
     finding_refs: z.array(z.string().max(500)).max(50).optional(), summary: z.string().max(1_000).optional(), response_mode: responseMode,
   }).strict(),
 }, async ({ session_id, task_id, event_id, response_mode, ...review_attestation }) => report("review.reported", { session_id, task_id, event_id, response_mode, revision: review_attestation.revision, review_attestation }));
 
+server.registerTool("taskcenter_task_diagnostic_report", {
+  title: "上报 TaskCenter 调试案例观察",
+  description: "追加观察性 Diagnostic Observation，用于复盘根因定位过程；不参与绩效、门禁或任务验收。",
+  inputSchema: z.object({
+    session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
+    case_id: z.string().min(1).max(120), observed_at: z.string().datetime({ offset: true }), started_at: z.string().datetime({ offset: true }), root_cause_at: z.string().datetime({ offset: true }).optional(),
+    outcome: z.enum(["resolved", "unresolved"]), hypothesis_count: z.number().int().min(0), failed_fix_count: z.number().int().min(0), rollback_count: z.number().int().min(0),
+    fresh_verification: z.enum(["passed", "failed", "not_run"]), evidence_refs: z.array(z.string().max(500)).max(30).default([]), note: z.string().max(1_000).optional(), response_mode: responseMode,
+  }).strict(),
+}, async ({ session_id, task_id, event_id, response_mode, ...diagnostic_observation }) => report("diagnostic.reported", { session_id, task_id, event_id, response_mode, diagnostic_observation }));
+
 server.registerTool("taskcenter_task_completion_readiness", {
   title: "查询 TaskCenter 完成就绪度",
-  description: "返回任务是否 ready，以及缺失、失败或过期的证据。",
+  description: "返回任务是否 ready、completionClaim.allowed，以及缺失、失败或过期的证据；allowed=false 时不得宣称任务真正完成。",
   inputSchema: z.object({ task_id: z.string().min(1).max(200), revision: z.string().max(200).optional() }).strict(),
 }, async ({ task_id, revision }) => queryEndpoint(`/tasks/${encodeURIComponent(task_id)}/completion-readiness${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`));
 
@@ -299,7 +317,7 @@ server.registerTool("taskcenter_session_lifecycle", {
 
 server.registerTool("taskcenter_governance_metrics", {
   title: "查询 TaskCenter 治理试点指标",
-  description: "返回 Credits 等价值、续调、输入分位数、往返、返工率和耗时，并按 profile、任务类别与模型分组。",
+  description: "返回 Credits 等价值、续调、输入分位数、归属覆盖率、往返、返工率、耗时和观察性调试指标，并按 profile、任务类别与模型分组。指标不用于绩效或门禁。",
   inputSchema: z.object({}).strict(),
 }, async () => queryEndpoint("/governance-metrics"));
 
@@ -420,6 +438,7 @@ function writeResult(payload, responseModeValue) {
     verification_status: task.verificationStatus || readiness.verificationStatus || "not_required",
     review_status: task.reviewStatus || readiness.reviewStatus || "not_required",
     missing_count: missing.length || [...new Set(readiness.reasons || [])].length,
+    completion_claim_allowed: readiness.completionClaim?.allowed === true,
   };
   // 通知属于账本写入后的可补偿副作用；摘要回包也必须让调用方看见失败警告。
   if (Array.isArray(payload?.warnings) && payload.warnings.length) compact.warnings = payload.warnings;

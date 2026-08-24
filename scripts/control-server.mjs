@@ -973,7 +973,7 @@ function withDelegations(tasks) {
 
 function taskSummary(task) {
   const summary = { ...task };
-  for (const key of ["requirementResults", "verificationClaims", "reviewAttestations", "acceptanceRecords", "subjectHistory", "evidence", "changedFiles", "tests"]) delete summary[key];
+  for (const key of ["requirementResults", "verificationClaims", "reviewAttestations", "diagnosticObservations", "acceptanceRecords", "subjectHistory", "evidence", "changedFiles", "tests"]) delete summary[key];
   return { ...summary, estimateHistory: (task.estimateHistory || []).slice(-3), routingHistory: (task.routingHistory || []).slice(-3), cliRuns: (task.cliRuns || []).map(compactDelegationRun) };
 }
 

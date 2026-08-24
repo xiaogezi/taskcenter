@@ -475,6 +475,7 @@ const idempotentEventFields = [
   "selected_executor_model", "dispatch_channel", "routing_reason", "routing_outcome", "policy_version",
   "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
   "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation",
+  "diagnostic_observation",
   "close_requirements", "close_verifications",
   "context_completion_id", "authorization_id", "reason", "actor", "subject_ref", "acceptance_record", "workspace_policy",
 ];
@@ -741,7 +742,7 @@ function normalizeEvent(input) {
   const allowedTypes = new Set([
     "session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.close", "task.review",
     "task.reminder", "tool.call", "routing.decision", "routing.result", "routing.health", "requirement.reported", "verification.reported", "review.reported",
-    "acceptance.accepted", "acceptance.rejected", "subject.updated",
+    "acceptance.accepted", "acceptance.rejected", "subject.updated", "diagnostic.reported",
   ]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
   if (input.status !== undefined && !statuses.has(input.status)) throw new TaskLedgerError(400, "任务状态无效。");
@@ -850,6 +851,9 @@ function normalizeEvent(input) {
   }
   if (type === "routing.result" && (!event.route_id || !event.routing_outcome)) {
     throw new TaskLedgerError(400, "routing.result 缺少 route_id 或 outcome。");
+  }
+  if (type === "diagnostic.reported" && !event.diagnostic_observation?.case_id) {
+    throw new TaskLedgerError(400, "diagnostic.reported 缺少有效 diagnostic_observation。");
   }
   return event;
 }
@@ -1018,6 +1022,7 @@ function applyEvent(current, event) {
     reviewReason: event.review_reason || base.reviewReason || "",
     reviewedAt: event.reviewed_at || base.reviewedAt || "",
     toolCalls: { ...(base.toolCalls || {}) },
+    diagnosticObservations: [...(base.diagnosticObservations || [])],
   };
   next = applyTimingTransition(current, base, next, event, now);
   if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;

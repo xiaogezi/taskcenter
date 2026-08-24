@@ -1363,7 +1363,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   for (const expected of [
     "taskcenter_session_register", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report",
     "taskcenter_task_close",
-    "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report",
+    "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report", "taskcenter_task_diagnostic_report",
     "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
     "taskcenter_delegation_grant", "taskcenter_delegation_claim", "taskcenter_cli_run_report", "taskcenter_delegation_revoke",
     "taskcenter_task_query", "taskcenter_session_status", "taskcenter_session_gate_exemption_status", "taskcenter_session_gate_exemption_set",
@@ -1557,7 +1557,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   });
   const compactText = textOf(compact);
   const compactPayload = JSON.parse(compactText);
-  assert.deepEqual(Object.keys(compactPayload).sort(), ["accepted", "missing_count", "review_status", "status", "task_id", "verification_status"]);
+  assert.deepEqual(Object.keys(compactPayload).sort(), ["accepted", "completion_claim_allowed", "missing_count", "review_status", "status", "task_id", "verification_status"]);
+  assert.equal(compactPayload.completion_claim_allowed, false);
   assert.equal(compactPayload.task_id, "task-mcp-summary");
   assert.ok(compactText.length < textOf(create).length / 2, "默认摘要应显著小于 full 回包");
 
@@ -1596,7 +1597,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.ok(["continue_current_session", "recommend_new_codex_session", "require_handoff_before_continue"].includes(lifecycle.action));
   assert.match(lifecycle.taskSemantics, /新建 Codex Session 不等于新建 TaskCenter task/);
   const governance = JSON.parse(textOf(await client.callTool({ name: "taskcenter_governance_metrics", arguments: {} })));
-  assert.equal(governance.schemaVersion, "taskcenter-governance-metrics-v1");
+  assert.equal(governance.schemaVersion, "taskcenter-governance-metrics-v2");
 
   const routing = await client.callTool({
     name: "taskcenter_routing_record",
@@ -1667,7 +1668,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     name: "taskcenter_task_review_report",
     arguments: {
       session_id: "sess-reviewer", task_id: "task-mcp-v2", event_id: "mcp-review", id: "review-mcp", reviewer: "ocr",
-      reviewer_session_id: "sess-reviewer", revision: "revision-mcp", scope: "scripts/", verdict: "approved", unresolved_findings: 0,
+      reviewer_session_id: "sess-reviewer", revision: "revision-mcp", scope: "scripts/", spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unverified_requirements: [], unresolved_findings: 0,
       observed_at: "2026-08-17T00:05:00.000Z", summary: "approved",
     },
   });
@@ -1675,6 +1676,16 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(JSON.parse(textOf(readiness)).completionReadiness.ready, true);
   const packet = await client.callTool({ name: "taskcenter_task_completion_packet", arguments: { task_id: "task-mcp-v2" } });
   assert.equal(JSON.parse(textOf(packet)).completionPacket.reviewStatus, "passed");
+  await client.callTool({
+    name: "taskcenter_task_diagnostic_report",
+    arguments: {
+      session_id: "sess-mcp", task_id: "task-mcp-v2", event_id: "mcp-diagnostic", case_id: "debug-mcp-1",
+      observed_at: "2026-08-17T00:08:00.000Z", started_at: "2026-08-17T00:01:00.000Z", root_cause_at: "2026-08-17T00:06:00.000Z",
+      outcome: "resolved", hypothesis_count: 2, failed_fix_count: 1, rollback_count: 1, fresh_verification: "passed", evidence_refs: ["log://debug-mcp-1"],
+    },
+  });
+  const afterDiagnostic = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "task-mcp-v2" } })));
+  assert.equal(afterDiagnostic.tasks[0].diagnosticObservations[0].case_id, "debug-mcp-1");
 
   const structuredSubject = { type: "git_worktree_snapshot", value: "snapshot-mcp-structured", repository: "/work", branch: "feature/readiness", observed_at: "2026-08-17T01:00:00.000Z" };
   await client.callTool({

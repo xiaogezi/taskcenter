@@ -5,6 +5,11 @@ const verificationKinds = new Set(["test", "build", "lint", "static_check", "dev
 const requirementStatuses = new Set(["pending", "passed", "failed", "not_applicable"]);
 const claimStatuses = new Set(["passed", "failed", "skipped"]);
 const reviewVerdicts = new Set(["approved", "changes_requested", "rejected"]);
+const reviewContractVersions = new Set(["legacy", "v2"]);
+const specVerdicts = new Set(["compliant", "issues_found", "not_evaluated"]);
+const qualityVerdicts = new Set(["approved", "needs_fixes", "not_evaluated"]);
+const diagnosticOutcomes = new Set(["resolved", "unresolved"]);
+const freshVerificationStatuses = new Set(["passed", "failed", "not_run"]);
 const subjectTypes = new Set(["git_commit", "git_worktree_snapshot", "pull_request_head", "artifact", "document_version", "external", "none"]);
 const actorTypes = new Set(["human", "agent", "ci", "review_platform", "task_platform", "other"]);
 const acceptanceSources = new Set(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"]);
@@ -70,6 +75,7 @@ export function normalizeCompletionEvent(input) {
       ? input.close_verifications.slice(0, 30).map((item) => normalizeVerificationClaim(item, occurredAt))
       : [],
     review_attestation: normalizeReview(input.review_attestation, occurredAt),
+    diagnostic_observation: normalizeDiagnosticObservation(input.diagnostic_observation, occurredAt),
     acceptance_record: normalizeAcceptance(input.acceptance_record, occurredAt),
     context_completion_id: text(input.context_completion_id, 200), authorization_id: text(input.authorization_id, 200), reason: text(input.reason, 1_000),
     actor: normalizeActorIdentity(input.actor, { type: input.agent && input.agent !== "unknown" ? "agent" : "other", id: input.session_id || (input.agent !== "unknown" ? input.agent : ""), provider: input.provider, session_id: input.session_id }),
@@ -127,8 +133,18 @@ export function applyCompletionEvent(task, event) {
     const review = normalizeReview(event.review_attestation, event.occurred_at || event.created_at);
     if (!review.id || !review.reviewer || !review.subject_ref || !review.scope || !review.verdict || !review.observed_at) throw failure("Review Attestation 字段不完整。");
     if (review.verdict === "approved" && review.unresolved_findings > 0) throw failure("存在未解决 findings 时不能提交 approved 审查。", 409);
+    validateReviewVerdicts(review);
     if ((next.reviewAttestations || []).some((item) => item.id === review.id)) throw failure("Review Attestation id 已存在；请使用新 id 追加复审。", 409);
     next.reviewAttestations = [...(next.reviewAttestations || []), review];
+  }
+  if (event.type === "diagnostic.reported") {
+    const observation = normalizeDiagnosticObservation(event.diagnostic_observation, event.occurred_at || event.created_at);
+    if (!observation.case_id || !observation.observed_at || !observation.started_at || !observation.outcome) throw failure("Diagnostic Observation 字段不完整。");
+    if (![observation.observed_at, observation.started_at, observation.root_cause_at].filter(Boolean).every((value) => Number.isFinite(Date.parse(value)))) throw failure("Diagnostic Observation 时间字段必须是可解析的 ISO 时间。");
+    if ((next.diagnosticObservations || []).some((item) => item.case_id === observation.case_id)) throw failure("Diagnostic Observation case_id 已存在；请使用同一任务内唯一 id。", 409);
+    if (observation.root_cause_at && Date.parse(observation.root_cause_at) < Date.parse(observation.started_at)) throw failure("root_cause_at 不能早于 started_at。");
+    if (observation.outcome === "resolved" && (!observation.root_cause_at || observation.fresh_verification === "not_run" || !observation.evidence_refs.length)) throw failure("resolved 调试案例必须记录 root_cause_at、新鲜验证结果和证据引用。");
+    next.diagnosticObservations = [...(next.diagnosticObservations || []), observation];
   }
   if (["acceptance.accepted", "acceptance.rejected"].includes(event.type)) {
     const outcome = event.type.endsWith("accepted") ? "accepted" : "rejected";
@@ -153,6 +169,7 @@ export function withCompletionState(task) {
     requirementResults: Array.isArray(task.requirementResults) ? task.requirementResults : [],
     verificationClaims: (task.verificationClaims || []).map((item) => item?.subject_ref && typeof item.producer === "object" ? item : normalizeVerificationClaim(item, item?.observed_at)),
     reviewAttestations: (task.reviewAttestations || []).map((item) => item?.subject_ref && typeof item.reviewer === "object" ? item : normalizeReview(item, item?.observed_at)),
+    diagnosticObservations: Array.isArray(task.diagnosticObservations) ? task.diagnosticObservations.map((item) => normalizeDiagnosticObservation(item, item?.observed_at)) : [],
     acceptanceRecords: Array.isArray(task.acceptanceRecords) ? task.acceptanceRecords : task.acceptanceRecord ? [migrateAcceptance(task.acceptanceRecord, task)] : [],
   };
   migrated.workspacePolicy = normalizeWorkspacePolicy(task.workspacePolicy, task.workflowProfile, task.reviewPolicy);
@@ -199,6 +216,14 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
     else {
       if (currentSubject && !sameSubject(review.subject_ref, currentSubject)) { staleEvidence.push(review.id); reasons.push("review_stale"); }
       if (review.unresolved_findings > 0) { unresolvedFindings.push(...(review.finding_refs?.length ? review.finding_refs : [review.id])); reasons.push("unresolved_findings_exist"); }
+      if (review.review_contract_version === "v2") {
+        if (review.spec_verdict !== "compliant") reasons.push("review_spec_not_compliant");
+        if (review.quality_verdict !== "approved") reasons.push("review_quality_not_approved");
+        if (review.unverified_requirements.length) {
+          missingRequirements.push(...review.unverified_requirements.map((item) => item.requirement_id));
+          reasons.push("review_requirements_unverified");
+        }
+      }
       if (review.verdict === "rejected") reasons.push("review_rejected");
       else if (review.verdict !== "approved") reasons.push("review_changes_requested");
       if (task.workspacePolicy?.requireIndependentReview !== false && !independent(task.ownerActor, review.reviewer)) reasons.push("reviewer_not_independent");
@@ -206,6 +231,7 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
   }
   return {
     ready: reasons.length === 0,
+    completionClaim: { allowed: reasons.length === 0, status: reasons.length === 0 ? "ready" : "blocked", blockingReasons: [...new Set(reasons)] },
     executionStatus: task.status || "planned", verificationStatus: verificationStatusOf({ ...task, currentSubject }), reviewStatus: reviewStatusOf({ ...task, currentSubject }), acceptanceStatus: task.acceptanceStatus || "pending",
     currentSubject: currentSubject || null, reasons: [...new Set(reasons)], missingRequirements: [...new Set(missingRequirements)], failedRequirements: [...new Set(failedRequirements)], staleEvidence: [...new Set(staleEvidence)], unresolvedFindings: [...new Set(unresolvedFindings)],
   };
@@ -216,14 +242,14 @@ export function buildCompletionPacket(task) {
   return {
     schemaVersion: "taskcenter-completion-v2", policyVersion: value.policyVersion,
     taskContract: { contractVersion: value.contractVersion, goal: value.goal, scope: value.scope || [], nonGoals: value.nonGoals || [], acceptanceCriteria: value.acceptanceRequirements, workflowProfile: value.workflowProfile, reviewPolicy: value.reviewPolicy, executionEnvironment: value.executionEnvironment, verificationPlan: value.verificationPlan || [], workspacePolicy: value.workspacePolicy },
-    currentSubject: value.currentSubject || null, requirementResults: value.requirementResults, verificationClaims: value.verificationClaims, reviewAttestations: value.reviewAttestations, acceptanceRecords: value.acceptanceRecords, completionReadiness: value.completionReadiness,
+    currentSubject: value.currentSubject || null, requirementResults: value.requirementResults, verificationClaims: value.verificationClaims, reviewAttestations: value.reviewAttestations, diagnosticObservations: value.diagnosticObservations, acceptanceRecords: value.acceptanceRecords, completionReadiness: value.completionReadiness,
     currentRevision: value.currentRevision || "", verificationStatus: value.verificationStatus, reviewStatus: value.reviewStatus, acceptanceStatus: value.acceptanceStatus,
   };
 }
 
 export function completionPacketMarkdown(task) {
   const packet = buildCompletionPacket(task), readiness = packet.completionReadiness;
-  return [`# TaskCenter Completion Packet: ${task.title || task.id}`, "", `- Task ID: ${task.id}`, `- Policy: ${packet.policyVersion}`, `- Ready: ${readiness.ready ? "yes" : "no"}`, `- Subject: ${packet.currentSubject ? `${packet.currentSubject.type}:${packet.currentSubject.value || "none"}` : "none"}`, "", "## Readiness", "", ...(readiness.reasons.length ? readiness.reasons.map((item) => `- ${item}`) : ["- ready"]), "", "## Acceptance criteria", "", ...packet.taskContract.acceptanceCriteria.map((item) => `- [${item.required ? "x" : " "}] ${item.id}: ${item.description}`), "", "## Verification claims", "", ...(packet.verificationClaims.length ? packet.verificationClaims.map((item) => `- ${item.id}: ${item.kind} / ${item.status}`) : ["- none"]), "", "## Reviews", "", ...(packet.reviewAttestations.length ? packet.reviewAttestations.map((item) => `- ${item.id}: ${item.verdict}`) : ["- none"]), "", "## Acceptance records", "", ...(packet.acceptanceRecords.length ? packet.acceptanceRecords.map((item) => `- ${item.id}: ${item.outcome} via ${item.source}`) : ["- none"]), ""].join("\n");
+  return [`# TaskCenter Completion Packet: ${task.title || task.id}`, "", `- Task ID: ${task.id}`, `- Policy: ${packet.policyVersion}`, `- Ready: ${readiness.ready ? "yes" : "no"}`, `- Completion claim allowed: ${readiness.completionClaim.allowed ? "yes" : "no"}`, `- Subject: ${packet.currentSubject ? `${packet.currentSubject.type}:${packet.currentSubject.value || "none"}` : "none"}`, "", "## Readiness", "", ...(readiness.reasons.length ? readiness.reasons.map((item) => `- ${item}`) : ["- ready"]), "", "## Acceptance criteria", "", ...packet.taskContract.acceptanceCriteria.map((item) => `- [${item.required ? "x" : " "}] ${item.id}: ${item.description}`), "", "## Verification claims", "", ...(packet.verificationClaims.length ? packet.verificationClaims.map((item) => `- ${item.id}: ${item.kind} / ${item.status}`) : ["- none"]), "", "## Reviews", "", ...(packet.reviewAttestations.length ? packet.reviewAttestations.map((item) => `- ${item.id}: spec=${item.spec_verdict || "legacy"} / quality=${item.quality_verdict || "legacy"} / overall=${item.verdict}`) : ["- none"]), "", "## Acceptance records", "", ...(packet.acceptanceRecords.length ? packet.acceptanceRecords.map((item) => `- ${item.id}: ${item.outcome} via ${item.source}`) : ["- none"]), ""].join("\n");
 }
 
 function normalizeCriteria(value) {
@@ -277,7 +303,44 @@ function normalizeVerificationClaim(value, fallbackAt) {
 function normalizeReview(value, fallbackAt) {
   if (!value || typeof value !== "object") return {};
   const observedAt = text(value.observed_at, 80) || fallbackAt;
-  return { id: text(value.id, 120), reviewer: normalizeActorIdentity(value.reviewer, { type: "agent", id: value.reviewer_session_id || "" }), subject_ref: normalizeSubjectReference(value.subject_ref, observedAt) || legacySubject(value.revision, observedAt), revision: text(value.revision, 500), scope: text(value.scope, 1_000), verdict: enumeration(value.verdict, reviewVerdicts, ""), unresolved_findings: Number.isInteger(value.unresolved_findings) && value.unresolved_findings >= 0 ? value.unresolved_findings : 0, observed_at: observedAt, authorization_id: text(value.authorization_id, 200), finding_refs: strings(value.finding_refs, 50, 500), summary: text(value.summary, 1_000) };
+  const hasV2Fields = value.spec_verdict !== undefined || value.quality_verdict !== undefined || value.unverified_requirements !== undefined;
+  return { id: text(value.id, 120), reviewer: normalizeActorIdentity(value.reviewer, { type: "agent", id: value.reviewer_session_id || "" }), subject_ref: normalizeSubjectReference(value.subject_ref, observedAt) || legacySubject(value.revision, observedAt), revision: text(value.revision, 500), scope: text(value.scope, 1_000), review_contract_version: enumeration(value.review_contract_version, reviewContractVersions, hasV2Fields ? "v2" : "legacy"), spec_verdict: enumeration(value.spec_verdict, specVerdicts, hasV2Fields ? "not_evaluated" : ""), quality_verdict: enumeration(value.quality_verdict, qualityVerdicts, hasV2Fields ? "not_evaluated" : ""), verdict: enumeration(value.verdict, reviewVerdicts, ""), unverified_requirements: normalizeUnverifiedRequirements(value.unverified_requirements), unresolved_findings: Number.isInteger(value.unresolved_findings) && value.unresolved_findings >= 0 ? value.unresolved_findings : 0, observed_at: observedAt, authorization_id: text(value.authorization_id, 200), finding_refs: strings(value.finding_refs, 50, 500), summary: text(value.summary, 1_000) };
+}
+
+function normalizeUnverifiedRequirements(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 50).flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const requirement_id = text(item.requirement_id, 120), reason = text(item.reason, 1_000), required_evidence = text(item.required_evidence, 500);
+    return requirement_id && reason ? [{ requirement_id, reason, ...(required_evidence ? { required_evidence } : {}) }] : [];
+  });
+}
+
+function validateReviewVerdicts(review) {
+  if (review.review_contract_version !== "v2") return;
+  const approved = review.spec_verdict === "compliant" && review.quality_verdict === "approved" && review.unverified_requirements.length === 0 && review.unresolved_findings === 0;
+  if (review.verdict === "approved" && !approved) throw failure("approved 要求 spec_verdict=compliant、quality_verdict=approved，且不存在未验证要求或未解决 findings。", 409);
+  if (review.verdict === "rejected" && (review.spec_verdict !== "not_evaluated" || review.quality_verdict !== "not_evaluated" || review.unverified_requirements.length || review.unresolved_findings)) throw failure("rejected 要求两个分项 verdict 均为 not_evaluated，且不携带未验证要求或 findings。", 409);
+  const hasRequestedChanges = review.spec_verdict === "issues_found" || review.quality_verdict === "needs_fixes" || review.unverified_requirements.length > 0 || review.unresolved_findings > 0;
+  if (review.verdict === "changes_requested" && !hasRequestedChanges) throw failure("changes_requested 必须至少包含规格问题、质量问题、未验证要求或未解决 finding。", 409);
+}
+
+function normalizeDiagnosticObservation(value, fallbackAt) {
+  if (!value || typeof value !== "object") return {};
+  const observedAt = text(value.observed_at, 80) || fallbackAt;
+  return {
+    case_id: text(value.case_id, 120),
+    observed_at: observedAt,
+    started_at: text(value.started_at, 80),
+    root_cause_at: text(value.root_cause_at, 80),
+    outcome: enumeration(value.outcome, diagnosticOutcomes, ""),
+    hypothesis_count: nonNegativeInteger(value.hypothesis_count),
+    failed_fix_count: nonNegativeInteger(value.failed_fix_count),
+    rollback_count: nonNegativeInteger(value.rollback_count),
+    fresh_verification: enumeration(value.fresh_verification, freshVerificationStatuses, "not_run"),
+    evidence_refs: strings(value.evidence_refs, 30, 500),
+    note: text(value.note, 1_000),
+  };
 }
 
 function normalizeAcceptance(value, fallbackAt) {
@@ -316,7 +379,8 @@ function reviewStatusOf(task) {
   if (!review) return "pending";
   if (task.currentSubject && !sameSubject(review.subject_ref, task.currentSubject)) return "stale";
   if (review.verdict === "rejected") return "rejected";
-  if (review.verdict === "approved" && review.unresolved_findings === 0 && (task.workspacePolicy?.requireIndependentReview === false || independent(task.ownerActor, review.reviewer))) return "passed";
+  const v2Approved = review.review_contract_version !== "v2" || (review.spec_verdict === "compliant" && review.quality_verdict === "approved" && review.unverified_requirements.length === 0);
+  if (review.verdict === "approved" && review.unresolved_findings === 0 && v2Approved && (task.workspacePolicy?.requireIndependentReview === false || independent(task.ownerActor, review.reviewer))) return "passed";
   return "changes_requested";
 }
 
@@ -327,6 +391,7 @@ function legacySubject(revision, observedAt) { return revision ? { type: "extern
 function hasPortableEvidence(claim) { return [claim.evidence_ref, ...(claim.artifact_refs || [])].filter(Boolean).some((ref) => !/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(ref)); }
 function latestBy(items, field) { const result = new Map(); for (const item of items) if (item?.[field]) result.set(item[field], item); return result; }
 function text(value, limit) { return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, limit) : ""; }
+function nonNegativeInteger(value) { return Number.isInteger(value) && value >= 0 ? value : 0; }
 function strings(value, count, length) { return Array.isArray(value) ? value.filter((item) => typeof item === "string").map((item) => text(item, length)).filter(Boolean).slice(0, count) : []; }
 function enumeration(value, allowed, fallback) { return allowed.has(value) ? value : fallback; }
 function enums(value, allowed) { return Array.isArray(value) ? [...new Set(value.filter((item) => allowed.has(item)))] : []; }

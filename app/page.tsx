@@ -126,7 +126,7 @@ type TaskRecord = {
   verificationStatus?: "not_required" | "pending" | "passed" | "failed" | "stale";
   reviewStatus?: "not_required" | "pending" | "passed" | "changes_requested" | "rejected" | "stale";
   acceptanceStatus?: "pending" | "ready" | "accepted" | "rejected" | "stale";
-  completionReadiness?: { ready: boolean; reasons: string[]; missingRequirements: string[]; failedRequirements: string[]; staleEvidence: string[]; unresolvedFindings: string[]; currentSubject?: { type: string; value?: string } | null };
+  completionReadiness?: { ready: boolean; completionClaim?: { allowed: boolean; status: "ready" | "blocked"; blockingReasons: string[] }; reasons: string[]; missingRequirements: string[]; failedRequirements: string[]; staleEvidence: string[]; unresolvedFindings: string[]; currentSubject?: { type: string; value?: string } | null };
   cliRuns?: Array<{
     id: string;
     status: string;
@@ -174,6 +174,8 @@ type GovernanceMetrics = {
   taskCenterCallsPerTask: number;
   reworkRate: number;
   durationMs: { average: number; p50: number; p95: number };
+  attributionCoverage?: { eventRatio: number; inputTokenRatio: number; attributedEvents: number; totalEvents: number; note: string };
+  diagnostics?: { cases: number; resolvedCases: number; medianTimeToRootCauseMs: number; averageHypotheses: number; averageFailedFixes: number; averageRollbacks: number; freshVerificationPassRate: number; note: string };
   comparisons?: { strategy?: string; note?: string };
   snapshotStatus?: { stale: boolean; ageMs: number | null; lastRefreshError?: string; updatedAt?: string };
 };
@@ -637,8 +639,10 @@ function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
         <article className="metric-card accent-cyan"><p>模型续调 / 任务</p><strong className="metric-value">{number(metrics.modelContinuationsPerTask)}</strong><span>完成任务 {metrics.completedTasks} 条</span></article>
         <article className="metric-card accent-lime"><p>INPUT TOKENS</p><strong className="metric-value">{number(metrics.inputTokens.p50, 0)}</strong><span>均值 {number(metrics.inputTokens.average, 0)} · P95 {number(metrics.inputTokens.p95, 0)}</span></article>
         <article className="metric-card"><p>TASKCENTER 往返 / 任务</p><strong className="metric-value">{number(metrics.taskCenterCallsPerTask)}</strong><span>返工率 {(metrics.reworkRate * 100).toFixed(1)}% · P50 耗时 {duration(metrics.durationMs.p50)}</span></article>
+        <article className="metric-card"><p>TOKEN 任务归属率</p><strong className="metric-value">{metrics.attributionCoverage ? `${(metrics.attributionCoverage.inputTokenRatio * 100).toFixed(1)}%` : "暂无"}</strong><span>{metrics.attributionCoverage ? `事件归属 ${(metrics.attributionCoverage.eventRatio * 100).toFixed(1)}% · 仅作数据质量检查` : "等待新版指标快照"}</span></article>
+        <article className="metric-card"><p>调试案例观察</p><strong className="metric-value">{metrics.diagnostics ? number(metrics.diagnostics.cases, 0) : "暂无"}</strong><span>{metrics.diagnostics ? `已解决 ${number(metrics.diagnostics.resolvedCases, 0)} · 根因 P50 ${duration(metrics.diagnostics.medianTimeToRootCauseMs)}` : "等待显式诊断观察"}</span></article>
       </div>
-      <p className="privacy-note">比较口径：按 workflow profile、任务类别和模型匹配，并支持多个交替窗口；不只比较相邻两个五小时窗口。</p>
+      <p className="privacy-note">比较口径：按 workflow profile、任务类别和模型匹配，并支持多个交替窗口；归属率和调试指标只用于发现数据与流程瓶颈，不参与绩效或门禁。</p>
     </section>
   );
 }
@@ -647,7 +651,7 @@ const taskStatusMeta: Record<TaskStatus, { label: string; tone: string }> = {
   planned: { label: "已登记", tone: "planned" },
   in_progress: { label: "进行中", tone: "in-progress" },
   blocked: { label: "已阻塞", tone: "blocked" },
-  done_claimed: { label: "已完成", tone: "done-claimed" },
+  done_claimed: { label: "已声明完成", tone: "done-claimed" },
   verified: { label: "已验收", tone: "verified" },
   cancelled: { label: "已取消", tone: "cancelled" },
 };

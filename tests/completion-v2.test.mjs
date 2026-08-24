@@ -109,6 +109,7 @@ test("V2-12 最终验收不要求 Context complete_task", () => {
 test("V2-13 CompletionReadiness 返回完整机器字段", () => {
   const readiness = base().completionReadiness;
   for (const field of ["executionStatus", "verificationStatus", "reviewStatus", "acceptanceStatus", "currentSubject", "reasons", "missingRequirements", "failedRequirements", "staleEvidence", "unresolvedFindings"]) assert.ok(Object.hasOwn(readiness, field));
+  assert.deepEqual(readiness.completionClaim, { allowed: true, status: "ready", blockingReasons: [] });
 });
 
 test("V2-14 Completion Packet 带 policy_version", () => assert.equal(buildCompletionPacket(base()).policyVersion, "policy-test"));
@@ -133,4 +134,27 @@ test("V2-18 legacy revision 可迁移为 external SubjectReference", () => {
   const task = withCompletionState({ id: "legacy", status: "done_claimed", currentRevision: "rev-a", updatedAt: at, acceptanceCriteria: ["done"] });
   assert.equal(task.currentSubject.type, "external");
   assert.ok(task.completionReadiness.reasons.includes("legacy_contract"));
+});
+
+test("V2-19 Review v2 同时校验规格、质量、未验证要求与总体结论", () => {
+  const task = base({ reviewPolicy: "required", workspacePolicy: { version: "p", requireIndependentReview: false } });
+  const common = { id: "r-v2", reviewer: actor("reviewer"), subject_ref: subject(), scope: "all", review_contract_version: "v2", observed_at: at, unresolved_findings: 0 };
+  assert.throws(() => applyCompletionEvent(task, { type: "review.reported", review_attestation: { ...common, spec_verdict: "issues_found", quality_verdict: "approved", verdict: "approved", unverified_requirements: [] } }), /approved 要求/);
+  const reviewed = applyCompletionEvent(task, { type: "review.reported", review_attestation: { ...common, spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unverified_requirements: [] } });
+  assert.equal(reviewed.reviewStatus, "passed");
+  assert.equal(reviewed.completionReadiness.ready, true);
+});
+
+test("V2-20 未验证要求阻止 Review v2 通过并进入机器可读缺口", () => {
+  const task = base({ reviewPolicy: "required", workspacePolicy: { version: "p", requireIndependentReview: false }, reviewAttestations: [{ id: "r", reviewer: actor("reviewer"), subject_ref: subject(), scope: "all", review_contract_version: "v2", spec_verdict: "compliant", quality_verdict: "approved", verdict: "changes_requested", unverified_requirements: [{ requirement_id: "runtime", reason: "需要真机" }], unresolved_findings: 0, observed_at: at }] });
+  assert.ok(task.completionReadiness.reasons.includes("review_requirements_unverified"));
+  assert.ok(task.completionReadiness.missingRequirements.includes("runtime"));
+  assert.equal(task.completionReadiness.completionClaim.allowed, false);
+});
+
+test("V2-21 Diagnostic Observation 只记录观察数据且 resolved 要求根因时间和新鲜验证", () => {
+  assert.throws(() => applyCompletionEvent(base(), { type: "diagnostic.reported", diagnostic_observation: { case_id: "d1", observed_at: at, started_at: at, outcome: "resolved", fresh_verification: "not_run" } }), /新鲜验证/);
+  const task = applyCompletionEvent(base(), { type: "diagnostic.reported", diagnostic_observation: { case_id: "d1", observed_at: at, started_at: "2026-08-17T00:00:00.000Z", root_cause_at: at, outcome: "resolved", hypothesis_count: 2, failed_fix_count: 1, rollback_count: 1, fresh_verification: "passed", evidence_refs: ["log://case/d1"] } });
+  assert.equal(task.diagnosticObservations.length, 1);
+  assert.equal(task.completionReadiness.ready, true);
 });

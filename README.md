@@ -155,7 +155,9 @@ TaskCenter Core 不依赖 Codex、Context Agent、OCR、GitHub/GitLab、Worktree
 
 scope 为文件工具提供可执行的路径边界；可识别路径超出 scope 时 Hook 会阻断。任意 Shell 命令无法可靠静态证明实际写入路径，因此只有 scope 显式为整个 workspace（`.`）时才允许，同时仍受精确 workspace、Session、TTL 和 `allowed_tools` 约束。该机制是任务授权边界，不替代 Codex sandbox 或操作系统隔离。
 
-完成闭环包含四层独立状态：执行 `done_claimed`、验证 `verification_status`、审查 `review_status`、最终验收 `acceptance_status`。`CompletionReadiness` 还返回当前 subject、机器可读 reason codes、缺失/失败条件、过期证据与未解决 findings。`strict` 默认要求当前 subject 的独立审查，但 Workspace Policy 可以显式调整。历史记录只追加，不覆盖。
+完成闭环包含四层独立状态：执行 `done_claimed`、验证 `verification_status`、审查 `review_status`、最终验收 `acceptance_status`。`done_claimed` 在 UI 中显示为“已声明完成”，不能等同于真正完成。`CompletionReadiness` 还返回当前 subject、机器可读 reason codes、缺失/失败条件、过期证据、未解决 findings 与 `completionClaim.allowed`；只有该字段为 `true` 时，调用方才可以向用户宣称任务真正完成。`strict` 默认要求当前 subject 的独立审查，但 Workspace Policy 可以显式调整。历史记录只追加，不覆盖。
+
+新版 Review Attestation 使用 `review_contract_version=v2`，由同一个独立 reviewer 按顺序提交 `spec_verdict`、`quality_verdict`、总体 `verdict` 和 `unverified_requirements`。总体 `approved` 仅在规格 `compliant`、质量 `approved`、没有未验证要求且没有未解决 finding 时成立。旧记录继续按 `legacy` 读取，不伪造缺失的双结论。
 
 如果 Hook 明确输出“门禁豁免白名单放行”，当前 Session 可以不执行登记和建任务步骤。该例外只来自独立的门禁豁免白名单，不能由内容读取白名单推断；命令安全检查仍然有效。
 
@@ -176,6 +178,7 @@ MCP 工具：
 - `taskcenter_task_requirement_report`
 - `taskcenter_task_verification_report`
 - `taskcenter_task_review_report`
+- `taskcenter_task_diagnostic_report`
 - `taskcenter_task_completion_readiness`
 - `taskcenter_task_completion_packet`
 - `taskcenter_task_subject_update`
@@ -200,7 +203,7 @@ MCP 工具：
 
 用量报告可通过 `node scripts/usage-report.mjs` 生成，默认只读取 `~/.codex/sessions/**/*.jsonl` 和本地任务账本；聚合使用每条记录的 `last_token_usage`，并按 `5h`、`24h`、`7d` 和 model/project/session/task 输出 input、cached input、output、average/P50/P95。报告支持注入 `sessionsRoot`、`ledger`、`rates`、`now`；全部未知费率时标记为 `unestimable`，混合已配置与未知费率（包括未配置的 Spark）时保留可估算部分并标记为 `partial`。
 
-费率表位于 `config/model-rates.json`，只应填写模型提供方正式公布并经操作者确认的每百万 Token Credits；禁止用相近模型价格代填 Spark。`taskcenter_usage_report`、`taskcenter_session_lifecycle` 和 `taskcenter_governance_metrics` 分别提供用量、会话建议与试点指标。生命周期建议不会强制中断，且“新建 Codex Session”不等于“新建 TaskCenter task”：同一交付继续复用原任务并携带 1–2KB handoff。
+费率表位于 `config/model-rates.json`，只应填写模型提供方正式公布并经操作者确认的每百万 Token Credits；禁止用相近模型价格代填 Spark。`taskcenter_usage_report`、`taskcenter_session_lifecycle` 和 `taskcenter_governance_metrics` 分别提供用量、会话建议与试点指标。治理指标同时返回 Token 任务归属覆盖率；只有显式调用 `taskcenter_task_diagnostic_report` 的案例才进入调试观察聚合，记录根因耗时、假设数、失败修复、回滚和新鲜验证。这些数据只用于发现流程瓶颈和检验改进，不参与个人绩效、任务门禁或自动模型路由。生命周期建议不会强制中断，且“新建 Codex Session”不等于“新建 TaskCenter task”：同一交付继续复用原任务并携带 1–2KB handoff。
 
 普通闭环可用 `taskcenter_task_close` 一次提交最终报告、Requirement Results 与 Verification Claims，并直接取得 readiness；同一 `event_id` 重试幂等。它把典型的 verification、requirements、report、readiness 四次往返压缩为一次，同时保留原有细粒度接口和 OCR 独立 Session/attestation 路径。
 
