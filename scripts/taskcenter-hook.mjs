@@ -185,21 +185,45 @@ function isScheduledReportPatch(payload) {
     const repaired = repairManagedReportHash(updated);
     if (!managedEnvelopeUnchanged(current, repaired)) return false;
     if (!inspectManagedReportContent(repaired, scheduledReadonly.reportPath).valid) return false;
-    scheduledPatchRewrite = repaired === updated ? "" : appendManagedHashRepair(originalPatch, updated, repaired);
+    scheduledPatchRewrite = repaired === updated ? "" : rewriteManagedHashRepair(originalPatch, current, updated, repaired);
     return true;
   } catch {
     return false;
   }
 }
 
-function appendManagedHashRepair(patch, before, after) {
+function rewriteManagedHashRepair(patch, current, before, after) {
   const hashLine = /^- managed_payload_sha256：.*$/m;
   const beforeLine = before.match(hashLine)?.[0]?.replace(/\r$/, "");
   const afterLine = after.match(hashLine)?.[0]?.replace(/\r$/, "");
   if (!beforeLine || !afterLine || beforeLine === afterLine) throw new Error("managed_hash_repair_unavailable");
-  const endAt = patch.lastIndexOf("*** End Patch");
-  if (endAt < 0) throw new Error("missing_patch_end");
-  return `${patch.slice(0, endAt)}@@\n-${beforeLine}\n+${afterLine}\n${patch.slice(endAt)}`;
+  const normalized = patch.replaceAll("\r\n", "\n");
+  const staleAddition = `\n+${beforeLine}\n`;
+  if (normalized.includes(staleAddition)) return normalized.replace(staleAddition, `\n+${afterLine}\n`);
+  const staleContext = `\n ${beforeLine}\n`;
+  if (normalized.includes(staleContext)) return normalized.replace(staleContext, `\n-${beforeLine}\n+${afterLine}\n`);
+
+  const currentLines = current.replaceAll("\r\n", "\n").split("\n");
+  const hashAt = currentLines.indexOf(beforeLine);
+  if (hashAt < 0) throw new Error("managed_hash_source_missing");
+  const bodyEnd = normalized.lastIndexOf("\n*** End Patch");
+  if (bodyEnd < 0) throw new Error("missing_patch_end");
+  const hunkMatches = [...normalized.slice(0, bodyEnd).matchAll(/^@@.*$/gm)];
+  let insertAt = bodyEnd + 1;
+  for (let index = 0; index < hunkMatches.length; index += 1) {
+    const match = hunkMatches[index];
+    const sectionStart = match.index + match[0].length + 1;
+    const sectionEnd = index + 1 < hunkMatches.length ? hunkMatches[index + 1].index : bodyEnd;
+    const rawLines = normalized.slice(sectionStart, sectionEnd).replace(/\n$/, "").split("\n");
+    const expected = rawLines.filter((line) => line[0] !== "+").map((line) => line.slice(1));
+    const positions = matchingLinePositions(currentLines, expected);
+    if (positions.length !== 1) throw new Error("hunk_context_not_unique");
+    if (positions[0] > hashAt) {
+      insertAt = match.index;
+      break;
+    }
+  }
+  return `${normalized.slice(0, insertAt)}@@\n-${beforeLine}\n+${afterLine}\n${normalized.slice(insertAt)}`;
 }
 
 function isBoundScheduledReportPatch(payload) {

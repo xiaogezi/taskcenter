@@ -203,6 +203,34 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   assert.equal(rewriteDecision.hookSpecificOutput.permissionDecision, "allow");
   assert.match(rewriteDecision.hookSpecificOutput.updatedInput.command, /managed_payload_sha256/);
   assert.notEqual(rewriteDecision.hookSpecificOutput.updatedInput.command, staleHashPatch);
+  const rewrittenPatch = rewriteDecision.hookSpecificOutput.updatedInput.command;
+  assert.match(rewrittenPatch, /\n\+- managed_payload_sha256/);
+  assert.doesNotMatch(rewrittenPatch, /@@\n-- managed_payload_sha256/);
+
+  const orderedPatch = [
+    "*** Begin Patch",
+    `*** Update File: ${reportPath}`,
+    "@@",
+    "-# 夜间报告",
+    "+# 夜间报告更新",
+    "@@",
+    "-rolling report",
+    "+rolling report updated",
+    "*** End Patch",
+  ].join("\n");
+  const orderedRewrite = await runHook("pre-tool-use", "codex", {
+    session_id: sessionId,
+    cwd: cyberRoleRoot,
+    tool_name: "apply_patch",
+    tool_input: { command: orderedPatch },
+  });
+  assert.equal(orderedRewrite.code, 0, orderedRewrite.stderr);
+  const orderedCommand = JSON.parse(orderedRewrite.stdout).hookSpecificOutput.updatedInput.command;
+  const headingAt = orderedCommand.indexOf("-# 夜间报告");
+  const hashRepairAt = orderedCommand.indexOf("@@\n-- managed_payload_sha256");
+  const contentChangeAt = orderedCommand.indexOf("-rolling report");
+  assert.ok(headingAt > 0 && headingAt < hashRepairAt && hashRepairAt < contentChangeAt,
+    "hash repair must follow source order between surrounding content hunks");
 
   await writeFile(reportPath, updatedReport);
   const postValid = await runHook("post-tool-use", "codex", {
