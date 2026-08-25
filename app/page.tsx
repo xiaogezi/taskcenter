@@ -703,6 +703,7 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
   const [executionProposalId, setExecutionProposalId] = useState("");
   const [executionMode, setExecutionMode] = useState<"new_session" | "existing_session">("new_session");
   const [executionThreadId, setExecutionThreadId] = useState("");
+  const completedProposalCount = reflections.proposals.filter((proposal) => ["done_claimed", "verified"].includes(proposal.executions?.at(-1)?.taskStatus || "")).length;
 
   const request = async (url: string, body = {}) => {
     setState("loading");
@@ -747,7 +748,7 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
         <div><p className="eyebrow orange">LOCAL REFLECTION LOOP</p><h2>数据反思与改进提案<span>{reflections.proposals.length}</span></h2></div>
         <div className="reflection-controls">
           <small>仅读取 {reflections.dataBoundary.allowedSessionCount} 个白名单 Session 的聚合结果与 {reflections.dataBoundary.taskCount} 条任务记录</small>
-          <button type="button" onClick={() => void request("/reflections/run")} disabled={state === "loading"}>{state === "loading" ? "分析中…" : "运行反思"}</button>
+          <button type="button" onClick={() => void request("/reflections/run")} disabled={state === "loading"}>{state === "loading" ? "分析中…" : completedProposalCount > 0 ? `复查已完成提案（${completedProposalCount}）` : "运行反思"}</button>
         </div>
       </div>
       <p className="reflection-boundary">人工配置提示只引导本机操作，不创建任务；Agent 改进提案采纳后才会选择 Session、建立正式任务并派发。</p>
@@ -757,6 +758,7 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
           {reflections.proposals.map((proposal) => {
             const latestExecution = proposal.executions?.at(-1);
             const executionSession = availableThreads.find((thread) => thread.id === latestExecution?.sessionId);
+            const taskFinished = ["done_claimed", "verified"].includes(latestExecution?.taskStatus || "");
             const executionLabel = latestExecution?.taskStatus === "done_claimed"
               ? "Agent 已声明完成，可再次反思复查"
               : latestExecution?.taskStatus === "verified"
@@ -773,7 +775,7 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
               <dl><div><dt>建议</dt><dd>{proposal.recommendation}</dd></div><div><dt>风险</dt><dd>{proposal.risk}</dd></div></dl>
               <small>证据：{proposal.evidence.map((item) => `${item.metric}=${item.count}${item.taskIds.length ? ` · ${item.taskIds.join("、")}` : ""}`).join("；")}</small>
               {proposal.executionPolicy === "manual_only" && <div className="reflection-execution-state"><strong>这是本机配置提示，不是 Agent 任务</strong><small>保存至少一个 Session 后提示会自动消失。</small><button type="button" onClick={onConfigureAllowlist}>打开会话白名单</button></div>}
-              {latestExecution && <div className="reflection-execution-state"><strong>{executionLabel}</strong><small>正式任务：{latestExecution.taskId}</small><small>执行 Session：{asText(executionSession?.title, latestExecution.sessionId || "正在创建")}</small>{latestExecution.dispatchError && <small className="reflection-execution-error">{latestExecution.dispatchError}</small>}</div>}
+              {latestExecution && <div className="reflection-execution-state"><strong>{executionLabel}</strong><small>正式任务：{latestExecution.taskId}</small><small>执行 Session：{asText(executionSession?.title, latestExecution.sessionId || "正在创建")}</small>{latestExecution.dispatchError && (taskFinished ? <small>历史派发记录（不影响当前完成声明）：{latestExecution.dispatchError}</small> : <small className="reflection-execution-error">{latestExecution.dispatchError}</small>)}</div>}
               {proposal.status === "accepted" && !latestExecution && executionProposalId === proposal.id && (
                 <fieldset className="reflection-executor-picker">
                   <legend>选择执行方式</legend>
@@ -788,7 +790,6 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
                 {proposal.status === "accepted" && proposal.executionPolicy === "agent_task" && !latestExecution && executionProposalId !== proposal.id && <button type="button" onClick={() => setExecutionProposalId(proposal.id)} disabled={state === "loading"}>选择 Session 并执行</button>}
                 {proposal.status === "proposed" && proposal.executionPolicy === "agent_task" && <button type="button" onClick={() => void request(`/reflections/${encodeURIComponent(proposal.id)}/actions`, { decision: "rejected" })} disabled={state === "loading"}>忽略</button>}
                 {proposal.executionPolicy === "agent_task" && ["accepted", "rejected"].includes(proposal.status) && !latestExecution && <button type="button" onClick={() => void request(`/reflections/${encodeURIComponent(proposal.id)}/actions`, { decision: "proposed" })} disabled={state === "loading"}>重新审核</button>}
-                {["done_claimed", "verified"].includes(latestExecution?.taskStatus || "") && <button type="button" onClick={() => void request("/reflections/run")} disabled={state === "loading"}>再次反思验证效果</button>}
               </div>
             </article>
           );})}
