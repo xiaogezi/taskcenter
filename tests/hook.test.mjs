@@ -460,6 +460,8 @@ test("Stop 在 Agent 声称完成但 v2 任务未原子闭环时继续本轮", a
     "> 错误日志：任务完成\n实际仍未完成。",
     "系统返回 `completed`，但验证尚未完成。",
     "```text\n任务完成\n```\n仍需处理。",
+    "上一版已经完成，本轮仍需补测试。",
+    "已完成的任务列表仅供回顾，当前工作仍需处理。",
   ]) {
     const quoted = await runHook("stop", "codex", {
       session_id: sessionId, cwd: "/work", hook_event_name: "Stop", turn_id: "turn-stop-context",

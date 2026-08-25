@@ -1038,9 +1038,10 @@ function claimsFormalCompletion(message) {
   if (!value) return false;
   const completion = /(?:已经|已)(?:经)?(?:完成|修复|实现|处理|交付|部署)|任务完成(?:了)?|可以交付|\b(?:completed|delivered|implemented|fixed)\b/i;
   const negation = /尚未|未完成|没有完成|并未|不是|不算|不可|不能|不得|不要|不应|无法|待完成|仍需|还需/;
+  const historicalContext = /上一(?:版|轮)|此前|之前|曾经|历史|旧(?:版|版本)|原(?:版|版本)|已完成的(?:任务|事项|工作)/;
   return value
     .split(/[。！？!?；;，,\n]+/)
-    .some((segment) => completion.test(segment) && !negation.test(segment));
+    .some((segment) => completion.test(segment) && !negation.test(segment) && !historicalContext.test(segment));
 }
 
 async function resolveCurrentDelegation() {
