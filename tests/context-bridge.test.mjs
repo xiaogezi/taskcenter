@@ -311,6 +311,8 @@ test("TaskCenter 页面同步 strict 任务使用独立控制 Session 和一次�
   assert.equal(attestationInput.payload.taskcenter_task_id, "task-sync");
   assert.deepEqual(attestationInput.payload.subject_ref, completionSubject);
   assert.match(attestationInput.payload.packet_digest, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(calls[2].arguments.project_id, "project-sync");
+  assert.equal(calls[2].arguments.workspace, "/work");
   assert.equal(calls.at(-1).arguments.completion_attestation.confirmed, true);
 });
 

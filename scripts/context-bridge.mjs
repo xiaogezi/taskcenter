@@ -175,6 +175,8 @@ export async function syncContextCompletionFromUi(task, packet, input = {}, opti
         event_id: `taskcenter-context-attach-${requestId}`,
       });
       await dependencies.callTool("context.open_task", {
+        project_id: attached.project_id,
+        workspace: task.workspace,
         client_session_id: clientSessionId,
         task_id: task.contextTaskId,
       });
