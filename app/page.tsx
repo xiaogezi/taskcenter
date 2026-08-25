@@ -646,9 +646,11 @@ function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
   const ratio = (value: number | null | undefined) => value === null || value === undefined ? "数据不足" : `${(value * 100).toFixed(1)}%`;
   const reviews = metrics.reviews;
   return (
-    <section aria-labelledby="governance-title">
-      <p className="eyebrow orange">GOVERNANCE PILOT</p>
-      <h2 id="governance-title">用量与交付效率</h2>
+    <section className="governance-panel" aria-labelledby="governance-title">
+      <header className="governance-heading">
+        <p className="eyebrow orange">GOVERNANCE PILOT</p>
+        <h2 id="governance-title">用量与交付效率</h2>
+      </header>
       {metrics.snapshotStatus?.stale && <p className="session-health-bar unhealthy" role="status">指标快照暂时陈旧，任务与门禁服务仍正常；最近错误：{metrics.snapshotStatus.lastRefreshError || "后台指标尚未完成刷新"}</p>}
       <div className="metrics-grid governance-metrics-grid">
         <article className="metric-card accent-orange"><p>CREDITS / 完成任务</p><strong className="metric-value">{number(metrics.creditsPerCompletedTask, 3)}</strong><span>{metrics.creditsEstimation === "complete" ? "按已配置官方费率估算" : metrics.creditsEstimation === "partial" ? "部分模型缺少官方费率" : "缺少官方费率不套用其他模型"}</span></article>
@@ -658,8 +660,9 @@ function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
         <article className="metric-card"><p>TOKEN 任务归属率</p><strong className="metric-value">{metrics.attributionCoverage ? `${(metrics.attributionCoverage.inputTokenRatio * 100).toFixed(1)}%` : "暂无"}</strong><span>{metrics.attributionCoverage ? `事件归属 ${(metrics.attributionCoverage.eventRatio * 100).toFixed(1)}% · 仅作数据质量检查` : "等待新版指标快照"}</span></article>
         <article className="metric-card"><p>调试案例观察</p><strong className="metric-value">{metrics.diagnostics ? number(metrics.diagnostics.cases, 0) : "暂无"}</strong><span>{metrics.diagnostics ? `已解决 ${number(metrics.diagnostics.resolvedCases, 0)} · 根因 P50 ${duration(metrics.diagnostics.medianTimeToRootCauseMs)}` : "等待显式诊断观察"}</span></article>
       </div>
-      {reviews && <div className="governance-block">
-        <h3>Review 流程诊断</h3>
+      <details className="governance-block governance-review-details">
+        <summary><strong>Review 流程诊断</strong><span>{reviews ? `通过 ${reviews.funnel.approved} · 轮次 P50 ${number(reviews.rounds.perTask.p50)} · 长尾 ${reviews.longTailTasks.length}` : "数据不足"}</span></summary>
+        {reviews && <div className="governance-review-content">
         <div className="metrics-grid governance-metrics-grid">
           <article className="metric-card accent-cyan"><p>REVIEW 漏斗</p><strong className="metric-value">{reviews.funnel.approved}</strong><span>待审 {reviews.funnel.pending_review} · 审查中 {reviews.funnel.reviewing} · 修改中 {reviews.funnel.fixing} · 复审 {reviews.funnel.rereview}</span></article>
           <article className="metric-card"><p>轮次分布</p><strong className="metric-value">{number(reviews.rounds.perTask.p50)}</strong><span>P95 {number(reviews.rounds.perTask.p95)} · 首次通过 {ratio(reviews.rounds.firstPassRate)}</span></article>
@@ -674,9 +677,10 @@ function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
           <span>Finding 分类：{Object.entries(reviews.findings.byCategory).length ? Object.entries(reviews.findings.byCategory).map(([category, count]) => `${category} ${count}`).join(" · ") : "数据不足"}</span>
           <span>长尾任务：{reviews.longTailTasks.length ? reviews.longTailTasks.map((task) => `${task.taskId}（${task.warnings.join("、")}）`).join("；") : "暂无"}</span>
         </div>
-        <p className="privacy-note">{reviews.note} 墙钟时间与调用方明确上报的 active time 分开展示；缺失阶段事件时显示“数据不足”。</p>
-      </div>}
-      <p className="privacy-note">比较口径：按 workflow profile、任务类别和模型匹配，并支持多个交替窗口；归属率和调试指标只用于发现数据与流程瓶颈，不参与绩效或门禁。</p>
+        <p className="governance-note">{reviews.note} 墙钟时间与调用方明确上报的 active time 分开展示；缺失阶段事件时显示“数据不足”。</p>
+        </div>}
+        <p className="governance-note">比较口径：按 workflow profile、任务类别和模型匹配，并支持多个交替窗口；归属率和调试指标只用于发现数据与流程瓶颈，不参与绩效或门禁。</p>
+      </details>
     </section>
   );
 }

@@ -205,15 +205,26 @@ button { cursor: pointer; }
 .card-detail-block { border-left: 2px solid var(--orange); margin: 0 0 14px; padding-left: 10px; }
 .detail-label { color: var(--muted); display: block; font-size: 10px; font-weight: 700; letter-spacing: .08em; margin-bottom: 4px; }
 .card-detail-block p { color: var(--ink); font-size: 12px; line-height: 1.55; margin: 0; }
-.governance-block { border-top: 1px dashed var(--line); margin-top: 12px; padding-top: 11px; }
-.governance-block h3 { font-size: 15px; margin: 0 0 8px; }
-.governance-metrics-grid { gap: 8px; grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 14px; }
-.governance-metrics-grid .metric-card { border-left-width: 3px; min-height: 86px; padding: 10px 12px; }
-.governance-metrics-grid .metric-card p { font-size: 10px; line-height: 1.25; margin-bottom: 7px; }
-.governance-metrics-grid .metric-value { font-size: 28px; }
-.governance-metrics-grid .metric-card > span { font-size: 10px; line-height: 1.35; margin-top: 7px; }
+.governance-panel { margin-bottom: 12px; }
+.governance-heading { align-items: baseline; display: flex; gap: 10px; margin-bottom: 7px; }
+.governance-heading p, .governance-heading h2 { margin: 0; }
+.governance-heading h2 { font-size: 18px; font-weight: 500; }
+.governance-block { border-top: 1px dashed var(--line); margin-top: 7px; }
+.governance-review-details > summary { align-items: center; color: var(--ink-soft); cursor: pointer; display: flex; gap: 8px; list-style: none; min-height: 30px; padding: 5px 0; }
+.governance-review-details > summary::-webkit-details-marker { display: none; }
+.governance-review-details > summary::before { color: var(--orange); content: "+"; font-size: 15px; line-height: 1; }
+.governance-review-details[open] > summary::before { content: "−"; }
+.governance-review-details > summary strong { font-size: 12px; }
+.governance-review-details > summary span { color: var(--muted); font-size: 10px; }
+.governance-review-content { padding-top: 5px; }
+.governance-metrics-grid { gap: 6px; grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 8px; }
+.governance-metrics-grid .metric-card { border-left-width: 3px; box-shadow: 0 5px 12px rgba(17, 36, 59, .05); min-height: 66px; padding: 7px 9px; }
+.governance-metrics-grid .metric-card p { font-size: 9px; line-height: 1.2; margin-bottom: 4px; }
+.governance-metrics-grid .metric-value { font-size: 23px; }
+.governance-metrics-grid .metric-card > span { font-size: 9px; line-height: 1.25; margin-top: 4px; }
 .governance-list { color: var(--ink-soft); display: grid; font-size: 11px; gap: 4px; line-height: 1.5; margin: 0; padding-left: 18px; }
 .governance-list li::marker { color: var(--orange); }
+.governance-note { background: var(--cyan-pale); border-radius: 8px; color: var(--ink-soft); font-size: 10px; line-height: 1.45; margin: 8px 0 0; padding: 8px 10px; }
 .evidence-block { border-top: 1px dashed var(--line); padding-top: 11px; }
 .evidence-list { display: flex; flex-direction: column; gap: 3px; }
 .evidence-list span { color: var(--ink-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -108,3 +108,11 @@ test("服务端渲染 TaskCenter 看板", async () => {
   assert.doesNotMatch(html, /需求卡片/);
   assert.doesNotMatch(html, /react-loading-skeleton/);
 });
+
+test("治理 Review 诊断默认折叠并保留完整内容", async () => {
+  const source = await readFile(new URL("app/page.tsx", root), "utf8");
+  assert.match(source, /<details className="governance-block governance-review-details">/);
+  assert.match(source, /Review 流程诊断/);
+  assert.match(source, /governance-review-content/);
+  assert.doesNotMatch(source, /<details className="governance-block governance-review-details" open/);
+});
