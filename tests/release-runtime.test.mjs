@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { buildReleaseEnvironment, resolveStartupRelease, resolveStopTarget } from "../scripts/release-runtime.mjs";
+import { buildReleaseEnvironment, resolveManagedProcessState, resolveStartupRelease, resolveStopTarget } from "../scripts/release-runtime.mjs";
 import { isProcessTreeAlive, terminateProcessTree } from "../scripts/process-tree.mjs";
 
 test("正式 release 从不可变源码运行但继续绑定正式数据目录", () => {
@@ -57,6 +57,53 @@ test("候选停止使用持久化 PID 和 token，不依赖 heartbeat 新鲜度"
   assert.equal(resolveStopTarget(state), state);
   assert.equal(resolveStopTarget({ pid: 42, token: "" }), null);
   assert.equal(resolveStopTarget({ pid: 0, token: "candidate" }), null);
+});
+
+test("新鲜 heartbeat 识别为正常受管理进程", () => {
+  const state = { pid: 42, token: "managed" };
+  const result = resolveManagedProcessState(state, {
+    pid: 42, token: "managed", updatedAt: "2026-08-25T10:00:00.000Z",
+  }, null, {
+    now: Date.parse("2026-08-25T10:00:01.000Z"),
+    platform: "darwin",
+    isPidAlive: () => true,
+  });
+  assert.equal(result.supervision, "healthy");
+});
+
+test("Unix 完整孤儿 release 进程组可被受控部署接管", () => {
+  const state = { pid: 42, token: "managed", revision: "abc" };
+  const children = ["watch-codex", "metrics-worker", "control-server", "web"]
+    .map((name, index) => ({ name, pid: 50 + index }));
+  const result = resolveManagedProcessState(state, {
+    pid: 42, token: "managed", updatedAt: "2026-08-25T09:00:00.000Z",
+  }, { parentPid: 42, token: "managed", children }, {
+    now: Date.parse("2026-08-25T10:00:00.000Z"),
+    platform: "darwin",
+    isPidAlive: (pid) => pid >= 50,
+    isTreeAlive: (pid) => pid === 42,
+    isExpectedChild: (child, parentPid) => parentPid === 42 && children.includes(child),
+  });
+  assert.equal(result.supervision, "orphaned");
+});
+
+test("孤儿恢复在 Windows 或证据不完整时保持 fail-closed", () => {
+  const state = { pid: 42, token: "managed" };
+  const full = {
+    parentPid: 42,
+    token: "managed",
+    children: ["watch-codex", "metrics-worker", "control-server", "web"].map((name, index) => ({ name, pid: 50 + index })),
+  };
+  const options = {
+    now: Date.parse("2026-08-25T10:00:00.000Z"),
+    isPidAlive: () => true,
+    isTreeAlive: () => true,
+    isExpectedChild: () => true,
+  };
+  assert.equal(resolveManagedProcessState(state, null, full, { ...options, platform: "win32" }), null);
+  assert.equal(resolveManagedProcessState(state, null, { ...full, token: "other" }, { ...options, platform: "darwin" }), null);
+  assert.equal(resolveManagedProcessState(state, null, { ...full, children: full.children.slice(1) }, { ...options, platform: "darwin" }), null);
+  assert.equal(resolveManagedProcessState(state, null, full, { ...options, platform: "darwin", isExpectedChild: () => false }), null);
 });
 
 test("Unix 候选停止针对完整进程组而不是单个 PID", async () => {

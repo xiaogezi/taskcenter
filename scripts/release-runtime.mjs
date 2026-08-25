@@ -64,3 +64,33 @@ export function resolveStopTarget(state) {
   if (!Number.isInteger(state?.pid) || state.pid <= 0 || typeof state.token !== "string" || !state.token) return null;
   return state;
 }
+
+const requiredManagedChildren = ["watch-codex", "metrics-worker", "control-server", "web"];
+
+export function resolveManagedProcessState(state, heartbeat, childSnapshot, options = {}) {
+  if (!Number.isInteger(state?.pid) || state.pid <= 0 || typeof state.token !== "string" || !state.token) return null;
+  const now = Number(options.now ?? Date.now());
+  const heartbeatAt = Date.parse(heartbeat?.updatedAt || "");
+  const heartbeatMatches = heartbeat?.pid === state.pid && heartbeat?.token === state.token;
+  if (
+    heartbeatMatches
+    && Number.isFinite(heartbeatAt)
+    && now - heartbeatAt <= 5_000
+    && options.isPidAlive?.(state.pid) === true
+  ) {
+    return { ...state, supervision: "healthy" };
+  }
+
+  // Windows 没有可验证的持久 process group / Job Object 身份，保持 fail-closed。
+  if ((options.platform || process.platform) === "win32") return null;
+  if (childSnapshot?.parentPid !== state.pid || childSnapshot?.token !== state.token) return null;
+  if (options.isTreeAlive?.(state.pid) !== true) return null;
+  const children = Array.isArray(childSnapshot.children) ? childSnapshot.children : [];
+  const byName = new Map(children.map((child) => [child?.name, child]));
+  if (requiredManagedChildren.some((name) => !byName.has(name))) return null;
+  const required = requiredManagedChildren.map((name) => byName.get(name));
+  if (new Set(required.map((child) => child?.pid)).size !== required.length) return null;
+  if (required.some((child) => !Number.isInteger(child?.pid) || child.pid <= 0 || options.isPidAlive?.(child.pid) !== true)) return null;
+  if (required.some((child) => options.isExpectedChild?.(child, state.pid) !== true)) return null;
+  return { ...state, supervision: "orphaned" };
+}

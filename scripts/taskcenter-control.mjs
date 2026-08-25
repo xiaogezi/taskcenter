@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -15,7 +15,7 @@ import { connect, createServer } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendReleaseEvent, loadReleaseEvents, summarizeReleaseEvents } from "./release-history.mjs";
-import { buildReleaseEnvironment, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
+import { buildReleaseEnvironment, resolveManagedProcessState, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.mjs";
 import { cutoverWithRollback, verifyBeforeServiceCutover } from "./service-deployment-policy.mjs";
@@ -155,6 +155,9 @@ async function deployService() {
   const original = readManagedProcess();
   if (!original || !(await healthCheck())) {
     throw new Error("部署已阻止：当前 TaskCenter 未处于健康运行状态。请先恢复原服务，不要用部署流程掩盖运行故障。");
+  }
+  if (original.supervision === "orphaned") {
+    console.warn(`TaskCenter 检测到 supervisor 已退出，但 PID group ${original.pid} 的完整 release 进程与健康端口一致；本次受控部署将接管并替换该进程组。`);
   }
   const revision = await gitOutput(["rev-parse", "HEAD"]);
   const previousRevision = original.revision || await inferRunningRevision(original.startedAt, revision);
@@ -492,10 +495,32 @@ async function statusService() {
 function readManagedProcess() {
   const state = readJson(statePath);
   const heartbeat = readJson(heartbeatPath);
-  if (!state?.pid || !state?.token || heartbeat?.pid !== state.pid || heartbeat?.token !== state.token) return null;
-  const updatedAt = Date.parse(heartbeat.updatedAt || "");
-  if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > 5_000) return null;
-  return isProcessAlive(state.pid) ? state : null;
+  const childSnapshot = readJson(resolve(runtimeDir, "web-children.json"));
+  return resolveManagedProcessState(state, heartbeat, childSnapshot, {
+    platform: process.platform,
+    now: Date.now(),
+    isPidAlive: isProcessAlive,
+    isTreeAlive: isProcessTreeAlive,
+    isExpectedChild: matchesManagedChildProcess,
+  });
+}
+
+function matchesManagedChildProcess(child, parentPid) {
+  const expected = {
+    "watch-codex": "scripts/watch-codex.mjs",
+    "metrics-worker": "scripts/metrics-worker.mjs",
+    "control-server": "scripts/control-server.mjs",
+    web: "vinext",
+  }[child.name];
+  if (!expected) return false;
+  const result = spawnSync("ps", ["-p", String(child.pid), "-o", "pgid=,command="], {
+    encoding: "utf8",
+    timeout: 2_000,
+    windowsHide: true,
+  });
+  if (result.status !== 0) return false;
+  const match = String(result.stdout || "").trim().match(/^(\d+)\s+(.+)$/s);
+  return Boolean(match && Number(match[1]) === parentPid && match[2].includes(expected));
 }
 
 function isProcessAlive(pid) {
