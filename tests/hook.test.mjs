@@ -448,6 +448,27 @@ test("Stop 在 Agent 声称完成但 v2 任务未原子闭环时继续本轮", a
   assert.equal(blockedOutput.decision, "block");
   assert.match(blockedOutput.reason, /taskcenter_task_close/);
 
+  const repeated = await runHook("stop", "codex", {
+    session_id: sessionId, cwd: "/work", hook_event_name: "Stop", turn_id: "turn-stop-repeated",
+    stop_hook_active: true, last_assistant_message: "修复已经完成，可以交付。",
+  });
+  assert.equal(repeated.code, 0);
+  assert.equal(JSON.parse(repeated.stdout).continue, true);
+
+  for (const lastAssistantMessage of [
+    "不要向用户说“任务完成”，当前仍需补测试。",
+    "> 错误日志：任务完成\n实际仍未完成。",
+    "系统返回 `completed`，但验证尚未完成。",
+    "```text\n任务完成\n```\n仍需处理。",
+  ]) {
+    const quoted = await runHook("stop", "codex", {
+      session_id: sessionId, cwd: "/work", hook_event_name: "Stop", turn_id: "turn-stop-context",
+      stop_hook_active: false, last_assistant_message: lastAssistantMessage,
+    });
+    assert.equal(quoted.code, 0);
+    assert.equal(JSON.parse(quoted.stdout).continue, true, lastAssistantMessage);
+  }
+
   const closed = await fetch(`${base}/task-events`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },

@@ -995,6 +995,9 @@ async function provideTaskPreparationContext() {
 }
 
 async function completionStopDecision() {
+  // Codex sets this after a Stop hook has already blocked once. Blocking again
+  // would create an automatic continuation loop with no new user input.
+  if (event.stop_hook_active === true) return { continue: true };
   if (!claimsFormalCompletion(event.last_assistant_message)) return { continue: true };
   const payload = await request("GET", "/tasks");
   const owned = (payload.tasks || [])
@@ -1025,9 +1028,19 @@ async function completionStopDecision() {
 }
 
 function claimsFormalCompletion(message) {
-  const value = String(message || "").trim();
+  const value = String(message || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^\s*>.*$/gm, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/[“「『][^”」』\n]*[”」』]/g, " ")
+    .replace(/"[^"\n]*"/g, " ")
+    .trim();
   if (!value) return false;
-  return /(?:已经|已)(?:经)?(?:完成|修复|实现|处理|交付|部署)|任务完成(?:了)?|可以交付|\b(?:completed|delivered|implemented|fixed)\b/i.test(value);
+  const completion = /(?:已经|已)(?:经)?(?:完成|修复|实现|处理|交付|部署)|任务完成(?:了)?|可以交付|\b(?:completed|delivered|implemented|fixed)\b/i;
+  const negation = /尚未|未完成|没有完成|并未|不是|不算|不可|不能|不得|不要|不应|无法|待完成|仍需|还需/;
+  return value
+    .split(/[。！？!?；;，,\n]+/)
+    .some((segment) => completion.test(segment) && !negation.test(segment));
 }
 
 async function resolveCurrentDelegation() {
