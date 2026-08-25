@@ -703,7 +703,7 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
   const [executionProposalId, setExecutionProposalId] = useState("");
   const [executionMode, setExecutionMode] = useState<"new_session" | "existing_session">("new_session");
   const [executionThreadId, setExecutionThreadId] = useState("");
-  const completedProposalCount = reflections.proposals.filter((proposal) => ["done_claimed", "verified"].includes(proposal.executions?.at(-1)?.taskStatus || "")).length;
+  const completedProposalCount = reflections.proposals.filter((proposal) => proposal.status === "accepted" && ["done_claimed", "verified"].includes(proposal.executions?.at(-1)?.taskStatus || "")).length;
 
   const request = async (url: string, body = {}) => {
     setState("loading");

@@ -129,6 +129,7 @@ test("会话主动任务只保留一套生命周期筛选", async () => {
 test("已完成反思提案使用单一全局复查入口并降级历史派发错误", async () => {
   const source = await readFile(new URL("app/page.tsx", root), "utf8");
   assert.match(source, /复查已完成提案/);
+  assert.match(source, /proposal\.status === "accepted"/);
   assert.match(source, /历史派发记录（不影响当前完成声明）/);
   assert.doesNotMatch(source, />再次反思验证效果</);
 });
