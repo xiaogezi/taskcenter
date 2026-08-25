@@ -116,3 +116,12 @@ test("治理 Review 诊断默认折叠并保留完整内容", async () => {
   assert.match(source, /governance-review-content/);
   assert.doesNotMatch(source, /<details className="governance-block governance-review-details" open/);
 });
+
+test("会话主动任务只保留一套生命周期筛选", async () => {
+  const source = await readFile(new URL("app/page.tsx", root), "utf8");
+  assert.match(source, /aria-label="未完成任务阶段筛选"/);
+  assert.match(source, /aria-label="任务终态"/);
+  assert.doesNotMatch(source, /需要关注：/);
+  assert.doesNotMatch(source, /aria-label="时间筛选"/);
+  assert.doesNotMatch(source, /attentionCounts/);
+});

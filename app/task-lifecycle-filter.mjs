@@ -1,4 +1,4 @@
-import { STALE_TASK_MS } from "./task-time-state.mjs";
+import { STALE_TASK_MS, taskTimeState } from "./task-time-state.mjs";
 
 export const taskLifecycleFilters = [
   { id: "all", label: "全部" },
@@ -6,6 +6,7 @@ export const taskLifecycleFilters = [
   { id: "planned", label: "待开始" },
   { id: "in_progress", label: "执行中" },
   { id: "blocked", label: "阻塞" },
+  { id: "overdue", label: "交付逾期" },
   { id: "stale", label: "陈旧未闭环" },
   { id: "needs_verification", label: "验证未就绪" },
   { id: "needs_review", label: "Review 未就绪" },
@@ -43,6 +44,7 @@ export function matchesTaskLifecycleFilter(task, filter, now = Date.now()) {
   if (!isActiveTask(task)) return false;
 
   const reasons = new Set(task?.completionReadiness?.reasons || []);
+  if (filter === "overdue") return taskTimeState(task, now).overdue;
   if (filter === "stale") {
     const updatedAt = Date.parse(String(task?.updatedAt || ""));
     return Number.isFinite(updatedAt) && now - updatedAt > STALE_TASK_MS;

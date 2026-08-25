@@ -17,7 +17,7 @@ test("顶部生命周期筛选区分未完成阶段与终态", () => {
   const tasks = [
     active,
     { id: "planned", status: "planned", updatedAt: "2026-08-25T11:00:00.000Z", verificationStatus: "pending", completionReadiness: { reasons: ["required_verification_missing"] } },
-    { id: "blocked", status: "blocked", updatedAt: "2026-08-25T10:00:00.000Z", reviewStatus: "not_required", completionReadiness: { reasons: [] } },
+    { id: "blocked", status: "blocked", dueAt: "2026-08-25T11:00:00.000Z", updatedAt: "2026-08-25T10:00:00.000Z", reviewStatus: "not_required", completionReadiness: { reasons: [] } },
     { id: "done", status: "done_claimed", updatedAt: "2026-08-25T09:00:00.000Z", completionReadiness: { reasons: [] } },
     { id: "archived", status: "in_progress", archivedAt: "2026-08-25T08:00:00.000Z", completionReadiness: { reasons: ["required_verification_missing"] } },
   ];
@@ -27,6 +27,7 @@ test("顶部生命周期筛选区分未完成阶段与终态", () => {
   assert.equal(counts.planned, 1);
   assert.equal(counts.in_progress, 1);
   assert.equal(counts.blocked, 1);
+  assert.equal(counts.overdue, 1);
   assert.equal(counts.stale, 1);
   assert.equal(counts.needs_verification, 1);
   assert.equal(counts.needs_review, 1);
@@ -37,6 +38,14 @@ test("证据与 Review 筛选只包含未完成且未归档任务", () => {
   assert.equal(matchesTaskLifecycleFilter(active, "stale_evidence", now), true);
   assert.equal(matchesTaskLifecycleFilter({ ...active, status: "done_claimed" }, "stale_evidence", now), false);
   assert.equal(matchesTaskLifecycleFilter({ ...active, archivedAt: "2026-08-25T10:00:00.000Z" }, "needs_review", now), false);
+});
+
+test("交付逾期只包含设置 dueAt 的未完成且未归档任务", () => {
+  const overdue = { ...active, dueAt: "2026-08-25T11:00:00.000Z" };
+  assert.equal(matchesTaskLifecycleFilter(overdue, "overdue", now), true);
+  assert.equal(matchesTaskLifecycleFilter({ ...overdue, status: "done_claimed" }, "overdue", now), false);
+  assert.equal(matchesTaskLifecycleFilter({ ...overdue, archivedAt: "2026-08-25T11:30:00.000Z" }, "overdue", now), false);
+  assert.equal(matchesTaskLifecycleFilter({ ...active, dueAt: undefined }, "overdue", now), false);
 });
 
 test("未闭环原因转换为可读标签并去重", () => {
