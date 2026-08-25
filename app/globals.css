@@ -206,6 +206,12 @@ button { cursor: pointer; }
 .detail-label { color: var(--muted); display: block; font-size: 10px; font-weight: 700; letter-spacing: .08em; margin-bottom: 4px; }
 .card-detail-block p { color: var(--ink); font-size: 12px; line-height: 1.55; margin: 0; }
 .governance-block { border-top: 1px dashed var(--line); margin-top: 12px; padding-top: 11px; }
+.governance-block h3 { font-size: 15px; margin: 0 0 8px; }
+.governance-metrics-grid { gap: 8px; grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 14px; }
+.governance-metrics-grid .metric-card { border-left-width: 3px; min-height: 86px; padding: 10px 12px; }
+.governance-metrics-grid .metric-card p { font-size: 10px; line-height: 1.25; margin-bottom: 7px; }
+.governance-metrics-grid .metric-value { font-size: 28px; }
+.governance-metrics-grid .metric-card > span { font-size: 10px; line-height: 1.35; margin-top: 7px; }
 .governance-list { color: var(--ink-soft); display: grid; font-size: 11px; gap: 4px; line-height: 1.5; margin: 0; padding-left: 18px; }
 .governance-list li::marker { color: var(--orange); }
 .evidence-block { border-top: 1px dashed var(--line); padding-top: 11px; }
@@ -608,6 +614,9 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
   .metrics-grid { gap: 8px; }
   .metric-card { padding: 16px; }
   .metric-value { font-size: 34px; }
+  .governance-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .governance-metrics-grid .metric-card { padding: 10px 12px; }
+  .governance-metrics-grid .metric-value { font-size: 28px; }
   .requirement-list-item { grid-template-columns: 1fr; }
   .list-side { align-items: flex-start; min-width: 0; width: 100%; }
   .list-actions { align-items: flex-start; width: 100%; }
@@ -630,6 +639,10 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
   .metric-card p { margin-bottom: 13px; }
   .metric-value { font-size: 32px; }
   .metric-card > span { font-size: 10px; margin-top: 11px; }
+  .governance-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 18px; }
+  .governance-metrics-grid .metric-card { min-height: 94px; padding: 10px; }
+  .governance-metrics-grid .metric-card p { margin-bottom: 7px; }
+  .governance-metrics-grid .metric-card > span { margin-top: 7px; }
   .content-layout { display: block; }
   .thread-rail { border-bottom: 1px solid var(--line); border-right: 0; min-height: auto; padding: 0 0 19px; }
   .thread-item { display: inline-flex; margin-right: 6px; min-height: 45px; padding: 8px 10px; width: auto; }

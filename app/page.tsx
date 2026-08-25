@@ -649,7 +649,7 @@ function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
       <p className="eyebrow orange">GOVERNANCE PILOT</p>
       <h2 id="governance-title">用量与交付效率</h2>
       {metrics.snapshotStatus?.stale && <p className="session-health-bar unhealthy" role="status">指标快照暂时陈旧，任务与门禁服务仍正常；最近错误：{metrics.snapshotStatus.lastRefreshError || "后台指标尚未完成刷新"}</p>}
-      <div className="metrics-grid">
+      <div className="metrics-grid governance-metrics-grid">
         <article className="metric-card accent-orange"><p>CREDITS / 完成任务</p><strong className="metric-value">{number(metrics.creditsPerCompletedTask, 3)}</strong><span>{metrics.creditsEstimation === "complete" ? "按已配置官方费率估算" : metrics.creditsEstimation === "partial" ? "部分模型缺少官方费率" : "缺少官方费率不套用其他模型"}</span></article>
         <article className="metric-card accent-cyan"><p>模型续调 / 任务</p><strong className="metric-value">{number(metrics.modelContinuationsPerTask)}</strong><span>完成任务 {metrics.completedTasks} 条</span></article>
         <article className="metric-card accent-lime"><p>INPUT TOKENS</p><strong className="metric-value">{number(metrics.inputTokens.p50, 0)}</strong><span>均值 {number(metrics.inputTokens.average, 0)} · P95 {number(metrics.inputTokens.p95, 0)}</span></article>
@@ -659,7 +659,7 @@ function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
       </div>
       {reviews && <div className="governance-block">
         <h3>Review 流程诊断</h3>
-        <div className="metrics-grid">
+        <div className="metrics-grid governance-metrics-grid">
           <article className="metric-card accent-cyan"><p>REVIEW 漏斗</p><strong className="metric-value">{reviews.funnel.approved}</strong><span>待审 {reviews.funnel.pending_review} · 审查中 {reviews.funnel.reviewing} · 修改中 {reviews.funnel.fixing} · 复审 {reviews.funnel.rereview}</span></article>
           <article className="metric-card"><p>轮次分布</p><strong className="metric-value">{number(reviews.rounds.perTask.p50)}</strong><span>P95 {number(reviews.rounds.perTask.p95)} · 首次通过 {ratio(reviews.rounds.firstPassRate)}</span></article>
           <article className="metric-card"><p>REVIEW 时间构成 P50</p><strong className="metric-value">{duration(reviews.timeMs.wall.p50)}</strong><span>等待 {duration(reviews.timeMs.wait.p50)} · 审查 {duration(reviews.timeMs.reviewElapsed.p50)} · 修复 {duration(reviews.timeMs.fixElapsed.p50)} · 验证 {duration(reviews.timeMs.verificationElapsed.p50)}</span></article>
