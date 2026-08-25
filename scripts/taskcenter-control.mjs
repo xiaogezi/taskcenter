@@ -358,18 +358,29 @@ async function waitForHealth(targetRuntimeDir, webPort, targetControlPort) {
 
 async function stopManagedAt(targetRuntimeDir, webPort, targetControlPort) {
   const state = resolveStopTarget(readJson(resolve(targetRuntimeDir, "web-state.json")));
+  const launchIntent = readJson(resolve(targetRuntimeDir, "web-launch-intent.json"));
+  const childPids = managedChildPids(targetRuntimeDir);
   if (!state) {
-    if (await healthCheckAt(webPort, targetControlPort)) {
-      throw new Error("候选实例缺少可验证 PID/token 且端口仍在服务，已保留候选目录供排障。");
+    const liveChildren = childPids.filter(isProcessAlive);
+    if (launchIntent || liveChildren.length || await healthCheckAt(webPort, targetControlPort)) {
+      throw new Error("候选实例缺少可验证 PID/token，但仍存在启动意图、子进程或服务端口；已保留候选目录供排障。");
     }
     return;
   }
   writeJson(resolve(targetRuntimeDir, "web-stop.json"), { token: state.token, requestedAt: new Date().toISOString() });
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (!isProcessAlive(state.pid) && !(await healthCheckAt(webPort, targetControlPort))) return;
+    const processTreeStopped = !isProcessAlive(state.pid) && childPids.every((pid) => !isProcessAlive(pid));
+    if (processTreeStopped && !(await healthCheckAt(webPort, targetControlPort))) return;
     await sleep(200);
   }
-  throw new Error("候选实例停止超时，未强制结束进程。");
+  throw new Error("候选实例进程树或端口停止超时，已保留候选目录供排障。");
+}
+
+function managedChildPids(targetRuntimeDir) {
+  const snapshot = readJson(resolve(targetRuntimeDir, "web-children.json"));
+  return Array.isArray(snapshot?.children)
+    ? snapshot.children.map((child) => Number(child?.pid)).filter((pid) => Number.isInteger(pid) && pid > 0)
+    : [];
 }
 
 function readManagedProcessAt(targetRuntimeDir) {
@@ -575,7 +586,14 @@ function rotateLog() {
 }
 
 function cleanupRuntimeFiles() {
-  for (const path of [statePath, heartbeatPath, stopPath, resolve(runtimeDir, "web.pid")]) {
+  for (const path of [
+    statePath,
+    heartbeatPath,
+    stopPath,
+    resolve(runtimeDir, "web.pid"),
+    resolve(runtimeDir, "web-children.json"),
+    resolve(runtimeDir, "web-launch-intent.json"),
+  ]) {
     rmSync(path, { force: true });
   }
 }

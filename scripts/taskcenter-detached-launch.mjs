@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { closeSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
@@ -13,14 +13,17 @@ const logDir = resolve(process.env.TASKCENTER_LOG_DIR || resolve(projectRoot, ".
 const logPath = resolve(logDir, "web.log");
 const pidPath = resolve(runtimeDir, "web.pid");
 const statePath = resolve(runtimeDir, "web-state.json");
+const launchIntentPath = resolve(runtimeDir, "web-launch-intent.json");
 const token = randomUUID();
 
 mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(logDir, { recursive: true });
 
 const log = openSync(logPath, "a");
+let child;
 try {
-  const child = spawn(process.execPath, [resolve(projectRoot, "scripts/dev-live.mjs")], {
+  writeFileSync(launchIntentPath, `${JSON.stringify({ token, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+  child = spawn(process.execPath, [resolve(projectRoot, "scripts/dev-live.mjs")], {
     cwd: projectRoot,
     env: { ...process.env, TASKCENTER_LAUNCH_TOKEN: token, TASKCENTER_RUNTIME_DIR: runtimeDir },
     detached: true,
@@ -37,7 +40,12 @@ try {
     releaseId: process.env.TASKCENTER_RELEASE_ID || "",
     webMode: process.env.TASKCENTER_WEB_MODE || "dev",
   }, null, 2)}\n`, { mode: 0o600 });
+  rmSync(launchIntentPath, { force: true });
   child.unref();
+} catch (error) {
+  child?.kill("SIGTERM");
+  rmSync(launchIntentPath, { force: true });
+  throw error;
 } finally {
   closeSync(log);
 }

@@ -8,6 +8,7 @@ const projectRoot = resolve(process.env.TASKCENTER_SOURCE_ROOT || fileURLToPath(
 const runtimeDir = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local/runtime"));
 const heartbeatPath = resolve(runtimeDir, "web-heartbeat.json");
 const stopPath = resolve(runtimeDir, "web-stop.json");
+const childrenPath = resolve(runtimeDir, "web-children.json");
 const launchToken = process.env.TASKCENTER_LAUNCH_TOKEN || "";
 const webArgs = process.env.TASKCENTER_WEB_PORT ? ["--port", process.env.TASKCENTER_WEB_PORT] : [];
 const webMode = process.env.TASKCENTER_WEB_MODE === "start" ? "start" : "dev";
@@ -32,8 +33,10 @@ function start(spec) {
     stdio: "inherit",
   });
   children.set(spec.name, child);
+  persistChildren();
   child.once("exit", (code, signal) => {
     if (children.get(spec.name) === child) children.delete(spec.name);
+    persistChildren();
     if (shuttingDown) return;
     console.error(`[dev-live] ${spec.name} exited (${signal || code}); restarting in 1s`);
     const timer = setTimeout(() => {
@@ -63,25 +66,63 @@ if (launchToken) {
   heartbeatTimer.unref();
 }
 
+let shutdownPromise;
 function shutdown() {
+  if (shutdownPromise) return shutdownPromise;
   if (shuttingDown) return;
   shuttingDown = true;
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   for (const timer of restartTimers) clearTimeout(timer);
   restartTimers.clear();
-  for (const child of children.values()) child.kill("SIGTERM");
+  shutdownPromise = finishShutdown([...children.values()]);
+  return shutdownPromise;
+}
+
+async function finishShutdown(runningChildren) {
+  for (const child of runningChildren) child.kill("SIGTERM");
+  const exitedGracefully = await waitForChildren(runningChildren, 5_000);
+  if (!exitedGracefully) {
+    for (const child of runningChildren) {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+    await Promise.all(runningChildren.map(waitForChildExit));
+  }
   if (launchToken) {
     const heartbeat = readJson(heartbeatPath);
     if (heartbeat?.pid === process.pid && heartbeat?.token === launchToken) {
       rmSync(heartbeatPath, { force: true });
       rmSync(stopPath, { force: true });
+      rmSync(childrenPath, { force: true });
     }
   }
   process.exit(0);
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => { void shutdown(); });
+process.on("SIGTERM", () => { void shutdown(); });
+
+function persistChildren() {
+  if (!launchToken) return;
+  mkdirSync(runtimeDir, { recursive: true });
+  writeFileSync(childrenPath, `${JSON.stringify({
+    parentPid: process.pid,
+    token: launchToken,
+    children: [...children.entries()].map(([name, child]) => ({ name, pid: child.pid })),
+    updatedAt: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+}
+
+function waitForChildren(runningChildren, timeoutMs) {
+  return Promise.race([
+    Promise.all(runningChildren.map(waitForChildExit)).then(() => true),
+    new Promise((resolvePromise) => setTimeout(() => resolvePromise(false), timeoutMs)),
+  ]);
+}
+
+function waitForChildExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolvePromise) => child.once("exit", resolvePromise));
+}
 
 function readJson(path) {
   if (!existsSync(path)) return null;
