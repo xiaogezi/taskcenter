@@ -79,6 +79,13 @@ function taskHeaders() {
   };
 }
 
+function legacyTaskHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "X-ReqRadar-Task": "mcp",
+  };
+}
+
 async function runTaskcenterHook(base, payload) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ["scripts/taskcenter-hook.mjs", "pre-tool-use", "--agent", "codex"], {
@@ -138,7 +145,7 @@ server.registerTool("context.report_observation", { inputSchema: schema }, async
 });
 server.registerTool("context.complete_task", { inputSchema: schema }, async (input) => {
   const state = load();
-  state.calls.push({ name: "context.complete_task", eventId: input.event_id });
+  state.calls.push({ name: "context.complete_task", eventId: input.event_id, taskCenterTaskId: input.taskcenter_task_id });
   save(state);
   return result({ accepted: true });
 });
@@ -383,6 +390,10 @@ test("Context semantic task 跨 Turn 复用同一执行任务，只有 complete 
   assert.equal(second.task.status, "in_progress");
 
   const completed = completeContextTasks({ context_task_id: "context-semantic-1", summary: "设计完成" });
+  assert.equal(completed.accepted, true);
+  assert.equal(completed.completionPacket.schemaVersion, "taskcenter-completion-v2");
+  assert.equal(completed.completionPacket.taskId, first.task.id);
+  assert.equal(completed.completionPacket.completionReadiness.completionClaim.allowed, true);
   assert.equal(completed.completed.length, 1);
   assert.equal(completed.completed[0].status, "done_claimed");
 
@@ -399,6 +410,34 @@ test("Context semantic task 跨 Turn 复用同一执行任务，只有 complete 
   const completedAgain = completeContextTasks({ context_task_id: "context-semantic-1", summary: "补充工作完成" });
   assert.equal(completedAgain.completed.length, 1);
   assert.equal(completedAgain.completed[0].status, "done_claimed");
+});
+
+test("正式 TaskCenter 任务未满足 Completion Packet 门禁时不能完成 Context", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "session.register", event_id: "packet-session", session_id: "packet-session", workspace: "/work", agent: "codex" });
+  recordTaskEvent({
+    type: "task.create",
+    event_id: "packet-task-create",
+    task_id: "packet-task",
+    context_task_id: "context-packet",
+    session_id: "packet-session",
+    title: "严格任务",
+    goal: "严格完成",
+    status: "done_claimed",
+    evidence: ["实现声明"],
+    contract_version: "v2",
+    scope: ["scripts/"],
+    non_goals: [],
+    workflow_profile: "strict",
+    review_policy: "required",
+    acceptance_criteria: [{ id: "ac", description: "完成", required: true }],
+    verification_plan: [{ id: "tests", title: "测试", kind: "test", required: true }],
+  });
+  const result = completeContextTasks({ context_task_id: "context-packet", taskcenter_task_id: "packet-task" });
+  assert.equal(result.accepted, false);
+  assert.equal(result.error, "completion_claim_blocked");
+  assert.ok(result.reasons.includes("current_subject_missing"));
+  assert.equal(result.completed.length, 0);
 });
 
 test("正式任务原子接管同 Session、同 Context 的内部影子且不会被重新激活", async () => {
@@ -760,6 +799,76 @@ test("普通任务事件不能验收，可信 Context 同步才可 accepted", as
   });
   assert.equal(accepted.status, 200);
   assert.equal((await accepted.json()).task.acceptanceStatus, "accepted");
+});
+
+test("TaskCenter 页面仅对门禁通过的 fast 任务同步关联 ProjectContext", async (context) => {
+  await resetLedger();
+  recordTaskEvent({ type: "session.register", event_id: "ui-sync-session", session_id: "ui-sync-session", workspace: "/work" });
+  recordTaskEvent({
+    type: "task.create",
+    event_id: "ui-sync-create",
+    session_id: "ui-sync-session",
+    task_id: "ui-sync-task",
+    context_task_id: "ui-sync-context",
+    workspace: "/work",
+    title: "同步 ProjectContext",
+    goal: "验证页面完成同步",
+    contract_version: "v2",
+    scope: ["completion bridge"],
+    non_goals: [],
+    workflow_profile: "fast",
+    review_policy: "not_required",
+    acceptance_criteria: [{ id: "done", description: "同步完成", required: true }],
+  });
+  recordTaskEvent({
+    type: "task.close",
+    event_id: "ui-sync-close",
+    session_id: "ui-sync-session",
+    task_id: "ui-sync-task",
+    context_task_id: "ui-sync-context",
+    status: "done_claimed",
+    evidence: ["fast completion evidence"],
+    close_requirements: [{
+      requirement_id: "done",
+      status: "passed",
+      evidence_refs: ["fast completion evidence"],
+      checked_at: "2026-08-25T00:00:00.000Z",
+      checked_by: { type: "task_platform", id: "taskcenter-test" },
+    }],
+  });
+
+  const fakeServerPath = join(tempDir, "ui-sync-context-server.mjs");
+  const fakeStatePath = join(tempDir, "ui-sync-context-state.json");
+  await rm(fakeStatePath, { force: true });
+  await writeTransientContextServer(fakeServerPath);
+  const { base, child } = await startControlServer({
+    TASKCENTER_CONTEXT_ROOT: tempDir,
+    TASKCENTER_CONTEXT_SERVER: fakeServerPath,
+    TASKCENTER_CONTEXT_NODE: process.execPath,
+    TASKCENTER_CONTEXT_TIMEOUT_MS: "2000",
+    FAKE_CONTEXT_STATE_PATH: fakeStatePath,
+  });
+  context.after(() => child.kill("SIGTERM"));
+
+  const response = await fetch(`${base}/tasks/ui-sync-task/sync-project-context`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "http://localhost:3000",
+      "X-TaskCenter-Action": "delegate",
+    },
+    body: JSON.stringify({ confirm: true, requestId: "55555555-5555-4555-8555-555555555555" }),
+  });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.accepted, true);
+  assert.equal(payload.completionPacket.completionReadiness.completionClaim.allowed, true);
+  const state = JSON.parse(await readFile(fakeStatePath, "utf8"));
+  assert.deepEqual(state.calls, [{
+    name: "context.complete_task",
+    eventId: "taskcenter-ui-context-complete-55555555-5555-4555-8555-555555555555",
+    taskCenterTaskId: "ui-sync-task",
+  }]);
 });
 
 test("需求 ID持久化且人工审核保留理由和时间", async () => {
@@ -1226,7 +1335,7 @@ test("控制服务只允许相同 event_id 的同事件补偿重放", async (con
   assert.deepEqual(stateAfterRetry.calls, [
     { name: "context.report_observation", eventId: "reqradar-context-observation-retry-report" },
     { name: "context.report_observation", eventId: "reqradar-context-observation-retry-report" },
-    { name: "context.complete_task", eventId: "reqradar-context-complete-retry-report" },
+    { name: "context.complete_task", eventId: "reqradar-context-complete-retry-report", taskCenterTaskId: "task-retry" },
   ]);
 
   const mutations = [
@@ -1254,7 +1363,7 @@ test("Context 生命周期维护端点显式接管影子并补齐完成状态", 
   await resetLedger();
   const { base, child } = await startControlServer();
   context.after(() => child.kill("SIGTERM"));
-  const taskHeaders = { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" };
+  const taskHeaders = legacyTaskHeaders();
   const manualHeaders = { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-TaskCenter-Action": "delegate" };
 
   const shadowResponse = await fetch(`${base}/context-tasks/ensure`, {
@@ -1266,6 +1375,7 @@ test("Context 生命周期维护端点显式接管影子并补齐完成状态", 
       workspace: "/work",
     }),
   });
+  assert.equal(shadowResponse.status, 201, "兼容期必须继续接受旧 X-ReqRadar-Task 请求头");
   const shadow = (await shadowResponse.json()).task;
   await fetch(`${base}/task-events`, {
     method: "POST",

@@ -97,6 +97,9 @@ test("验证证据绑定的 legacy revision 不得改写当前结构化 SubjectR
   });
   assert.deepEqual(verified.currentSubject, subject);
   assert.equal(verified.verificationStatus, "passed");
+  const packet = buildCompletionPacket(verified);
+  assert.equal(packet.currentRevision, subject.value, "Completion Packet revision 必须规范化为当前 Subject 身份");
+  assert.equal(packet.legacyCurrentRevision, "legacy-revision", "旧 revision 只作为兼容审计字段保留");
 });
 
 test("required review 缺失、有 findings 或旧 revision 时均不得 ready", () => {

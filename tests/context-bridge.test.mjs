@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
-import { parseContextToolResult, resolveContextCommand, syncContextEvent } from "../scripts/context-bridge.mjs";
+import { parseContextToolResult, resolveContextCommand, syncContextCompletionFromUi, syncContextEvent } from "../scripts/context-bridge.mjs";
 
 function bridgeOptions(calls, savedMaps, initialMap = {}) {
   return {
@@ -246,4 +246,145 @@ test("543 observation 已存在时以同一 event_id 回退到旧 payload", asyn
   assert.ok(observations.every((call) => call.arguments.event_id === "reqradar-context-observation-from-543"));
   assert.equal(JSON.parse(observations[0].arguments.content).reqradar_task_id, "task-from-543");
   assert.equal(JSON.parse(observations[1].arguments.content).taskcenter_task_id, "task-from-543");
+});
+
+const completionSubject = { type: "git_commit", value: "abc123", repository: "/work", observed_at: "2026-08-25T00:00:00Z" };
+
+function completionPacket(profile = "fast") {
+  return {
+    schemaVersion: "taskcenter-completion-v2",
+    taskId: "task-sync",
+    taskContract: { workflowProfile: profile },
+    currentSubject: completionSubject,
+    completionReadiness: { ready: true, completionClaim: { allowed: true, blockingReasons: [] }, reasons: [] },
+  };
+}
+
+test("TaskCenter 页面同步 fast 任务不签发 Review 授权且绑定 task ID", async () => {
+  const calls = [];
+  const audits = [];
+  const result = await syncContextCompletionFromUi({
+    id: "task-sync", contextTaskId: "context-sync", workspace: "/work", goal: "完成同步",
+  }, completionPacket("fast"), { requestId: "11111111-1111-4111-8111-111111111111" }, {
+    callTool: async (name, arguments_) => { calls.push({ name, arguments: arguments_ }); return { status: "completed" }; },
+    issueAttestation: async () => { throw new Error("fast 不应签发授权"); },
+    appendAudit: value => audits.push(value),
+  });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.map(item => item.name), ["context.complete_task"]);
+  assert.equal(calls[0].arguments.taskcenter_task_id, "task-sync");
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].status, "synced");
+  assert.equal(audits[0].contextTaskId, "context-sync");
+  assert.match(audits[0].packetDigest, /^sha256:[0-9a-f]{64}$/);
+});
+
+test("TaskCenter 页面同步 strict 任务使用独立控制 Session 和一次性授权", async () => {
+  const calls = [];
+  let attestationInput;
+  const requestId = "22222222-2222-4222-8222-222222222222";
+  const result = await syncContextCompletionFromUi({
+    id: "task-sync", contextTaskId: "context-sync", workspace: "/work", goal: "完成同步",
+  }, completionPacket("strict"), { requestId }, {
+    callTool: async (name, arguments_) => {
+      calls.push({ name, arguments: arguments_ });
+      if (name === "context.attach_session") return { project_id: "project-sync" };
+      if (name === "context.complete_task" && !arguments_.completion_attestation) {
+        const error = new Error("需要用户授权");
+        error.code = "USER_ATTESTATION_REQUIRED";
+        throw error;
+      }
+      if (name === "context.complete_task") return { status: "completed" };
+      return { ok: true };
+    },
+    issueAttestation: async input => {
+      attestationInput = input;
+      return { ...input, confirmed: true };
+    },
+  });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.map(item => item.name), [
+    "context.complete_task", "context.attach_session", "context.open_task", "context.prepare_turn", "context.complete_task",
+  ]);
+  assert.equal(attestationInput.action, "context.complete_task_review");
+  assert.equal(attestationInput.proposal_id, "context-sync");
+  assert.equal(attestationInput.payload.taskcenter_task_id, "task-sync");
+  assert.deepEqual(attestationInput.payload.subject_ref, completionSubject);
+  assert.match(attestationInput.payload.packet_digest, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(calls.at(-1).arguments.completion_attestation.confirmed, true);
+});
+
+test("strict 同步按需创建独立 0600 控制凭证并发送给 Agent Web", async () => {
+  const root = await mkdtemp(join(tmpdir(), "taskcenter-attestation-token-"));
+  const tokenPath = join(root, "runtime", "token");
+  let suppliedToken = "";
+  try {
+    await syncContextCompletionFromUi({
+      id: "task-sync", contextTaskId: "context-sync", workspace: "/work", goal: "完成同步",
+    }, completionPacket("strict"), { requestId: "66666666-6666-4666-8666-666666666666" }, {
+      audit: false,
+      authorizationTokenPath: tokenPath,
+      fetchImpl: async (_url, request) => {
+        suppliedToken = request.headers["X-Agent-Authorization-Token"];
+        return { ok: true, status: 201, json: async () => ({ confirmed: true }) };
+      },
+      callTool: async (name, arguments_) => {
+        if (name === "context.attach_session") return { project_id: "project-sync" };
+        if (name === "context.complete_task" && !arguments_.completion_attestation) {
+          const error = new Error("需要用户授权");
+          error.code = "USER_ATTESTATION_REQUIRED";
+          throw error;
+        }
+        return { status: "completed" };
+      },
+    });
+    assert.equal(suppliedToken, (await readFile(tokenPath, "utf8")).trim());
+    assert.equal((await stat(tokenPath)).mode & 0o077, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TaskCenter 页面以同一 requestId 重试时复用完成事件且不再次签发授权", async () => {
+  const completions = [];
+  const authorizations = [];
+  let completed = false;
+  const input = { requestId: "44444444-4444-4444-8444-444444444444" };
+  const options = {
+    audit: false,
+    callTool: async (name, arguments_) => {
+      if (name === "context.attach_session") return { project_id: "project-sync" };
+      if (name === "context.complete_task") {
+        completions.push(arguments_);
+        if (!completed && !arguments_.completion_attestation) {
+          const error = new Error("需要用户授权");
+          error.code = "USER_ATTESTATION_REQUIRED";
+          throw error;
+        }
+        completed = true;
+      }
+      return { status: "completed" };
+    },
+    issueAttestation: async value => {
+      authorizations.push(value);
+      return { ...value, confirmed: true };
+    },
+  };
+  const task = { id: "task-sync", contextTaskId: "context-sync", workspace: "/work", goal: "完成同步" };
+  await syncContextCompletionFromUi(task, completionPacket("strict"), input, options);
+  await syncContextCompletionFromUi(task, completionPacket("strict"), input, options);
+  assert.equal(completions.length, 3);
+  assert.ok(completions.every(item => item.event_id === completions[0].event_id));
+  assert.equal(authorizations.length, 1, "成功后的重试不应再次签发授权");
+});
+
+test("TaskCenter completionClaim 未允许时页面同步在授权前拒绝", async () => {
+  const blocked = completionPacket("strict");
+  blocked.completionReadiness = { ready: false, completionClaim: { allowed: false, blockingReasons: ["review_stale"] }, reasons: ["review_stale"] };
+  await assert.rejects(() => syncContextCompletionFromUi({
+    id: "task-sync", contextTaskId: "context-sync", workspace: "/work",
+  }, blocked, { requestId: "33333333-3333-4333-8333-333333333333" }, {
+    callTool: async () => { throw new Error("不应调用 Context"); },
+    issueAttestation: async () => { throw new Error("不应签发授权"); },
+  }), /完成门禁未满足/);
 });

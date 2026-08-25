@@ -67,6 +67,7 @@ type ReflectionState = {
 type TaskStatus = "planned" | "in_progress" | "blocked" | "done_claimed" | "verified" | "cancelled";
 type TaskRecord = {
   id: string;
+  contextTaskId?: string;
   sessionId: string;
   agent?: "codex" | "claude" | "workbuddy" | "unknown";
   provider?: string;
@@ -890,6 +891,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [events, setEvents] = useState<Array<Record<string, string>> | null>(null);
   const [eventsError, setEventsError] = useState("");
+  const contextSyncRequestId = useRef("");
   useEffect(() => { if (!detailsOpen || events) return; void fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/events`).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "事件加载失败"); setEvents(payload.events ?? []); }).catch((error) => setEventsError(error instanceof Error ? error.message : "事件加载失败")); }, [detailsOpen, events, task.id]);
   const meta = taskStatusMeta[task.status] ?? taskStatusMeta.planned;
   const detailItems = [
@@ -957,6 +959,38 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
     } catch (error) {
       setActionState("error");
       setActionError(error instanceof Error ? error.message : "操作失败");
+    }
+  };
+
+  const handleContextSync = async () => {
+    if (actionState === "loading") return;
+    const subject = task.currentSubject ? `${task.currentSubject.type}:${task.currentSubject.value || "none"}` : "none";
+    const findings = task.completionReadiness?.unresolvedFindings?.length || 0;
+    const confirmed = window.confirm([
+      "确认完成并同步 ProjectContext？",
+      `Subject: ${subject}`,
+      `验证: ${task.verificationStatus || "unknown"}`,
+      `Review: ${task.reviewStatus || "unknown"}`,
+      `未决 finding: ${findings}`,
+    ].join("\n"));
+    if (!confirmed) return;
+    setActionState("loading");
+    setActionError("");
+    try {
+      if (!contextSyncRequestId.current) contextSyncRequestId.current = crypto.randomUUID();
+      const response = await fetch(`${controlServerUrl}/tasks/${encodeURIComponent(task.id)}/sync-project-context`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" },
+        body: JSON.stringify({ confirm: true, requestId: contextSyncRequestId.current }),
+      });
+      const payload = await response.json() as { error?: string; task?: TaskRecord };
+      if (!response.ok) throw new Error(payload.error || "ProjectContext 同步失败");
+      if (payload.task) onTaskUpdated(payload.task);
+      contextSyncRequestId.current = "";
+      setActionState("done");
+    } catch (error) {
+      setActionState("error");
+      setActionError(error instanceof Error ? error.message : "ProjectContext 同步失败");
     }
   };
 
@@ -1055,6 +1089,11 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         )}
         {task.status === "done_claimed" && (
           <button className="task-action-button action-block" onClick={() => handleAction("reject")} disabled={actionState === "loading"}>打回</button>
+        )}
+        {task.status === "done_claimed" && task.contextTaskId && task.completionReadiness?.completionClaim?.allowed === true && (
+          <button className="task-action-button action-done" onClick={() => void handleContextSync()} disabled={actionState === "loading"}>
+            {actionState === "loading" ? "同步中…" : "完成并同步 ProjectContext"}
+          </button>
         )}
         {task.status === "verified" && <span className="task-action-note">已验收</span>}
         {["planned", "in_progress", "blocked"].includes(task.status) && <button className="task-action-button action-block" onClick={() => handleAction("cancel")} disabled={actionState === "loading"}>取消</button>}

@@ -272,11 +272,15 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
 export function buildCompletionPacket(task) {
   const value = withCompletionState(task);
   const reviewProcess = buildReviewProcess(value);
+  const normalizedRevision = value.currentSubject?.value || value.currentRevision || "";
   return {
     schemaVersion: "taskcenter-completion-v2", policyVersion: value.policyVersion,
+    taskId: value.id,
     taskContract: { contractVersion: value.contractVersion, goal: value.goal, scope: value.scope || [], nonGoals: value.nonGoals || [], acceptanceCriteria: value.acceptanceRequirements, workflowProfile: value.workflowProfile, reviewPolicy: value.reviewPolicy, executionEnvironment: value.executionEnvironment, verificationPlan: value.verificationPlan || [], workspacePolicy: value.workspacePolicy },
     currentSubject: value.currentSubject || null, requirementResults: value.requirementResults, verificationClaims: value.verificationClaims, reviewAttestations: value.reviewAttestations, reviewCycles: value.reviewCycles, reviewProcess, diagnosticObservations: value.diagnosticObservations, acceptanceRecords: value.acceptanceRecords, completionReadiness: value.completionReadiness,
-    currentRevision: value.currentRevision || "", verificationStatus: value.verificationStatus, reviewStatus: value.reviewStatus, acceptanceStatus: value.acceptanceStatus,
+    currentRevision: normalizedRevision,
+    ...(value.currentRevision && value.currentRevision !== normalizedRevision ? { legacyCurrentRevision: value.currentRevision } : {}),
+    verificationStatus: value.verificationStatus, reviewStatus: value.reviewStatus, acceptanceStatus: value.acceptanceStatus,
   };
 }
 

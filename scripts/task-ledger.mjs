@@ -59,6 +59,25 @@ export function taskCompletionPacket(taskId) {
   return buildCompletionPacket(task);
 }
 
+function contextCompletionTask(contextTaskId, taskCenterTaskId = "") {
+  const candidates = loadTasks().filter((task) => task.contextTaskId === contextTaskId);
+  if (taskCenterTaskId) {
+    const exact = candidates.find((task) => task.id === taskCenterTaskId);
+    if (!exact) throw new TaskLedgerError(404, "TaskCenter task 与 context_task_id 不匹配。");
+    return exact;
+  }
+  const formal = candidates.filter((task) => !isContextShadowTask(task));
+  const ready = formal.filter((task) => task.completionReadiness?.completionClaim?.allowed === true);
+  if (ready.length === 1) return ready[0];
+  if (ready.length > 1) throw new TaskLedgerError(409, "同一 Context task 对应多个可完成 TaskCenter task，请显式指定 taskcenter_task_id。");
+  if (formal.length === 1) return formal[0];
+  if (formal.length > 1) throw new TaskLedgerError(409, "同一 Context task 对应多个 TaskCenter task，请显式指定 taskcenter_task_id。");
+  const shadows = candidates.filter((task) => isContextShadowTask(task));
+  if (shadows.length === 1) return shadows[0];
+  if (!shadows.length) throw new TaskLedgerError(404, "未找到关联的 TaskCenter task。");
+  throw new TaskLedgerError(409, "同一 Context task 对应多个影子任务，无法确定完成对象。");
+}
+
 export function taskExport(taskId, format = "json") {
   const task = loadTasks().find((item) => item.id === taskId);
   if (!task) throw new TaskLedgerError(404, "任务不存在。");
@@ -692,6 +711,12 @@ export function ensureContextTask(input) {
     goal: cleanText(input.semantic_label, 1_000) || `跟踪 ProjectContext semantic task ${contextTaskId}`,
     status: "in_progress",
     priority: "P1",
+    contract_version: "v2",
+    scope: ["ProjectContext semantic task lifecycle"],
+    non_goals: [],
+    workflow_profile: "fast",
+    review_policy: "not_required",
+    acceptance_criteria: [{ id: "context_goal", description: "ProjectContext 已声明语义目标完成", required: true }],
   });
   return { task: result.task, created: true, resumed: false, reactivated: false };
 }
@@ -701,11 +726,10 @@ export function completeContextTasks(input) {
   const contextTaskId = cleanText(input?.context_task_id, 200);
   if (!contextTaskId) throw new TaskLedgerError(400, "缺少 context_task_id。");
   const completed = [];
-  for (const task of loadTasks().filter(
-    (item) => item.contextTaskId === contextTaskId && activeTaskStatuses.has(item.status)
-  )) {
+  let task = contextCompletionTask(contextTaskId, cleanText(input?.taskcenter_task_id, 200));
+  if (isContextShadowTask(task) && activeTaskStatuses.has(task.status)) {
     const result = recordTaskEvent({
-      type: "task.report",
+      type: "task.close",
       event_id: `context-complete-${contextIdentity(`${contextTaskId}:${task.id}:${task.lastEventId || task.updatedAt}`)}`,
       task_id: task.id,
       context_task_id: contextTaskId,
@@ -713,10 +737,38 @@ export function completeContextTasks(input) {
       status: "done_claimed",
       current_step: "ProjectContext semantic task 已完成。",
       evidence: [cleanText(input.summary, 1_000)].filter(Boolean),
+      ...(task.contractVersion === "v2" ? {} : {
+        contract_version: "v2",
+        scope: ["ProjectContext semantic task lifecycle"],
+        non_goals: [],
+        workflow_profile: "fast",
+        review_policy: "not_required",
+        acceptance_criteria: [{ id: "context_goal", description: "ProjectContext 已声明语义目标完成", required: true }],
+      }),
+      close_requirements: [{
+        requirement_id: "context_goal",
+        status: "passed",
+        evidence_refs: [cleanText(input.summary, 1_000) || `context-task:${contextTaskId}`],
+        checked_at: new Date().toISOString(),
+        checked_by: { type: "task_platform", id: "project-context" },
+      }],
     });
     completed.push(result.task);
+    task = result.task;
   }
-  return { contextTaskId, completed };
+  const completionPacket = buildCompletionPacket(task);
+  const accepted = completionPacket.completionReadiness?.completionClaim?.allowed === true;
+  return {
+    accepted,
+    contextTaskId,
+    taskId: task.id,
+    completed,
+    completionPacket,
+    ...(accepted ? {} : {
+      error: "completion_claim_blocked",
+      reasons: completionPacket.completionReadiness?.completionClaim?.blockingReasons || [],
+    }),
+  };
 }
 
 function loadProcessedEventIds() {

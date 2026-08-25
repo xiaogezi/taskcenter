@@ -129,6 +129,8 @@ Codex 配置中的 `UserPromptSubmit` Hook 会在非门禁豁免 Session 没有�
 
 同一语义需求在用户反馈、测试失败或 Review 后修订时继续复用原任务，通过 `taskcenter_task_subject_update` 更新 Subject；只补跑受影响验证并对增量 diff 复审。首次遗漏原因、防回归措施和完成度变化记录在原任务事件中，不为普通修订重复创建正式任务。
 
+TaskCenter 与 ProjectContextAgent 关联后，Completion Packet 是交付完成证据的唯一桥接对象：`fast` 任务在 TaskCenter 门禁通过后可自动同步；`strict` 任务必须在页面核对当前 Subject、验收、验证、独立 Review 和未决 finding，再点击“完成并同步 ProjectContext”。页面确认会触发 ProjectContextAgent 的原生用户授权弹窗，并签发绑定 task、Subject 和 packet digest 的一次性授权；重试复用 request ID，不会产生重复完成事件。两端默认共享 `~/.local/state/project-context-agent/taskcenter-attestation-token` 中权限为 `0600` 的专用凭证；可用 `PROJECT_CONTEXT_ATTESTATION_TOKEN_PATH` 同时覆盖两端路径，或通过 `TASKCENTER_CONTEXT_ATTESTATION_TOKEN` 与 `AGENT_WEB_ATTESTATION_TOKEN` 显式提供相同值。该凭证不等于 Dashboard token，也不取消原生确认。
+
 在 Windows 上，TaskCenter 会安全解析标准 npm 安装生成的 `codex.cmd` 并直接调用其 Node 入口，避免把 Session prompt 拼进 shell。非标准批处理启动器应通过 `TASKCENTER_CODEX_COMMAND` 指向 `codex.exe`，或配合 `TASKCENTER_CODEX_PREFIX_ARGS` 显式配置。
 
 ## 通用完成协议与 Codex 适配器

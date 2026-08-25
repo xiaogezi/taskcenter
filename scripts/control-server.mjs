@@ -46,7 +46,7 @@ import {
   taskLedgerPath,
   TaskLedgerError,
 } from "./task-ledger.mjs";
-import { syncContextEvent } from "./context-bridge.mjs";
+import { syncContextCompletionFromUi, syncContextEvent } from "./context-bridge.mjs";
 import {
   beginReflectionExecution,
   buildReflectionExecutionPrompt,
@@ -560,7 +560,7 @@ const server = createServer(async (request, response) => {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
       const result = completeContextTasks(body);
-      sendJson(response, 200, { accepted: true, ...result });
+      sendJson(response, 200, result);
       return;
     }
     if (request.method === "POST" && request.url === "/maintenance/context-tasks/reconcile") {
@@ -606,6 +606,23 @@ const server = createServer(async (request, response) => {
     const packetMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/completion-packet$/) : null;
     if (packetMatch) {
       sendJson(response, 200, { taskId: packetMatch[1], completionPacket: taskCompletionPacket(packetMatch[1]) });
+      return;
+    }
+    const contextCompletionMatch = request.method === "POST"
+      ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/sync-project-context$/)
+      : null;
+    if (contextCompletionMatch) {
+      verifyManualTaskAction(request);
+      const body = await readJsonBody(request);
+      if (body.confirm !== true) throw new TaskLedgerError(400, "同步 ProjectContext 需要显式 confirm=true。");
+      const task = loadTasks().find(item => item.id === contextCompletionMatch[1]);
+      if (!task) throw new TaskLedgerError(404, "任务不存在。");
+      const completionPacket = taskCompletionPacket(task.id);
+      if (completionPacket.completionReadiness?.completionClaim?.allowed !== true) {
+        throw new TaskLedgerError(409, `完成门禁未满足: ${(completionPacket.completionReadiness?.reasons || []).join(", ") || "unknown"}`);
+      }
+      const contextResult = await syncContextCompletionFromUi(task, completionPacket, { requestId: body.requestId });
+      sendJson(response, 200, { accepted: true, task, completionPacket, contextResult });
       return;
     }
     const exportMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/export(?:\?format=(json|markdown))?$/) : null;
@@ -1382,7 +1399,8 @@ function validateInboxDecision(decision) {
 
 function verifyTaskRequest(request) {
   // MCP/Hook 请求只允许本机客户端携带协议标记，不开放给浏览器跨域调用。
-  if (["mcp", "hook"].includes(request.headers["x-taskcenter-task"])) {
+  const protocolTask = request.headers["x-taskcenter-task"] || request.headers["x-reqradar-task"];
+  if (["mcp", "hook"].includes(protocolTask)) {
     if (!String(request.headers["content-type"] || "").startsWith("application/json")) {
       throw new TaskLedgerError(415, "任务事件必须使用 JSON。");
     }
