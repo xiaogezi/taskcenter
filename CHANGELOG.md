@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- 正式服务改为运行不可变 release worktree 与 production build，开发工作区修改不再被当前实例热加载。
+- 新增隔离候选自检、失败自动回滚、发布阶段事件与 `service:history` 研发效能摘要。
+
 All notable changes to TaskCenter are documented here.
 
 ## Unreleased

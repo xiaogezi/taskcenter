@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-export function vinextInvocation(command, args = []) {
-  const cli = resolve(projectRoot, "node_modules", "vinext", "dist", "cli.js");
+export function vinextInvocation(command, args = [], root = projectRoot) {
+  const cli = resolve(root, "node_modules", "vinext", "dist", "cli.js");
   if (!existsSync(cli)) {
     throw new Error("找不到 vinext CLI，请先运行 npm ci。");
   }

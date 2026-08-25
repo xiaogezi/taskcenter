@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const controllerRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = resolve(process.env.TASKCENTER_SOURCE_ROOT || controllerRoot);
 const runtimeDir = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local/runtime"));
 const logDir = resolve(process.env.TASKCENTER_LOG_DIR || resolve(projectRoot, ".local/logs"));
 const logPath = resolve(logDir, "web.log");
@@ -19,7 +20,7 @@ mkdirSync(logDir, { recursive: true });
 
 const log = openSync(logPath, "a");
 try {
-  const child = spawn(process.execPath, ["scripts/dev-live.mjs"], {
+  const child = spawn(process.execPath, [resolve(projectRoot, "scripts/dev-live.mjs")], {
     cwd: projectRoot,
     env: { ...process.env, TASKCENTER_LAUNCH_TOKEN: token, TASKCENTER_RUNTIME_DIR: runtimeDir },
     detached: true,
@@ -31,6 +32,10 @@ try {
     pid: child.pid,
     token,
     startedAt: new Date().toISOString(),
+    sourceRoot: projectRoot,
+    revision: process.env.TASKCENTER_RELEASE_REVISION || "",
+    releaseId: process.env.TASKCENTER_RELEASE_ID || "",
+    webMode: process.env.TASKCENTER_WEB_MODE || "dev",
   }, null, 2)}\n`, { mode: 0o600 });
   child.unref();
 } finally {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -13,7 +14,9 @@ import {
 import { connect, createServer } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyBeforeServiceCutover } from "./service-deployment-policy.mjs";
+import { appendReleaseEvent, loadReleaseEvents, summarizeReleaseEvents } from "./release-history.mjs";
+import { buildReleaseEnvironment } from "./release-runtime.mjs";
+import { cutoverWithRollback, verifyBeforeServiceCutover } from "./service-deployment-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const runtimeDir = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local/runtime"));
@@ -23,6 +26,10 @@ const heartbeatPath = resolve(runtimeDir, "web-heartbeat.json");
 const stopPath = resolve(runtimeDir, "web-stop.json");
 const lockDir = resolve(runtimeDir, "launcher.lock");
 const logPath = resolve(logDir, "web.log");
+const releasesDir = resolve(projectRoot, ".local/releases");
+const candidatesDir = resolve(projectRoot, ".local/candidates");
+const activeReleasePath = resolve(runtimeDir, "active-release.json");
+const releaseHistoryPath = resolve(projectRoot, ".local/release-events.jsonl");
 const dashboardUrl = process.env.TASKCENTER_DASHBOARD_URL || `http://localhost:${process.env.TASKCENTER_WEB_PORT || 3000}`;
 const healthUrl = process.env.TASKCENTER_HEALTH_URL || `http://127.0.0.1:${process.env.TASKCENTER_CONTROL_PORT || 3001}/health`;
 const dashboardPort = portOf(dashboardUrl);
@@ -43,6 +50,7 @@ try {
       await sleep(500);
       await startService();
     } else if (action === "deploy") await deployService();
+    else if (action === "history") await showReleaseHistory();
     else if (action === "status") await statusService();
     else throw usageError();
   });
@@ -51,13 +59,19 @@ try {
   process.exitCode = Number(error.exitCode || 1);
 }
 
-async function startService() {
+async function startService(options = {}) {
   if (await healthCheck()) {
     await openDashboard();
     console.log("TaskCenter 已在运行：http://localhost:3000");
     return;
   }
-  if (!existsSync(resolve(projectRoot, "node_modules"))) {
+  const release = options.release || readJson(activeReleasePath) || {
+    sourceRoot: projectRoot,
+    revision: "",
+    releaseId: "legacy-worktree",
+    webMode: "dev",
+  };
+  if (!existsSync(resolve(release.sourceRoot, "node_modules"))) {
     throw new Error("启动失败：项目依赖未安装，请先在 TaskCenter 目录运行 npm ci。");
   }
 
@@ -73,7 +87,17 @@ async function startService() {
 
   const launched = spawn(process.execPath, ["scripts/taskcenter-detached-launch.mjs"], {
     cwd: projectRoot,
-    env: process.env,
+    env: buildReleaseEnvironment({
+      sourceRoot: release.sourceRoot,
+      revision: release.revision,
+      releaseId: release.releaseId,
+      webMode: release.webMode || "start",
+      runtimeRoot: runtimeDir,
+      logRoot: logDir,
+      dataRoot: resolve(projectRoot, "data"),
+      webPort: dashboardPort,
+      controlPort,
+    }, { controllerRoot: projectRoot }),
     stdio: "inherit",
   });
   await childResult(launched, "TaskCenter 后台启动器");
@@ -112,28 +136,82 @@ async function stopService(options = {}) {
 }
 
 async function deployService() {
+  const deploymentId = `release-${randomUUID()}`;
+  const startedAtMs = Date.now();
   const original = readManagedProcess();
   if (!original || !(await healthCheck())) {
     throw new Error("部署已阻止：当前 TaskCenter 未处于健康运行状态。请先恢复原服务，不要用部署流程掩盖运行故障。");
   }
   const revision = await gitOutput(["rev-parse", "HEAD"]);
+  const previousRevision = original.revision || await inferRunningRevision(original.startedAt, revision);
+  const record = (stage, outcome, detail = {}) => appendReleaseEvent(releaseHistoryPath, {
+    deploymentId,
+    revision,
+    previousRevision,
+    stage,
+    outcome,
+    ...detail,
+  });
 
   console.log(`TaskCenter 受控部署：保持现有 PID ${original.pid} 运行并验证 ${revision.slice(0, 12)}。`);
+  record("deployment", "started", { originalPid: original.pid });
+  try {
   await verifyBeforeServiceCutover({
     original,
     revision,
     stages: ["lint", "test"],
-    runStage: runNpmScript,
+    runStage: async (stage) => {
+      const stageStartedAt = Date.now();
+      await runNpmScript(stage);
+      record(stage, "passed", { durationMs: Date.now() - stageStartedAt });
+    },
     assertOriginalService: requireOriginalService,
     readRevision: () => gitOutput(["rev-parse", "HEAD"]),
     readStatus: () => gitOutput(["status", "--porcelain"]),
   });
 
-  console.log("部署前验证通过，开始切换 TaskCenter 运行实例。");
-  await stopService({ authorized: true });
-  await sleep(500);
-  await startService();
-  console.log(`TaskCenter 已部署已验证版本 ${revision.slice(0, 12)}。`);
+  const releaseStartedAt = Date.now();
+  const release = await prepareRelease(revision);
+  record("artifact", "passed", { durationMs: Date.now() - releaseStartedAt, sourceRoot: release.sourceRoot });
+  await requireOriginalService(original, "release artifact");
+
+  const previousRelease = await resolvePreviousRelease(original, previousRevision);
+  await requireOriginalService(original, "rollback artifact");
+
+  const candidateStartedAt = Date.now();
+  const candidate = await validateCandidateRelease(release);
+  record("candidate", "passed", {
+    durationMs: Date.now() - candidateStartedAt,
+    webPort: candidate.webPort,
+    controlPort: candidate.controlPort,
+  });
+  await requireOriginalService(original, "candidate");
+
+  console.log("候选实例验证通过，开始受控切换 TaskCenter 运行实例。");
+  await cutoverWithRollback({
+      stopOriginal: () => stopService({ authorized: true }),
+      startCandidate: () => startService({ release }),
+      assertCandidateHealthy: async () => {
+        if (!(await healthCheck())) throw new Error("新版本未通过稳定端口健康检查");
+      },
+      restoreOriginal: async () => {
+        await stopService({ authorized: true, allowMissing: true });
+        await sleep(300);
+        await startService({ release: previousRelease });
+        writeJson(activeReleasePath, previousRelease);
+      },
+  });
+  writeJson(activeReleasePath, release);
+  record("deployment", "succeeded", { durationMs: Date.now() - startedAtMs });
+  console.log(`TaskCenter 已部署不可变版本 ${revision.slice(0, 12)}。`);
+  } catch (error) {
+    const rolledBack = error.code === "TASKCENTER_RELEASE_ROLLED_BACK";
+    record("deployment", rolledBack ? "rolled_back" : "failed", {
+      durationMs: Date.now() - startedAtMs,
+      error: error.message,
+    });
+    throw error;
+  }
 }
 
 async function requireDisruptionAuthorization(requestedAction) {
@@ -162,6 +240,168 @@ async function runNpmScript(script) {
     stdio: "inherit",
   });
   await childResult(child, `npm run ${script}`);
+}
+
+async function prepareRelease(revision) {
+  const releaseId = revision.slice(0, 12);
+  const sourceRoot = resolve(releasesDir, releaseId);
+  const markerPath = resolve(sourceRoot, ".taskcenter-release.json");
+  const marker = readJson(markerPath);
+  if (marker?.revision === revision && existsSync(resolve(sourceRoot, "dist")) && existsSync(resolve(sourceRoot, "node_modules"))) {
+    return { sourceRoot, revision, releaseId, webMode: "start", builtAt: marker.builtAt };
+  }
+
+  const active = readJson(activeReleasePath);
+  if (active?.sourceRoot === sourceRoot) {
+    throw new Error("部署已阻止：当前激活 release 的构建标记损坏，不能原地覆盖。");
+  }
+  mkdirSync(releasesDir, { recursive: true });
+  if (existsSync(sourceRoot)) await runGit(["worktree", "remove", "--force", sourceRoot], projectRoot, "清理不完整 release");
+  await runGit(["worktree", "add", "--detach", sourceRoot, revision], projectRoot, "创建不可变 release worktree");
+  try {
+    await runNpmAt(["ci"], sourceRoot, "release npm ci");
+    await runNpmAt(["run", "build"], sourceRoot, "release build");
+    const builtAt = new Date().toISOString();
+    writeJson(markerPath, { schemaVersion: "taskcenter-release/v1", revision, releaseId, builtAt });
+    return { sourceRoot, revision, releaseId, webMode: "start", builtAt };
+  } catch (error) {
+    await runGit(["worktree", "remove", "--force", sourceRoot], projectRoot, "清理失败 release").catch(() => {});
+    throw error;
+  }
+}
+
+async function resolvePreviousRelease(original, previousRevision) {
+  if (
+    original.sourceRoot &&
+    original.sourceRoot !== projectRoot &&
+    original.revision === previousRevision &&
+    existsSync(resolve(original.sourceRoot, ".taskcenter-release.json"))
+  ) {
+    return {
+      sourceRoot: original.sourceRoot,
+      revision: original.revision,
+      releaseId: original.releaseId || original.revision.slice(0, 12),
+      webMode: "start",
+    };
+  }
+  return prepareRelease(previousRevision);
+}
+
+async function inferRunningRevision(startedAt, headRevision) {
+  const revision = await gitOutput(["rev-list", "-1", `--before=${startedAt}`, headRevision]);
+  if (!revision) throw new Error("部署已阻止：无法确定当前运行实例对应的 Git revision，不能保证回滚。");
+  return revision;
+}
+
+async function validateCandidateRelease(release) {
+  const candidateRoot = resolve(candidatesDir, release.releaseId);
+  const candidateRuntime = resolve(candidateRoot, "runtime");
+  const candidateLogs = resolve(candidateRoot, "logs");
+  const candidateData = resolve(candidateRoot, "data");
+  const candidateCodex = resolve(candidateRoot, "codex-home");
+  rmSync(candidateRoot, { recursive: true, force: true });
+  for (const path of [candidateRuntime, candidateLogs, candidateData, resolve(candidateCodex, "sessions")]) {
+    mkdirSync(path, { recursive: true });
+  }
+  writeJson(resolve(candidateData, "session-selection.json"), { mode: "allowlist", threadIds: [] });
+  writeJson(resolve(candidateData, "session-merges.json"), []);
+
+  const webPort = await allocatePort();
+  const controlPort = await allocatePort();
+  const config = {
+    sourceRoot: release.sourceRoot,
+    revision: release.revision,
+    releaseId: release.releaseId,
+    webMode: "start",
+    runtimeRoot: candidateRuntime,
+    logRoot: candidateLogs,
+    dataRoot: candidateData,
+    webPort,
+    controlPort,
+    candidateCodex,
+  };
+  try {
+    await launchDetached(config);
+    await waitForHealth(candidateRuntime, webPort, controlPort);
+    return { webPort, controlPort };
+  } finally {
+    await stopManagedAt(candidateRuntime, webPort, controlPort).catch(() => {});
+    rmSync(candidateRoot, { recursive: true, force: true });
+  }
+}
+
+async function launchDetached(config) {
+  if (await isPortBusy(config.webPort) || await isPortBusy(config.controlPort)) {
+    throw new Error(`候选启动失败：${config.webPort} 或 ${config.controlPort} 端口已被占用。`);
+  }
+  const child = spawn(process.execPath, ["scripts/taskcenter-detached-launch.mjs"], {
+    cwd: projectRoot,
+    env: buildReleaseEnvironment(config, { controllerRoot: projectRoot }),
+    stdio: "inherit",
+  });
+  await childResult(child, "TaskCenter 候选后台启动器");
+}
+
+async function waitForHealth(targetRuntimeDir, webPort, targetControlPort) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const state = readManagedProcessAt(targetRuntimeDir);
+    if (state && await healthCheckAt(webPort, targetControlPort)) return;
+    await sleep(500);
+  }
+  throw new Error("候选实例未在 30 秒内通过 Dashboard 与 Control 健康检查。");
+}
+
+async function stopManagedAt(targetRuntimeDir, webPort, targetControlPort) {
+  const state = readManagedProcessAt(targetRuntimeDir);
+  if (!state) return;
+  writeJson(resolve(targetRuntimeDir, "web-stop.json"), { token: state.token, requestedAt: new Date().toISOString() });
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (!isProcessAlive(state.pid) && !(await healthCheckAt(webPort, targetControlPort))) return;
+    await sleep(200);
+  }
+  throw new Error("候选实例停止超时，未强制结束进程。");
+}
+
+function readManagedProcessAt(targetRuntimeDir) {
+  const state = readJson(resolve(targetRuntimeDir, "web-state.json"));
+  const heartbeat = readJson(resolve(targetRuntimeDir, "web-heartbeat.json"));
+  if (!state?.pid || !state?.token || heartbeat?.pid !== state.pid || heartbeat?.token !== state.token) return null;
+  const updatedAt = Date.parse(heartbeat.updatedAt || "");
+  if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > 5_000) return null;
+  return isProcessAlive(state.pid) ? state : null;
+}
+
+async function healthCheckAt(webPort, targetControlPort) {
+  return await fetchOk(`http://127.0.0.1:${targetControlPort}/health`) && await fetchOk(`http://127.0.0.1:${webPort}`);
+}
+
+async function allocatePort() {
+  return new Promise((resolvePromise, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => resolvePromise(port));
+    });
+  });
+}
+
+async function runNpmAt(args, cwd, label) {
+  const npmCli = process.env.npm_execpath;
+  if (!npmCli) throw new Error("部署已阻止：请通过 npm run service:deploy 执行受控部署。");
+  const child = spawn(process.execPath, [npmCli, ...args], { cwd, env: process.env, stdio: "inherit" });
+  await childResult(child, label);
+}
+
+async function runGit(args, cwd, label) {
+  const child = spawn("git", args, { cwd, env: process.env, stdio: "inherit" });
+  await childResult(child, label);
+}
+
+function showReleaseHistory() {
+  console.log(JSON.stringify(summarizeReleaseEvents(loadReleaseEvents(releaseHistoryPath)), null, 2));
 }
 
 async function gitOutput(args) {
@@ -334,7 +574,7 @@ function childResult(child, label) {
 }
 
 function usageError() {
-  const error = new Error("用法：node scripts/taskcenter-control.mjs {start|stop|restart|deploy|status}");
+  const error = new Error("用法：node scripts/taskcenter-control.mjs {start|stop|restart|deploy|status|history}");
   error.exitCode = 2;
   return error;
 }

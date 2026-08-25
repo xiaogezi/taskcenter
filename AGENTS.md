@@ -46,6 +46,7 @@ git diff --check
 - 开发、修复、构建和测试期间必须保持当前健康的 TaskCenter 实例持续运行，不得直接停止、重启或用未验证代码替换它。
 - `service:stop` 与 `service:restart` 对健康实例默认受硬门禁保护。代码完成、验证通过并提交后，只能使用 `npm run service:deploy` 重新部署。
 - 受控部署必须在原 PID 持续健康的情况下完成 lint、完整测试、Git revision 与干净工作区校验；任何切换前检查失败都必须保留原实例且不得切换。全部检查通过后才进入重新部署阶段，该阶段不属于开发或修复阶段。
+- 正式实例必须运行 `.local/releases/<commit>` 的不可变 production build；候选实例必须使用独立端口、runtime、日志、Codex home 与数据目录。切换失败必须自动恢复上一已验证 release，并追加发布事件供 `service:history` 复盘。
 - `TASKCENTER_ALLOW_SERVICE_DISRUPTION=1` 仅用于人工明确停机或隔离测试环境，不得作为 Agent 开发或部署捷径。
 
 ## Git 提交

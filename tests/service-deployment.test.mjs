@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { verifyBeforeServiceCutover } from "../scripts/service-deployment-policy.mjs";
+import { cutoverWithRollback, verifyBeforeServiceCutover } from "../scripts/service-deployment-policy.mjs";
 
 const original = { pid: 42, token: "original" };
 
@@ -74,4 +74,36 @@ test("验证期间原服务变化或 revision 变化时禁止切换", async () =
     readRevision: async () => (++reads === 1 ? "abc123" : "def456"),
     readStatus: async () => "",
   }), /Git revision 已变化/);
+});
+
+test("新版本稳定端口健康后完成切换", async () => {
+  const calls = [];
+  const result = await cutoverWithRollback({
+    stopOriginal: async () => { calls.push("stop-original"); },
+    startCandidate: async () => { calls.push("start-candidate"); },
+    assertCandidateHealthy: async () => { calls.push("healthy-candidate"); },
+    restoreOriginal: async () => { calls.push("restore-original"); },
+  });
+  assert.deepEqual(result, { outcome: "succeeded", rollback: false });
+  assert.deepEqual(calls, ["stop-original", "start-candidate", "healthy-candidate"]);
+});
+
+test("新版本启动失败时自动恢复上一版本", async () => {
+  const calls = [];
+  await assert.rejects(() => cutoverWithRollback({
+    stopOriginal: async () => { calls.push("stop-original"); },
+    startCandidate: async () => { calls.push("start-candidate"); throw new Error("boot failed"); },
+    assertCandidateHealthy: async () => { calls.push("healthy-candidate"); },
+    restoreOriginal: async () => { calls.push("restore-original"); },
+  }), (error) => error.code === "TASKCENTER_RELEASE_ROLLED_BACK" && /已恢复上一版本/.test(error.message));
+  assert.deepEqual(calls, ["stop-original", "start-candidate", "restore-original"]);
+});
+
+test("新旧版本都启动失败时报告双重故障", async () => {
+  await assert.rejects(() => cutoverWithRollback({
+    stopOriginal: async () => {},
+    startCandidate: async () => { throw new Error("new failed"); },
+    assertCandidateHealthy: async () => {},
+    restoreOriginal: async () => { throw new Error("old failed"); },
+  }), (error) => error instanceof AggregateError && /新版本启动失败且旧版本恢复失败/.test(error.message));
 });

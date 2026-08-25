@@ -4,13 +4,14 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { vinextInvocation } from "./vinext-cli.mjs";
 
-const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const projectRoot = resolve(process.env.TASKCENTER_SOURCE_ROOT || fileURLToPath(new URL("..", import.meta.url)));
 const runtimeDir = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local/runtime"));
 const heartbeatPath = resolve(runtimeDir, "web-heartbeat.json");
 const stopPath = resolve(runtimeDir, "web-stop.json");
 const launchToken = process.env.TASKCENTER_LAUNCH_TOKEN || "";
 const webArgs = process.env.TASKCENTER_WEB_PORT ? ["--port", process.env.TASKCENTER_WEB_PORT] : [];
-const web = vinextInvocation("dev", webArgs);
+const webMode = process.env.TASKCENTER_WEB_MODE === "start" ? "start" : "dev";
+const web = vinextInvocation(webMode, webArgs, projectRoot);
 
 const specs = [
   { name: "watch-codex", command: process.execPath, args: ["scripts/watch-codex.mjs"] },

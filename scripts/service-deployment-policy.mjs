@@ -26,3 +26,31 @@ export async function assertCleanRevision(expectedRevision, readRevision, readSt
     throw new Error("部署已阻止：工作区存在未提交改动。请完成验证并提交后再部署。");
   }
 }
+
+export async function cutoverWithRollback(options) {
+  const {
+    stopOriginal,
+    startCandidate,
+    assertCandidateHealthy,
+    restoreOriginal,
+  } = options;
+
+  await stopOriginal();
+  try {
+    await startCandidate();
+    await assertCandidateHealthy();
+    return { outcome: "succeeded", rollback: false };
+  } catch (releaseError) {
+    try {
+      await restoreOriginal();
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [releaseError, rollbackError],
+        `新版本启动失败且旧版本恢复失败：${releaseError.message}; ${rollbackError.message}`,
+      );
+    }
+    const error = new Error(`新版本启动失败，已恢复上一版本：${releaseError.message}`, { cause: releaseError });
+    error.code = "TASKCENTER_RELEASE_ROLLED_BACK";
+    throw error;
+  }
+}

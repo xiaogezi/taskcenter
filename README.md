@@ -57,9 +57,22 @@ npm run service:start
 npm run service:status
 npm run service:stop
 npm run service:deploy
+npm run service:history
 ```
 
-运行中的健康实例默认受到保护，直接执行 `service:stop` 或 `service:restart` 会被拒绝。开发和修复期间保持原实例运行；代码完成、验证通过并提交后，使用 `npm run service:deploy`。该命令会在原 PID 持续提供服务时运行 lint、完整测试并确认 Git revision 与工作区未变化；任何切换前检查失败都保留原实例，全部通过后才进入重新部署阶段。人工明确停机可临时设置 `TASKCENTER_ALLOW_SERVICE_DISRUPTION=1`，不得把该变量用于常规 Agent 开发或部署。
+运行中的健康实例默认受到保护，直接执行 `service:stop` 或 `service:restart` 会被拒绝。开发和修复期间保持原实例运行；代码完成、验证通过并提交后，使用 `npm run service:deploy`。
+
+受控发布按固定阶段执行：
+
+```text
+干净提交 → lint/完整测试 → 不可变 release worktree → production build
+→ 隔离数据与随机端口候选自检 → 准备上一版本回滚包
+→ 稳定端口切换 → 健康确认 → 成功或自动恢复上一版本
+```
+
+正式实例运行 `.local/releases/<commit>` 中的生产构建，不再监听日常开发工作区；候选实例使用 `.local/candidates/` 下的临时 runtime、日志、Codex home 和数据目录，不读取或写入正式账本。原 PID 在 lint、测试、构建和候选健康检查期间持续提供服务，任一切换前检查失败都保留原实例。稳定端口切换失败时会自动启动上一已验证 release。人工明确停机可临时设置 `TASKCENTER_ALLOW_SERVICE_DISRUPTION=1`，不得把该变量用于常规 Agent 开发或部署。
+
+每次发布会把阶段、revision、前一 revision、耗时、候选端口和最终结果追加到 `.local/release-events.jsonl`。`npm run service:history` 输出发布次数、成功率、回滚率、P50/P95 耗时和最近一次结果，用于复盘发布失败、优化测试与缩短反馈周期；事件不包含 Session 正文或凭据。
 
 Windows 原生环境要求 Node.js 与 Git 在 `PATH` 中。使用 WSL2 时建议把仓库放在 Linux 文件系统（例如 `~/code/taskcenter`），不要放在 `/mnt/c`；这能避免跨文件系统的权限、符号链接和监听性能问题。Windows 当前不提供 GUI 桌面壳。
 
