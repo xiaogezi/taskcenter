@@ -1463,6 +1463,80 @@ test("MCP verification report 在 Session 通知失败后保留账本并返回 w
   assert.equal(loadTasks().find((task) => task.id === "verification-warning-task").verificationClaims.length, 1);
 });
 
+test("MCP Review attestation 先落账，通知失败降级且非法 v3 返回真实校验原因", async (context) => {
+  await resetLedger();
+  const fakeServerPath = join(tempDir, "review-warning-context-server.mjs");
+  const fakeStatePath = join(tempDir, "review-warning-context-state.json");
+  await rm(fakeStatePath, { force: true });
+  await writeTransientContextServer(fakeServerPath);
+  const { base, child } = await startControlServer({
+    TASKCENTER_CONTEXT_ROOT: tempDir,
+    TASKCENTER_CONTEXT_SERVER: fakeServerPath,
+    TASKCENTER_CONTEXT_NODE: process.execPath,
+    TASKCENTER_CONTEXT_TIMEOUT_MS: "2000",
+    FAKE_CONTEXT_STATE_PATH: fakeStatePath,
+  });
+  context.after(() => child.kill("SIGTERM"));
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["scripts/taskcenter-mcp.mjs"],
+    env: { ...process.env, TASKCENTER_CONTROL_URL: base },
+    cwd: root,
+  });
+  const client = new Client({ name: "taskcenter-review-warning", version: "0.0.0" });
+  await client.connect(transport);
+  context.after(async () => { await client.close().catch(() => {}); });
+
+  const subject = {
+    type: "git_commit", value: "review-warning-revision", repository: "example", branch: "main",
+    observed_at: "2026-08-25T08:00:00.000Z",
+  };
+  const owner = { type: "agent", id: "review-owner", provider: "openai", session_id: "review-owner-session" };
+  const reviewer = { type: "agent", id: "reviewer-luna", provider: "openai", session_id: "reviewer-session" };
+  for (const session_id of ["review-owner-session", "reviewer-session"]) {
+    await client.callTool({ name: "taskcenter_session_register", arguments: {
+      session_id, agent: "codex", provider: "openai", model: "gpt-test", workspace: "/work",
+    } });
+  }
+  await client.callTool({ name: "taskcenter_task_create", arguments: {
+    session_id: "review-owner-session", task_id: "review-warning-task", context_task_id: "review-warning-context",
+    contract_version: "v2", title: "Review 通知降级", goal: "Review 先落账", scope: ["example"], non_goals: [],
+    workflow_profile: "standard", review_policy: "required", execution_environment: "local",
+    acceptance_criteria: [{ id: "review", description: "独立 Review 通过", required: true }],
+    verification_plan: [{ id: "review-check", title: "Review", kind: "other", required: true }],
+    plan: ["报告 Review"], subject_ref: subject, actor: owner,
+  } });
+  const attestation = {
+    session_id: "reviewer-session", task_id: "review-warning-task", event_id: "review-warning-event",
+    id: "review-warning-attestation", reviewer, reviewer_session_id: "reviewer-session", subject_ref: subject,
+    scope: "all", review_contract_version: "v2", spec_verdict: "compliant", quality_verdict: "approved",
+    verdict: "approved", unresolved_findings: 0, unverified_requirements: [], observed_at: "2026-08-25T08:05:00.000Z",
+  };
+
+  const first = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_review_report", arguments: attestation })));
+  assert.equal(first.accepted, true);
+  assert.equal(first.review_status, "passed");
+  assert.deepEqual(first.warnings.map((warning) => warning.code), ["SESSION_NOTIFICATION_FAILED"]);
+  assert.equal(loadTasks().find((task) => task.id === "review-warning-task").reviewAttestations.length, 1);
+
+  const replay = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_review_report", arguments: attestation })));
+  assert.equal(replay.accepted, true);
+  assert.equal(replay.warnings, undefined);
+  assert.equal(loadTasks().find((task) => task.id === "review-warning-task").reviewAttestations.length, 1);
+
+  const invalid = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_review_report", arguments: {
+    ...attestation,
+    event_id: "review-invalid-v3-event",
+    id: "review-invalid-v3-attestation",
+    review_contract_version: "v3",
+  } })));
+  assert.equal(invalid.error, "TASKCENTER_REQUEST_FAILED");
+  assert.match(invalid.message, /Review Attestation v3 缺少 cycle、scope、files 或 findings/);
+  assert.doesNotMatch(invalid.message, /Session 投递服务失败/);
+  assert.equal(loadTasks().find((task) => task.id === "review-warning-task").reviewAttestations.length, 1);
+});
+
 test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id", async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer();

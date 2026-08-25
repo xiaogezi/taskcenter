@@ -1088,7 +1088,16 @@ function applyEvent(current, event) {
   next = applyTimingTransition(current, base, next, event, now);
   if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;
   if (event.type === "task.review") next.status = event.status || base.status;
-  next = applyCompletionEvent(next, event);
+  try {
+    next = applyCompletionEvent(next, event);
+  } catch (error) {
+    // completion-state 使用 statusCode 表达协议校验失败。这里必须把它转换成
+    // TaskLedgerError，否则控制服务会把合法的 4xx 误报成“Session 投递失败”。
+    if (Number.isInteger(error?.statusCode)) {
+      throw new TaskLedgerError(error.statusCode, error.message);
+    }
+    throw error;
+  }
   return next;
 }
 
