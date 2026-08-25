@@ -15,7 +15,8 @@ import { connect, createServer } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendReleaseEvent, loadReleaseEvents, summarizeReleaseEvents } from "./release-history.mjs";
-import { buildReleaseEnvironment } from "./release-runtime.mjs";
+import { buildReleaseEnvironment, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
+import { resolveSpawnCommand } from "./platform-command.mjs";
 import { cutoverWithRollback, verifyBeforeServiceCutover } from "./service-deployment-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -65,12 +66,13 @@ async function startService(options = {}) {
     console.log("TaskCenter 已在运行：http://localhost:3000");
     return;
   }
-  const release = options.release || readJson(activeReleasePath) || {
-    sourceRoot: projectRoot,
-    revision: "",
-    releaseId: "legacy-worktree",
-    webMode: "dev",
-  };
+  const startup = options.release
+    ? { mode: "release", release: options.release }
+    : resolveStartupRelease(readJson(activeReleasePath), {
+      allowLegacyDev: process.env.TASKCENTER_ALLOW_LEGACY_DEV_START === "1",
+      projectRoot,
+    });
+  const release = startup.mode === "bootstrap" ? await bootstrapRelease() : startup.release;
   if (!existsSync(resolve(release.sourceRoot, "node_modules"))) {
     throw new Error("启动失败：项目依赖未安装，请先在 TaskCenter 目录运行 npm ci。");
   }
@@ -103,6 +105,7 @@ async function startService(options = {}) {
   await childResult(launched, "TaskCenter 后台启动器");
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (await healthCheck()) {
+      if (startup.mode === "bootstrap") writeJson(activeReleasePath, release);
       await openDashboard();
       console.log("TaskCenter 启动成功：http://localhost:3000");
       return;
@@ -232,9 +235,8 @@ async function requireOriginalService(original, stage) {
 }
 
 async function runNpmScript(script) {
-  const npmCli = process.env.npm_execpath;
-  if (!npmCli) throw new Error("部署已阻止：请通过 npm run service:deploy 执行受控部署。");
-  const child = spawn(process.execPath, [npmCli, "run", script], {
+  const invocation = npmInvocation();
+  const child = spawn(invocation.command, [...invocation.argsPrefix, "run", script], {
     cwd: projectRoot,
     env: process.env,
     stdio: "inherit",
@@ -307,7 +309,8 @@ async function validateCandidateRelease(release) {
   writeJson(resolve(candidateData, "session-merges.json"), []);
 
   const webPort = await allocatePort();
-  const controlPort = await allocatePort();
+  let controlPort = await allocatePort();
+  while (controlPort === webPort) controlPort = await allocatePort();
   const config = {
     sourceRoot: release.sourceRoot,
     revision: release.revision,
@@ -320,13 +323,15 @@ async function validateCandidateRelease(release) {
     controlPort,
     candidateCodex,
   };
+  let cleaned = false;
   try {
     await launchDetached(config);
     await waitForHealth(candidateRuntime, webPort, controlPort);
     return { webPort, controlPort };
   } finally {
-    await stopManagedAt(candidateRuntime, webPort, controlPort).catch(() => {});
-    rmSync(candidateRoot, { recursive: true, force: true });
+    await stopManagedAt(candidateRuntime, webPort, controlPort);
+    cleaned = true;
+    if (cleaned) rmSync(candidateRoot, { recursive: true, force: true });
   }
 }
 
@@ -352,8 +357,13 @@ async function waitForHealth(targetRuntimeDir, webPort, targetControlPort) {
 }
 
 async function stopManagedAt(targetRuntimeDir, webPort, targetControlPort) {
-  const state = readManagedProcessAt(targetRuntimeDir);
-  if (!state) return;
+  const state = resolveStopTarget(readJson(resolve(targetRuntimeDir, "web-state.json")));
+  if (!state) {
+    if (await healthCheckAt(webPort, targetControlPort)) {
+      throw new Error("候选实例缺少可验证 PID/token 且端口仍在服务，已保留候选目录供排障。");
+    }
+    return;
+  }
   writeJson(resolve(targetRuntimeDir, "web-stop.json"), { token: state.token, requestedAt: new Date().toISOString() });
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (!isProcessAlive(state.pid) && !(await healthCheckAt(webPort, targetControlPort))) return;
@@ -389,10 +399,29 @@ async function allocatePort() {
 }
 
 async function runNpmAt(args, cwd, label) {
-  const npmCli = process.env.npm_execpath;
-  if (!npmCli) throw new Error("部署已阻止：请通过 npm run service:deploy 执行受控部署。");
-  const child = spawn(process.execPath, [npmCli, ...args], { cwd, env: process.env, stdio: "inherit" });
+  const invocation = npmInvocation();
+  const child = spawn(invocation.command, [...invocation.argsPrefix, ...args], { cwd, env: process.env, stdio: "inherit" });
   await childResult(child, label);
+}
+
+async function bootstrapRelease() {
+  const revision = await gitOutput(["rev-parse", "HEAD"]);
+  console.log(`TaskCenter 首次受控启动：验证并构建 ${revision.slice(0, 12)}，不使用开发模式。`);
+  await verifyBeforeServiceCutover({
+    original: null,
+    revision,
+    stages: ["lint", "test"],
+    runStage: runNpmScript,
+    assertOriginalService: async () => {},
+    readRevision: () => gitOutput(["rev-parse", "HEAD"]),
+    readStatus: () => gitOutput(["status", "--porcelain"]),
+  });
+  return prepareRelease(revision);
+}
+
+function npmInvocation() {
+  if (process.env.npm_execpath) return { command: process.execPath, argsPrefix: [process.env.npm_execpath] };
+  return resolveSpawnCommand("npm");
 }
 
 async function runGit(args, cwd, label) {

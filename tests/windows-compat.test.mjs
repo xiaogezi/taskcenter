@@ -74,6 +74,7 @@ test("cross-platform controller starts, observes, and gracefully stops an isolat
     TASKCENTER_WATCHER_HEARTBEAT_PATH: join(root, "watcher-heartbeat.json"),
     TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1",
     TASKCENTER_NO_OPEN: "1",
+    TASKCENTER_ALLOW_LEGACY_DEV_START: "1",
   };
   try {
     const started = await runNode(["scripts/taskcenter-control.mjs", "start"], env);

@@ -48,3 +48,19 @@ export function buildReleaseEnvironment(config, options = {}) {
   }
   return environment;
 }
+
+export function resolveStartupRelease(activeRelease, options = {}) {
+  if (activeRelease?.sourceRoot && activeRelease?.revision) return { mode: "release", release: activeRelease };
+  if (options.allowLegacyDev === true) {
+    return {
+      mode: "legacy_test_only",
+      release: { sourceRoot: options.projectRoot, revision: "", releaseId: "legacy-worktree", webMode: "dev" },
+    };
+  }
+  return { mode: "bootstrap", release: null };
+}
+
+export function resolveStopTarget(state) {
+  if (!Number.isInteger(state?.pid) || state.pid <= 0 || typeof state.token !== "string" || !state.token) return null;
+  return state;
+}

@@ -72,6 +72,8 @@ npm run service:history
 
 正式实例运行 `.local/releases/<commit>` 中的生产构建，不再监听日常开发工作区；候选实例使用 `.local/candidates/` 下的临时 runtime、日志、Codex home 和数据目录，不读取或写入正式账本。原 PID 在 lint、测试、构建和候选健康检查期间持续提供服务，任一切换前检查失败都保留原实例。稳定端口切换失败时会自动启动上一已验证 release。人工明确停机可临时设置 `TASKCENTER_ALLOW_SERVICE_DISRUPTION=1`，不得把该变量用于常规 Agent 开发或部署。
 
+首次安装尚无 `active-release.json` 时，`service:start` 会先校验干净提交、执行 lint 和完整测试，再构建并启动不可变 release；不会回退到主工作区的 `vinext dev`。`TASKCENTER_ALLOW_LEGACY_DEV_START=1` 仅供隔离测试夹具使用，不得用于正式实例。
+
 每次发布会把阶段、revision、前一 revision、耗时、候选端口和最终结果追加到 `.local/release-events.jsonl`。`npm run service:history` 输出发布次数、成功率、回滚率、P50/P95 耗时和最近一次结果，用于复盘发布失败、优化测试与缩短反馈周期；事件不包含 Session 正文或凭据。
 
 Windows 原生环境要求 Node.js 与 Git 在 `PATH` 中。使用 WSL2 时建议把仓库放在 Linux 文件系统（例如 `~/code/taskcenter`），不要放在 `/mnt/c`；这能避免跨文件系统的权限、符号链接和监听性能问题。Windows 当前不提供 GUI 桌面壳。
