@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
 import { detectSparkRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
+import { matchesTaskLifecycleFilter, taskClosureReasonLabels, taskLifecycleFilterCounts, taskLifecycleFilters } from "./task-lifecycle-filter.mjs";
 import { taskTimeState } from "./task-time-state.mjs";
 
 type SessionGroup = Thread & {
@@ -806,6 +807,7 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
   const [attention, setAttention] = useState<"all" | "blocked" | "overdue" | "service">("all");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | TaskStatus>("all");
+  const [lifecycleFilter, setLifecycleFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState<"all" | "stale" | "overdue">("all");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
@@ -813,7 +815,8 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
   const agents: string[] = [...new Set(filteredTasks.map((task) => task.agent || "unknown"))];
   const attentionTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt);
   const attentionCounts = { blocked: attentionTasks.filter((task) => task.status === "blocked").length, overdue: attentionTasks.filter((task) => taskTimeState(task).overdue).length, service: serviceHealthy ? 0 : 1 };
-  const shownTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt).filter((task) => statusFilter === "all" || task.status === statusFilter).filter((task) => agentFilter === "all" || (task.agent || "unknown") === agentFilter).filter((task) => timeFilter === "all" || taskTimeState(task)[timeFilter]).filter((task) => attention === "all" || (attention === "service" ? false : attention === "blocked" ? task.status === "blocked" : taskTimeState(task).overdue)).filter((task) => !query || `${task.title} ${task.id} ${task.sessionId}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => (Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || "")) * (sortOrder === "newest" ? 1 : -1));
+  const lifecycleCounts = { ...taskLifecycleFilterCounts(filteredTasks), all: filteredTasks.filter((task) => showArchived || !task.archivedAt).length };
+  const shownTasks = filteredTasks.filter((task) => showArchived || !task.archivedAt).filter((task) => lifecycleFilter === "all" || matchesTaskLifecycleFilter(task, lifecycleFilter)).filter((task) => statusFilter === "all" || task.status === statusFilter).filter((task) => agentFilter === "all" || (task.agent || "unknown") === agentFilter).filter((task) => timeFilter === "all" || taskTimeState(task)[timeFilter]).filter((task) => attention === "all" || (attention === "service" ? false : attention === "blocked" ? task.status === "blocked" : taskTimeState(task).overdue)).filter((task) => !query || `${task.title} ${task.id} ${task.sessionId}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => (Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || "")) * (sortOrder === "newest" ? 1 : -1));
   const pageCount = Math.max(1, Math.ceil(shownTasks.length / TASKS_PER_PAGE));
   const effectivePage = Math.min(page, pageCount);
   const visibleTasks = shownTasks.slice((effectivePage - 1) * TASKS_PER_PAGE, effectivePage * TASKS_PER_PAGE);
@@ -827,12 +830,16 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
         <h2>会话主动任务<span>{filteredTasks.length}</span></h2>
         <span className="attention-summary">需要关注：</span>{(["blocked", "overdue", "service"] as const).map((key) => <button type="button" key={key} className="task-filter-button" onClick={() => setAttention(attention === key ? "all" : key)}>{key === "blocked" ? "阻塞" : key === "overdue" ? "逾期" : "服务"} {attentionCounts[key]}</button>)}
         <input aria-label="搜索任务" placeholder="标题 / ID / Session" value={query} onChange={(event) => setQuery(event.target.value)} />
-        <select aria-label="任务状态" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | TaskStatus)}><option value="all">全部状态</option>{Object.keys(taskStatusMeta).map((status) => <option key={status} value={status}>{taskStatusMeta[status as TaskStatus].label}</option>)}</select>
+        <select aria-label="任务状态" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value as "all" | TaskStatus); setLifecycleFilter("all"); setPage(1); }}><option value="all">全部状态</option>{Object.keys(taskStatusMeta).map((status) => <option key={status} value={status}>{taskStatusMeta[status as TaskStatus].label}</option>)}</select>
         <select aria-label="任务 Agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}><option value="all">全部 Agent</option>{agents.map((agent) => <option key={agent}>{agent}</option>)}</select>
         <select aria-label="时间筛选" value={timeFilter} onChange={(event) => setTimeFilter(event.target.value as "all" | "stale" | "overdue")}><option value="all">全部时间</option><option value="stale">陈旧</option><option value="overdue">逾期</option></select>
         <select aria-label="更新时间排序" value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")}><option value="newest">更新时间：最新</option><option value="oldest">更新时间：最早</option></select>
         <label><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> 显示归档</label>
       </div>
+      <nav className="task-lifecycle-filters" aria-label="未完成任务阶段筛选">
+        {taskLifecycleFilters.map((filter) => <button type="button" key={filter.id} className={lifecycleFilter === filter.id ? "active" : ""} aria-pressed={lifecycleFilter === filter.id} onClick={() => { setLifecycleFilter(filter.id); setStatusFilter("all"); setPage(1); }}>{filter.label}<span>{lifecycleCounts[filter.id] || 0}</span></button>)}
+      </nav>
+      <p className="task-closure-note">TaskCenter 不按时间或测试数量猜测完成；Agent 必须显式声明完成，且当前 Subject 的验收、验证与 Review 证据满足契约后才会闭环。</p>
       {shownTasks.length === 0 ? (
         <p className="ledger-empty">
           {selectedSessionId === "全部任务"
@@ -905,6 +912,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   const goalOrStep = task.goal || stepText ? `${asText(task.goal)}${stepText ? ` · ${asText(stepText)}` : ""}` : "—";
   const isDemo = task.id.startsWith("ui-demo-");
   const timeState = taskTimeState(task);
+  const closureReasons = taskClosureReasonLabels(task);
 
   const sessionInfo = useMemo(
     () => resolveTaskSessionDisplay(task, threadsForTask.find((thread) => thread.id === task.sessionId || thread.sessionIds?.includes(task.sessionId))),
@@ -987,6 +995,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
       <td data-label="状态" className="task-cell">
         <span className={`task-status status-${meta.tone}`}>{meta.label}</span>{timeState.stale && <small> · 陈旧</small>}{timeState.overdue && <small> · 交付逾期</small>}{timeState.effortOverrun && <small> · 工时超预估</small>}
         {task.contractVersion === "v2" && <small className="task-assurance-status">验证 {task.verificationStatus} · 审查 {task.reviewStatus} · 验收 {task.acceptanceStatus}</small>}
+        {closureReasons.length > 0 && <small className="task-closure-reasons" title={closureReasons.join("、")}>{closureReasons.slice(0, 2).join(" · ")}{closureReasons.length > 2 ? ` +${closureReasons.length - 2}` : ""}</small>}
       </td>
       <td data-label="目标 / 步骤" className="task-cell task-goal-cell" title={goalOrStep}>{goalOrStep}</td>
       <td data-label="阻塞" className="task-cell task-blocker-cell" title={task.blocker || "—"}>{task.blocker ? asText(task.blocker) : "—"}</td>

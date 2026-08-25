@@ -390,6 +390,12 @@ button { cursor: pointer; }
 .task-actions-cell input[type="datetime-local"] { background: var(--paper); border: 1px solid var(--line); color: var(--ink); font-size: 10px; margin: 0 6px 4px 0; padding: 5px; }
 .ledger-heading h2 { font-family: Georgia, serif; font-size: 25px; font-weight: 400; letter-spacing: -.04em; margin: 0; }
 .ledger-heading h2 span { color: var(--orange); font-family: "Avenir Next", sans-serif; font-size: 11px; margin-left: 6px; }
+.task-lifecycle-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 8px; }
+.task-lifecycle-filters button { align-items: center; background: rgba(255, 255, 255, .38); border: 1px solid var(--line); color: var(--ink-soft); cursor: pointer; display: inline-flex; font-size: 10px; gap: 6px; min-height: 28px; padding: 5px 9px; }
+.task-lifecycle-filters button span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.task-lifecycle-filters button.active { background: var(--ink); border-color: var(--ink); color: white; }
+.task-lifecycle-filters button.active span { color: var(--orange-pale); }
+.task-closure-note { color: var(--muted); font-size: 10px; line-height: 1.5; margin: 0 0 12px; }
 .ledger-empty { background: rgba(255, 255, 255, .35); border: 1px dashed var(--line); color: var(--ink-soft); font-size: 12px; line-height: 1.7; margin: 0; padding: 18px 20px; }
 .task-list { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .task-card { animation: rise .35s both; background: rgba(255, 255, 255, .63); border-top: 3px solid var(--ink); box-shadow: var(--shadow); min-width: 0; padding: 18px 19px 15px; position: relative; }
@@ -442,6 +448,7 @@ button { cursor: pointer; }
 .task-row.status-task-done-claimed { background: rgba(140, 166, 51, .06); }
 .task-row.status-task-verified { background: rgba(22, 126, 134, .06); }
 .task-assurance-status { display: block; margin-top: 6px; color: var(--muted); line-height: 1.35; }
+.task-closure-reasons { color: var(--rose); display: block; line-height: 1.35; margin-top: 4px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-row.status-task-cancelled { background: rgba(130, 144, 154, .06); }
 
 .task-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
