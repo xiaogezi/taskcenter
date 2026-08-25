@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { appendReleaseEvent, loadReleaseEvents, summarizeReleaseEvents } from "./release-history.mjs";
 import { buildReleaseEnvironment, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
+import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.mjs";
 import { cutoverWithRollback, verifyBeforeServiceCutover } from "./service-deployment-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -127,15 +128,25 @@ async function stopService(options = {}) {
     return;
   }
   writeJson(stopPath, { token: state.token, requestedAt: new Date().toISOString() });
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (!isProcessAlive(state.pid) && !(await healthCheck())) {
+  await terminateProcessTree(state.pid);
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    if (!isProcessTreeAlive(state.pid) && !(await healthCheck())) {
       cleanupRuntimeFiles();
       console.log("TaskCenter 已安全停止。");
       return;
     }
     await sleep(200);
   }
-  throw new Error("停止超时，未强制结束进程。");
+  await terminateProcessTree(state.pid, { force: true });
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    if (!isProcessTreeAlive(state.pid) && !(await healthCheck())) {
+      cleanupRuntimeFiles();
+      console.log("TaskCenter 已安全停止。");
+      return;
+    }
+    await sleep(200);
+  }
+  throw new Error("停止超时：完整进程树或服务端口仍未释放。");
 }
 
 async function deployService() {
@@ -368,8 +379,15 @@ async function stopManagedAt(targetRuntimeDir, webPort, targetControlPort) {
     return;
   }
   writeJson(resolve(targetRuntimeDir, "web-stop.json"), { token: state.token, requestedAt: new Date().toISOString() });
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    const processTreeStopped = !isProcessAlive(state.pid) && childPids.every((pid) => !isProcessAlive(pid));
+  await terminateProcessTree(state.pid);
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const processTreeStopped = !isProcessTreeAlive(state.pid) && childPids.every((pid) => !isProcessAlive(pid));
+    if (processTreeStopped && !(await healthCheckAt(webPort, targetControlPort))) return;
+    await sleep(200);
+  }
+  await terminateProcessTree(state.pid, { force: true });
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const processTreeStopped = !isProcessTreeAlive(state.pid) && childPids.every((pid) => !isProcessAlive(pid));
     if (processTreeStopped && !(await healthCheckAt(webPort, targetControlPort))) return;
     await sleep(200);
   }
