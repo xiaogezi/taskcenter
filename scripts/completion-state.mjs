@@ -60,9 +60,17 @@ export function normalizeActorIdentity(value, fallback = {}) {
   return result;
 }
 
-export function normalizeCompletionEvent(input) {
+export function normalizeCompletionEvent(input, currentSubject = null) {
   const occurredAt = text(input.occurred_at, 80);
-  const subject = normalizeSubjectReference(input.subject_ref, occurredAt) || legacySubject(input.revision, occurredAt || input.created_at || "1970-01-01T00:00:00.000Z");
+  const fallbackAt = occurredAt || input.created_at || "1970-01-01T00:00:00.000Z";
+  const subject = normalizeSubjectReference(input.subject_ref, occurredAt) || subjectFromRevision(currentSubject, input.revision, fallbackAt);
+  const alignSubject = (normalized, raw) => alignImplicitRevisionSubject(
+    normalized,
+    raw,
+    currentSubject,
+    fallbackAt,
+    input.type === "task.close" ? subject : null,
+  );
   return {
     ...(input.contract_version !== undefined ? { contract_version: text(input.contract_version, 20) } : {}),
     ...(input.scope !== undefined ? { scope: strings(input.scope, 50, 500) } : {}),
@@ -73,15 +81,15 @@ export function normalizeCompletionEvent(input) {
     ...(input.verification_plan !== undefined ? { verification_plan: normalizeVerificationPlan(input.verification_plan) } : {}),
     ...(input.workspace_policy !== undefined ? { workspace_policy: input.workspace_policy } : {}),
     revision: text(input.revision, 500), subject_ref: subject,
-    requirement_result: normalizeRequirementResult(input.requirement_result, occurredAt),
-    verification_claim: normalizeVerificationClaim(input.verification_claim, occurredAt),
+    requirement_result: alignSubject(normalizeRequirementResult(input.requirement_result, occurredAt), input.requirement_result),
+    verification_claim: alignSubject(normalizeVerificationClaim(input.verification_claim, occurredAt), input.verification_claim),
     close_requirements: Array.isArray(input.close_requirements)
-      ? input.close_requirements.slice(0, 50).map((item) => normalizeRequirementResult(item, occurredAt))
+      ? input.close_requirements.slice(0, 50).map((item) => alignSubject(normalizeRequirementResult(item, occurredAt), item))
       : [],
     close_verifications: Array.isArray(input.close_verifications)
-      ? input.close_verifications.slice(0, 30).map((item) => normalizeVerificationClaim(item, occurredAt))
+      ? input.close_verifications.slice(0, 30).map((item) => alignSubject(normalizeVerificationClaim(item, occurredAt), item))
       : [],
-    review_attestation: normalizeReview(input.review_attestation, occurredAt),
+    review_attestation: alignSubject(normalizeReview(input.review_attestation, occurredAt), input.review_attestation),
     review_cycle: normalizeReviewCycle(input.review_cycle, occurredAt),
     diagnostic_observation: normalizeDiagnosticObservation(input.diagnostic_observation, occurredAt),
     acceptance_record: normalizeAcceptance(input.acceptance_record, occurredAt),
@@ -214,7 +222,7 @@ export function withCompletionState(task) {
 }
 
 export function computeCompletionReadiness(task, subject = task.currentSubject || null) {
-  const currentSubject = typeof subject === "string" ? legacySubject(subject, task.updatedAt || task.createdAt) : subject;
+  const currentSubject = resolveCompletionSubject(task, subject);
   const reasons = [], missingRequirements = [], failedRequirements = [], staleEvidence = [], unresolvedFindings = [];
   if ((task.contractVersion || "legacy") !== "v2") reasons.push("legacy_contract");
   if (task.status !== "done_claimed") reasons.push("execution_not_done_claimed");
@@ -267,6 +275,14 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
     executionStatus: task.status || "planned", verificationStatus: verificationStatusOf({ ...task, currentSubject }), reviewStatus: reviewStatusOf({ ...task, currentSubject }), acceptanceStatus: task.acceptanceStatus || "pending",
     currentSubject: currentSubject || null, reasons: [...new Set(reasons)], missingRequirements: [...new Set(missingRequirements)], failedRequirements: [...new Set(failedRequirements)], staleEvidence: [...new Set(staleEvidence)], unresolvedFindings: [...new Set(unresolvedFindings)],
   };
+}
+
+export function resolveCompletionSubject(task, subject = null) {
+  if (subject && typeof subject === "object") return subject;
+  if (typeof subject === "string" && subject.trim()) {
+    return subjectFromRevision(task.currentSubject, subject, task.updatedAt || task.createdAt);
+  }
+  return task.currentSubject || legacySubject(task.currentRevision, task.updatedAt || task.createdAt);
 }
 
 export function buildCompletionPacket(task) {
@@ -568,7 +584,25 @@ function reviewStatusOf(task) {
 }
 
 function reviewRequired(task) { return task.workflowProfile === "strict" || task.reviewPolicy === "required"; }
-function sameSubject(left, right) { return Boolean(left && right && left.type === right.type && (left.value || "") === (right.value || "") && (left.repository || "") === (right.repository || "") && (left.branch || "") === (right.branch || "")); }
+export function sameSubject(left, right) { return Boolean(left && right && left.type === right.type && (left.value || "") === (right.value || "") && (left.repository || "") === (right.repository || "") && (left.branch || "") === (right.branch || "")); }
+
+function subjectFromRevision(currentSubject, revision, observedAt) {
+  const value = text(revision, 500);
+  if (!value) return null;
+  if (currentSubject && typeof currentSubject === "object" && currentSubject.type !== "none") {
+    if ((currentSubject.value || "") === value) return currentSubject;
+    return { ...currentSubject, value, observed_at: observedAt || currentSubject.observed_at };
+  }
+  return legacySubject(value, observedAt);
+}
+
+function alignImplicitRevisionSubject(normalized, raw, currentSubject, observedAt, closeSubject = null) {
+  if (!normalized || !raw || raw.subject_ref) return normalized;
+  if (raw.revision && currentSubject) {
+    return { ...normalized, subject_ref: subjectFromRevision(currentSubject, raw.revision, observedAt) };
+  }
+  return closeSubject ? { ...normalized, subject_ref: closeSubject } : normalized;
+}
 function independent(left, right) { return !left || !right || `${left.type}:${left.id}` !== `${right.type}:${right.id}`; }
 function legacySubject(revision, observedAt) { return revision ? { type: "external", value: text(revision, 500), observed_at: observedAt || new Date().toISOString() } : null; }
 function hasPortableEvidence(claim) { return [claim.evidence_ref, ...(claim.artifact_refs || [])].filter(Boolean).some((ref) => !/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(ref)); }

@@ -112,6 +112,8 @@ hooks = true
 
 重新启动 Codex，在 `/hooks` 中审核并信任 Hook，在 `/mcp` 中确认 `taskcenter` 已连接。也可以把 MCP 配置放进可信项目的 `.codex/config.toml`。
 
+Codex 配置必须同时包含生成器输出的 `Stop` Hook。v2 任务不能再通过普通 `taskcenter_task_report(done_claimed)` 绕过闭环；Agent 应使用 `taskcenter_task_close` 原子提交验收与验证证据，并读取返回的 `completionReadiness`。当最终回复明确声称“已完成”但任务仍未调用 close、证据缺失或 Subject 已过期时，`Stop` Hook 会让 Codex 自动继续本轮并注入具体缺口；只有 `completionClaim.allowed=true` 才放行正式完成声明。L0 只读回答、无任务 Session、明确说明尚未完成以及已 ready 的任务不会被该 Hook 阻断。
+
 ### Claude Code
 
 注册用户级 MCP：

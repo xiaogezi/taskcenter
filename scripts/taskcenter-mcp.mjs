@@ -123,9 +123,9 @@ server.registerTool("taskcenter_task_update", {
 
 server.registerTool("taskcenter_task_report", {
   title: "上报 TaskCenter 任务结果",
-  description: "上报任务结果、变更文件、测试、证据和复盘；完成只记录为 done_claimed。",
+  description: "上报任务过程结果、变更文件、测试、证据和复盘；v2 正式完成必须使用 taskcenter_task_close。",
   inputSchema: z.object(taskFields).extend({ task_id: z.string().min(1).max(200), status: z.enum(["in_progress", "blocked", "done_claimed"]).optional() }).strict(),
-}, async (input) => report("task.report", input));
+}, async (input) => reportTaskProgress(input));
 
 server.registerTool("taskcenter_task_close", {
   title: "原子关闭 TaskCenter 任务",
@@ -419,6 +419,26 @@ async function report(type, input) {
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
   }
+}
+
+async function reportTaskProgress(input) {
+  if (input.status !== "done_claimed") return report("task.report", input);
+  try {
+    const response = await fetch(`${controlServerUrl}/tasks`);
+    const payload = await readJson(response);
+    const task = (payload.tasks || []).find((item) => item.id === input.task_id);
+    if (task?.contractVersion === "v2") {
+      return result({
+        error: "TASKCENTER_ATOMIC_CLOSE_REQUIRED",
+        message: "v2 任务不能通过 taskcenter_task_report 声明完成；请调用 taskcenter_task_close 一次提交验收条件、验证证据并读取 completionReadiness。",
+        task_id: task.id,
+        completionReadiness: task.completionReadiness,
+      });
+    }
+  } catch (error) {
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: error.message });
+  }
+  return report("task.report", input);
 }
 
 async function postCore(path, input) {

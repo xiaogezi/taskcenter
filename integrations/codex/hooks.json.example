@@ -26,6 +26,18 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs\" stop --agent codex",
+            "timeout": 10,
+            "statusMessage": "Checking TaskCenter completion readiness"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "^(Bash|apply_patch|exec_command|Edit|Write)$",

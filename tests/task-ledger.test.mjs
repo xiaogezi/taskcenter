@@ -1773,6 +1773,15 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     close_verifications: [{ id: "close-test", kind: "test", status: "passed", observed_at: "2026-08-20T08:30:00.000Z", producer: "codex", evidence_ref: "summary:passed" }],
     response_mode: "full",
   };
+  const bypassClose = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_task_report",
+    arguments: {
+      session_id: "sess-mcp", task_id: "task-mcp-close", event_id: "mcp-close-bypass",
+      status: "done_claimed", tests: ["passed"], evidence: ["summary:passed"],
+    },
+  })));
+  assert.equal(bypassClose.error, "TASKCENTER_ATOMIC_CLOSE_REQUIRED");
+  assert.match(bypassClose.message, /v2.*taskcenter_task_close/);
   const closed = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_close", arguments: closeArguments })));
   assert.equal(closed.accepted, true);
   assert.equal(closed.event.type, "task.close");
@@ -1845,7 +1854,13 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     },
   });
   assert.equal(JSON.parse(textOf(v2Create)).task.contractVersion, "v2");
-  await client.callTool({ name: "taskcenter_task_report", arguments: { session_id: "sess-mcp", task_id: "task-mcp-v2", status: "done_claimed", tests: ["passed"], revision: "revision-mcp" } });
+  await client.callTool({
+    name: "taskcenter_task_close",
+    arguments: {
+      session_id: "sess-mcp", task_id: "task-mcp-v2", event_id: "mcp-v2-close",
+      tests: ["passed"], evidence: ["summary:passed"], revision: "revision-mcp",
+    },
+  });
   await client.callTool({
     name: "taskcenter_task_requirement_report",
     arguments: { session_id: "sess-mcp", task_id: "task-mcp-v2", event_id: "mcp-requirement", requirement_id: "acceptance-1", status: "passed", evidence_refs: ["claim-mcp"], checked_by: "codex", revision: "revision-mcp" },
@@ -1899,7 +1914,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const afterDiagnostic = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "task-mcp-v2" } })));
   assert.equal(afterDiagnostic.tasks[0].diagnosticObservations[0].case_id, "debug-mcp-1");
 
-  const structuredSubject = { type: "git_worktree_snapshot", value: "snapshot-mcp-structured", repository: "/work", branch: "feature/readiness", observed_at: "2026-08-17T01:00:00.000Z" };
+  const structuredSubject = { type: "git_commit", value: "commit-mcp-structured", repository: "/work", branch: "feature/readiness", observed_at: "2026-08-17T01:00:00.000Z" };
   await client.callTool({
     name: "taskcenter_task_create",
     arguments: {
@@ -1909,24 +1924,30 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
       verification_plan: [{ id: "tests", title: "测试", kind: "test", required: true }],
     },
   });
-  await client.callTool({ name: "taskcenter_task_report", arguments: { session_id: "sess-mcp", task_id: "task-mcp-structured", status: "done_claimed", tests: ["passed"], subject_ref: structuredSubject } });
   await client.callTool({
-    name: "taskcenter_task_requirement_report",
-    arguments: { session_id: "sess-mcp", task_id: "task-mcp-structured", event_id: "mcp-structured-requirement", requirement_id: "acceptance-1", status: "passed", evidence_refs: ["structured-claim"], checked_by: "codex", subject_ref: structuredSubject },
-  });
-  await client.callTool({
-    name: "taskcenter_task_verification_report",
+    name: "taskcenter_task_close",
     arguments: {
-      session_id: "sess-mcp", task_id: "task-mcp-structured", event_id: "mcp-structured-verification", id: "structured-claim", requirement_id: "tests",
-      kind: "test", command_or_probe: "node --test", status: "passed", exit_code: 0, subject_ref: structuredSubject,
-      observed_at: "2026-08-17T01:05:00.000Z", producer: "codex", producer_session_id: "sess-mcp", evidence_ref: "summary:passed",
+      session_id: "sess-mcp", task_id: "task-mcp-structured", event_id: "mcp-structured-close",
+      tests: ["passed"], evidence: ["summary:passed"], subject_ref: structuredSubject,
+      close_requirements: [{ requirement_id: "acceptance-1", status: "passed", evidence_refs: ["structured-claim"] }],
+      close_verifications: [{
+        id: "structured-claim", requirement_id: "tests", kind: "test", command_or_probe: "node --test",
+        status: "passed", exit_code: 0, observed_at: "2026-08-17T01:05:00.000Z",
+        producer: "codex", producer_session_id: "sess-mcp", evidence_ref: "summary:passed",
+      }],
     },
   });
   const structuredQuery = await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "task-mcp-structured" } });
   const structuredReadiness = await client.callTool({ name: "taskcenter_task_completion_readiness", arguments: { task_id: "task-mcp-structured" } });
+  const sameRevisionReadiness = await client.callTool({
+    name: "taskcenter_task_completion_readiness",
+    arguments: { task_id: "task-mcp-structured", revision: structuredSubject.value },
+  });
   assert.equal(JSON.parse(textOf(structuredQuery)).tasks[0].completionReadiness.ready, true);
   assert.equal(JSON.parse(textOf(structuredReadiness)).completionReadiness.ready, true);
   assert.deepEqual(JSON.parse(textOf(structuredReadiness)).completionReadiness.currentSubject, structuredSubject);
+  assert.equal(JSON.parse(textOf(sameRevisionReadiness)).completionReadiness.ready, true);
+  assert.deepEqual(JSON.parse(textOf(sameRevisionReadiness)).completionReadiness.currentSubject, structuredSubject);
 });
 
 test("V2 通用核心 API：无 Session 创建、离线导入、独立验收与双格式导出", async (context) => {

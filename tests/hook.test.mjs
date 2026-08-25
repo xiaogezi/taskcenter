@@ -418,6 +418,55 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
   assert.equal(active.stdout, "");
 });
 
+test("Stop 在 Agent 声称完成但 v2 任务未原子闭环时继续本轮", async () => {
+  const sessionId = "019f0000-0000-7000-8000-000000000094";
+  assert.equal((await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" })).code, 0);
+  const created = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({
+      type: "task.create", event_id: "stop-gate-create", task_id: "stop-gate-task", session_id: sessionId,
+      title: "完成声明门禁", goal: "验证 Stop Hook", contract_version: "v2", scope: ["tests"], non_goals: [],
+      workflow_profile: "fast", review_policy: "not_required", acceptance_criteria: [{ id: "done", description: "闭环", required: true }], plan: ["close"],
+    }),
+  });
+  assert.equal(created.status, 201);
+
+  const progress = await runHook("stop", "codex", {
+    session_id: sessionId, cwd: "/work", hook_event_name: "Stop", turn_id: "turn-stop-progress",
+    stop_hook_active: false, last_assistant_message: "当前仍在处理，尚未完成。",
+  });
+  assert.equal(progress.code, 0);
+  assert.equal(JSON.parse(progress.stdout).continue, true);
+
+  const blocked = await runHook("stop", "codex", {
+    session_id: sessionId, cwd: "/work", hook_event_name: "Stop", turn_id: "turn-stop-blocked",
+    stop_hook_active: false, last_assistant_message: "修复已经完成，可以交付。",
+  });
+  assert.equal(blocked.code, 0);
+  const blockedOutput = JSON.parse(blocked.stdout);
+  assert.equal(blockedOutput.decision, "block");
+  assert.match(blockedOutput.reason, /taskcenter_task_close/);
+
+  const closed = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({
+      type: "task.close", event_id: "stop-gate-close", task_id: "stop-gate-task", session_id: sessionId,
+      status: "done_claimed", tests: ["passed"], evidence: ["summary:passed"],
+      close_requirements: [{ requirement_id: "done", status: "passed", evidence_refs: ["summary:passed"] }],
+    }),
+  });
+  assert.equal(closed.status, 200);
+
+  const allowed = await runHook("stop", "codex", {
+    session_id: sessionId, cwd: "/work", hook_event_name: "Stop", turn_id: "turn-stop-ready",
+    stop_hook_active: true, last_assistant_message: "修复已经完成，可以交付。",
+  });
+  assert.equal(allowed.code, 0);
+  assert.equal(JSON.parse(allowed.stdout).continue, true);
+});
+
 test("CLI Session 领取 delegation 后通过主任务门禁且不创建子任务", async () => {
   const parentSessionId = "019f0000-0000-7000-8000-000000000092";
   const cliSessionId = "019f0000-0000-7000-8000-000000000093";

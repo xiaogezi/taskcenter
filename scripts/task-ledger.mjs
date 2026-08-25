@@ -358,7 +358,9 @@ function readLedger() {
 }
 
 export function recordTaskEvent(input, options = {}) {
-  const event = normalizeEvent(input);
+  const tasks = loadTasks();
+  const current = input?.task_id ? tasks.find((task) => task.id === String(input.task_id)) : null;
+  const event = normalizeEvent(input, current?.currentSubject || null);
   const sessionRegistry = loadSessionRegistry();
   const isRegistered = Boolean(event.session_id && sessionRegistry[event.session_id]);
 
@@ -372,8 +374,6 @@ export function recordTaskEvent(input, options = {}) {
   if (event.type === "task.create" && options.requireRegistered && !isRegistered) {
     throw new TaskLedgerError(409, "当前 Session 尚未登记，请先调用 taskcenter_session_register。");
   }
-  const tasks = loadTasks();
-  const current = event.task_id ? tasks.find((task) => task.id === event.task_id) : null;
   const processed = loadProcessedEventIds();
   const storedEvent = processed.has(event.event_id) || event.type === "task.close"
     ? findStoredTaskEvent(event.event_id)
@@ -789,7 +789,7 @@ function persistProcessedEventIds(set) {
   renameSync(temporaryPath, processedEventIdsPath);
 }
 
-function normalizeEvent(input) {
+function normalizeEvent(input, currentSubject = null) {
   if (!input || typeof input !== "object") throw new TaskLedgerError(400, "任务事件必须是 JSON 对象。");
   const type = String(input.type || "");
   const sessionId = String(input.session_id || "");
@@ -862,7 +862,7 @@ function normalizeEvent(input) {
     active_executors: normalizeNonNegativeInteger(input.active_executors),
     retry_after_at: cleanText(input.retry_after_at, 80),
     review_artifacts: normalizeReviewArtifacts(input.review_artifacts),
-    ...normalizeCompletionEvent(input),
+    ...normalizeCompletionEvent(input, currentSubject),
     created_at: new Date().toISOString(),
   };
   event.recorded_at = event.created_at;
