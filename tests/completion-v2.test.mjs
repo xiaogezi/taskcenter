@@ -158,3 +158,83 @@ test("V2-21 Diagnostic Observation 只记录观察数据且 resolved 要求根�
   assert.equal(task.diagnosticObservations.length, 1);
   assert.equal(task.completionReadiness.ready, true);
 });
+
+test("Review legacy 迁移不补造 cycle 字段", () => {
+  const legacy = withCompletionState({ id: "legacy-review", status: "done_claimed", currentRevision: "rev", updatedAt: at, acceptanceCriteria: ["done"], reviewAttestations: [{ id: "legacy-a", reviewer: "reviewer", revision: "rev", scope: "all", verdict: "approved", observed_at: at }] });
+  const review = legacy.reviewAttestations[0];
+  assert.equal(review.review_contract_version, "legacy");
+  assert.equal(Object.hasOwn(review, "cycle_id"), false);
+  assert.equal(Object.hasOwn(review, "review_scope"), false);
+});
+
+test("Review Cycle 支持增量阶段并拒绝逆序时间", () => {
+  const common = { cycle_id: "cycle-1", subject_ref: subject(), reviewer: actor("reviewer"), model: "gpt-review", review_scope: "full" };
+  let task = applyCompletionEvent(base(), { type: "review_cycle.reported", review_cycle: { ...common, phase: "pending_review", implementation_ready_at: "2026-08-17T00:00:00.000Z", review_requested_at: "2026-08-17T00:10:00.000Z" } });
+  task = applyCompletionEvent(task, { type: "review_cycle.reported", review_cycle: { ...common, phase: "reviewing", review_started_at: "2026-08-17T00:15:00.000Z" } });
+  assert.equal(task.reviewCycles.length, 1);
+  assert.equal(task.reviewCycles[0].cycle_number, 1);
+  assert.equal(task.reviewCycles[0].review_started_at, "2026-08-17T00:15:00.000Z");
+  assert.throws(() => applyCompletionEvent(task, { type: "review_cycle.reported", review_cycle: { ...common, phase: "pending_review" } }), /phase 不能回退/);
+  assert.throws(() => applyCompletionEvent(task, { type: "review_cycle.reported", review_cycle: { ...common, review_finished_at: "2026-08-17T00:05:00.000Z" } }), /时间顺序/);
+});
+
+test("Review v3 修复后 Subject 更新仍可关联上一轮基础 Attestation", () => {
+  const task = base({ reviewPolicy: "required", workspacePolicy: { version: "p", requireIndependentReview: false } });
+  const fullCycle = { cycle_id: "cycle-full", subject_ref: subject(), reviewer: actor("reviewer"), model: "spark", review_scope: "full", phase: "completed", implementation_ready_at: "2026-08-17T00:00:00.000Z", review_requested_at: "2026-08-17T00:01:00.000Z", review_started_at: "2026-08-17T00:02:00.000Z", review_finished_at: "2026-08-17T00:03:00.000Z", outcome: "changes_requested" };
+  let reviewed = applyCompletionEvent(task, { type: "review_cycle.reported", review_cycle: fullCycle });
+  reviewed = applyCompletionEvent(reviewed, { type: "review.reported", review_attestation: { id: "att-full", reviewer: actor("reviewer"), subject_ref: subject(), scope: "all", review_contract_version: "v3", cycle_id: "cycle-full", cycle_number: 1, review_scope: "full", reviewed_files: ["a.mjs"], changed_files_since_previous_review: [], findings: [{ finding_id: "f1", fingerprint: "fp1", category: "correctness", severity: "p1", validity: "valid", status: "unresolved" }], spec_verdict: "issues_found", quality_verdict: "needs_fixes", verdict: "changes_requested", unresolved_findings: 1, unverified_requirements: [], observed_at: at } });
+  const fixedSubject = { ...subject(), value: "artifact:v2" };
+  reviewed = withCompletionState({ ...reviewed, currentSubject: fixedSubject });
+  assert.equal(reviewed.reviewStatus, "stale");
+  assert.ok(reviewed.completionReadiness.staleEvidence.includes("att-full"));
+  reviewed = applyCompletionEvent(reviewed, { type: "review_cycle.reported", review_cycle: { cycle_id: "cycle-inc", subject_ref: fixedSubject, reviewer: actor("reviewer"), model: "luna", review_scope: "incremental", base_attestation_id: "att-full", phase: "completed", implementation_ready_at: "2026-08-17T01:10:00.000Z", review_requested_at: "2026-08-17T01:11:00.000Z", review_started_at: "2026-08-17T01:12:00.000Z", review_finished_at: "2026-08-17T01:13:00.000Z", outcome: "approved" } });
+  reviewed = applyCompletionEvent(reviewed, { type: "review.reported", review_attestation: { id: "att-inc", reviewer: actor("reviewer"), subject_ref: fixedSubject, scope: "a.mjs", review_contract_version: "v3", cycle_id: "cycle-inc", cycle_number: 2, review_scope: "incremental", base_attestation_id: "att-full", reviewed_files: ["a.mjs"], changed_files_since_previous_review: ["a.mjs"], findings: [], spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unresolved_findings: 0, unverified_requirements: [], observed_at: at } });
+  assert.equal(reviewed.reviewAttestations[1].base_attestation_id, "att-full");
+  assert.equal(reviewed.reviewAttestations[0].subject_ref.value, "artifact:v1");
+  assert.equal(reviewed.reviewStatus, "passed");
+});
+
+test("相同 Subject 的重复 approved Attestation 保留审计但不计为有效 Review", () => {
+  const task = base({ reviewPolicy: "required", workspacePolicy: { version: "p", requireIndependentReview: false } });
+  const cycle = (id) => ({ cycle_id: id, subject_ref: subject(), reviewer: actor("reviewer"), model: "luna", review_scope: "full", phase: "completed", implementation_ready_at: "2026-08-17T00:00:00.000Z", review_requested_at: "2026-08-17T00:01:00.000Z", review_started_at: "2026-08-17T00:02:00.000Z", review_finished_at: "2026-08-17T00:03:00.000Z", outcome: "approved" });
+  const attestation = (id, cycleId, number) => ({ id, reviewer: actor("reviewer"), subject_ref: subject(), scope: "all", review_contract_version: "v3", cycle_id: cycleId, cycle_number: number, review_scope: "full", reviewed_files: ["a.mjs"], changed_files_since_previous_review: [], findings: [], spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unresolved_findings: 0, unverified_requirements: [], observed_at: at });
+  let reviewed = applyCompletionEvent(task, { type: "review_cycle.reported", review_cycle: cycle("cycle-a") });
+  reviewed = applyCompletionEvent(reviewed, { type: "review.reported", review_attestation: attestation("att-a", "cycle-a", 1) });
+  reviewed = applyCompletionEvent(reviewed, { type: "review_cycle.reported", review_cycle: cycle("cycle-b") });
+  reviewed = applyCompletionEvent(reviewed, { type: "review.reported", review_attestation: attestation("att-b", "cycle-b", 2) });
+  assert.equal(reviewed.reviewAttestations.length, 2);
+  assert.equal(reviewed.reviewAttestations[1].effective_review, false);
+  assert.equal(reviewed.reviewAttestations[1].duplicate_of_attestation_id, "att-a");
+  assert.equal(reviewed.reviewStatus, "passed");
+});
+
+test("Completion Packet 增加 Review 过程但不改变 completionClaim", () => {
+  const task = base({
+    reviewCycles: [{ cycle_id: "packet-cycle", cycle_number: 1, subject_ref: subject(), reviewer: actor("reviewer"), model: "luna", review_scope: "full", phase: "completed", outcome: "approved", observed_at: at }],
+    reviewAttestations: [{ id: "packet-att", reviewer: actor("reviewer"), subject_ref: subject(), scope: "all", review_contract_version: "v3", cycle_id: "packet-cycle", cycle_number: 1, review_scope: "full", reviewed_files: ["a.mjs"], changed_files_since_previous_review: [], findings: [], finding_summary: { total: 0, resolved: 0, unresolved: 0 }, spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unverified_requirements: [], unresolved_findings: 0, observed_at: at, effective_review: true }],
+    routingHistory: [{ preferredExecutorModel: "spark", selectedExecutorModel: "luna", fallbackFrom: "spark", fallbackReason: "capacity" }],
+  });
+  const before = task.completionReadiness.completionClaim;
+  const packet = buildCompletionPacket(task);
+  assert.deepEqual(packet.completionReadiness.completionClaim, before);
+  assert.equal(packet.reviewProcess.totalCycles, 1);
+  assert.equal(packet.reviewProcess.cycles[0].model, "luna");
+  assert.equal(packet.reviewProcess.fallbackOccurred, true);
+  assert.equal(packet.reviewProcess.finalApprovedSubject.value, "artifact:v1");
+  assert.match(completionPacketMarkdown(task), /Effective cycles: 1/);
+});
+
+test("Completion Packet 汇总 Review 长尾告警且不把告警作为完成阻断", () => {
+  const task = base({
+    reviewCycles: [
+      { cycle_id: "slow-a", cycle_number: 1, subject_ref: subject(), reviewer: actor("reviewer"), model: "luna", review_scope: "full", phase: "completed", implementation_ready_at: "2026-08-15T00:00:00.000Z", review_requested_at: "2026-08-15T00:01:00.000Z", review_started_at: "2026-08-17T00:00:00.000Z", review_finished_at: "2026-08-17T00:05:00.000Z", outcome: "changes_requested" },
+      { cycle_id: "slow-b", cycle_number: 2, subject_ref: subject(), reviewer: actor("reviewer"), model: "luna", review_scope: "full", phase: "reviewing", implementation_ready_at: "2026-08-17T01:00:00.000Z", review_requested_at: "2026-08-17T01:01:00.000Z", review_started_at: "2026-08-17T01:02:00.000Z", outcome: "pending" },
+    ],
+  });
+  const packet = buildCompletionPacket(task);
+  assert.ok(packet.reviewProcess.reviewLoopWarnings.includes("review_wait_dominates"));
+  assert.ok(packet.reviewProcess.reviewLoopWarnings.includes("overnight_wall_clock_distortion"));
+  assert.ok(packet.reviewProcess.reviewLoopWarnings.includes("repeated_full_review_same_subject"));
+  assert.ok(packet.reviewProcess.reviewLoopWarnings.includes("review_cycle_in_progress"));
+  assert.deepEqual(packet.completionReadiness.completionClaim, task.completionReadiness.completionClaim);
+});

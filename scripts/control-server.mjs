@@ -631,7 +631,7 @@ const server = createServer(async (request, response) => {
       const events = Array.isArray(body.events) ? body.events.slice(0, 100) : [];
       if (!events.length) throw new TaskLedgerError(400, "证据导入至少包含一个事件。");
       const imported = events.map((event) => {
-        if (!["subject.updated", "requirement.reported", "verification.reported", "review.reported"].includes(event?.type)) throw new TaskLedgerError(400, "证据导入事件类型无效。");
+        if (!["subject.updated", "requirement.reported", "verification.reported", "review.reported", "review_cycle.reported"].includes(event?.type)) throw new TaskLedgerError(400, "证据导入事件类型无效。");
         return recordTaskEvent({ ...event, task_id: event.task_id || body.task_id }).event;
       });
       sendJson(response, 200, { accepted: true, importedCount: imported.length, events: imported });

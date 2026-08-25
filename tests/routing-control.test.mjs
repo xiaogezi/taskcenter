@@ -20,6 +20,11 @@ const {
 
 const spark = "gpt-5.3-codex-spark";
 const baseInput = { task_id: "task-routing", preferred_model: spark, task_class: "implementation", channel: "cli" };
+const reviewArtifacts = {
+  subject: { fingerprint: "sha256:subject" },
+  bundle: { ref: "bundle://ocr/review-1", fingerprint: "sha256:bundle" },
+  rules: { fingerprint: "sha256:rules" },
+};
 
 test.after(async () => rm(directory, { recursive: true, force: true }));
 test.beforeEach(async () => rm(statePath, { force: true }));
@@ -78,15 +83,68 @@ test("明确容量错误立即 Open，避免在同一模型重复重试", () => 
   assert.equal(halfOpen.half_open_lease, null);
 });
 
-test("高风险任务优先回退 Terra，OCR 不自动伪装独立审查", () => {
+test("高风险任务优先回退 Terra", () => {
   routingSelect({ ...baseInput, event_id: "occupy-spark" }, "2026-08-18T08:00:00.000Z");
   const complex = routingSelect({ ...baseInput, task_class: "security", event_id: "complex-select" }, "2026-08-18T08:00:01.000Z");
   assert.equal(complex.route.selected_model, "gpt-5.6-terra");
+});
 
-  const ocr = routingSelect({ ...baseInput, task_class: "ocr_review", event_id: "ocr-select" }, "2026-08-18T08:00:02.000Z");
-  assert.equal(ocr.route.available, false);
-  assert.equal(ocr.route.selected_model, null);
-  assert.equal(ocr.route.reason, "ocr_reviewer_unavailable_no_substitute");
+test("Spark 已知不可用时 OCR 推荐 Luna，并保留 fallback 与审查输入证据", () => {
+  const selected = routingSelect({ ...baseInput, event_id: "ocr-spark-select" }, "2026-08-18T08:00:00.000Z");
+  routingResult({
+    route_id: selected.route.route_id,
+    event_id: "ocr-spark-unavailable",
+    outcome: "unavailable",
+    error_type: "model_unavailable",
+    error_code: "usage_limit_exhausted",
+  }, "2026-08-18T08:00:01.000Z");
+
+  const ocrInput = { ...baseInput, task_class: "ocr_review", event_id: "ocr-select", review_artifacts: reviewArtifacts };
+  const ocr = routingSelect(ocrInput, "2026-08-18T08:00:01.500Z");
+  assert.equal(ocr.route.available, true);
+  assert.equal(ocr.route.selected_model, "gpt-5.6-luna");
+  assert.equal(ocr.route.fallback_from, spark);
+  assert.equal(ocr.route.fallback_reason, "preferred_model_circuit_open");
+  assert.equal(ocr.route.retry_after_at, "2026-08-18T08:00:02.000Z");
+  assert.deepEqual(ocr.route.review_artifacts, {
+    subject: { ref: null, fingerprint: "sha256:subject" },
+    bundle: { ref: "bundle://ocr/review-1", fingerprint: "sha256:bundle" },
+    rules: { ref: null, fingerprint: "sha256:rules" },
+  });
+  const decision = ocr.auditEvents.find((event) => event.type === "routing.decision");
+  assert.equal(decision.fallback_from, spark);
+  assert.equal(decision.fallback_reason, "preferred_model_circuit_open");
+  assert.equal(decision.retry_after_at, "2026-08-18T08:00:02.000Z");
+  assert.equal(decision.policy_version, "routing-control-v2");
+  assert.deepEqual(decision.review_artifacts, ocr.route.review_artifacts);
+
+  const replay = routingSelect(ocrInput, "2026-08-18T08:00:01.600Z");
+  assert.equal(replay.idempotent, true);
+  assert.throws(
+    () => routingSelect({ ...ocrInput, review_artifacts: { ...reviewArtifacts, rules: { fingerprint: "sha256:changed" } } }, "2026-08-18T08:00:01.700Z"),
+    (error) => error instanceof RoutingControlError && error.statusCode === 409,
+  );
+});
+
+test("OCR 缺少冻结输入或 Luna 也不可用时 fail closed", () => {
+  assert.throws(
+    () => routingSelect({ ...baseInput, task_class: "ocr_review", event_id: "ocr-missing-artifacts" }, "2026-08-18T08:00:00.000Z"),
+    (error) => error instanceof RoutingControlError && error.statusCode === 400,
+  );
+
+  routingSelect({ ...baseInput, event_id: "occupy-spark" }, "2026-08-18T08:00:01.000Z");
+  routingSelect({ ...baseInput, event_id: "occupy-luna-1" }, "2026-08-18T08:00:01.100Z");
+  routingSelect({ ...baseInput, event_id: "occupy-luna-2" }, "2026-08-18T08:00:01.150Z");
+  const unavailable = routingSelect({
+    ...baseInput,
+    task_class: "ocr_review",
+    event_id: "ocr-no-luna",
+    review_artifacts: reviewArtifacts,
+  }, "2026-08-18T08:00:01.200Z");
+  assert.equal(unavailable.route.available, false);
+  assert.equal(unavailable.route.selected_model, null);
+  assert.equal(unavailable.route.reason, "ocr_luna_fallback_unavailable");
+  assert.equal(unavailable.route.fallback_from, spark);
 });
 
 test("routing_result 幂等且拒绝冲突结果，租约过期会释放并发", () => {

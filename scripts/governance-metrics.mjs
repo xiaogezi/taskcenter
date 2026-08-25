@@ -29,6 +29,7 @@ export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = 
   const continuations = number(overallUsage.modelContinuations);
   const attributionCoverage = buildAttributionCoverage(usageReport?.windows?.["24h"]);
   const diagnostics = buildDiagnosticMetrics(visible, windowStart);
+  const reviews = buildReviewMetrics(visible);
   return {
     schemaVersion: "taskcenter-governance-metrics-v2",
     completedTasks: completed.length,
@@ -45,8 +46,112 @@ export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = 
     durationMs: distribution(completed.map(durationMs).filter(Number.isFinite)),
     attributionCoverage,
     diagnostics,
+    reviews,
     groups,
     comparisons: buildMatchedComparisons(groups, usageReport?.windows || []),
+  };
+}
+
+function buildReviewMetrics(tasks) {
+  const implementationTasks = tasks.filter((task) => !isIndependentReviewTask(task));
+  const independentReviewTasks = tasks.filter(isIndependentReviewTask);
+  const taskSummaries = implementationTasks.flatMap((task) => summarizeTaskReview(task));
+  const cycles = taskSummaries.flatMap((item) => item.cycles.map((cycle) => ({ ...cycle, taskId: item.taskId })));
+  const effectiveAttestations = implementationTasks.flatMap((task) => (task.reviewAttestations || []).filter((item) => item.effective_review !== false));
+  const findings = effectiveAttestations.flatMap((item) => item.findings || []);
+  const reviewedTaskSummaries = taskSummaries.filter((item) => item.reviewRounds > 0);
+  const cycleTasks = new Set(taskSummaries.map((item) => item.taskId));
+  const activeSamples = cycles.filter((item) => item.activeMs !== null);
+  const phase = (value) => cycles.filter((item) => item.phase === value).length;
+  return {
+    taskRoles: { implementation: implementationTasks.length, independent_review: independentReviewTasks.length },
+    coverage: {
+      eligibleTasks: implementationTasks.length,
+      tasksWithCycles: cycleTasks.size,
+      cycleCoverage: implementationTasks.length ? cycleTasks.size / implementationTasks.length : null,
+      cycles: cycles.length,
+      cyclesWithActiveTime: activeSamples.length,
+      activeTimeCoverage: cycles.length ? activeSamples.length / cycles.length : null,
+      note: "缺少阶段事件或 active time 时显示数据不足，不推断为 0。",
+    },
+    funnel: {
+      pending_review: phase("pending_review"), reviewing: phase("reviewing"), fixing: phase("fixing"),
+      rereview: cycles.filter((item) => item.reviewScope === "incremental").length,
+      approved: cycles.filter((item) => item.outcome === "approved").length,
+    },
+    rounds: {
+      perTask: distribution(reviewedTaskSummaries.map((item) => item.reviewRounds)),
+      firstPassRate: reviewedTaskSummaries.length ? reviewedTaskSummaries.filter((item) => item.firstPass).length / reviewedTaskSummaries.length : null,
+      changesRequested: taskSummaries.reduce((sum, item) => sum + item.changesRequestedRounds, 0),
+      full: cycles.filter((item) => item.reviewScope === "full").length,
+      incremental: cycles.filter((item) => item.reviewScope === "incremental").length,
+    },
+    timeMs: {
+      wait: distribution(cycles.map((item) => item.waitMs).filter(Number.isFinite)),
+      reviewElapsed: distribution(cycles.map((item) => item.reviewElapsedMs).filter(Number.isFinite)),
+      fixElapsed: distribution(cycles.map((item) => item.fixElapsedMs).filter(Number.isFinite)),
+      verificationElapsed: distribution(cycles.map((item) => item.verificationElapsedMs).filter(Number.isFinite)),
+      wall: distribution(cycles.map((item) => item.wallMs).filter(Number.isFinite)),
+      active: distribution(cycles.map((item) => item.activeMs).filter(Number.isFinite)),
+      wallToTaskRatio: distribution(taskSummaries.map((item) => item.reviewWallToTaskRatio).filter(Number.isFinite)),
+    },
+    findings: {
+      total: findings.length,
+      byCategory: countBy(findings, "category"), bySeverity: countBy(findings, "severity"), byValidity: countBy(findings, "validity"),
+      validRatio: ratioOf(findings, "validity", "valid"), duplicateRatio: ratioOf(findings, "validity", "duplicate"), falsePositiveRatio: ratioOf(findings, "validity", "false_positive"),
+    },
+    waitReasons: countBy(cycles.filter((item) => item.waitReason).map((item) => ({ reason: item.waitReason })), "reason"),
+    reviewLoopWarnings: taskSummaries.flatMap((item) => item.warnings),
+    longTailTasks: taskSummaries.filter((item) => item.warnings.length).map((item) => ({ taskId: item.taskId, warnings: item.warnings.map((warning) => warning.type), reviewRounds: item.reviewRounds, reviewWallMs: item.reviewWallMs })),
+    taskSummaries,
+    note: "团队与流程诊断数据，不用于 reviewer、模型或个人排名，也不参与任务门禁。",
+  };
+}
+
+function summarizeTaskReview(task) {
+  const cycles = (task.reviewCycles || []).map(summarizeCycle);
+  const reviews = (task.reviewAttestations || []).filter((item) => item.effective_review !== false);
+  if (!cycles.length && !reviews.length) return [];
+  const changesRequestedRounds = reviews.filter((item) => item.verdict === "changes_requested").length;
+  const reviewWallMs = sumKnown(cycles.map((item) => item.wallMs));
+  const taskWallMs = completedDurationMs(task);
+  const reviewWallToTaskRatio = reviewWallMs !== null && Number.isFinite(taskWallMs) && taskWallMs > 0 ? reviewWallMs / taskWallMs : null;
+  const warnings = [];
+  const add = (type, cycleId = "", detail = "") => warnings.push({ taskId: task.id, type, cycleId, detail });
+  if (changesRequestedRounds > 2) add("changes_requested_over_two", "", `${changesRequestedRounds}`);
+  if (reviewWallToTaskRatio !== null && reviewWallToTaskRatio > 0.5) add("review_stage_ratio_high", "", `${reviewWallToTaskRatio}`);
+  for (const cycle of cycles) {
+    if (Number.isFinite(cycle.waitMs) && cycle.waitMs > numberOrZero(cycle.reviewElapsedMs) + numberOrZero(cycle.fixElapsedMs)) add("wait_exceeds_review_and_fix", cycle.cycleId);
+    if (cycle.wallClockDistorted) add("wall_clock_distorted", cycle.cycleId, cycle.distortionReason);
+  }
+  const fullBySubject = groupCount(cycles.filter((item) => item.reviewScope === "full"), (item) => item.subjectKey);
+  for (const [subjectKey, count] of fullBySubject) if (subjectKey && count > 1) add("repeated_full_review_same_subject", "", subjectKey);
+  const fingerprints = reviews.flatMap((item) => item.findings || []).map((item) => item.fingerprint).filter(Boolean);
+  for (const [fingerprint, count] of groupCount(fingerprints, (item) => item)) if (count > 1) add("repeated_finding", "", fingerprint);
+  for (const review of (task.reviewAttestations || []).filter((item) => item.effective_review === false && item.duplicate_of_attestation_id)) add("duplicate_approved", review.cycle_id || "", review.id);
+  return [{
+    taskId: task.id, reviewRounds: reviews.length, firstPass: reviews.length > 0 && reviews[0].verdict === "approved",
+    changesRequestedRounds, fullRounds: cycles.filter((item) => item.reviewScope === "full").length,
+    incrementalRounds: cycles.filter((item) => item.reviewScope === "incremental").length,
+    reviewWallMs, taskWallMs: Number.isFinite(taskWallMs) ? taskWallMs : null, reviewWallToTaskRatio, cycles, warnings,
+  }];
+}
+
+function summarizeCycle(cycle) {
+  const span = (start, end) => timestampSpan(cycle[start], cycle[end]);
+  const wallEnd = cycle.verification_finished_at || cycle.fix_finished_at || cycle.review_finished_at;
+  const activeValues = [cycle.review_active_ms, cycle.fix_active_ms, cycle.verification_active_ms];
+  const activeMs = activeValues.some(Number.isFinite) ? activeValues.filter(Number.isFinite).reduce((sum, value) => sum + value, 0) : null;
+  const rawWall = cycle.implementation_ready_at && wallEnd ? Math.max(0, Date.parse(wallEnd) - Date.parse(cycle.implementation_ready_at)) : null;
+  const overnight = Number.isFinite(rawWall) && rawWall > 24 * 60 * 60_000;
+  return {
+    cycleId: cycle.cycle_id, cycleNumber: cycle.cycle_number, reviewScope: cycle.review_scope, phase: cycle.phase || "data_insufficient", outcome: cycle.outcome || "pending",
+    subjectKey: subjectKey(cycle.subject_ref), waitReason: cycle.wait_reason || "",
+    waitMs: span("review_requested_at", "review_started_at"), reviewElapsedMs: span("review_started_at", "review_finished_at"),
+    fixElapsedMs: span("fix_started_at", "fix_finished_at"), verificationElapsedMs: cycle.verification_finished_at ? Math.max(0, Date.parse(cycle.verification_finished_at) - Date.parse(cycle.fix_finished_at || cycle.review_finished_at || "")) : null,
+    wallMs: Number.isFinite(rawWall) ? rawWall : null, activeMs,
+    wallClockDistorted: overnight || !["approved", "rejected", "cancelled"].includes(cycle.outcome || "pending"),
+    distortionReason: overnight ? "overnight_over_24h" : !["approved", "rejected", "cancelled"].includes(cycle.outcome || "pending") ? "cycle_in_progress" : "",
   };
 }
 
@@ -116,14 +221,18 @@ function buildMatchedComparisons(groups, windows) {
   };
 }
 
-function isCompleted(task) { return ["done_claimed", "verified"].includes(task.status); }
+function isCompleted(task) { return task.status === "verified" || task.acceptanceStatus === "accepted" || (task.acceptanceRecords || []).at(-1)?.outcome === "accepted"; }
+function isIndependentReviewTask(task) { return ["ocr", "ocr_review", "independent_review"].includes(task.routing?.taskClass || task.taskClass); }
 function hasRework(task) {
   return (task.requirementResults || []).some((item) => item.status === "failed")
     || (task.reviewAttestations || []).some((item) => ["changes_requested", "rejected"].includes(item.verdict));
 }
 function durationMs(task) {
-  if (Number.isFinite(Number(task.activeDurationMs)) && Number(task.activeDurationMs) > 0) return Number(task.activeDurationMs);
-  const end = Date.parse(task.actualAt || task.updatedAt || "");
+  return Number.isFinite(Number(task.activeDurationMs)) && Number(task.activeDurationMs) > 0 ? Number(task.activeDurationMs) : NaN;
+}
+function completedDurationMs(task) {
+  if (!isCompleted(task)) return NaN;
+  const end = Date.parse(task.actualAt || task.acceptanceRecords?.at(-1)?.observed_at || "");
   const start = Date.parse(task.firstStartedAt || task.startedAt || task.createdAt || "");
   return Number.isFinite(end) && Number.isFinite(start) ? Math.max(0, end - start) : NaN;
 }
@@ -131,12 +240,22 @@ function timestampOf(task) { return Date.parse(task.actualAt || task.updatedAt |
 function eventTimestamp(event) { return Date.parse(event.recorded_at || event.recordedAt || event.created_at || event.createdAt || "") || -Infinity; }
 function distribution(values) {
   const sorted = values.slice().sort((a, b) => a - b);
-  return { average: average(sorted), p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) };
+  return { average: sorted.length ? average(sorted) : null, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95), sampleCount: sorted.length, status: sorted.length ? "available" : "data_insufficient" };
 }
 function average(values) { return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0; }
 function percentile(values, quantile) {
-  if (!values.length) return 0;
+  if (!values.length) return null;
   return values[Math.min(values.length - 1, Math.max(0, Math.ceil(values.length * quantile) - 1))];
 }
 function number(value) { return Number.isFinite(Number(value)) ? Number(value) : 0; }
 function finiteOrNull(value) { return value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null; }
+function numberOrZero(value) { return Number.isFinite(value) ? value : 0; }
+function timestampSpan(start, end) {
+  const from = Date.parse(start || ""), to = Date.parse(end || "");
+  return Number.isFinite(from) && Number.isFinite(to) && to >= from ? to - from : null;
+}
+function sumKnown(values) { const known = values.filter(Number.isFinite); return known.length ? known.reduce((sum, value) => sum + value, 0) : null; }
+function subjectKey(subject) { return subject ? `${subject.type}:${subject.value || ""}:${subject.repository || ""}:${subject.branch || ""}` : ""; }
+function groupCount(values, keyOf) { const map = new Map(); for (const value of values) { const key = keyOf(value); map.set(key, (map.get(key) || 0) + 1); } return map; }
+function countBy(values, field) { return Object.fromEntries([...groupCount(values, (item) => item[field] || "unknown").entries()].sort(([left], [right]) => left.localeCompare(right))); }
+function ratioOf(values, field, expected) { return values.length ? values.filter((item) => item[field] === expected).length / values.length : null; }

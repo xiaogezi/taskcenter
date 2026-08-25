@@ -18,6 +18,13 @@ const responseMode = z.enum(["summary", "full"]).default("summary");
 const operationalResponseMode = z.enum(["summary", "full"]).default("full");
 const actorIdentity = z.object({ type: z.enum(["human", "agent", "ci", "review_platform", "task_platform", "other"]), id: z.string().min(1).max(200), display_name: z.string().max(200).optional(), provider: z.string().max(200).optional(), session_id: z.string().max(200).optional() }).strict();
 const subjectReference = z.object({ type: z.enum(["git_commit", "git_worktree_snapshot", "pull_request_head", "artifact", "document_version", "external", "none"]), value: z.string().max(500).optional(), repository: z.string().max(300).optional(), branch: z.string().max(300).optional(), observed_at: z.string().datetime({ offset: true }) }).strict();
+const routingReviewArtifact = z.object({ ref: z.string().max(1_000).optional(), fingerprint: z.string().max(300).optional() }).strict()
+  .refine((value) => Boolean(value.ref?.trim() || value.fingerprint?.trim()), { message: "ref 或 fingerprint 至少提供一个" });
+const routingReviewArtifacts = z.object({
+  subject: routingReviewArtifact,
+  bundle: routingReviewArtifact,
+  rules: routingReviewArtifact,
+}).strict();
 const acceptanceCriterion = z.union([z.string().min(1).max(500), z.object({ id: z.string().min(1).max(120), description: z.string().min(1).max(500), required: z.boolean() }).strict()]);
 const verificationRequirement = z.object({
   id: z.string().min(1).max(120),
@@ -31,6 +38,24 @@ const unverifiedRequirement = z.object({
   reason: z.string().min(1).max(1_000),
   required_evidence: z.string().max(500).optional(),
 }).strict();
+const reviewFinding = z.object({
+  finding_id: z.string().min(1).max(160), fingerprint: z.string().min(1).max(200), category: z.string().max(120).default("unknown"),
+  severity: z.enum(["p0", "p1", "p2", "p3", "unknown"]).default("unknown"),
+  validity: z.enum(["valid", "duplicate", "false_positive", "unknown"]).default("unknown"),
+  status: z.enum(["resolved", "unresolved"]).default("unresolved"),
+}).strict();
+const reviewCycleFields = {
+  cycle_id: z.string().min(1).max(120), cycle_number: z.number().int().positive().optional(), subject_ref: subjectReference,
+  reviewer: actorIdentity, model: z.string().min(1).max(120), review_scope: z.enum(["full", "incremental"]),
+  base_attestation_id: z.string().max(120).optional(), phase: z.enum(["pending_review", "reviewing", "fixing", "verifying", "completed"]).optional(),
+  implementation_ready_at: z.string().datetime({ offset: true }).optional(), review_requested_at: z.string().datetime({ offset: true }).optional(),
+  review_started_at: z.string().datetime({ offset: true }).optional(), review_finished_at: z.string().datetime({ offset: true }).optional(),
+  fix_started_at: z.string().datetime({ offset: true }).optional(), fix_finished_at: z.string().datetime({ offset: true }).optional(),
+  verification_finished_at: z.string().datetime({ offset: true }).optional(), review_active_ms: z.number().int().nonnegative().optional(),
+  fix_active_ms: z.number().int().nonnegative().optional(), verification_active_ms: z.number().int().nonnegative().optional(),
+  wait_reason: z.string().max(500).optional(), outcome: z.enum(["pending", "changes_requested", "approved", "rejected", "cancelled"]).optional(),
+  occurred_at: z.string().datetime({ offset: true }).optional(),
+};
 const taskFields = {
   response_mode: responseMode,
   session_id: z.string().min(1).max(200).optional(),
@@ -154,13 +179,22 @@ server.registerTool("taskcenter_task_review_report", {
   inputSchema: z.object({
     session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
     id: z.string().min(1).max(120), reviewer: z.union([actorIdentity, z.string().min(1).max(200)]), reviewer_session_id: z.string().max(200).optional(),
-    revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), scope: z.string().min(1).max(1_000), review_contract_version: z.literal("v2").default("v2"),
+    revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), scope: z.string().min(1).max(1_000), review_contract_version: z.enum(["v2", "v3"]).default("v2"),
     spec_verdict: z.enum(["compliant", "issues_found", "not_evaluated"]), quality_verdict: z.enum(["approved", "needs_fixes", "not_evaluated"]), verdict: z.enum(["approved", "changes_requested", "rejected"]),
     unverified_requirements: z.array(unverifiedRequirement).max(50).default([]),
     unresolved_findings: z.number().int().min(0), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(),
     finding_refs: z.array(z.string().max(500)).max(50).optional(), summary: z.string().max(1_000).optional(), response_mode: responseMode,
+    cycle_id: z.string().max(120).optional(), cycle_number: z.number().int().positive().optional(), review_scope: z.enum(["full", "incremental"]).optional(),
+    base_attestation_id: z.string().max(120).optional(), reviewed_files: z.array(z.string().max(500)).max(500).optional(),
+    changed_files_since_previous_review: z.array(z.string().max(500)).max(500).optional(), findings: z.array(reviewFinding).max(500).optional(),
   }).strict(),
 }, async ({ session_id, task_id, event_id, response_mode, ...review_attestation }) => report("review.reported", { session_id, task_id, event_id, response_mode, revision: review_attestation.revision, review_attestation }));
+
+server.registerTool("taskcenter_review_cycle_report", {
+  title: "上报 TaskCenter Review Cycle",
+  description: "按 cycle_id 增量记录 Review 阶段、墙钟时间与调用方提供的 active time；仅用于流程诊断，不替 reviewer 作技术判断。",
+  inputSchema: z.object({ session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), response_mode: responseMode, ...reviewCycleFields }).strict(),
+}, async ({ session_id, task_id, event_id, response_mode, occurred_at, ...review_cycle }) => report("review_cycle.reported", { session_id, task_id, event_id, response_mode, occurred_at, review_cycle }));
 
 server.registerTool("taskcenter_task_diagnostic_report", {
   title: "上报 TaskCenter 调试案例观察",
@@ -222,6 +256,10 @@ server.registerTool("taskcenter_routing_record", {
     selected_executor_model: z.string().min(1).max(120),
     dispatch_channel: z.enum(["direct", "native", "cli", "other"]),
     routing_reason: z.string().min(1).max(1_000),
+    fallback_from: z.string().max(120).optional(),
+    fallback_reason: z.string().max(200).optional(),
+    retry_after_at: z.string().datetime({ offset: true }).optional(),
+    review_artifacts: routingReviewArtifacts.optional(),
     routing_outcome: z.enum(["selected", "started", "succeeded", "failed"]).optional(),
     policy_version: z.string().min(1).max(80).optional(), response_mode: responseMode,
   }).strict(),
@@ -229,7 +267,7 @@ server.registerTool("taskcenter_routing_record", {
 
 server.registerTool("taskcenter_routing_select", {
   title: "选择 TaskCenter 执行模型",
-  description: "原子检查模型熔断、并发和 Half-Open 探测租约，返回强建议路由；TaskCenter 不会启动 CLI。OCR 独立审查不可自动降级为其他模型。",
+  description: "原子检查模型熔断、并发和 Half-Open 探测租约，返回强建议路由；TaskCenter 不会启动执行器。OCR 首选 Spark 已知不可用时默认推荐独立 Luna reviewer，并保留同一 Subject、Bundle 和规则证据。",
   inputSchema: z.object({
     task_id: z.string().min(1).max(200),
     preferred_model: z.string().min(1).max(120),
@@ -237,6 +275,7 @@ server.registerTool("taskcenter_routing_select", {
     channel: z.enum(["direct", "native", "cli", "other"]),
     event_id: z.string().max(200).optional(),
     route_id: z.string().max(200).optional(),
+    review_artifacts: routingReviewArtifacts.optional().describe("OCR 路由必填；Subject、OCR Bundle 与规则各提供 ref 或 fingerprint"),
     lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input) => postLocal("/routing/select", input));

@@ -34,10 +34,13 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const eventId = clean(input.event_id, 200) || `routing-select-${randomUUID()}`;
   if (!taskId || !preferredModel) throw new RoutingControlError(400, "routing_select 缺少 task_id 或 preferred_model。");
   if (!["direct", "native", "cli", "other"].includes(channel)) throw new RoutingControlError(400, "routing_select channel 无效。");
+  const reviewArtifacts = normalizeReviewArtifacts(input.review_artifacts, ocrTaskClasses.has(taskClass));
 
   const state = readState();
   expireRoutes(state, now);
-  const signature = signatureOf({ taskId, preferredModel, taskClass, channel });
+  const signatureInput = { taskId, preferredModel, taskClass, channel };
+  if (reviewArtifacts) signatureInput.reviewArtifacts = reviewArtifacts;
+  const signature = signatureOf(signatureInput);
   const replay = state.routes.find((route) => route.selectEventId === eventId);
   if (replay) {
     if (replay.selectSignature !== signature) throw new RoutingControlError(409, "event_id 已被不同 routing_select 请求使用。");
@@ -50,35 +53,31 @@ export function routingSelect(input, now = new Date().toISOString()) {
   advanceCircuit(preferred, now);
   let selectedModel = preferredModel;
   let reason = "preferred_model_available";
+  let fallbackFrom = "";
+  let fallbackReason = "";
+  let retryAfterAt = "";
   let probe = preferred.state === "half_open";
 
   if (!canLease(state, preferred, now)) {
-    if (ocrTaskClasses.has(taskClass)) {
-      const route = buildUnavailableRoute({ eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now });
-      state.routes.push(route);
-      route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
-      persistState(state, now);
-      return {
-        route: publicRoute(route),
-        health: healthSnapshot(state, now),
-        idempotent: false,
-        auditEvents: route.selectAuditEvents,
-      };
-    }
-    const fallback = chooseFallback(state, taskClass, preferredModel, now);
+    fallbackFrom = preferredModel;
+    fallbackReason = fallbackReasonFor(preferred);
+    retryAfterAt = preferred.retryAfterAt;
+    const fallback = ocrTaskClasses.has(taskClass)
+      ? chooseOcrFallback(state, preferredModel, now)
+      : chooseFallback(state, taskClass, preferredModel, now);
     if (!fallback) {
-      const route = buildUnavailableRoute({ eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now, reason: "no_model_capacity_available" });
+      const route = buildUnavailableRoute({
+        eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now,
+        reason: ocrTaskClasses.has(taskClass) ? "ocr_luna_fallback_unavailable" : "no_model_capacity_available",
+        fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
+      });
       state.routes.push(route);
       route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
       persistState(state, now);
       return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: route.selectAuditEvents };
     }
     selectedModel = fallback.model;
-    reason = preferred.state === "open"
-      ? `${modelSlug(preferredModel)}_circuit_open_until_${preferred.retryAfterAt}`
-      : preferred.state === "half_open"
-        ? `${modelSlug(preferredModel)}_half_open_probe_leased`
-        : `${modelSlug(preferredModel)}_concurrency_limit_reached`;
+    reason = detailedFallbackReason(preferredModel, preferred);
     probe = fallback.state === "half_open";
   }
 
@@ -94,6 +93,10 @@ export function routingSelect(input, now = new Date().toISOString()) {
     channel,
     circuitState: selected.state,
     reason,
+    fallbackFrom,
+    fallbackReason,
+    retryAfterAt,
+    reviewArtifacts,
     requiresNewSession: selectedModel !== preferredModel || channel === "cli",
     available: true,
     probe,
@@ -193,6 +196,13 @@ function chooseFallback(state, taskClass, preferredModel, now) {
     }) || null;
 }
 
+function chooseOcrFallback(state, preferredModel, now) {
+  if (preferredModel === "gpt-5.6-luna") return null;
+  const luna = ensureHealth(state, "gpt-5.6-luna", now);
+  advanceCircuit(luna, now);
+  return canLease(state, luna, now) ? luna : null;
+}
+
 function canLease(state, health, now) {
   advanceCircuit(health, now);
   if (health.state === "open") return false;
@@ -221,7 +231,10 @@ function isCircuitFailure(result) {
     || /overload|capacity|unavailable|rate.?limit|timeout/i.test(`${result.errorType} ${result.errorCode}`);
 }
 
-function buildUnavailableRoute({ eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now, reason }) {
+function buildUnavailableRoute({
+  eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now, reason,
+  fallbackFrom = "", fallbackReason = "", retryAfterAt = "", reviewArtifacts = null,
+}) {
   return {
     id: `route_${randomUUID()}`,
     selectEventId: eventId,
@@ -232,7 +245,11 @@ function buildUnavailableRoute({ eventId, signature, taskId, preferredModel, tas
     taskClass,
     channel,
     circuitState: preferred.state,
-    reason: reason || "ocr_reviewer_unavailable_no_substitute",
+    reason: reason || "no_model_capacity_available",
+    fallbackFrom,
+    fallbackReason,
+    retryAfterAt,
+    reviewArtifacts,
     requiresNewSession: false,
     available: false,
     probe: false,
@@ -316,6 +333,10 @@ function publicRoute(route) {
     channel: route.channel,
     circuit_state: route.circuitState,
     reason: route.reason,
+    fallback_from: route.fallbackFrom || null,
+    fallback_reason: route.fallbackReason || null,
+    retry_after_at: route.retryAfterAt || null,
+    review_artifacts: route.reviewArtifacts || null,
     requires_new_session: route.requiresNewSession,
     available: route.available,
     probe: route.probe,
@@ -354,8 +375,12 @@ function auditEventsFor(route, health, transition, phase = "select") {
       selected_executor_model: selected,
       dispatch_channel: route.channel,
       routing_reason: route.reason,
+      fallback_from: route.fallbackFrom,
+      fallback_reason: route.fallbackReason,
+      retry_after_at: route.retryAfterAt,
+      review_artifacts: route.reviewArtifacts,
       routing_outcome: route.status === "succeeded" ? "succeeded" : ["failed", "overloaded", "unavailable"].includes(route.status) ? "failed" : "selected",
-      policy_version: "routing-control-v1",
+      policy_version: "routing-control-v2",
       route_id: route.id,
       task_class: route.taskClass,
       circuit_state: route.circuitState,
@@ -457,6 +482,41 @@ function integerEnv(name, fallback, min, max) {
 
 function clean(value, limit) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, limit) : "";
+}
+
+function normalizeReviewArtifacts(value, required) {
+  if (!value && !required) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new RoutingControlError(400, "OCR routing_select 必须提供 review_artifacts。");
+  }
+  const normalized = {
+    subject: normalizeReviewArtifact(value.subject, "subject"),
+    bundle: normalizeReviewArtifact(value.bundle, "bundle"),
+    rules: normalizeReviewArtifact(value.rules, "rules"),
+  };
+  return normalized;
+}
+
+function normalizeReviewArtifact(value, name) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new RoutingControlError(400, `review_artifacts.${name} 必须提供 ref 或 fingerprint。`);
+  }
+  const ref = clean(value.ref, 1_000);
+  const fingerprint = clean(value.fingerprint, 300);
+  if (!ref && !fingerprint) throw new RoutingControlError(400, `review_artifacts.${name} 必须提供 ref 或 fingerprint。`);
+  return { ref: ref || null, fingerprint: fingerprint || null };
+}
+
+function fallbackReasonFor(health) {
+  if (health.state === "open") return "preferred_model_circuit_open";
+  if (health.state === "half_open") return "preferred_model_half_open_probe_leased";
+  return "preferred_model_concurrency_limit_reached";
+}
+
+function detailedFallbackReason(preferredModel, health) {
+  if (health.state === "open") return `${modelSlug(preferredModel)}_circuit_open_until_${health.retryAfterAt}`;
+  if (health.state === "half_open") return `${modelSlug(preferredModel)}_half_open_probe_leased`;
+  return `${modelSlug(preferredModel)}_concurrency_limit_reached`;
 }
 
 function signatureOf(value) {

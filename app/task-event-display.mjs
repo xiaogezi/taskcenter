@@ -22,6 +22,7 @@ export function taskEventStatus(event) {
     "verification.reported": "验证证据",
     "verification.staled": "验证过期",
     "review.reported": "独立审查",
+    "review_cycle.reported": "Review 阶段",
     "review.staled": "审查过期",
     "acceptance.ready": "待最终验收",
     "acceptance.accepted": "已最终验收",
@@ -36,6 +37,7 @@ export function taskEventSummary(event) {
   if (event?.type === "requirement.reported") return [event.requirement_result?.requirement_id, event.requirement_result?.status, event.requirement_result?.note].map((value) => text(value, "")).filter(Boolean).join(" · ") || "验收条件结果";
   if (event?.type === "verification.reported") return [event.verification_claim?.kind, event.verification_claim?.status, subjectLabel(event.verification_claim?.subject_ref) || event.verification_claim?.revision, identityLabel(event.verification_claim?.producer), event.verification_claim?.summary].map((value) => text(value, "")).filter(Boolean).join(" · ") || "验证证据";
   if (event?.type === "review.reported") return [identityLabel(event.review_attestation?.reviewer), event.review_attestation?.verdict, subjectLabel(event.review_attestation?.subject_ref) || event.review_attestation?.revision, event.review_attestation?.summary].map((value) => text(value, "")).filter(Boolean).join(" · ") || "独立审查";
+  if (event?.type === "review_cycle.reported") return [event.review_cycle?.cycle_id, event.review_cycle?.phase, event.review_cycle?.review_scope, identityLabel(event.review_cycle?.reviewer), event.review_cycle?.model, event.review_cycle?.outcome].map((value) => text(value, "")).filter(Boolean).join(" · ") || "Review 阶段";
   if (["acceptance.accepted", "acceptance.rejected"].includes(event?.type) && event.acceptance_record) return [event.acceptance_record.source, identityLabel(event.acceptance_record.actor), subjectLabel(event.acceptance_record.subject_ref), event.acceptance_record.reason].map((value) => text(value, "")).filter(Boolean).join(" · ");
   if (["verification.staled", "review.staled", "acceptance.ready", "acceptance.accepted", "acceptance.rejected"].includes(event?.type)) return text(event?.reason, "完成保障状态已变化");
   if (event?.type !== "routing.decision") {

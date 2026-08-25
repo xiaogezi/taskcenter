@@ -261,6 +261,14 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
     selected_executor_model: "gpt-5.3-codex-spark",
     dispatch_channel: "native",
     routing_reason: "任务边界清晰，可独立验证。",
+    fallback_from: "gpt-5.3-codex-spark",
+    fallback_reason: "preferred_model_circuit_open",
+    retry_after_at: "2026-08-25T04:00:00.000Z",
+    review_artifacts: {
+      subject: { fingerprint: "sha256:subject" },
+      bundle: { ref: "bundle://ocr/review-1", fingerprint: "sha256:bundle" },
+      rules: { fingerprint: "sha256:rules" },
+    },
   };
   const first = recordTaskEvent(firstInput);
   assert.equal(first.task.status, "blocked");
@@ -270,6 +278,10 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
   assert.equal(first.task.routing.action, "delegate_native");
   assert.equal(first.task.routing.outcome, "selected");
   assert.equal(first.task.routing.policyVersion, "soft-routing-v1");
+  assert.equal(first.task.routing.fallbackFrom, "gpt-5.3-codex-spark");
+  assert.equal(first.task.routing.fallbackReason, "preferred_model_circuit_open");
+  assert.equal(first.task.routing.retryAfterAt, "2026-08-25T04:00:00.000Z");
+  assert.equal(first.task.routing.reviewArtifacts.bundle.fingerprint, "sha256:bundle");
   assert.equal(first.task.routingHistory.length, 1);
   assert.ok(first.task.routingRecordedAt);
   const session = getSessionStatuses().find((item) => item.sessionId === "sess-routing");
@@ -1363,7 +1375,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   for (const expected of [
     "taskcenter_session_register", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report",
     "taskcenter_task_close",
-    "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report", "taskcenter_task_diagnostic_report",
+    "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report", "taskcenter_review_cycle_report", "taskcenter_task_diagnostic_report",
     "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
     "taskcenter_delegation_grant", "taskcenter_delegation_claim", "taskcenter_cli_run_report", "taskcenter_delegation_revoke",
     "taskcenter_task_query", "taskcenter_session_status", "taskcenter_session_gate_exemption_status", "taskcenter_session_gate_exemption_set",
@@ -1664,18 +1676,34 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   });
   const beforeReview = await client.callTool({ name: "taskcenter_task_completion_readiness", arguments: { task_id: "task-mcp-v2" } });
   assert.equal(JSON.parse(textOf(beforeReview)).completionReadiness.ready, false);
+  const reviewSubject = { type: "external", value: "revision-mcp", observed_at: "2026-08-17T00:00:00.000Z" };
+  const cycleReport = await client.callTool({
+    name: "taskcenter_review_cycle_report",
+    arguments: {
+      session_id: "sess-reviewer", task_id: "task-mcp-v2", event_id: "mcp-review-cycle", cycle_id: "cycle-mcp", subject_ref: reviewSubject,
+      reviewer: { type: "agent", id: "ocr", session_id: "sess-reviewer" }, model: "gpt-review", review_scope: "full", phase: "completed", outcome: "approved",
+      implementation_ready_at: "2026-08-17T00:01:00.000Z", review_requested_at: "2026-08-17T00:02:00.000Z", review_started_at: "2026-08-17T00:03:00.000Z", review_finished_at: "2026-08-17T00:05:00.000Z",
+      review_active_ms: 60_000, response_mode: "full",
+    },
+  });
+  assert.equal(JSON.parse(textOf(cycleReport)).task.reviewCycles[0].cycle_id, "cycle-mcp");
   await client.callTool({
     name: "taskcenter_task_review_report",
     arguments: {
       session_id: "sess-reviewer", task_id: "task-mcp-v2", event_id: "mcp-review", id: "review-mcp", reviewer: "ocr",
-      reviewer_session_id: "sess-reviewer", revision: "revision-mcp", scope: "scripts/", spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unverified_requirements: [], unresolved_findings: 0,
+      reviewer_session_id: "sess-reviewer", revision: "revision-mcp", subject_ref: reviewSubject, scope: "scripts/", review_contract_version: "v3", cycle_id: "cycle-mcp", cycle_number: 1, review_scope: "full",
+      reviewed_files: ["scripts/example.mjs"], changed_files_since_previous_review: [], findings: [], spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unverified_requirements: [], unresolved_findings: 0,
       observed_at: "2026-08-17T00:05:00.000Z", summary: "approved",
     },
   });
   const readiness = await client.callTool({ name: "taskcenter_task_completion_readiness", arguments: { task_id: "task-mcp-v2" } });
   assert.equal(JSON.parse(textOf(readiness)).completionReadiness.ready, true);
   const packet = await client.callTool({ name: "taskcenter_task_completion_packet", arguments: { task_id: "task-mcp-v2" } });
-  assert.equal(JSON.parse(textOf(packet)).completionPacket.reviewStatus, "passed");
+  const packetPayload = JSON.parse(textOf(packet)).completionPacket;
+  assert.equal(packetPayload.reviewStatus, "passed");
+  assert.equal(packetPayload.reviewProcess.totalCycles, 1);
+  assert.equal(packetPayload.reviewProcess.cycles[0].model, "gpt-review");
+  assert.equal(packetPayload.reviewProcess.finalApprovedSubject.value, "revision-mcp");
   await client.callTool({
     name: "taskcenter_task_diagnostic_report",
     arguments: {

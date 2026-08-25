@@ -4,7 +4,7 @@ import { readFile, stat } from "node:fs/promises";
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
 import { writeJsonAtomic } from "./usage-index.mjs";
 
-const INDEX_VERSION = 4;
+const INDEX_VERSION = 5;
 
 export async function updateTaskEventIndex(options) {
   const now = Number(options.now || Date.now());
@@ -64,7 +64,7 @@ function compactTaskEvent(event) {
   const keys = [
     "event_id", "task_id", "type", "status", "created_at", "recorded_at", "current_step", "tool_name", "review_reason", "next_action", "reason",
     "orchestrator_model", "selected_executor_model", "dispatch_channel", "routing_outcome", "routing_reason",
-    "requirement_result", "verification_claim", "review_attestation", "acceptance_record",
+    "requirement_result", "verification_claim", "review_attestation", "review_cycle", "acceptance_record",
   ];
   return Object.fromEntries(keys.flatMap((key) => event[key] === undefined ? [] : [[key, event[key]]]));
 }

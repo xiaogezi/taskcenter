@@ -4,6 +4,10 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- Adds incremental `review_cycle.reported` observations, Review Attestation v3 linkage, finding fingerprints, review-stage distributions, data-quality coverage, long-tail diagnostics, Completion Packet review history, and a team-level Review governance panel while preserving legacy attestations unchanged.
+- Keeps wall-clock and caller-reported active Review time separate, excludes unaccepted and independent OCR tasks from implementation completion ratios, and reports missing samples as data insufficient instead of zero.
+- Recommends an independent Luna reviewer after known Spark OCR unavailability while retaining the same Subject, OCR Bundle and rules references plus explicit fallback and recovery audit fields.
+
 - 门禁豁免支持按精确 Session 一键加入与退出，操作幂等且不会覆盖其他 Session。
 
 - Adds a fail-closed, per-Session `scheduled_readonly` Hook profile for the fixed CyberRole context automation, scoped to one workspace, one rolling report, a fixed managed-payload probe, exact read-only MCP queries, and the sole ability to patch that report without TaskCenter/PCA/task mutation authority.

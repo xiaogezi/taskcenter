@@ -380,10 +380,11 @@ export function recordTaskEvent(input, options = {}) {
   // 对已存在的任务，先校验 session 归属，再决定幂等或拒绝。
   if (current) {
     // 人工操作事件（event_id 以 "manual-" 开头）绕过归属校验，但必须本机 UI 来源
-    if (!event.event_id.startsWith("manual-") && event.type !== "review.reported" && current.sessionId && event.session_id && current.sessionId !== event.session_id) {
+    const reviewEvidence = ["review.reported", "review_cycle.reported"].includes(event.type);
+    if (!event.event_id.startsWith("manual-") && !reviewEvidence && current.sessionId && event.session_id && current.sessionId !== event.session_id) {
       throw new TaskLedgerError(403, "当前 Session 不是该任务的登记 Session。");
     }
-    if (options.requireRegistered && event.type === "review.reported" && !isRegistered) {
+    if (options.requireRegistered && reviewEvidence && !isRegistered) {
       throw new TaskLedgerError(409, "Reviewer Session 尚未登记。");
     }
     // 任务幂等：同一 session 的 task.create 对已存在的任务视为幂等更新，不新建。
@@ -473,8 +474,9 @@ const idempotentEventFields = [
   "due_at", "estimated_effort_ms", "estimate_reason",
   "tool_use_id", "routing_action", "orchestrator_model", "preferred_executor_model",
   "selected_executor_model", "dispatch_channel", "routing_reason", "routing_outcome", "policy_version",
+  "fallback_from", "fallback_reason", "retry_after_at", "review_artifacts",
   "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
-  "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation",
+  "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation", "review_cycle",
   "diagnostic_observation",
   "close_requirements", "close_verifications",
   "context_completion_id", "authorization_id", "reason", "actor", "subject_ref", "acceptance_record", "workspace_policy",
@@ -741,7 +743,7 @@ function normalizeEvent(input) {
   const sessionId = String(input.session_id || "");
   const allowedTypes = new Set([
     "session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.close", "task.review",
-    "task.reminder", "tool.call", "routing.decision", "routing.result", "routing.health", "requirement.reported", "verification.reported", "review.reported",
+    "task.reminder", "tool.call", "routing.decision", "routing.result", "routing.health", "requirement.reported", "verification.reported", "review.reported", "review_cycle.reported",
     "acceptance.accepted", "acceptance.rejected", "subject.updated", "diagnostic.reported",
   ]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
@@ -796,6 +798,8 @@ function normalizeEvent(input) {
     dispatch_channel: cleanText(input.dispatch_channel, 40),
     routing_reason: cleanText(input.routing_reason, 1_000),
     routing_outcome: cleanText(input.routing_outcome, 40),
+    fallback_from: cleanText(input.fallback_from, 120),
+    fallback_reason: cleanText(input.fallback_reason, 200),
     policy_version: cleanText(input.policy_version, 80),
     route_id: cleanText(input.route_id, 200),
     task_class: cleanText(input.task_class, 80),
@@ -805,6 +809,7 @@ function normalizeEvent(input) {
     consecutive_failures: normalizeNonNegativeInteger(input.consecutive_failures),
     active_executors: normalizeNonNegativeInteger(input.active_executors),
     retry_after_at: cleanText(input.retry_after_at, 80),
+    review_artifacts: normalizeReviewArtifacts(input.review_artifacts),
     ...normalizeCompletionEvent(input),
     created_at: new Date().toISOString(),
   };
@@ -900,6 +905,10 @@ function applyEvent(current, event) {
       routeId: event.route_id || undefined,
       taskClass: event.task_class || undefined,
       circuitState: event.circuit_state || undefined,
+      fallbackFrom: event.fallback_from || undefined,
+      fallbackReason: event.fallback_reason || undefined,
+      retryAfterAt: event.retry_after_at || undefined,
+      reviewArtifacts: event.review_artifacts || undefined,
     };
     return {
       ...current,
@@ -980,12 +989,12 @@ function applyEvent(current, event) {
   };
   let next = {
     ...base,
-    sessionId: event.type === "review.reported" ? base.sessionId : (event.session_id || base.sessionId),
+    sessionId: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.sessionId : (event.session_id || base.sessionId),
     ownerActor: event.type === "task.create" ? (event.actor || base.ownerActor) : base.ownerActor,
-    agent: event.type === "review.reported" ? base.agent : event.agent !== "unknown" ? event.agent : (base.agent || "unknown"),
-    provider: event.type === "review.reported" ? base.provider : event.provider !== "unknown" ? event.provider : (base.provider || "unknown"),
-    model: event.type === "review.reported" ? base.model : event.model !== "unknown" ? event.model : (base.model || "unknown"),
-    workspace: event.type === "review.reported" ? base.workspace : (event.workspace || base.workspace),
+    agent: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.agent : event.agent !== "unknown" ? event.agent : (base.agent || "unknown"),
+    provider: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.provider : event.provider !== "unknown" ? event.provider : (base.provider || "unknown"),
+    model: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.model : event.model !== "unknown" ? event.model : (base.model || "unknown"),
+    workspace: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.workspace : (event.workspace || base.workspace),
     title: event.title || base.title,
     goal: event.goal || base.goal,
     requirementId: event.requirement_id || base.requirementId,
@@ -1082,6 +1091,20 @@ function cleanText(value, limit) {
 function cleanList(value, maxItems, maxLength) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => typeof item === "string").map((item) => cleanText(item, maxLength)).filter(Boolean).slice(0, maxItems);
+}
+
+function normalizeReviewArtifacts(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const normalize = (item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const ref = cleanText(item.ref, 1_000);
+    const fingerprint = cleanText(item.fingerprint, 300);
+    return ref || fingerprint ? { ref: ref || null, fingerprint: fingerprint || null } : null;
+  };
+  const subject = normalize(value.subject);
+  const bundle = normalize(value.bundle);
+  const rules = normalize(value.rules);
+  return subject && bundle && rules ? { subject, bundle, rules } : undefined;
 }
 
 function normalizePositiveInteger(value) {

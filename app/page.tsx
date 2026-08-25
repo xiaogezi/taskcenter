@@ -165,6 +165,7 @@ type Dashboard = {
   };
   threads?: Thread[];
 };
+type MetricDistribution = { average: number | null; p50: number | null; p95: number | null; sampleCount: number; status: "available" | "data_insufficient" };
 type GovernanceMetrics = {
   completedTasks: number;
   creditsPerCompletedTask: number | null;
@@ -173,9 +174,21 @@ type GovernanceMetrics = {
   inputTokens: { average: number; p50: number; p95: number };
   taskCenterCallsPerTask: number;
   reworkRate: number;
-  durationMs: { average: number; p50: number; p95: number };
+  durationMs: MetricDistribution;
   attributionCoverage?: { eventRatio: number; inputTokenRatio: number; attributedEvents: number; totalEvents: number; note: string };
   diagnostics?: { cases: number; resolvedCases: number; medianTimeToRootCauseMs: number; averageHypotheses: number; averageFailedFixes: number; averageRollbacks: number; freshVerificationPassRate: number; note: string };
+  reviews?: {
+    taskRoles: { implementation: number; independent_review: number };
+    coverage: { eligibleTasks: number; tasksWithCycles: number; cycleCoverage: number | null; cycles: number; cyclesWithActiveTime: number; activeTimeCoverage: number | null; note: string };
+    funnel: { pending_review: number; reviewing: number; fixing: number; rereview: number; approved: number };
+    rounds: { perTask: MetricDistribution; firstPassRate: number | null; changesRequested: number; full: number; incremental: number };
+    timeMs: { wait: MetricDistribution; reviewElapsed: MetricDistribution; fixElapsed: MetricDistribution; verificationElapsed: MetricDistribution; wall: MetricDistribution; active: MetricDistribution; wallToTaskRatio: MetricDistribution };
+    findings: { total: number; byCategory: Record<string, number>; bySeverity: Record<string, number>; byValidity: Record<string, number>; validRatio: number | null; duplicateRatio: number | null; falsePositiveRatio: number | null };
+    waitReasons: Record<string, number>;
+    reviewLoopWarnings: Array<{ taskId: string; type: string; cycleId?: string; detail?: string }>;
+    longTailTasks: Array<{ taskId: string; warnings: string[]; reviewRounds: number; reviewWallMs: number | null }>;
+    note: string;
+  };
   comparisons?: { strategy?: string; note?: string };
   snapshotStatus?: { stale: boolean; ageMs: number | null; lastRefreshError?: string; updatedAt?: string };
 };
@@ -628,7 +641,9 @@ export default function Home() {
 function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
   if (!metrics) return null;
   const number = (value: number | null, digits = 1) => value === null ? "不可估算" : value.toLocaleString("zh-CN", { maximumFractionDigits: digits });
-  const duration = (value: number) => value ? `${Math.round(value / 60_000)} 分钟` : "暂无";
+  const duration = (value: number | null | undefined) => value === null || value === undefined ? "数据不足" : `${Math.round(value / 60_000)} 分钟`;
+  const ratio = (value: number | null | undefined) => value === null || value === undefined ? "数据不足" : `${(value * 100).toFixed(1)}%`;
+  const reviews = metrics.reviews;
   return (
     <section aria-labelledby="governance-title">
       <p className="eyebrow orange">GOVERNANCE PILOT</p>
@@ -642,6 +657,24 @@ function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {
         <article className="metric-card"><p>TOKEN 任务归属率</p><strong className="metric-value">{metrics.attributionCoverage ? `${(metrics.attributionCoverage.inputTokenRatio * 100).toFixed(1)}%` : "暂无"}</strong><span>{metrics.attributionCoverage ? `事件归属 ${(metrics.attributionCoverage.eventRatio * 100).toFixed(1)}% · 仅作数据质量检查` : "等待新版指标快照"}</span></article>
         <article className="metric-card"><p>调试案例观察</p><strong className="metric-value">{metrics.diagnostics ? number(metrics.diagnostics.cases, 0) : "暂无"}</strong><span>{metrics.diagnostics ? `已解决 ${number(metrics.diagnostics.resolvedCases, 0)} · 根因 P50 ${duration(metrics.diagnostics.medianTimeToRootCauseMs)}` : "等待显式诊断观察"}</span></article>
       </div>
+      {reviews && <div className="governance-block">
+        <h3>Review 流程诊断</h3>
+        <div className="metrics-grid">
+          <article className="metric-card accent-cyan"><p>REVIEW 漏斗</p><strong className="metric-value">{reviews.funnel.approved}</strong><span>待审 {reviews.funnel.pending_review} · 审查中 {reviews.funnel.reviewing} · 修改中 {reviews.funnel.fixing} · 复审 {reviews.funnel.rereview}</span></article>
+          <article className="metric-card"><p>轮次分布</p><strong className="metric-value">{number(reviews.rounds.perTask.p50)}</strong><span>P95 {number(reviews.rounds.perTask.p95)} · 首次通过 {ratio(reviews.rounds.firstPassRate)}</span></article>
+          <article className="metric-card"><p>REVIEW 时间构成 P50</p><strong className="metric-value">{duration(reviews.timeMs.wall.p50)}</strong><span>等待 {duration(reviews.timeMs.wait.p50)} · 审查 {duration(reviews.timeMs.reviewElapsed.p50)} · 修复 {duration(reviews.timeMs.fixElapsed.p50)} · 验证 {duration(reviews.timeMs.verificationElapsed.p50)}</span></article>
+          <article className="metric-card"><p>实际触达时间 P50</p><strong className="metric-value">{duration(reviews.timeMs.active.p50)}</strong><span>墙钟/任务占比 P50 {ratio(reviews.timeMs.wallToTaskRatio.p50)} · active 覆盖 {ratio(reviews.coverage.activeTimeCoverage)}</span></article>
+          <article className="metric-card"><p>全量 / 增量</p><strong className="metric-value">{reviews.rounds.full} / {reviews.rounds.incremental}</strong><span>changes requested {reviews.rounds.changesRequested} 轮</span></article>
+          <article className="metric-card"><p>FINDING 质量</p><strong className="metric-value">{reviews.findings.total}</strong><span>有效 {ratio(reviews.findings.validRatio)} · 重复 {ratio(reviews.findings.duplicateRatio)} · 误报 {ratio(reviews.findings.falsePositiveRatio)}</span></article>
+        </div>
+        <div className="governance-list">
+          <span>指标覆盖：{reviews.coverage.tasksWithCycles}/{reviews.coverage.eligibleTasks} 个实现任务 · Review Cycle {reviews.coverage.cycles} · 独立 OCR 任务 {reviews.taskRoles.independent_review}</span>
+          <span>等待原因：{Object.entries(reviews.waitReasons).length ? Object.entries(reviews.waitReasons).map(([reason, count]) => `${reason} ${count}`).join(" · ") : "数据不足"}</span>
+          <span>Finding 分类：{Object.entries(reviews.findings.byCategory).length ? Object.entries(reviews.findings.byCategory).map(([category, count]) => `${category} ${count}`).join(" · ") : "数据不足"}</span>
+          <span>长尾任务：{reviews.longTailTasks.length ? reviews.longTailTasks.map((task) => `${task.taskId}（${task.warnings.join("、")}）`).join("；") : "暂无"}</span>
+        </div>
+        <p className="privacy-note">{reviews.note} 墙钟时间与调用方明确上报的 active time 分开展示；缺失阶段事件时显示“数据不足”。</p>
+      </div>}
       <p className="privacy-note">比较口径：按 workflow profile、任务类别和模型匹配，并支持多个交替窗口；归属率和调试指标只用于发现数据与流程瓶颈，不参与绩效或门禁。</p>
     </section>
   );

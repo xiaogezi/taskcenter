@@ -37,6 +37,9 @@ test("完成闭环事件显示验证、审查与最终验收摘要", () => {
   assert.equal(taskEventStatus({ type: "review.staled" }), "审查过期");
   assert.equal(taskEventSummary({ type: "review.staled", reason: "revision changed" }), "revision changed");
   assert.equal(taskEventStatus({ type: "acceptance.accepted" }), "已最终验收");
+  const cycle = { type: "review_cycle.reported", review_cycle: { cycle_id: "cycle-1", phase: "reviewing", review_scope: "incremental", reviewer: { id: "ocr" }, model: "luna", outcome: "pending" } };
+  assert.equal(taskEventStatus(cycle), "Review 阶段");
+  assert.equal(taskEventSummary(cycle), "cycle-1 · reviewing · incremental · ocr · luna · pending");
 });
 
 test("仅有路由记录的任务仍可打开事件详情", () => {

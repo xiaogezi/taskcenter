@@ -5,9 +5,16 @@ const verificationKinds = new Set(["test", "build", "lint", "static_check", "dev
 const requirementStatuses = new Set(["pending", "passed", "failed", "not_applicable"]);
 const claimStatuses = new Set(["passed", "failed", "skipped"]);
 const reviewVerdicts = new Set(["approved", "changes_requested", "rejected"]);
-const reviewContractVersions = new Set(["legacy", "v2"]);
+const reviewContractVersions = new Set(["legacy", "v2", "v3"]);
 const specVerdicts = new Set(["compliant", "issues_found", "not_evaluated"]);
 const qualityVerdicts = new Set(["approved", "needs_fixes", "not_evaluated"]);
+const reviewScopes = new Set(["full", "incremental"]);
+const reviewCyclePhases = new Set(["pending_review", "reviewing", "fixing", "verifying", "completed"]);
+const reviewCyclePhaseOrder = ["pending_review", "reviewing", "fixing", "verifying", "completed"];
+const reviewCycleOutcomes = new Set(["pending", "changes_requested", "approved", "rejected", "cancelled"]);
+const findingSeverities = new Set(["p0", "p1", "p2", "p3", "unknown"]);
+const findingValidities = new Set(["valid", "duplicate", "false_positive", "unknown"]);
+const findingStatuses = new Set(["resolved", "unresolved"]);
 const diagnosticOutcomes = new Set(["resolved", "unresolved"]);
 const freshVerificationStatuses = new Set(["passed", "failed", "not_run"]);
 const subjectTypes = new Set(["git_commit", "git_worktree_snapshot", "pull_request_head", "artifact", "document_version", "external", "none"]);
@@ -75,6 +82,7 @@ export function normalizeCompletionEvent(input) {
       ? input.close_verifications.slice(0, 30).map((item) => normalizeVerificationClaim(item, occurredAt))
       : [],
     review_attestation: normalizeReview(input.review_attestation, occurredAt),
+    review_cycle: normalizeReviewCycle(input.review_cycle, occurredAt),
     diagnostic_observation: normalizeDiagnosticObservation(input.diagnostic_observation, occurredAt),
     acceptance_record: normalizeAcceptance(input.acceptance_record, occurredAt),
     context_completion_id: text(input.context_completion_id, 200), authorization_id: text(input.authorization_id, 200), reason: text(input.reason, 1_000),
@@ -135,7 +143,30 @@ export function applyCompletionEvent(task, event) {
     if (review.verdict === "approved" && review.unresolved_findings > 0) throw failure("存在未解决 findings 时不能提交 approved 审查。", 409);
     validateReviewVerdicts(review);
     if ((next.reviewAttestations || []).some((item) => item.id === review.id)) throw failure("Review Attestation id 已存在；请使用新 id 追加复审。", 409);
-    next.reviewAttestations = [...(next.reviewAttestations || []), review];
+    validateReviewCycleLink(next, review);
+    const duplicate = review.verdict === "approved"
+      ? (next.reviewAttestations || []).find((item) => item.effective_review !== false && item.verdict === "approved" && sameSubject(item.subject_ref, review.subject_ref))
+      : null;
+    next.reviewAttestations = [...(next.reviewAttestations || []), duplicate
+      ? { ...review, effective_review: false, duplicate_of_attestation_id: duplicate.id }
+      : { ...review, effective_review: true }];
+  }
+  if (event.type === "review_cycle.reported") {
+    const cycle = normalizeReviewCycle(event.review_cycle, event.occurred_at || event.created_at);
+    if (!cycle.cycle_id || !cycle.subject_ref || !cycle.reviewer || !cycle.model || !cycle.review_scope) throw failure("Review Cycle 字段不完整。");
+    const cycles = next.reviewCycles || [];
+    const existingIndex = cycles.findIndex((item) => item.cycle_id === cycle.cycle_id);
+    const existing = existingIndex >= 0 ? cycles[existingIndex] : null;
+    if (existing) validateCycleIdentity(existing, cycle);
+    const merged = {
+      ...(existing || {}),
+      ...cycle,
+      cycle_number: existing?.cycle_number || cycles.length + 1,
+    };
+    validateReviewCycle(merged);
+    next.reviewCycles = existing
+      ? cycles.map((item, index) => index === existingIndex ? merged : item)
+      : [...cycles, merged];
   }
   if (event.type === "diagnostic.reported") {
     const observation = normalizeDiagnosticObservation(event.diagnostic_observation, event.occurred_at || event.created_at);
@@ -169,6 +200,7 @@ export function withCompletionState(task) {
     requirementResults: Array.isArray(task.requirementResults) ? task.requirementResults : [],
     verificationClaims: (task.verificationClaims || []).map((item) => item?.subject_ref && typeof item.producer === "object" ? item : normalizeVerificationClaim(item, item?.observed_at)),
     reviewAttestations: (task.reviewAttestations || []).map((item) => item?.subject_ref && typeof item.reviewer === "object" ? item : normalizeReview(item, item?.observed_at)),
+    reviewCycles: Array.isArray(task.reviewCycles) ? task.reviewCycles.map((item) => normalizeReviewCycle(item, item?.observed_at)) : [],
     diagnosticObservations: Array.isArray(task.diagnosticObservations) ? task.diagnosticObservations.map((item) => normalizeDiagnosticObservation(item, item?.observed_at)) : [],
     acceptanceRecords: Array.isArray(task.acceptanceRecords) ? task.acceptanceRecords : task.acceptanceRecord ? [migrateAcceptance(task.acceptanceRecord, task)] : [],
   };
@@ -211,12 +243,12 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
     }
   }
   if (reviewRequired(task)) {
-    const review = (task.reviewAttestations || []).at(-1);
+    const review = (task.reviewAttestations || []).filter((item) => item.effective_review !== false).at(-1);
     if (!review) reasons.push("required_review_missing");
     else {
       if (currentSubject && !sameSubject(review.subject_ref, currentSubject)) { staleEvidence.push(review.id); reasons.push("review_stale"); }
       if (review.unresolved_findings > 0) { unresolvedFindings.push(...(review.finding_refs?.length ? review.finding_refs : [review.id])); reasons.push("unresolved_findings_exist"); }
-      if (review.review_contract_version === "v2") {
+      if (["v2", "v3"].includes(review.review_contract_version)) {
         if (review.spec_verdict !== "compliant") reasons.push("review_spec_not_compliant");
         if (review.quality_verdict !== "approved") reasons.push("review_quality_not_approved");
         if (review.unverified_requirements.length) {
@@ -239,17 +271,70 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
 
 export function buildCompletionPacket(task) {
   const value = withCompletionState(task);
+  const reviewProcess = buildReviewProcess(value);
   return {
     schemaVersion: "taskcenter-completion-v2", policyVersion: value.policyVersion,
     taskContract: { contractVersion: value.contractVersion, goal: value.goal, scope: value.scope || [], nonGoals: value.nonGoals || [], acceptanceCriteria: value.acceptanceRequirements, workflowProfile: value.workflowProfile, reviewPolicy: value.reviewPolicy, executionEnvironment: value.executionEnvironment, verificationPlan: value.verificationPlan || [], workspacePolicy: value.workspacePolicy },
-    currentSubject: value.currentSubject || null, requirementResults: value.requirementResults, verificationClaims: value.verificationClaims, reviewAttestations: value.reviewAttestations, diagnosticObservations: value.diagnosticObservations, acceptanceRecords: value.acceptanceRecords, completionReadiness: value.completionReadiness,
+    currentSubject: value.currentSubject || null, requirementResults: value.requirementResults, verificationClaims: value.verificationClaims, reviewAttestations: value.reviewAttestations, reviewCycles: value.reviewCycles, reviewProcess, diagnosticObservations: value.diagnosticObservations, acceptanceRecords: value.acceptanceRecords, completionReadiness: value.completionReadiness,
     currentRevision: value.currentRevision || "", verificationStatus: value.verificationStatus, reviewStatus: value.reviewStatus, acceptanceStatus: value.acceptanceStatus,
   };
 }
 
 export function completionPacketMarkdown(task) {
   const packet = buildCompletionPacket(task), readiness = packet.completionReadiness;
-  return [`# TaskCenter Completion Packet: ${task.title || task.id}`, "", `- Task ID: ${task.id}`, `- Policy: ${packet.policyVersion}`, `- Ready: ${readiness.ready ? "yes" : "no"}`, `- Completion claim allowed: ${readiness.completionClaim.allowed ? "yes" : "no"}`, `- Subject: ${packet.currentSubject ? `${packet.currentSubject.type}:${packet.currentSubject.value || "none"}` : "none"}`, "", "## Readiness", "", ...(readiness.reasons.length ? readiness.reasons.map((item) => `- ${item}`) : ["- ready"]), "", "## Acceptance criteria", "", ...packet.taskContract.acceptanceCriteria.map((item) => `- [${item.required ? "x" : " "}] ${item.id}: ${item.description}`), "", "## Verification claims", "", ...(packet.verificationClaims.length ? packet.verificationClaims.map((item) => `- ${item.id}: ${item.kind} / ${item.status}`) : ["- none"]), "", "## Reviews", "", ...(packet.reviewAttestations.length ? packet.reviewAttestations.map((item) => `- ${item.id}: spec=${item.spec_verdict || "legacy"} / quality=${item.quality_verdict || "legacy"} / overall=${item.verdict}`) : ["- none"]), "", "## Acceptance records", "", ...(packet.acceptanceRecords.length ? packet.acceptanceRecords.map((item) => `- ${item.id}: ${item.outcome} via ${item.source}`) : ["- none"]), ""].join("\n");
+  return [`# TaskCenter Completion Packet: ${task.title || task.id}`, "", `- Task ID: ${task.id}`, `- Policy: ${packet.policyVersion}`, `- Ready: ${readiness.ready ? "yes" : "no"}`, `- Completion claim allowed: ${readiness.completionClaim.allowed ? "yes" : "no"}`, `- Subject: ${packet.currentSubject ? `${packet.currentSubject.type}:${packet.currentSubject.value || "none"}` : "none"}`, "", "## Readiness", "", ...(readiness.reasons.length ? readiness.reasons.map((item) => `- ${item}`) : ["- ready"]), "", "## Acceptance criteria", "", ...packet.taskContract.acceptanceCriteria.map((item) => `- [${item.required ? "x" : " "}] ${item.id}: ${item.description}`), "", "## Verification claims", "", ...(packet.verificationClaims.length ? packet.verificationClaims.map((item) => `- ${item.id}: ${item.kind} / ${item.status}`) : ["- none"]), "", "## Reviews", "", `- Effective cycles: ${packet.reviewProcess.totalCycles}`, `- Changes requested: ${packet.reviewProcess.changesRequestedCycles}`, `- Fallback occurred: ${packet.reviewProcess.fallbackOccurred ? "yes" : "no"}`, `- Long-tail warnings: ${packet.reviewProcess.reviewLoopWarnings.length}`, `- Final approved subject: ${packet.reviewProcess.finalApprovedSubject ? `${packet.reviewProcess.finalApprovedSubject.type}:${packet.reviewProcess.finalApprovedSubject.value || "none"}` : "none"}`, ...(packet.reviewProcess.cycles.length ? packet.reviewProcess.cycles.map((item) => `- cycle ${item.cycleNumber}: reviewer=${item.reviewer?.id || "unknown"} / model=${item.model || "unknown"} / scope=${item.reviewScope || "legacy"} / verdict=${item.verdict || item.outcome || "pending"}`) : ["- none"]), "", "## Acceptance records", "", ...(packet.acceptanceRecords.length ? packet.acceptanceRecords.map((item) => `- ${item.id}: ${item.outcome} via ${item.source}`) : ["- none"]), ""].join("\n");
+}
+
+function buildReviewProcess(task) {
+  const attestations = (task.reviewAttestations || []).filter((item) => item.effective_review !== false);
+  const attestationByCycle = new Map(attestations.filter((item) => item.cycle_id).map((item) => [item.cycle_id, item]));
+  const cycles = (task.reviewCycles || []).map((cycle) => {
+    const attestation = attestationByCycle.get(cycle.cycle_id);
+    return {
+      cycleId: cycle.cycle_id, cycleNumber: cycle.cycle_number, reviewer: cycle.reviewer || attestation?.reviewer || null,
+      model: cycle.model || "", reviewScope: cycle.review_scope || attestation?.review_scope || "legacy", baseAttestationId: cycle.base_attestation_id || attestation?.base_attestation_id || "",
+      subjectRef: cycle.subject_ref || attestation?.subject_ref || null, verdict: attestation?.verdict || "", outcome: cycle.outcome || "pending",
+      findingSummary: attestation?.finding_summary || { total: 0, resolved: 0, unresolved: attestation?.unresolved_findings || 0 },
+      fallback: Boolean(cycle.fallback_from || cycle.fallback_reason), fallbackFrom: cycle.fallback_from || "", fallbackReason: cycle.fallback_reason || "",
+    };
+  });
+  const routingFallbacks = (task.routingHistory || []).filter((item) => item.fallbackFrom || (item.preferredExecutorModel && item.selectedExecutorModel && item.preferredExecutorModel !== item.selectedExecutorModel));
+  const fingerprints = attestations.flatMap((item) => item.findings || []).map((item) => item.fingerprint).filter(Boolean);
+  const reviewLoopWarnings = [];
+  const span = (start, end) => start && end ? Math.max(0, Date.parse(end) - Date.parse(start)) : null;
+  const subjectKey = (value) => value ? `${value.type || "artifact"}:${value.value || ""}` : "none";
+  const cycleTiming = (task.reviewCycles || []).map((cycle) => {
+    const wallEnd = cycle.verification_finished_at || cycle.fix_finished_at || cycle.review_finished_at;
+    return {
+      cycle,
+      waitMs: span(cycle.review_requested_at, cycle.review_started_at),
+      reviewMs: span(cycle.review_started_at, cycle.review_finished_at),
+      fixMs: span(cycle.fix_started_at, cycle.fix_finished_at),
+      wallMs: span(cycle.implementation_ready_at, wallEnd),
+    };
+  });
+  if (attestations.filter((item) => item.verdict === "changes_requested").length > 2) reviewLoopWarnings.push("changes_requested_over_two");
+  if ((task.reviewAttestations || []).some((item) => item.effective_review === false && item.duplicate_of_attestation_id)) reviewLoopWarnings.push("duplicate_approved");
+  if ([...new Set(fingerprints)].some((fingerprint) => fingerprints.filter((item) => item === fingerprint).length > 1)) reviewLoopWarnings.push("repeated_finding");
+  if (cycleTiming.some(({ waitMs, reviewMs, fixMs }) => Number.isFinite(waitMs) && waitMs > (reviewMs || 0) + (fixMs || 0))) reviewLoopWarnings.push("review_wait_dominates");
+  if (cycleTiming.some(({ cycle }) => !["approved", "rejected", "cancelled"].includes(cycle.outcome || "pending"))) reviewLoopWarnings.push("review_cycle_in_progress");
+  if (cycleTiming.some(({ wallMs }) => Number.isFinite(wallMs) && wallMs > 24 * 60 * 60_000)) reviewLoopWarnings.push("overnight_wall_clock_distortion");
+  const fullSubjects = (task.reviewCycles || []).filter((item) => item.review_scope === "full").map((item) => subjectKey(item.subject_ref));
+  if ([...new Set(fullSubjects)].some((subject) => fullSubjects.filter((item) => item === subject).length > 1)) reviewLoopWarnings.push("repeated_full_review_same_subject");
+  const reviewWallMs = cycleTiming.reduce((sum, item) => sum + (item.wallMs || 0), 0);
+  const taskStart = Date.parse(task.firstStartedAt || task.startedAt || task.createdAt || "");
+  const taskEnd = Date.parse(task.acceptedAt || task.completedAt || task.updatedAt || "");
+  if (["verified", "accepted"].includes(task.status) || task.acceptanceStatus === "accepted") {
+    const taskWallMs = taskEnd - taskStart;
+    if (Number.isFinite(taskWallMs) && taskWallMs > 0 && reviewWallMs / taskWallMs > 0.5) reviewLoopWarnings.push("review_stage_ratio_high");
+  }
+  const finalApproved = attestations.filter((item) => item.verdict === "approved").at(-1);
+  return {
+    totalCycles: attestations.length, changesRequestedCycles: attestations.filter((item) => item.verdict === "changes_requested").length,
+    cycles, fallbackOccurred: routingFallbacks.length > 0 || cycles.some((item) => item.fallback),
+    fallbacks: routingFallbacks.map((item) => ({ fallbackFrom: item.fallbackFrom || item.preferredExecutorModel || "", fallbackReason: item.fallbackReason || item.reason || "", selectedModel: item.selectedExecutorModel || "" })),
+    reviewLoopWarnings: [...new Set(reviewLoopWarnings)], finalApprovedSubject: finalApproved?.subject_ref || null,
+  };
 }
 
 function normalizeCriteria(value) {
@@ -304,7 +389,57 @@ function normalizeReview(value, fallbackAt) {
   if (!value || typeof value !== "object") return {};
   const observedAt = text(value.observed_at, 80) || fallbackAt;
   const hasV2Fields = value.spec_verdict !== undefined || value.quality_verdict !== undefined || value.unverified_requirements !== undefined;
-  return { id: text(value.id, 120), reviewer: normalizeActorIdentity(value.reviewer, { type: "agent", id: value.reviewer_session_id || "" }), subject_ref: normalizeSubjectReference(value.subject_ref, observedAt) || legacySubject(value.revision, observedAt), revision: text(value.revision, 500), scope: text(value.scope, 1_000), review_contract_version: enumeration(value.review_contract_version, reviewContractVersions, hasV2Fields ? "v2" : "legacy"), spec_verdict: enumeration(value.spec_verdict, specVerdicts, hasV2Fields ? "not_evaluated" : ""), quality_verdict: enumeration(value.quality_verdict, qualityVerdicts, hasV2Fields ? "not_evaluated" : ""), verdict: enumeration(value.verdict, reviewVerdicts, ""), unverified_requirements: normalizeUnverifiedRequirements(value.unverified_requirements), unresolved_findings: Number.isInteger(value.unresolved_findings) && value.unresolved_findings >= 0 ? value.unresolved_findings : 0, observed_at: observedAt, authorization_id: text(value.authorization_id, 200), finding_refs: strings(value.finding_refs, 50, 500), summary: text(value.summary, 1_000) };
+  const hasV3Fields = value.cycle_id !== undefined || value.review_scope !== undefined || value.findings !== undefined;
+  const contractVersion = enumeration(value.review_contract_version, reviewContractVersions, hasV3Fields ? "v3" : hasV2Fields ? "v2" : "legacy");
+  const findings = contractVersion === "v3" ? normalizeFindings(value.findings) : [];
+  const unresolved = contractVersion === "v3" ? findings.filter((item) => item.status === "unresolved").length : Number.isInteger(value.unresolved_findings) && value.unresolved_findings >= 0 ? value.unresolved_findings : 0;
+  return {
+    id: text(value.id, 120), reviewer: normalizeActorIdentity(value.reviewer, { type: "agent", id: value.reviewer_session_id || "" }),
+    subject_ref: normalizeSubjectReference(value.subject_ref, observedAt) || legacySubject(value.revision, observedAt), revision: text(value.revision, 500), scope: text(value.scope, 1_000),
+    review_contract_version: contractVersion, spec_verdict: enumeration(value.spec_verdict, specVerdicts, hasV2Fields || hasV3Fields ? "not_evaluated" : ""), quality_verdict: enumeration(value.quality_verdict, qualityVerdicts, hasV2Fields || hasV3Fields ? "not_evaluated" : ""),
+    verdict: enumeration(value.verdict, reviewVerdicts, ""), unverified_requirements: normalizeUnverifiedRequirements(value.unverified_requirements), unresolved_findings: unresolved,
+    observed_at: observedAt, authorization_id: text(value.authorization_id, 200), finding_refs: strings(value.finding_refs, 50, 500), summary: text(value.summary, 1_000),
+    ...(contractVersion === "v3" ? {
+      cycle_id: text(value.cycle_id, 120), cycle_number: positiveInteger(value.cycle_number), review_scope: enumeration(value.review_scope, reviewScopes, ""),
+      base_attestation_id: text(value.base_attestation_id, 120), reviewed_files: strings(value.reviewed_files, 500, 500),
+      changed_files_since_previous_review: strings(value.changed_files_since_previous_review, 500, 500), findings, finding_summary: summarizeFindings(findings),
+    } : {}),
+  };
+}
+
+function normalizeReviewCycle(value, fallbackAt) {
+  if (!value || typeof value !== "object") return {};
+  const optionalTime = (field) => text(value[field], 80);
+  return {
+    cycle_id: text(value.cycle_id, 120),
+    ...(positiveInteger(value.cycle_number) ? { cycle_number: positiveInteger(value.cycle_number) } : {}),
+    ...(normalizeSubjectReference(value.subject_ref, fallbackAt) ? { subject_ref: normalizeSubjectReference(value.subject_ref, fallbackAt) } : {}),
+    ...(normalizeActorIdentity(value.reviewer) ? { reviewer: normalizeActorIdentity(value.reviewer) } : {}),
+    ...(text(value.model, 120) ? { model: text(value.model, 120) } : {}),
+    ...(enumeration(value.review_scope, reviewScopes, "") ? { review_scope: value.review_scope } : {}),
+    ...(text(value.base_attestation_id, 120) ? { base_attestation_id: text(value.base_attestation_id, 120) } : {}),
+    ...(enumeration(value.phase, reviewCyclePhases, "") ? { phase: value.phase } : {}),
+    ...(enumeration(value.outcome, reviewCycleOutcomes, "") ? { outcome: value.outcome } : {}),
+    ...(text(value.wait_reason, 500) ? { wait_reason: text(value.wait_reason, 500) } : {}),
+    ...Object.fromEntries(["implementation_ready_at", "review_requested_at", "review_started_at", "review_finished_at", "fix_started_at", "fix_finished_at", "verification_finished_at"].flatMap((field) => optionalTime(field) ? [[field, optionalTime(field)]] : [])),
+    ...Object.fromEntries(["review_active_ms", "fix_active_ms", "verification_active_ms"].flatMap((field) => nonNegativeIntegerOrNull(value[field]) !== null ? [[field, nonNegativeIntegerOrNull(value[field])]] : [])),
+    observed_at: text(value.observed_at, 80) || fallbackAt,
+  };
+}
+
+function normalizeFindings(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 500).flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const findingId = text(item.finding_id, 160), fingerprint = text(item.fingerprint, 200);
+    if (!findingId || !fingerprint) return [];
+    return [{ finding_id: findingId, fingerprint, category: text(item.category, 120) || "unknown", severity: enumeration(item.severity, findingSeverities, "unknown"), validity: enumeration(item.validity, findingValidities, "unknown"), status: enumeration(item.status, findingStatuses, "unresolved") }];
+  });
+}
+
+function summarizeFindings(findings) {
+  const countBy = (field) => Object.fromEntries([...new Set(findings.map((item) => item[field]))].sort().map((key) => [key, findings.filter((item) => item[field] === key).length]));
+  return { total: findings.length, by_category: countBy("category"), by_severity: countBy("severity"), by_validity: countBy("validity"), resolved: findings.filter((item) => item.status === "resolved").length, unresolved: findings.filter((item) => item.status === "unresolved").length };
 }
 
 function normalizeUnverifiedRequirements(value) {
@@ -317,12 +452,56 @@ function normalizeUnverifiedRequirements(value) {
 }
 
 function validateReviewVerdicts(review) {
-  if (review.review_contract_version !== "v2") return;
+  if (review.review_contract_version === "legacy") return;
   const approved = review.spec_verdict === "compliant" && review.quality_verdict === "approved" && review.unverified_requirements.length === 0 && review.unresolved_findings === 0;
   if (review.verdict === "approved" && !approved) throw failure("approved 要求 spec_verdict=compliant、quality_verdict=approved，且不存在未验证要求或未解决 findings。", 409);
   if (review.verdict === "rejected" && (review.spec_verdict !== "not_evaluated" || review.quality_verdict !== "not_evaluated" || review.unverified_requirements.length || review.unresolved_findings)) throw failure("rejected 要求两个分项 verdict 均为 not_evaluated，且不携带未验证要求或 findings。", 409);
   const hasRequestedChanges = review.spec_verdict === "issues_found" || review.quality_verdict === "needs_fixes" || review.unverified_requirements.length > 0 || review.unresolved_findings > 0;
   if (review.verdict === "changes_requested" && !hasRequestedChanges) throw failure("changes_requested 必须至少包含规格问题、质量问题、未验证要求或未解决 finding。", 409);
+}
+
+function validateReviewCycleLink(task, review) {
+  if (review.review_contract_version !== "v3") return;
+  if (!review.cycle_id || !review.cycle_number || !review.review_scope || !Array.isArray(review.reviewed_files) || !Array.isArray(review.findings)) throw failure("Review Attestation v3 缺少 cycle、scope、files 或 findings。");
+  const cycle = (task.reviewCycles || []).find((item) => item.cycle_id === review.cycle_id);
+  if (!cycle) throw failure("Review Attestation v3 引用的 cycle_id 不存在。", 404);
+  if (cycle.cycle_number !== review.cycle_number || cycle.review_scope !== review.review_scope || !sameSubject(cycle.subject_ref, review.subject_ref)) throw failure("Review Attestation v3 与 Review Cycle 不一致。", 409);
+  if (review.review_scope === "incremental") {
+    if (!review.base_attestation_id) throw failure("incremental Review 必须引用 base_attestation_id。");
+    const base = (task.reviewAttestations || []).find((item) => item.id === review.base_attestation_id && item.effective_review !== false);
+    if (!base) throw failure("incremental Review 的 base Attestation 不存在或已失效。", 409);
+    if (Number.isFinite(base.cycle_number) && base.cycle_number >= review.cycle_number) throw failure("incremental Review 的 base Attestation 必须来自更早轮次。", 409);
+  }
+}
+
+function validateCycleIdentity(existing, incoming) {
+  for (const field of ["model", "review_scope"]) if (incoming[field] && existing[field] !== incoming[field]) throw failure(`Review Cycle ${field} 不可变更。`, 409);
+  if (incoming.subject_ref && !sameSubject(existing.subject_ref, incoming.subject_ref)) throw failure("Review Cycle SubjectReference 不可变更。", 409);
+  if (incoming.reviewer && `${existing.reviewer?.type}:${existing.reviewer?.id}` !== `${incoming.reviewer.type}:${incoming.reviewer.id}`) throw failure("Review Cycle reviewer 不可变更。", 409);
+  if (incoming.phase && existing.phase && reviewCyclePhaseOrder.indexOf(incoming.phase) < reviewCyclePhaseOrder.indexOf(existing.phase)) throw failure("Review Cycle phase 不能回退。", 409);
+  if (existing.outcome && existing.outcome !== "pending" && incoming.outcome && incoming.outcome !== existing.outcome) throw failure("Review Cycle 终态 outcome 不可变更。", 409);
+}
+
+function validateReviewCycle(cycle) {
+  const ordered = ["implementation_ready_at", "review_requested_at", "review_started_at", "review_finished_at", "fix_started_at", "fix_finished_at", "verification_finished_at"];
+  let previous = -Infinity;
+  for (const field of ordered) {
+    if (!cycle[field]) continue;
+    const instant = Date.parse(cycle[field]);
+    if (!Number.isFinite(instant)) throw failure(`Review Cycle ${field} 必须是有效 ISO 时间。`);
+    if (instant < previous) throw failure("Review Cycle 时间顺序无效。", 409);
+    previous = instant;
+  }
+  for (const [activeField, startField, finishField] of [
+    ["review_active_ms", "review_started_at", "review_finished_at"],
+    ["fix_active_ms", "fix_started_at", "fix_finished_at"],
+    ["verification_active_ms", "fix_finished_at", "verification_finished_at"],
+  ]) {
+    if (cycle[activeField] === undefined) continue;
+    if (!cycle[startField] || !cycle[finishField]) throw failure(`${activeField} 要求同时提供阶段开始与结束时间。`);
+    if (cycle[activeField] > Date.parse(cycle[finishField]) - Date.parse(cycle[startField])) throw failure(`${activeField} 不能大于对应阶段墙钟时间。`, 409);
+  }
+  if (cycle.review_scope === "incremental" && !cycle.base_attestation_id) throw failure("incremental Review Cycle 必须引用 base_attestation_id。");
 }
 
 function normalizeDiagnosticObservation(value, fallbackAt) {
@@ -375,7 +554,7 @@ function verificationStatusOf(task) {
 
 function reviewStatusOf(task) {
   if (!reviewRequired(task) && task.reviewPolicy !== "recommended") return "not_required";
-  const review = (task.reviewAttestations || []).at(-1);
+  const review = (task.reviewAttestations || []).filter((item) => item.effective_review !== false).at(-1);
   if (!review) return "pending";
   if (task.currentSubject && !sameSubject(review.subject_ref, task.currentSubject)) return "stale";
   if (review.verdict === "rejected") return "rejected";
@@ -392,6 +571,8 @@ function hasPortableEvidence(claim) { return [claim.evidence_ref, ...(claim.arti
 function latestBy(items, field) { const result = new Map(); for (const item of items) if (item?.[field]) result.set(item[field], item); return result; }
 function text(value, limit) { return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, limit) : ""; }
 function nonNegativeInteger(value) { return Number.isInteger(value) && value >= 0 ? value : 0; }
+function nonNegativeIntegerOrNull(value) { return Number.isInteger(value) && value >= 0 ? value : null; }
+function positiveInteger(value) { return Number.isInteger(value) && value > 0 ? value : 0; }
 function strings(value, count, length) { return Array.isArray(value) ? value.filter((item) => typeof item === "string").map((item) => text(item, length)).filter(Boolean).slice(0, count) : []; }
 function enumeration(value, allowed, fallback) { return allowed.has(value) ? value : fallback; }
 function enums(value, allowed) { return Array.isArray(value) ? [...new Set(value.filter((item) => allowed.has(item)))] : []; }
