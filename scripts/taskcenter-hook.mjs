@@ -48,7 +48,9 @@ try {
     await registerSession();
     console.log(`TaskCenter Session 已登记: ${sessionId}`);
   } else if (action === "stop") {
-    process.stdout.write(JSON.stringify(await completionStopDecision()));
+    // Completion readiness remains observable through TaskCenter, but ending a
+    // Codex turn must never interrupt the user's active workflow.
+    process.stdout.write(JSON.stringify({ continue: true }));
   } else if (action === "user-prompt-submit") {
     if (scheduledReadonly) process.exit(0);
     await provideTaskPreparationContext();
@@ -111,10 +113,7 @@ try {
   }
 } catch (error) {
   if (action === "stop") {
-    process.stdout.write(JSON.stringify({
-      decision: "block",
-      reason: `TaskCenter 完成门禁检查失败：${error.message}。恢复控制服务并查询 completionReadiness 后再结束本轮。`,
-    }));
+    process.stdout.write(JSON.stringify({ continue: true }));
     process.exit(0);
   }
   console.error(`TaskCenter Hook: ${error.message}`);
@@ -992,56 +991,6 @@ async function provideTaskPreparationContext() {
       additionalContext,
     },
   }));
-}
-
-async function completionStopDecision() {
-  // Codex sets this after a Stop hook has already blocked once. Blocking again
-  // would create an automatic continuation loop with no new user input.
-  if (event.stop_hook_active === true) return { continue: true };
-  if (!claimsFormalCompletion(event.last_assistant_message)) return { continue: true };
-  const payload = await request("GET", "/tasks");
-  const owned = (payload.tasks || [])
-    .filter((task) => task.sessionId === sessionId && !task.archivedAt && !task.supersededAt)
-    .sort((left, right) => Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || ""));
-  const task = owned.find((item) => ["in_progress", "blocked", "planned"].includes(item.status))
-    || owned.find((item) => item.status === "done_claimed");
-  if (!task || task.contractVersion !== "v2") return { continue: true };
-  if (task.completionReadiness?.completionClaim?.allowed === true) return { continue: true };
-  const reasons = [...new Set(task.completionReadiness?.reasons || [])];
-  const missing = [...new Set([
-    ...(task.completionReadiness?.missingRequirements || []),
-    ...(task.completionReadiness?.failedRequirements || []),
-    ...(task.completionReadiness?.staleEvidence || []),
-  ])];
-  return {
-    decision: "block",
-    reason: [
-      `TaskCenter 完成门禁：任务 ${task.id} 尚未 ready，不得向用户声明正式完成。`,
-      task.status === "done_claimed"
-        ? "请查询 taskcenter_task_completion_readiness，补齐缺失或过期证据后再次调用 taskcenter_task_close。"
-        : "请先调用 taskcenter_task_close 原子提交验收条件和验证证据，再查询 taskcenter_task_completion_readiness。",
-      reasons.length ? `阻断原因：${reasons.join(", ")}。` : "",
-      missing.length ? `缺失或过期：${missing.join(", ")}。` : "",
-      "如果工作尚未真正完成，只能明确报告已交付部分和剩余缺口。",
-    ].filter(Boolean).join("\n"),
-  };
-}
-
-function claimsFormalCompletion(message) {
-  const value = String(message || "")
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/^\s*>.*$/gm, " ")
-    .replace(/`[^`\n]*`/g, " ")
-    .replace(/[“「『][^”」』\n]*[”」』]/g, " ")
-    .replace(/"[^"\n]*"/g, " ")
-    .trim();
-  if (!value) return false;
-  const completion = /(?:已经|已)(?:经)?(?:完成|修复|实现|处理|交付|部署)|任务完成(?:了)?|可以交付|\b(?:completed|delivered|implemented|fixed)\b/i;
-  const negation = /尚未|未完成|没有完成|并未|不是|不算|不可|不能|不得|不要|不应|无法|待完成|仍需|还需/;
-  const historicalContext = /上一(?:版|轮)|此前|之前|曾经|历史|旧(?:版|版本)|原(?:版|版本)|已完成的(?:任务|事项|工作)/;
-  return value
-    .split(/[。！？!?；;，,\n]+/)
-    .some((segment) => completion.test(segment) && !negation.test(segment) && !historicalContext.test(segment));
 }
 
 async function resolveCurrentDelegation() {

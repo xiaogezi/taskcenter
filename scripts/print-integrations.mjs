@@ -44,18 +44,6 @@ export function codexHooks(root = defaultRoot) {
           ],
         },
       ],
-      Stop: [
-        {
-          hooks: [
-            {
-              type: "command",
-              command: `node ${script} stop --agent codex`,
-              timeout: 10,
-              statusMessage: "Checking TaskCenter completion readiness",
-            },
-          ],
-        },
-      ],
       PreToolUse: [
         {
           matcher: "^(Bash|apply_patch|exec_command|Edit|Write)$",

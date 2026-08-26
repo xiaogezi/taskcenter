@@ -26,10 +26,7 @@ test("integration config generators use the selected absolute root", () => {
     codexHooks(root).hooks.UserPromptSubmit[0].hooks[0].command,
     /taskcenter-hook\.mjs.*user-prompt-submit.*--agent codex/,
   );
-  assert.match(
-    codexHooks(root).hooks.Stop[0].hooks[0].command,
-    /taskcenter-hook\.mjs.*stop.*--agent codex/,
-  );
+  assert.equal(codexHooks(root).hooks.Stop, undefined);
   assert.match(
     claudeSettings(root).hooks.PreToolUse[0].hooks[0].command,
     /taskcenter-hook\.mjs.*--agent claude/,
