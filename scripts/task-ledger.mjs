@@ -152,6 +152,10 @@ export function canonicalSessionId(sessionId) {
   return loadSessionMerges()[value] || value;
 }
 
+export function isProjectContextClientSessionId(sessionId) {
+  return /^codex:[0-9a-f]{32}$/i.test(String(sessionId || ""));
+}
+
 export function loadSessionRegistry() {
   let registry = {};
   const registryIdentity = fileIdentity(sessionRegistryPath);
@@ -363,6 +367,12 @@ export function recordTaskEvent(input, options = {}) {
   const event = normalizeEvent(input, current?.currentSubject || null);
   const sessionRegistry = loadSessionRegistry();
   const isRegistered = Boolean(event.session_id && sessionRegistry[event.session_id]);
+
+  if (options.requireRegistered
+    && ["session.register", "task.create"].includes(event.type)
+    && isProjectContextClientSessionId(event.session_id)) {
+    throw new TaskLedgerError(409, "检测到 ProjectContext client_session_id；正式 TaskCenter 任务必须使用真实 Codex Session UUID。");
+  }
 
   // 已注册的 session 始终有效，无需在 Codex dashboard 中检查
   if (event.type === "task.create" && options.availableSessionIds && !isRegistered) {

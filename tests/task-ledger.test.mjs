@@ -2229,6 +2229,58 @@ test("任务创建闸门：未登记 Session 被拒绝，登记后返回执行�
   });
 });
 
+test("正式任务通道拒绝 ProjectContext client_session_id，但 Context 影子任务仍可使用", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  const clientSessionId = "codex:7a19678690d0ce7d4affa2afb4ac88c9";
+
+  const rejectedRegistration = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "session.register",
+      session_id: clientSessionId,
+      workspace: "/work",
+      agent: "codex",
+      provider: "openai",
+      model: "gpt-test",
+    }),
+  });
+  assert.equal(rejectedRegistration.status, 409);
+  assert.match((await rejectedRegistration.json()).error, /client_session_id.*真实 Codex Session UUID/);
+
+  const contextShadow = await fetch(`${base}/context-tasks/ensure`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      context_task_id: "context-client-session",
+      session_id: clientSessionId,
+      workspace: "/work",
+      semantic_label: "Context 影子任务",
+      agent: "codex",
+    }),
+  });
+  assert.equal(contextShadow.status, 201);
+  assert.equal((await contextShadow.json()).task.sessionId, clientSessionId);
+
+  const rejectedFormalTask = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      session_id: clientSessionId,
+      task_id: "formal-task-with-context-client-id",
+      title: "错误身份任务",
+      goal: "不应创建",
+      acceptance_criteria: ["a"],
+      plan: ["p"],
+    }),
+  });
+  assert.equal(rejectedFormalTask.status, 409);
+  assert.match((await rejectedFormalTask.json()).error, /client_session_id.*真实 Codex Session UUID/);
+});
+
 test("人工操作端点：演示任务可移除，真实任务取消", async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer();

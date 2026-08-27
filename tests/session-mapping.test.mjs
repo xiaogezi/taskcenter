@@ -173,6 +173,20 @@ test("项目任务缺失真实 Session 时不伪造关联", () => {
   assert.equal(display?.detail, "项目：Atlas");
 });
 
+test("已登记但缺少 Codex thread 元数据时不误报未关联", () => {
+  const display = resolveTaskSessionDisplay(
+    { sessionId: "codex:7a19678690d0ce7d4affa2afb4ac88c9", workspace: "/Users/example/projects/OtherProject" },
+    undefined,
+    { status: "registered" },
+  );
+  assert.deepEqual(display, {
+    title: "已登记执行会话",
+    detail: "codex:7a…",
+    sessionId: "codex:7a19678690d0ce7d4affa2afb4ac88c9",
+    hasSession: false,
+  });
+});
+
 test("无 workspace 且缺失真实 Session 返回 null", () => {
   assert.equal(resolveTaskSessionDisplay({ sessionId: "session-missing" }, undefined), null);
 });

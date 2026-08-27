@@ -9,7 +9,7 @@ export function projectLabelFromWorkspace(workspace) {
   return match ? PROJECT_LABELS.get(match[1].toLowerCase()) ?? null : null;
 }
 
-export function resolveTaskSessionDisplay(task, thread) {
+export function resolveTaskSessionDisplay(task, thread, sessionStatus) {
   const projectLabel = projectLabelFromWorkspace(task?.workspace);
   if (thread?.title) {
     return {
@@ -17,6 +17,14 @@ export function resolveTaskSessionDisplay(task, thread) {
       detail: projectLabel ? `项目：${projectLabel}` : (task?.sessionId ? `${task.sessionId.slice(0, 8)}…` : ""),
       sessionId: task?.sessionId ?? "",
       hasSession: true,
+    };
+  }
+  if (sessionStatus?.status === "registered") {
+    return {
+      title: "已登记执行会话",
+      detail: projectLabel ? `项目：${projectLabel}` : (task?.sessionId ? `${task.sessionId.slice(0, 8)}…` : ""),
+      sessionId: task?.sessionId ?? "",
+      hasSession: false,
     };
   }
   if (projectLabel) {

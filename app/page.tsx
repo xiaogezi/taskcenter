@@ -915,11 +915,11 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
   const timeState = taskTimeState(task);
   const closureReasons = taskClosureReasonLabels(task);
 
-  const sessionInfo = useMemo(
-    () => resolveTaskSessionDisplay(task, threadsForTask.find((thread) => thread.id === task.sessionId || thread.sessionIds?.includes(task.sessionId))),
-    [task, threadsForTask],
-  );
   const sessionStatus = sessionStatuses[task.sessionId];
+  const sessionInfo = useMemo(
+    () => resolveTaskSessionDisplay(task, threadsForTask.find((thread) => thread.id === task.sessionId || thread.sessionIds?.includes(task.sessionId)), sessionStatus),
+    [task, threadsForTask, sessionStatus],
+  );
 
   const handleAction = async (action: "start" | "block" | "done" | "cancel" | "remove" | "verify" | "reject" | "archive" | "unarchive" | "schedule") => {
     if (actionState === "loading") return;
