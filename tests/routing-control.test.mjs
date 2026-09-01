@@ -186,3 +186,14 @@ test("v1 容量失败状态迁移为 Open，升级后不会继续撞同一模型
   const health = routingHealth("2026-08-18T08:00:02.000Z");
   assert.equal(health.find((item) => item.model === luna).state, "open");
 });
+
+test("历史 Spark 健康状态不再作为活跃候选返回", async () => {
+  await writeFile(statePath, `${JSON.stringify({
+    version: 3,
+    models: {
+      [spark]: { model: spark, state: "closed", consecutiveFailures: 0, openedAt: "", retryAfterAt: "", halfOpenLease: "", activeExecutors: 0, concurrencyLimit: 2, failureThreshold: 3, cooldownMs: 300_000, lastErrorCode: "", lastRequestId: "", lastSuccessAt: "2026-08-18T08:00:00.000Z", updatedAt: "2026-08-18T08:00:00.000Z" },
+    },
+    routes: [],
+  })}\n`, "utf8");
+  assert.equal(routingHealth("2026-08-18T08:00:01.000Z").some((item) => item.model === spark), false);
+});

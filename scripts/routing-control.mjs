@@ -306,7 +306,7 @@ function activeRoutes(state, model, now) {
 
 function healthSnapshot(state, now) {
   refreshActiveExecutors(state, now);
-  return Object.values(state.models).map((health) => ({
+  return Object.values(state.models).filter((health) => health.model !== retiredSparkModel).map((health) => ({
     model: health.model,
     state: health.state,
     consecutive_failures: health.consecutiveFailures,
