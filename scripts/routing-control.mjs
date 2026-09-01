@@ -8,9 +8,10 @@ export const routingControlPath = resolve(process.env.TASKCENTER_ROUTING_CONTROL
 const defaultFailureThreshold = integerEnv("TASKCENTER_ROUTING_FAILURE_THRESHOLD", 3, 1, 20);
 const defaultCooldownMs = integerEnv("TASKCENTER_ROUTING_COOLDOWN_MS", 300_000, 1_000, 86_400_000);
 const defaultLeaseTtlMs = integerEnv("TASKCENTER_ROUTING_LEASE_TTL_MS", 3_600_000, 60_000, 28_800_000);
+const lunaModel = "gpt-5.6-luna";
+const retiredSparkModel = "gpt-5.3-codex-spark";
 const defaultConcurrency = Object.freeze({
-  "gpt-5.3-codex-spark": 2,
-  "gpt-5.6-luna": 2,
+  [lunaModel]: 2,
   "gpt-5.6-terra": 1,
 });
 const terminalOutcomes = new Set(["succeeded", "failed", "cancelled", "unavailable", "overloaded"]);
@@ -27,12 +28,15 @@ export class RoutingControlError extends Error {
 }
 
 export function routingSelect(input, now = new Date().toISOString()) {
-  const preferredModel = clean(input.preferred_model, 120);
+  const requestedPreferredModel = clean(input.preferred_model, 120);
   const taskId = clean(input.task_id, 200);
   const taskClass = clean(input.task_class, 80) || "general";
+  const preferredModel = ocrTaskClasses.has(taskClass)
+    ? lunaModel
+    : normalizePreferredModel(requestedPreferredModel);
   const channel = clean(input.channel, 40) || "cli";
   const eventId = clean(input.event_id, 200) || `routing-select-${randomUUID()}`;
-  if (!taskId || !preferredModel) throw new RoutingControlError(400, "routing_select 缺少 task_id 或 preferred_model。");
+  if (!taskId || !requestedPreferredModel) throw new RoutingControlError(400, "routing_select 缺少 task_id 或 preferred_model。");
   if (!["direct", "native", "cli", "other"].includes(channel)) throw new RoutingControlError(400, "routing_select channel 无效。");
   const reviewArtifacts = normalizeReviewArtifacts(input.review_artifacts, ocrTaskClasses.has(taskClass));
 
@@ -52,7 +56,11 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const preferred = ensureHealth(state, preferredModel, now);
   advanceCircuit(preferred, now);
   let selectedModel = preferredModel;
-  let reason = "preferred_model_available";
+  let reason = requestedPreferredModel === preferredModel
+    ? "preferred_model_available"
+    : ocrTaskClasses.has(taskClass)
+      ? "ocr_preference_normalized_to_luna"
+      : "spark_preference_normalized_to_luna";
   let fallbackFrom = "";
   let fallbackReason = "";
   let retryAfterAt = "";
@@ -62,13 +70,11 @@ export function routingSelect(input, now = new Date().toISOString()) {
     fallbackFrom = preferredModel;
     fallbackReason = fallbackReasonFor(preferred);
     retryAfterAt = preferred.retryAfterAt;
-    const fallback = ocrTaskClasses.has(taskClass)
-      ? chooseOcrFallback(state, preferredModel, now)
-      : chooseFallback(state, taskClass, preferredModel, now);
+    const fallback = ocrTaskClasses.has(taskClass) ? null : chooseFallback(state, taskClass, preferredModel, now);
     if (!fallback) {
       const route = buildUnavailableRoute({
         eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now,
-        reason: ocrTaskClasses.has(taskClass) ? "ocr_luna_fallback_unavailable" : "no_model_capacity_available",
+        reason: ocrTaskClasses.has(taskClass) ? "ocr_luna_unavailable" : "no_model_capacity_available",
         fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
       });
       state.routes.push(route);
@@ -194,13 +200,6 @@ function chooseFallback(state, taskClass, preferredModel, now) {
       advanceCircuit(health, now);
       return canLease(state, health, now);
     }) || null;
-}
-
-function chooseOcrFallback(state, preferredModel, now) {
-  if (preferredModel === "gpt-5.6-luna") return null;
-  const luna = ensureHealth(state, "gpt-5.6-luna", now);
-  advanceCircuit(luna, now);
-  return canLease(state, luna, now) ? luna : null;
 }
 
 function canLease(state, health, now) {
@@ -484,6 +483,10 @@ function clean(value, limit) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, limit) : "";
 }
 
+function normalizePreferredModel(model) {
+  return model === retiredSparkModel ? lunaModel : model;
+}
+
 function normalizeReviewArtifacts(value, required) {
   if (!value && !required) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -524,6 +527,5 @@ function signatureOf(value) {
 }
 
 function modelSlug(model) {
-  if (model === "gpt-5.3-codex-spark") return "spark";
   return model.replace(/[^A-Za-z0-9]+/g, "_").toLowerCase();
 }

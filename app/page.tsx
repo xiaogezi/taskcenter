@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
-import { detectSparkRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
+import { detectLunaRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
 import { matchesTaskLifecycleFilter, taskClosureReasonLabels, taskLifecycleFilterCounts, taskLifecycleFilters } from "./task-lifecycle-filter.mjs";
 import { taskTimeState } from "./task-time-state.mjs";
 
@@ -906,7 +906,7 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
     { label: "估时调整", items: (task.estimateHistory ?? []).slice(-3).reverse().map((item) => `${item.previousDueAt ? normalizeDate(item.previousDueAt) : "未设置"} → ${item.dueAt ? normalizeDate(item.dueAt) : "不变"} · ${item.estimatedEffortMs ? formatElapsed(item.estimatedEffortMs) : "工时不变"} · ${item.reason || "未说明"}`) },
     { label: "CLI 执行", items: (task.cliRuns ?? []).slice().reverse().map((run) => `${run.executorModel || "unknown"} · ${run.status} · Session ${run.delegateSessionId ? run.delegateSessionId.slice(0, 12) : "待领取"} · scope ${(run.scope ?? []).join(", ") || "未声明"}${run.completedAt ? ` · ${normalizeDate(run.completedAt)}` : ""}`) },
   ];
-  const routingAdvisory = detectSparkRoutingAdvisory(task);
+  const routingAdvisory = detectLunaRoutingAdvisory(task);
   const nonEmptyDetails = detailItems.filter((item) => item.items.length > 0);
   const hasEventDetails = hasTaskEventDetails(task, nonEmptyDetails.length > 0 || Boolean(routingAdvisory?.triggered));
   const stepText = task.currentStep ?? task.nextAction;

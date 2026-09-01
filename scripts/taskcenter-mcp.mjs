@@ -267,7 +267,7 @@ server.registerTool("taskcenter_routing_record", {
 
 server.registerTool("taskcenter_routing_select", {
   title: "选择 TaskCenter 执行模型",
-  description: "原子检查模型熔断、并发和 Half-Open 探测租约，返回强建议路由；TaskCenter 不会启动执行器。OCR 首选 Spark 已知不可用时默认推荐独立 Luna reviewer，并保留同一 Subject、Bundle 和规则证据。",
+  description: "原子检查模型熔断、并发和 Half-Open 探测租约，返回强建议路由；TaskCenter 不会启动执行器。Luna 是普通执行和 OCR 的首选，旧 Spark 首选请求会归一化为 Luna；OCR 保留同一 Subject、Bundle 和规则证据，并在 Luna 不可用时 fail closed。",
   inputSchema: z.object({
     task_id: z.string().min(1).max(200),
     preferred_model: z.string().min(1).max(120),

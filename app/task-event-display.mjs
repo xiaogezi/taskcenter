@@ -56,32 +56,32 @@ export function hasTaskEventDetails(task, hasStructuredDetails = false) {
   return Boolean(hasStructuredDetails || task?.routingRecordedAt || task?.contractVersion === "v2");
 }
 
-export function detectSparkRoutingAdvisory(task) {
+export function detectLunaRoutingAdvisory(task) {
   const routingHistory = Array.isArray(task?.routingHistory) ? task.routingHistory : [];
   const changedFiles = Array.isArray(task?.changedFiles) ? task.changedFiles : [];
-  const hasSparkLifecycle = routingHistory.some((entry) => {
+  const hasLunaLifecycle = routingHistory.some((entry) => {
     const selected = String(entry?.selectedExecutorModel || entry?.preferredExecutorModel || "").toLowerCase();
     const outcome = String(entry?.outcome || "");
-    return selected === "gpt-5.3-codex-spark" && (outcome === "started" || outcome === "succeeded");
+    return selected === "gpt-5.6-luna" && (outcome === "started" || outcome === "succeeded");
   });
-  if (!hasSparkLifecycle) {
+  if (!hasLunaLifecycle) {
     const invalidReason = routingHistory.some((entry) => INVALID_DEVIATION_REASONS.some((phrase) => String(entry?.reason || "").toLowerCase().includes(phrase.toLowerCase())));
     const codeLikeChanges = changedFiles.filter((path) => isCodeLikeFile(String(path || ""))).length;
     const hasSubtaskHint = changedFiles.some((path) => isSubTaskFile(String(path || "")));
     const hasEnoughChanges = codeLikeChanges >= 3 || hasSubtaskHint;
     if ((invalidReason || hasEnoughChanges) && routingHistory.length > 0) {
-      const sparkExpectation = routingHistory.some((entry) => {
+      const lunaExpectation = routingHistory.some((entry) => {
         const selected = String(entry?.selectedExecutorModel || "").toLowerCase();
         const preferred = String(entry?.preferredExecutorModel || "").toLowerCase();
-        return selected === "gpt-5.3-codex-spark" || preferred === "gpt-5.3-codex-spark";
+        return selected === "gpt-5.6-luna" || preferred === "gpt-5.6-luna";
       });
       return {
         triggered: true,
         title: "模型路由偏离提醒",
-        message: sparkExpectation
-          ? "当前任务未形成 5.3 的成功派发链路，请确认本次是否存在偏离。"
-          : "当前任务为实质性代码改动，但未形成 gpt-5.3-codex-spark 的 started/succeeded 路由记录。",
-        suggestion: "请确认现有偏离理由是否具体且仍成立；若存在可安全隔离的搜索、实现、测试或审查阶段，优先派发 Spark。"
+        message: lunaExpectation
+          ? "当前任务未形成 Luna 的成功派发链路，请确认本次是否存在偏离。"
+          : "当前任务为实质性代码改动，但未形成 gpt-5.6-luna 的 started/succeeded 路由记录。",
+        suggestion: "请确认现有偏离理由是否具体且仍成立；若存在可安全隔离的搜索、实现、测试或审查阶段，优先派发 Luna。"
       };
     }
   }

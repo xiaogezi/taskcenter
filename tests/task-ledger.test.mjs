@@ -1177,7 +1177,7 @@ test("CLI delegation 附着单个正式主任务并独立记录 Run", async (con
 
 test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计", async (context) => {
   await resetLedger();
-  const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_3_CODEX_SPARK: "1" });
+  const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_LUNA: "1" });
   context.after(() => child.kill("SIGTERM"));
   await registerHttpSession(base, "session-routing-control", { model: "gpt-5.6-sol" });
   const created = await fetch(`${base}/task-events`, {
@@ -1194,7 +1194,9 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   });
   const selected = await selectedResponse.json();
   assert.equal(selectedResponse.status, 201, selected.error);
-  assert.equal(selected.route.selected_model, "gpt-5.3-codex-spark");
+  assert.equal(selected.route.preferred_model, "gpt-5.6-luna");
+  assert.equal(selected.route.selected_model, "gpt-5.6-luna");
+  assert.equal(selected.route.reason, "spark_preference_normalized_to_luna");
   assert.equal(selected.route.available, true);
 
   const resultResponse = await fetch(`${base}/routing/result`, {
@@ -1205,7 +1207,7 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   const result = await resultResponse.json();
   assert.equal(resultResponse.status, 200, result.error);
   assert.equal(result.route.status, "succeeded");
-  assert.equal(result.health.find((item) => item.model === "gpt-5.3-codex-spark").active_executors, 0);
+  assert.equal(result.health.find((item) => item.model === "gpt-5.6-luna").active_executors, 0);
 
   const task = (await (await fetch(`${base}/tasks`)).json()).tasks.find((item) => item.id === "task-routing-control");
   assert.equal(task.routing.routeId, selected.route.route_id);
@@ -1218,7 +1220,7 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
 
 test("路由状态已持久化但审计首次失败时，同 event_id 可补偿重放且不重复", async (context) => {
   await resetLedger();
-  const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_3_CODEX_SPARK: "1" });
+  const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_LUNA: "1" });
   context.after(async () => {
     await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o600).catch(() => {});
     child.kill("SIGTERM");
@@ -1812,8 +1814,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
       event_id: "mcp-routing-native",
       routing_action: "delegate_native",
       orchestrator_model: "gpt-5.6-sol",
-      preferred_executor_model: "gpt-5.3-codex-spark",
-      selected_executor_model: "gpt-5.3-codex-spark",
+      preferred_executor_model: "gpt-5.6-luna",
+      selected_executor_model: "gpt-5.6-luna",
       dispatch_channel: "native",
       routing_reason: "边界清晰，优先原生派发。",
       response_mode: "full",
@@ -1822,14 +1824,15 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const routingPayload = JSON.parse(textOf(routing));
   assert.equal(routingPayload.accepted, true);
   assert.equal(routingPayload.task.status, "planned");
-  assert.equal(routingPayload.task.routing.selectedExecutorModel, "gpt-5.3-codex-spark");
+  assert.equal(routingPayload.task.routing.selectedExecutorModel, "gpt-5.6-luna");
 
   const selectedRoute = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_routing_select",
     arguments: { task_id: "task-mcp", preferred_model: "gpt-5.3-codex-spark", task_class: "test", channel: "cli", route_id: "route-mcp-compat" },
   })));
   assert.equal(selectedRoute.route.route_id, "route-mcp-compat", "旧客户端不传 response_mode 时仍需取得路由租约");
-  assert.ok(selectedRoute.route.selected_model);
+  assert.equal(selectedRoute.route.preferred_model, "gpt-5.6-luna");
+  assert.equal(selectedRoute.route.selected_model, "gpt-5.6-luna");
   await client.callTool({ name: "taskcenter_routing_result", arguments: { route_id: selectedRoute.route.route_id, outcome: "succeeded" } });
 
   const query = await client.callTool({ name: "taskcenter_task_query", arguments: { session_id: "sess-mcp" } });

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { detectSparkRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "../app/task-event-display.mjs";
+import { detectLunaRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "../app/task-event-display.mjs";
 
 test("路由事件时间线显示模型、通道、结果和原因", () => {
   const event = {
     type: "routing.decision",
     orchestrator_model: "gpt-5.6-sol",
-    selected_executor_model: "gpt-5.3-codex-spark",
+    selected_executor_model: "gpt-5.6-luna",
     dispatch_channel: "native",
     routing_outcome: "succeeded",
     routing_reason: "任务边界清晰。",
@@ -15,7 +15,7 @@ test("路由事件时间线显示模型、通道、结果和原因", () => {
   assert.equal(taskEventStatus(event), "仅审计");
   assert.equal(
     taskEventSummary(event),
-    "gpt-5.6-sol → gpt-5.3-codex-spark · native · succeeded · 任务边界清晰。",
+    "gpt-5.6-sol → gpt-5.6-luna · native · succeeded · 任务边界清晰。",
   );
 });
 
@@ -48,24 +48,24 @@ test("仅有路由记录的任务仍可打开事件详情", () => {
   assert.equal(hasTaskEventDetails({}, false), false);
 });
 
-test("代码文件≥3 且未启动 5.3 时给出路由偏离建议", () => {
+test("代码文件≥3 且未启动 Luna 时给出路由偏离建议", () => {
   assert.deepEqual(
-    detectSparkRoutingAdvisory({
+    detectLunaRoutingAdvisory({
       routingHistory: [
         { selectedExecutorModel: "gpt-5.6-sol", preferredExecutorModel: "gpt-5.6-sol", dispatch_channel: "direct", outcome: "selected", reason: "任务边界清晰" },
         { selectedExecutorModel: "gpt-5.6-sol", preferredExecutorModel: "gpt-5.6-sol", dispatch_channel: "direct", outcome: "selected", reason: "继续采用 Sol 直接执行" },
       ],
       changedFiles: ["src/a.ts", "src/b.ts", "src/c.ts", "README.md"],
     }),
-    { triggered: true, title: "模型路由偏离提醒", message: "当前任务为实质性代码改动，但未形成 gpt-5.3-codex-spark 的 started/succeeded 路由记录。", suggestion: "请确认现有偏离理由是否具体且仍成立；若存在可安全隔离的搜索、实现、测试或审查阶段，优先派发 Spark。" },
+    { triggered: true, title: "模型路由偏离提醒", message: "当前任务为实质性代码改动，但未形成 gpt-5.6-luna 的 started/succeeded 路由记录。", suggestion: "请确认现有偏离理由是否具体且仍成立；若存在可安全隔离的搜索、实现、测试或审查阶段，优先派发 Luna。" },
   );
 });
 
-test("5.3 派发已启动或成功时不发出建议", () => {
+test("Luna 派发已启动或成功时不发出建议", () => {
   assert.equal(
-    detectSparkRoutingAdvisory({
+    detectLunaRoutingAdvisory({
       routingHistory: [
-        { selectedExecutorModel: "gpt-5.3-codex-spark", preferredExecutorModel: "gpt-5.3-codex-spark", dispatch_channel: "native", outcome: "succeeded", reason: "独立子代理执行" },
+        { selectedExecutorModel: "gpt-5.6-luna", preferredExecutorModel: "gpt-5.6-luna", dispatch_channel: "native", outcome: "succeeded", reason: "独立子代理执行" },
       ],
       changedFiles: ["src/a.ts", "src/b.ts", "src/c.ts"],
     }),
@@ -75,7 +75,7 @@ test("5.3 派发已启动或成功时不发出建议", () => {
 
 test("无效偏离原因即使改动较少也给出建议", () => {
   assert.equal(
-    detectSparkRoutingAdvisory({
+    detectLunaRoutingAdvisory({
       routingHistory: [{ selectedExecutorModel: "gpt-5.6-sol", outcome: "selected", reason: "用户未要求子代理" }],
       changedFiles: ["README.md"],
     })?.triggered,
@@ -85,7 +85,7 @@ test("无效偏离原因即使改动较少也给出建议", () => {
 
 test("非实质改动且无无效偏离原因不建议", () => {
   assert.equal(
-    detectSparkRoutingAdvisory({
+    detectLunaRoutingAdvisory({
       routingHistory: [{ selectedExecutorModel: "gpt-5.6-sol", outcome: "selected", reason: "仅执行本地修订" }],
       changedFiles: ["README.md", "assets/logo.svg", "docs/index.md"],
     }),
