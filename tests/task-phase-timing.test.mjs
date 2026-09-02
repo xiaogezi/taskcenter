@@ -216,6 +216,14 @@ test("as_of 排除未来事件并把跨截止时间的阶段与 Review Cycle 截
   assert.equal(phaseReport.phases.implementing.phase_active_ms, 600_000);
   assert.equal(phaseReport.coverage.phase_event_count, 1);
   assert.equal(buildTaskPhaseReport({ task_id: "task-1", phaseEvents, as_of: "2026-09-01T23:00:00.000Z" }).status, "unknown");
+  const futureInvalidTransition = [
+    phaseEvents[0],
+    event("future-wrong-phase", "verifying", "finished", "2026-09-02T01:00:00.000Z"),
+  ];
+  const historical = buildTaskPhaseReport({ task_id: "task-1", phaseEvents: futureInvalidTransition, as_of: "2026-09-02T00:10:00.000Z" });
+  assert.equal(historical.status, "partial");
+  assert.equal(historical.phases.implementing.phase_wall_ms, 600_000);
+  assert.throws(() => buildTaskPhaseReport({ task_id: "task-1", phaseEvents: [{ ...phaseEvents[0], occurred_at: "invalid" }] }), /occurred_at/);
 
   const cycle = {
     task_id: "task-1",

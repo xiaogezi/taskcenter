@@ -137,8 +137,14 @@ export function buildTaskPhaseReport({ task_id, taskId, phaseEvents, reviewCycle
   const reportAsOf = new Date(now).toISOString();
   if (!Array.isArray(phaseEvents) && !Array.isArray(reviewCycles)) return emptyReport(reportAsOf);
 
-  const validatedEvents = validatePhaseEvents(phaseEvents || [], { taskId: id || undefined, reviewCycles });
-  const events = validatedEvents.filter((event) => Date.parse(event.occurred_at) <= now);
+  const sourceEvents = Array.isArray(phaseEvents) ? phaseEvents : [];
+  for (const event of sourceEvents) {
+    if (!Number.isFinite(Date.parse(event?.occurred_at || ""))) fail("occurred_at 必须是有效 ISO 时间。");
+  }
+  const events = validatePhaseEvents(
+    sourceEvents.filter((event) => Date.parse(event.occurred_at) <= now),
+    { taskId: id || undefined, reviewCycles },
+  );
   const cycles = Array.isArray(reviewCycles) ? reviewCycles : [];
   if (!events.length && !cycles.length) return emptyReport(reportAsOf);
 
