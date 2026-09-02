@@ -204,3 +204,32 @@ test("task wrapper 保存事件并输出 phaseTiming", () => {
   assert.equal(PHASES.length, 6);
   assert.throws(() => buildTaskPhaseReport({ task_id: "task-1", as_of: "not-a-time" }), /as_of/);
 });
+
+test("as_of 排除未来事件并把跨截止时间的阶段与 Review Cycle 截断为 partial", () => {
+  const phaseEvents = [
+    event("as-of-start", "implementing", "started", "2026-09-02T00:00:00.000Z"),
+    event("as-of-finish", "implementing", "finished", "2026-09-02T01:00:00.000Z"),
+  ];
+  const phaseReport = buildTaskPhaseReport({ task_id: "task-1", phaseEvents, as_of: "2026-09-02T00:10:00.000Z" });
+  assert.equal(phaseReport.status, "partial");
+  assert.equal(phaseReport.phases.implementing.phase_wall_ms, 600_000);
+  assert.equal(phaseReport.phases.implementing.phase_active_ms, 600_000);
+  assert.equal(phaseReport.coverage.phase_event_count, 1);
+  assert.equal(buildTaskPhaseReport({ task_id: "task-1", phaseEvents, as_of: "2026-09-01T23:00:00.000Z" }).status, "unknown");
+
+  const cycle = {
+    task_id: "task-1",
+    cycle_id: "as-of-cycle",
+    phase: "completed",
+    outcome: "approved",
+    review_requested_at: "2026-09-02T00:00:00.000Z",
+    review_started_at: "2026-09-02T00:05:00.000Z",
+    review_finished_at: "2026-09-02T00:15:00.000Z",
+    review_active_ms: 120_000,
+  };
+  const cycleReport = buildTaskPhaseReport({ task_id: "task-1", reviewCycles: [cycle], as_of: "2026-09-02T00:10:00.000Z" });
+  assert.equal(cycleReport.status, "partial");
+  assert.equal(cycleReport.phases.reviewing.phase_wall_ms, 600_000);
+  assert.equal(cycleReport.phases.reviewing.phase_active_ms, null);
+  assert.equal(cycleReport.phases.reviewing.phase_wait_ms, 300_000);
+});

@@ -403,10 +403,13 @@ export function recordTaskEvent(input, options = {}) {
     throw new TaskLedgerError(409, "当前 Session 尚未登记，请先调用 taskcenter_session_register。");
   }
   const processed = loadProcessedEventIds();
-  const storedEvent = processed.has(event.event_id) || event.type === "task.close"
+  const projectedPhaseEvent = event.type === "phase.reported"
+    ? (current?.phaseEvents || []).find((item) => item.event_id === event.event_id)
+    : null;
+  const storedEvent = processed.has(event.event_id) || event.type === "task.close" || projectedPhaseEvent
     ? findStoredTaskEvent(event.event_id)
     : null;
-  if (processed.has(event.event_id) || storedEvent) {
+  if (processed.has(event.event_id) || storedEvent || projectedPhaseEvent) {
     const original = storedEvent;
     if (!original) {
       throw new TaskLedgerError(409, "event_id 已处理，但找不到原始事件，拒绝不安全重放。");

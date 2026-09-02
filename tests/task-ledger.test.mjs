@@ -196,6 +196,11 @@ test("阶段事件写入任务账本并保持幂等、状态机校验与旧账�
   assert.throws(() => recordTaskEvent({ ...start, occurred_at: "2026-09-02T00:01:00.000Z" }, { requireRegistered: true }), /幂等冲突|拒绝重放/);
   assert.throws(() => recordTaskEvent({ ...start, event_id: "phase-early-finish", transition: "finished", occurred_at: "2026-09-01T23:59:00.000Z" }, { requireRegistered: true }), /时间顺序/);
   recordTaskEvent({ ...start, event_id: "phase-finish", transition: "finished", occurred_at: "2026-09-02T00:10:00.000Z", reason: "规划结束" }, { requireRegistered: true });
+  const auditBeforeEvictedReplay = (await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8")).trim().split("\n").length;
+  await writeFile(envPaths.TASKCENTER_TASK_EVENT_IDS_PATH, JSON.stringify(Array.from({ length: 5_000 }, (_, index) => `evicted-${index}`)));
+  assert.equal(recordTaskEvent(start, { requireRegistered: true }).idempotent, true);
+  const auditAfterEvictedReplay = (await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8")).trim().split("\n").length;
+  assert.equal(auditAfterEvictedReplay, auditBeforeEvictedReplay, "阶段事件 ID 从近期缓存淘汰后仍不得重复追加");
   const report = taskPhaseReport("phase-task", "2026-09-02T00:20:00.000Z");
   assert.equal(report.status, "complete");
   assert.equal(report.phases.planning.phase_wall_ms, 600_000);

@@ -137,7 +137,8 @@ export function buildTaskPhaseReport({ task_id, taskId, phaseEvents, reviewCycle
   const reportAsOf = new Date(now).toISOString();
   if (!Array.isArray(phaseEvents) && !Array.isArray(reviewCycles)) return emptyReport(reportAsOf);
 
-  const events = validatePhaseEvents(phaseEvents || [], { taskId: id || undefined, reviewCycles });
+  const validatedEvents = validatePhaseEvents(phaseEvents || [], { taskId: id || undefined, reviewCycles });
+  const events = validatedEvents.filter((event) => Date.parse(event.occurred_at) <= now);
   const cycles = Array.isArray(reviewCycles) ? reviewCycles : [];
   if (!events.length && !cycles.length) return emptyReport(reportAsOf);
 
@@ -403,26 +404,42 @@ function buildReviewCycleIntervals(cycles, taskId, now, warnings) {
 
 function reviewCycleRow(cycle, now, warnings) {
   const parse = (field) => parseCycleTime(cycle, field, warnings);
-  const implementationReady = parse("implementation_ready_at");
-  const requested = parse("review_requested_at");
-  const reviewStarted = parse("review_started_at");
-  const reviewFinished = parse("review_finished_at");
-  const fixStarted = parse("fix_started_at");
-  const fixFinished = parse("fix_finished_at");
-  const verificationFinished = parse("verification_finished_at");
+  const rawImplementationReady = parse("implementation_ready_at");
+  const rawRequested = parse("review_requested_at");
+  const rawReviewStarted = parse("review_started_at");
+  const rawReviewFinished = parse("review_finished_at");
+  const rawFixStarted = parse("fix_started_at");
+  const rawFixFinished = parse("fix_finished_at");
+  const rawVerificationFinished = parse("verification_finished_at");
+  const observed = (value) => value !== null && value <= now ? value : null;
+  const implementationReady = observed(rawImplementationReady);
+  const requested = observed(rawRequested);
+  const reviewStarted = observed(rawReviewStarted);
+  const reviewFinished = observed(rawReviewFinished);
+  const fixStarted = observed(rawFixStarted);
+  const fixFinished = observed(rawFixFinished);
+  const verificationFinished = observed(rawVerificationFinished);
   const cyclePhase = cycle.phase || "";
   const cyclePhaseIndex = reviewPhaseOrder.indexOf(cyclePhase);
   const terminal = terminalReviewOutcomes.has(cycle.outcome || "") || cyclePhase === "completed";
+  const snapshotCycle = { ...cycle };
+  if (rawReviewFinished === null || rawReviewFinished > now) delete snapshotCycle.review_active_ms;
+  if (rawFixFinished === null || rawFixFinished > now) delete snapshotCycle.fix_active_ms;
+  if (rawVerificationFinished === null || rawVerificationFinished > now) delete snapshotCycle.verification_active_ms;
   const contributions = [];
   let partial = false;
 
   const reviewing = makeCycleContribution({
-    cycle,
+    cycle: snapshotCycle,
     phase: "reviewing",
     wallStart: requested ?? reviewStarted,
     executionStart: reviewStarted,
     finish: reviewFinished,
-    mayBeOpen: !terminal && ["pending_review", "reviewing"].includes(cyclePhase),
+    mayBeOpen: (requested !== null || reviewStarted !== null) && (
+      rawReviewFinished !== null
+        ? rawReviewFinished > now
+        : !terminal && ["pending_review", "reviewing"].includes(cyclePhase)
+    ),
     waitStart: requested,
     waitEnd: reviewStarted,
     activeField: "review_active_ms",
@@ -437,12 +454,14 @@ function reviewCycleRow(cycle, now, warnings) {
   }
 
   const reworking = makeCycleContribution({
-    cycle,
+    cycle: snapshotCycle,
     phase: "reworking",
     wallStart: fixStarted,
     executionStart: fixStarted,
     finish: fixFinished,
-    mayBeOpen: !terminal && cyclePhase === "fixing",
+    mayBeOpen: fixStarted !== null && (
+      rawFixFinished !== null ? rawFixFinished > now : !terminal && cyclePhase === "fixing"
+    ),
     activeField: "fix_active_ms",
     now,
   });
@@ -454,24 +473,29 @@ function reviewCycleRow(cycle, now, warnings) {
     partial = true;
   }
 
-  const verificationStarted = fixFinished ?? reviewFinished;
+  const hasFixStage = rawFixStarted !== null || rawFixFinished !== null;
+  const verificationStarted = hasFixStage ? fixFinished : reviewFinished;
   const verifying = makeCycleContribution({
-    cycle,
+    cycle: snapshotCycle,
     phase: "verifying",
     wallStart: verificationStarted,
     executionStart: verificationStarted,
     finish: verificationFinished,
-    mayBeOpen: !terminal && cyclePhase === "verifying",
+    mayBeOpen: verificationStarted !== null && (
+      rawVerificationFinished !== null
+        ? rawVerificationFinished > now
+        : !terminal && cyclePhase === "verifying"
+    ),
     activeField: "verification_active_ms",
     now,
   });
-  if (verifying && (verificationFinished !== null || cyclePhase === "verifying" || cycle.verification_active_ms !== undefined)) {
+  if (verifying && (verificationFinished !== null || verifying.partial || snapshotCycle.verification_active_ms !== undefined)) {
     contributions.push(verifying);
     partial ||= verifying.partial;
   }
 
   const wallEnd = verificationFinished ?? fixFinished ?? reviewFinished;
-  const activeValues = [cycle.review_active_ms, cycle.fix_active_ms, cycle.verification_active_ms].filter(Number.isFinite);
+  const activeValues = [snapshotCycle.review_active_ms, snapshotCycle.fix_active_ms, snapshotCycle.verification_active_ms].filter(Number.isFinite);
   return {
     contributions,
     partial,
