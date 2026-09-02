@@ -1,14 +1,34 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { dirname, join, resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const taskReuseDecisionsPath = resolve(
   process.env.TASKCENTER_TASK_REUSE_DECISIONS_PATH
     || resolve(projectRoot, "data", "task-reuse-decisions.jsonl"),
 );
+export const taskReuseDecisionIndexPath = `${taskReuseDecisionsPath}.event-index`;
 
 export const TASK_REUSE_ADVISOR_VERSION = "task-reuse-advisor-v1";
+const UNKNOWN_PROJECT_ID = "unknown";
+const decisionLockPath = `${taskReuseDecisionsPath}.lock`;
+const decisionLockOwnerPath = join(decisionLockPath, "owner.json");
+const decisionIndexStatePath = join(taskReuseDecisionIndexPath, "state.json");
+const decisionLockWaiter = new Int32Array(new SharedArrayBuffer(4));
+const decisionLockTimeoutMs = 5_000;
+const decisionLockStaleMs = 30_000;
 const candidateStatuses = new Set(["planned", "in_progress", "blocked", "done_claimed"]);
 const decisions = new Set(["reuse", "create_new", "uncertain"]);
 const ignoredTokens = new Set([
@@ -86,21 +106,32 @@ export function taskReuseCheck(input, options = {}) {
     match_reasons: publicCandidates[0]?.match_reasons || [],
     confidence: recommendation.confidence,
     advisory_only: true,
+    project_identity: options.projectIdentity || {
+      status: request.project_id === UNKNOWN_PROJECT_ID ? "unknown" : "caller_provided",
+      project_id: request.project_id,
+    },
   };
 }
 
 export function recordTaskReuseDecision(input, options = {}) {
   const record = normalizeDecision(input, validNow(options.now));
-  const existing = readTaskReuseDecisionRecords().find((item) => item.event_id === record.event_id);
-  if (existing) {
-    if (decisionSignature(existing) !== decisionSignature(record)) {
-      throw new TaskReuseAdvisorError(409, "event_id 已被不同复用决策使用，拒绝重放。");
+  const releaseLock = acquireDecisionLock();
+  try {
+    ensureDecisionEventIndex();
+    const existing = readIndexedDecision(record.event_id);
+    if (existing) {
+      if (decisionSignature(existing) !== decisionSignature(record)) {
+        throw new TaskReuseAdvisorError(409, "event_id 已被不同复用决策使用，拒绝重放。");
+      }
+      return { record: existing, idempotent: true };
     }
-    return { record: existing, idempotent: true };
+    appendDecisionRecord(record);
+    writeDecisionIndexEntry(record);
+    writeDecisionIndexState(sourceIdentity());
+    return { record, idempotent: false };
+  } finally {
+    releaseLock();
   }
-  mkdirSync(dirname(taskReuseDecisionsPath), { recursive: true });
-  appendFileSync(taskReuseDecisionsPath, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
-  return { record, idempotent: false };
 }
 
 export function loadTaskReuseDecisions(filters = {}) {
@@ -129,7 +160,9 @@ export function summarizeTaskReuseDecisions(records) {
   return {
     schema_version: "taskcenter-task-reuse-decision-summary-v1",
     decision_count: values.length,
-    project_count: new Set(values.map((record) => record.project_id).filter(Boolean)).size,
+    project_count: new Set(values
+      .map((record) => normalizedId(record.project_id))
+      .filter((projectId) => projectId && projectId !== UNKNOWN_PROJECT_ID)).size,
     recommendations,
     final_decisions: finalDecisions,
     agreement_count: agreements,
@@ -153,6 +186,184 @@ function readTaskReuseDecisionRecords() {
         return [];
       }
     });
+}
+
+function acquireDecisionLock() {
+  mkdirSync(dirname(taskReuseDecisionsPath), { recursive: true });
+  const deadline = Date.now() + decisionLockTimeoutMs;
+  const owner = {
+    pid: process.pid,
+    nonce: randomUUID(),
+    acquired_at: new Date().toISOString(),
+  };
+  while (true) {
+    try {
+      mkdirSync(decisionLockPath, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (clearStaleDecisionLock()) continue;
+      if (Date.now() >= deadline) {
+        throw new TaskReuseAdvisorError(503, "复用决策审计正由另一进程写入，请稍后重试。");
+      }
+      Atomics.wait(decisionLockWaiter, 0, 0, 10);
+      continue;
+    }
+    try {
+      writeFileSync(decisionLockOwnerPath, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+      return () => releaseDecisionLock(owner.nonce);
+    } catch (error) {
+      rmSync(decisionLockPath, { recursive: true, force: true });
+      throw error;
+    }
+  }
+}
+
+function clearStaleDecisionLock() {
+  let lockAge = 0;
+  try {
+    lockAge = Date.now() - statSync(decisionLockPath).mtimeMs;
+  } catch (error) {
+    return error?.code === "ENOENT";
+  }
+  try {
+    const owner = JSON.parse(readFileSync(decisionLockOwnerPath, "utf8"));
+    if (Number.isInteger(owner?.pid) && processIsAlive(owner.pid)) return false;
+    rmSync(decisionLockPath, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    if (error?.code !== "ENOENT" && error?.name !== "SyntaxError") throw error;
+    if (lockAge < decisionLockStaleMs) return false;
+    rmSync(decisionLockPath, { recursive: true, force: true });
+    return true;
+  }
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+}
+
+function releaseDecisionLock(nonce) {
+  try {
+    const owner = JSON.parse(readFileSync(decisionLockOwnerPath, "utf8"));
+    if (owner?.nonce !== nonce) return;
+    rmSync(decisionLockPath, { recursive: true, force: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+function ensureDecisionEventIndex() {
+  const source = sourceIdentity();
+  if (decisionIndexMatchesSource(source)) return;
+  const records = readTaskReuseDecisionRecords();
+  const indexed = new Map();
+  for (const record of records) {
+    const eventId = optionalText(record.event_id, 200);
+    if (!eventId) continue;
+    const previous = indexed.get(eventId);
+    if (previous && decisionSignature(previous) !== decisionSignature(record)) {
+      throw new TaskReuseAdvisorError(409, `复用决策账本包含冲突 event_id：${eventId}`);
+    }
+    if (!previous) indexed.set(eventId, record);
+  }
+  rmSync(taskReuseDecisionIndexPath, { recursive: true, force: true });
+  mkdirSync(taskReuseDecisionIndexPath, { recursive: true, mode: 0o700 });
+  for (const record of indexed.values()) writeDecisionIndexEntry(record);
+  writeDecisionIndexState(source);
+}
+
+function decisionIndexMatchesSource(source) {
+  if (!existsSync(decisionIndexStatePath)) return false;
+  try {
+    const state = JSON.parse(readFileSync(decisionIndexStatePath, "utf8"));
+    return state?.schema_version === "taskcenter-task-reuse-event-index-v1"
+      && state.source?.size === source.size
+      && state.source?.mtime_ms === source.mtime_ms
+      && state.source?.inode === source.inode
+      && state.source?.device === source.device;
+  } catch {
+    return false;
+  }
+}
+
+function readIndexedDecision(eventId) {
+  const path = decisionIndexEntryPath(eventId);
+  if (!existsSync(path)) return null;
+  try {
+    const entry = JSON.parse(readFileSync(path, "utf8"));
+    if (entry?.event_id !== eventId || !entry.record || decisionSignature(entry.record) !== entry.signature) {
+      throw new Error("index entry mismatch");
+    }
+    return entry.record;
+  } catch {
+    rmSync(decisionIndexStatePath, { force: true });
+    ensureDecisionEventIndex();
+    if (!existsSync(path)) return null;
+    const recovered = JSON.parse(readFileSync(path, "utf8"));
+    if (recovered?.event_id !== eventId || !recovered.record || decisionSignature(recovered.record) !== recovered.signature) {
+      throw new TaskReuseAdvisorError(500, "复用决策幂等索引无法从审计账本恢复。");
+    }
+    return recovered.record;
+  }
+}
+
+function appendDecisionRecord(record) {
+  mkdirSync(dirname(taskReuseDecisionsPath), { recursive: true });
+  const descriptor = openSync(taskReuseDecisionsPath, "a", 0o600);
+  try {
+    writeSync(descriptor, `${JSON.stringify(record)}\n`, null, "utf8");
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function writeDecisionIndexEntry(record) {
+  mkdirSync(taskReuseDecisionIndexPath, { recursive: true, mode: 0o700 });
+  const path = decisionIndexEntryPath(record.event_id);
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  const entry = {
+    schema_version: "taskcenter-task-reuse-event-index-entry-v1",
+    event_id: record.event_id,
+    signature: decisionSignature(record),
+    record,
+  };
+  writeFileSync(temporaryPath, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+  renameSync(temporaryPath, path);
+}
+
+function writeDecisionIndexState(source) {
+  mkdirSync(taskReuseDecisionIndexPath, { recursive: true, mode: 0o700 });
+  const temporaryPath = `${decisionIndexStatePath}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify({
+    schema_version: "taskcenter-task-reuse-event-index-v1",
+    source,
+    updated_at: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+  renameSync(temporaryPath, decisionIndexStatePath);
+}
+
+function decisionIndexEntryPath(eventId) {
+  return join(taskReuseDecisionIndexPath, `${hashOf(String(eventId))}.json`);
+}
+
+function sourceIdentity() {
+  if (!existsSync(taskReuseDecisionsPath)) {
+    return { size: 0, mtime_ms: 0, inode: "", device: "" };
+  }
+  const metadata = statSync(taskReuseDecisionsPath);
+  if (!metadata.isFile()) throw new TaskReuseAdvisorError(500, "复用决策审计路径必须是普通文件。");
+  return {
+    size: metadata.size,
+    mtime_ms: metadata.mtimeMs,
+    inode: String(metadata.ino),
+    device: String(metadata.dev),
+  };
 }
 
 function normalizeCheckInput(input) {
@@ -284,7 +495,8 @@ function candidateFor(task, context) {
   confidence = rounded(Math.max(0, Math.min(0.99, confidence)));
   if (confidence < 0.15) return null;
   const hasBoundaryConflict = differentContext || differentWorkspace || differentProject || differentOwner;
-  const strongReuse = !hasBoundaryConflict && (
+  const identityAligned = sameSession || relatedDelegation || sameOwner;
+  const strongReuse = !hasBoundaryConflict && identityAligned && (
     (sameContext && sameWorkspace)
       || (sameWorkspace && (sameSession || relatedDelegation) && semanticSimilarity >= 0.55)
   );

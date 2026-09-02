@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,6 +14,7 @@ const {
   recordTaskReuseDecision,
   summarizeTaskReuseDecisions,
   taskReuseCheck,
+  taskReuseDecisionIndexPath,
   taskReuseDecisionsPath,
   TaskReuseAdvisorError,
 } = await import("../scripts/task-reuse-advisor.mjs");
@@ -59,13 +61,19 @@ function check(request, tasks, options = {}) {
   });
 }
 
-test("相同 context_task_id 与 workspace 召回 done_claimed 候选", () => {
+test("相同 context_task_id 与 workspace 会召回候选，身份未知时保持 uncertain", () => {
   const result = check(baseRequest, [task({ status: "done_claimed" })]);
-  assert.equal(result.recommendation, "reuse");
+  assert.equal(result.recommendation, "uncertain");
   assert.equal(result.advisory_only, true);
   assert.equal(result.candidates[0].task_id, "task-fcm");
   assert.ok(result.candidates[0].match_reasons.includes("same_context_task_id"));
   assert.ok(result.candidates[0].match_reasons.includes("done_claimed_pending_acceptance"));
+});
+
+test("相同 context、workspace 与 Session 时可给出强复用建议", () => {
+  const result = check(baseRequest, [task({ sessionId: "session-new", status: "done_claimed" })]);
+  assert.equal(result.recommendation, "reuse");
+  assert.ok(result.candidates[0].match_reasons.includes("same_session"));
 });
 
 test("同一 Session 的 FCM 追加要求返回 reuse 或 uncertain", () => {
@@ -111,6 +119,22 @@ test("不同 Worktree 和 Owner 即使 context 相同也不会强复用", () => 
   assert.notEqual(result.recommendation, "reuse");
 });
 
+test("同 workspace 但不同 Owner 时不会把 context 命中升级为强复用", () => {
+  const requesterTask = task({
+    id: "task-requester-owner",
+    sessionId: "session-new",
+    contextTaskId: "other-context",
+    ownerActor: owner,
+  });
+  const otherOwnerTask = task({
+    ownerActor: { type: "human", id: "owner-b", provider: "local" },
+  });
+  const result = check(baseRequest, [requesterTask, otherOwnerTask]);
+  const candidate = result.candidates.find((item) => item.task_id === "task-fcm");
+  assert.ok(candidate.conflicts.includes("different_owner"));
+  assert.notEqual(result.recommendation, "reuse");
+});
+
 test("取消、归档和被替代任务被排除，done_claimed 仍可召回", () => {
   const result = check(baseRequest, [
     task({ id: "cancelled", status: "cancelled" }),
@@ -150,6 +174,8 @@ test("最终选择与 force_new_reason append-only 记录并保持语义幂等",
   assert.equal(first.idempotent, false);
   assert.equal(replay.idempotent, true);
   assert.equal(replay.record.force_new_reason, input.force_new_reason);
+  await rm(join(taskReuseDecisionIndexPath, "state.json"), { force: true });
+  assert.equal(recordTaskReuseDecision(input).idempotent, true, "索引状态丢失后从 JSONL 恢复幂等记录");
   assert.equal((await readFile(taskReuseDecisionsPath, "utf8")).trim().split("\n").length, 1);
   assert.equal(loadTaskReuseDecisions({ project_id: "alpha" })[0].final_decision, "create_new");
   assert.deepEqual(summarizeTaskReuseDecisions(loadTaskReuseDecisions({ project_id: "alpha" })), {
@@ -201,3 +227,75 @@ test("覆盖复用建议新建时缺少 force_new_reason 会被拒绝", () => {
     (error) => error instanceof TaskReuseAdvisorError && error.statusCode === 400,
   );
 });
+
+test("跨进程并发记录保持 event_id 唯一并拒绝冲突 payload", async () => {
+  const input = {
+    event_id: "decision-cross-process-same",
+    check_id: "reuse-check-cross-process",
+    session_id: "session-new",
+    workspace: "/projects/alpha",
+    project_id: "alpha",
+    context_task_id: "context-fcm",
+    title: "FCM 并发审计",
+    recommendation: "uncertain",
+    confidence: 0.62,
+    candidate_task_ids: ["task-fcm"],
+    match_reasons: ["same_context_task_id"],
+    final_decision: "uncertain",
+    occurred_at: "2026-09-02T02:30:00.000Z",
+  };
+  const sameResults = await Promise.all(Array.from({ length: 12 }, () => runDecisionWorker(input)));
+  assert.equal(sameResults.filter((result) => result.ok && result.idempotent === false).length, 1);
+  assert.equal(sameResults.filter((result) => result.ok && result.idempotent === true).length, 11);
+  assert.equal(loadTaskReuseDecisions({ limit: 500 }).filter((record) => record.event_id === input.event_id).length, 1);
+
+  const conflictingEventId = "decision-cross-process-conflict";
+  const conflictingResults = await Promise.all(Array.from({ length: 12 }, (_, index) => runDecisionWorker({
+    ...input,
+    event_id: conflictingEventId,
+    final_decision: index % 2 === 0 ? "uncertain" : "create_new",
+    force_new_reason: index % 2 === 0 ? undefined : "独立交付边界。",
+  })));
+  assert.equal(conflictingResults.filter((result) => result.ok && result.idempotent === false).length, 1);
+  assert.ok(conflictingResults.some((result) => !result.ok && result.statusCode === 409));
+  assert.equal(loadTaskReuseDecisions({ limit: 500 }).filter((record) => record.event_id === conflictingEventId).length, 1);
+});
+
+function runDecisionWorker(input) {
+  const moduleUrl = new URL("../scripts/task-reuse-advisor.mjs", import.meta.url).href;
+  const script = `
+const { recordTaskReuseDecision } = await import(process.env.TASK_REUSE_ADVISOR_MODULE_URL);
+try {
+  const result = recordTaskReuseDecision(JSON.parse(process.env.TASK_REUSE_ADVISOR_INPUT));
+  console.log(JSON.stringify({ ok: true, idempotent: result.idempotent, finalDecision: result.record.final_decision }));
+} catch (error) {
+  console.log(JSON.stringify({ ok: false, statusCode: error.statusCode || 500, message: error.message }));
+}
+`;
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", script], {
+      env: {
+        ...process.env,
+        TASK_REUSE_ADVISOR_MODULE_URL: moduleUrl,
+        TASK_REUSE_ADVISOR_INPUT: JSON.stringify(input),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", rejectPromise);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        rejectPromise(new Error(`复用决策并发 worker 失败：${stderr || code}`));
+        return;
+      }
+      try {
+        resolvePromise(JSON.parse(stdout.trim()));
+      } catch {
+        rejectPromise(new Error(`复用决策并发 worker 返回无效结果：${stdout || stderr}`));
+      }
+    });
+  });
+}

@@ -415,7 +415,7 @@ server.registerTool("taskcenter_task_reuse_decision_query", {
   if (workspace) params.set("workspace", workspace);
   if (project_id) params.set("project_id", project_id);
   if (limit) params.set("limit", String(limit));
-  return queryEndpoint(`/task-reuse/decisions${params.size ? `?${params}` : ""}`);
+  return queryLocalEndpoint(`/task-reuse/decisions${params.size ? `?${params}` : ""}`);
 });
 
 server.registerTool("taskcenter_usage_report", {
@@ -583,6 +583,21 @@ function writeResult(payload, responseModeValue) {
 async function queryEndpoint(path) {
   try {
     const response = await fetch(`${controlServerUrl}${path}`);
+    return result(await readJson(response));
+  } catch (e) {
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+  }
+}
+
+async function queryLocalEndpoint(path) {
+  try {
+    const response = await fetch(`${controlServerUrl}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-TaskCenter-Task": "mcp",
+        "X-TaskCenter-MCP-Token": readLocalMcpToken(),
+      },
+    });
     return result(await readJson(response));
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });

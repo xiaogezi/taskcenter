@@ -237,9 +237,9 @@ Review 过程使用 `taskcenter_review_cycle_report` 按稳定 `cycle_id` 增量
 
 `phaseTiming.task_wall_ms` 是所有已观测阶段区间的并集，多个执行器重叠时只计算一次；`executor_active_ms` 按 Session 或 delegation 累计，因此并行时总和可以大于任务墙钟。`phase_wait_ms` 与 `wait_breakdown_ms` 只统计明确上报的暂停、构建等待、外部等待和 Review 排队区间，不用 Token 或“墙钟减 active”猜测有效工时。Review、返工和 Review 后验证继续以现有 Review Cycle 时间为权威来源，阶段事件只补充边界与执行器归因，不重复计账。指定 `as_of` 时只聚合截止时刻已经发生的边界，跨越截止时间的区间会截断并标记 `partial`。旧任务或缺失字段返回 `unknown`/`partial` 和 `null`，不会把缺失数据伪装为零；这些数据只用于流程诊断，不参与绩效、任务门禁或验收。
 
-创建正式任务前可调用 `taskcenter_task_reuse_check`。Advisor 只读取已登记 Session 与可见任务投影，候选包含 `planned/in_progress/blocked/done_claimed`，默认排除取消、已验收、归档、移除、被替代和 Context 影子任务。相同 `context_task_id + workspace` 是强证据；同项目、同 Session/delegation、文本相似和 Subject/Worktree 关系只参与排序。语义相似度使用本地、确定性的 Unicode token overlap，不调用远程模型；同仓库、同 Session 或标题相似都不能单独产生强复用建议。返回结果始终标记 `advisory_only=true`，不会自动创建、合并、阻断或修改任务。
+创建正式任务前可调用 `taskcenter_task_reuse_check`。Advisor 只读取已登记 Session 与可见任务投影，候选包含 `planned/in_progress/blocked/done_claimed`，默认排除取消、已验收、归档、移除、被替代和 Context 影子任务。相同 `context_task_id + workspace` 是最高优先级的召回证据，但只有同 Session、有效 delegation 或可验证的同 Owner 同时成立时才会形成强复用建议；身份无法确认时保持 `uncertain`。同项目、文本相似和 Subject/Worktree 关系只参与排序。语义相似度使用本地、确定性的 Unicode token overlap，不调用远程模型；同仓库、同 Session 或标题相似都不能单独产生强复用建议。请求的 `project_id` 必须与已登记 Session 一致；旧 Session 没有项目身份时明确降级为 `unknown`，不会采信调用方值或用目录名推断。返回结果始终标记 `advisory_only=true`，不会自动创建、合并、阻断或修改任务。
 
-调用方用 `taskcenter_task_reuse_decision_report` 把 Advisor 建议与最终 `reuse/create_new/uncertain` 选择写入独立 append-only 账本；覆盖 `reuse/uncertain` 建议而新建时必须填写 `force_new_reason`。相同 `event_id` 只有在语义完全一致时幂等，冲突重放会被拒绝。`taskcenter_task_reuse_decision_query` 用于试点评估；在完成 3 个项目、至少 10 次创建决策的观察前，不增加 Hook 提示、软门禁、自动阻断或自动合并。
+调用方用 `taskcenter_task_reuse_decision_report` 把 Advisor 建议与最终 `reuse/create_new/uncertain` 选择写入独立 append-only 账本；覆盖 `reuse/uncertain` 建议而新建时必须填写 `force_new_reason`。相同 `event_id` 只有在语义完全一致时幂等，冲突重放会被拒绝；专用跨进程锁和可从 JSONL 重建的 event-id 索引保证并发唯一性，JSONL 仍是审计事实源。`taskcenter_task_reuse_decision_query` 通过本机 MCP 运行时令牌读取审计，用于试点评估；未知项目身份不计入项目覆盖。在完成 3 个项目、至少 10 次创建决策的观察前，不增加 Hook 提示、软门禁、自动阻断或自动合并。
 
 ```bash
 npm run sync

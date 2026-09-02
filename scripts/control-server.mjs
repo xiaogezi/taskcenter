@@ -350,12 +350,13 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/task-reuse/check") {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
-      const registry = requireRegisteredReuseSession(body);
-      const advice = taskReuseCheck(body, {
+      const identity = requireRegisteredReuseSession(body);
+      const advice = taskReuseCheck({ ...body, project_id: identity.projectIdentity.project_id }, {
         tasks: loadVisibleTasks(),
-        sessionRegistry: registry,
+        sessionRegistry: identity.registry,
         delegations: listDelegations(),
         canonicalSessionId,
+        projectIdentity: identity.projectIdentity,
       });
       sendJson(response, 200, advice);
       return;
@@ -363,12 +364,13 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/task-reuse/decisions") {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
-      requireRegisteredReuseSession(body);
-      const result = recordTaskReuseDecision(body);
+      const identity = requireRegisteredReuseSession(body);
+      const result = recordTaskReuseDecision({ ...body, project_id: identity.projectIdentity.project_id });
       sendJson(response, result.idempotent ? 200 : 201, { accepted: true, ...result });
       return;
     }
     if (request.method === "GET" && request.url?.startsWith("/task-reuse/decisions")) {
+      verifyBoundMcpRequest(request);
       const url = new URL(request.url, `http://${host}:${port}`);
       if (url.pathname !== "/task-reuse/decisions") {
         sendJson(response, 404, { error: "接口不存在。" });
@@ -1473,7 +1475,10 @@ function verifyTaskRequest(request) {
 function requireRegisteredReuseSession(input) {
   const sessionId = String(input?.session_id || "").trim();
   const workspace = String(input?.workspace || "").trim();
-  if (!sessionId || !workspace) throw new TaskReuseAdvisorError(400, "复用请求缺少 session_id 或 workspace。");
+  const projectId = String(input?.project_id || "").trim();
+  if (!sessionId || !workspace || !projectId) {
+    throw new TaskReuseAdvisorError(400, "复用请求缺少 session_id、workspace 或 project_id。");
+  }
   const registry = loadSessionRegistry();
   const canonical = canonicalSessionId(sessionId);
   const session = registry[canonical] || registry[sessionId];
@@ -1481,7 +1486,17 @@ function requireRegisteredReuseSession(input) {
   if (resolve(session.workspace || "") !== resolve(workspace)) {
     throw new TaskReuseAdvisorError(403, "复用请求 workspace 与已登记 Session 不一致。");
   }
-  return registry;
+  const registeredProjectId = String(session.projectId || session.project_id || "").trim();
+  if (registeredProjectId && registeredProjectId !== projectId) {
+    throw new TaskReuseAdvisorError(403, "复用请求 project_id 与已登记 Session 不一致。");
+  }
+  return {
+    registry,
+    projectIdentity: {
+      status: registeredProjectId ? "registered" : "unknown",
+      project_id: registeredProjectId || "unknown",
+    },
+  };
 }
 
 function verifyBoundMcpRequest(request) {

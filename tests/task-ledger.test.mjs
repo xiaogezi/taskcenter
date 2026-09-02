@@ -1334,7 +1334,7 @@ test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审�
   await resetLedger();
   const { base, child } = await startControlServer();
   context.after(() => child.kill("SIGTERM"));
-  await registerHttpSession(base, "session-reuse", { workspace: "/work" });
+  await registerHttpSession(base, "session-reuse", { project_id: "example" });
   const created = await fetch(`${base}/task-events`, {
     method: "POST",
     headers: taskHeaders(),
@@ -1353,26 +1353,34 @@ test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审�
   assert.equal(created.status, 201, await created.text());
   const ledgerBefore = await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8");
   const eventsBefore = await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8");
+  const checkInput = {
+    session_id: "session-reuse",
+    workspace: "/work",
+    project_id: "example",
+    context_task_id: "context-reuse-http",
+    title: "继续完善 FCM 通知链路",
+    goal: "补充 FCM 通知失败重试和送达验证",
+    scope: ["FCM notification delivery"],
+  };
   const check = await fetch(`${base}/task-reuse/check`, {
     method: "POST",
     headers: taskHeaders(),
-    body: JSON.stringify({
-      session_id: "session-reuse",
-      workspace: "/work",
-      project_id: "example",
-      context_task_id: "context-reuse-http",
-      title: "继续完善 FCM 通知链路",
-      goal: "补充 FCM 通知失败重试和送达验证",
-      scope: ["FCM notification delivery"],
-    }),
+    body: JSON.stringify(checkInput),
   });
   const advice = await check.json();
   assert.equal(check.status, 200, advice.error);
   assert.equal(advice.recommendation, "reuse");
+  assert.deepEqual(advice.project_identity, { status: "registered", project_id: "example" });
   assert.equal(advice.candidates[0].task_id, "task-reuse-http");
   assert.equal(advice.advisory_only, true);
   assert.equal(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"), ledgerBefore);
   assert.equal(await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8"), eventsBefore);
+  const mismatchedCheck = await fetch(`${base}/task-reuse/check`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ ...checkInput, project_id: "forged-project" }),
+  });
+  assert.equal(mismatchedCheck.status, 403);
 
   const decision = {
     event_id: "reuse-http-decision",
@@ -1395,6 +1403,12 @@ test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审�
     body: JSON.stringify(decision),
   });
   assert.equal(report.status, 201, await report.text());
+  const mismatchedReport = await fetch(`${base}/task-reuse/decisions`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ ...decision, event_id: "reuse-http-decision-forged", project_id: "forged-project" }),
+  });
+  assert.equal(mismatchedReport.status, 403);
   const replay = await fetch(`${base}/task-reuse/decisions`, {
     method: "POST",
     headers: taskHeaders(),
@@ -1411,12 +1425,64 @@ test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审�
   assert.equal(conflict.status, 409);
   assert.equal(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"), ledgerBefore);
   assert.equal(await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8"), eventsBefore);
-  const queried = await (await fetch(`${base}/task-reuse/decisions?project_id=example`)).json();
+  const unauthorizedQuery = await fetch(`${base}/task-reuse/decisions?project_id=example`);
+  assert.equal(unauthorizedQuery.status, 403);
+  const markerOnlyQuery = await fetch(`${base}/task-reuse/decisions?project_id=example`, { headers: taskHeaders() });
+  assert.equal(markerOnlyQuery.status, 403);
+  const mcpToken = (await readFile(envPaths.TASKCENTER_MCP_TOKEN_PATH, "utf8")).trim();
+  const queriedResponse = await fetch(`${base}/task-reuse/decisions?project_id=example`, {
+    headers: { ...taskHeaders(), "X-TaskCenter-MCP-Token": mcpToken },
+  });
+  const queried = await queriedResponse.json();
+  assert.equal(queriedResponse.status, 200, queried.error);
   assert.equal(queried.decisions.length, 1);
   assert.equal(queried.decisions[0].selected_task_id, "task-reuse-http");
   assert.equal(queried.summary.decision_count, 1);
   assert.equal(queried.summary.automatic_block_count, 0);
   assert.equal(queried.summary.automatic_merge_count, 0);
+
+  await registerHttpSession(base, "session-reuse-legacy");
+  const unknownProjectCheck = await fetch(`${base}/task-reuse/check`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      ...checkInput,
+      session_id: "session-reuse-legacy",
+      project_id: "caller-asserted-project",
+      context_task_id: "context-independent-legacy",
+      title: "独立日志归档",
+      goal: "实现本地日志按月归档",
+      scope: ["local log archive"],
+    }),
+  });
+  const unknownProjectAdvice = await unknownProjectCheck.json();
+  assert.equal(unknownProjectCheck.status, 200, unknownProjectAdvice.error);
+  assert.deepEqual(unknownProjectAdvice.project_identity, { status: "unknown", project_id: "unknown" });
+  const unknownProjectReport = await fetch(`${base}/task-reuse/decisions`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      event_id: "reuse-http-decision-legacy-project",
+      check_id: unknownProjectAdvice.check_id,
+      session_id: "session-reuse-legacy",
+      workspace: "/work",
+      project_id: "caller-asserted-project",
+      recommendation: unknownProjectAdvice.recommendation,
+      confidence: unknownProjectAdvice.confidence,
+      candidate_task_ids: unknownProjectAdvice.candidates.map((candidate) => candidate.task_id),
+      match_reasons: unknownProjectAdvice.match_reasons,
+      final_decision: unknownProjectAdvice.recommendation,
+      occurred_at: "2026-09-02T03:05:00.000Z",
+    }),
+  });
+  const unknownProjectRecord = await unknownProjectReport.json();
+  assert.equal(unknownProjectReport.status, 201, unknownProjectRecord.error);
+  assert.equal(unknownProjectRecord.record.project_id, "unknown");
+  const allDecisionsResponse = await fetch(`${base}/task-reuse/decisions`, {
+    headers: { ...taskHeaders(), "X-TaskCenter-MCP-Token": mcpToken },
+  });
+  const allDecisions = await allDecisionsResponse.json();
+  assert.equal(allDecisions.summary.project_count, 1, "unknown project 不计入试点项目覆盖");
 });
 
 test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计", async (context) => {
@@ -1816,7 +1882,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     assert.ok(toolNames.includes(expected), `MCP 应暴露 ${expected}`);
   }
 
-  const register = await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-mcp", agent: "codex", provider: "openai", model: "gpt-test", workspace: "/work", response_mode: "full" } });
+  const register = await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-mcp", agent: "codex", provider: "openai", model: "gpt-test", workspace: "/work", project_id: "mcp-project", response_mode: "full" } });
   const registerPayload = JSON.parse(textOf(register));
   assert.equal(registerPayload.accepted, true);
   assert.equal(registerPayload.task, null);
