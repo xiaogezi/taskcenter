@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- 新增只读活跃任务复用 Advisor 与独立 append-only 决策审计，返回可解释的 `reuse/create_new/uncertain` 建议并完整保留 `force_new_reason`；Session/project 身份严格绑定，审计查询受本机 MCP 令牌保护，跨进程 event-id 锁与可恢复索引保持并发幂等；首阶段不增加 Hook 提示、阻断或自动合并。
+- 新增只读活跃任务复用 Advisor 与独立 append-only 决策审计，返回可解释的 `reuse/create_new/uncertain` 建议并完整保留 `force_new_reason`；Session/project 身份严格绑定，审计查询受本机 MCP 令牌保护，跨进程锁与可恢复的 event-id/顺序/project/workspace 索引保持并发幂等和有界查询；首阶段不增加 Hook 提示、阻断或自动合并。
 - 新增 append-only 任务阶段事件与阶段报告，分别提供并行去重的任务墙钟、各执行器累计活动时间和显式等待来源；复用 Review Cycle 作为 Review 时间权威账本，并让旧任务保持 `unknown` 而非伪造零值。
 - 正式服务改为运行不可变 release worktree 与 production build，开发工作区修改不再被当前实例热加载。
 - 新增隔离候选自检、失败自动回滚、发布阶段事件与 `service:history` 研发效能摘要。

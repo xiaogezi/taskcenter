@@ -5,6 +5,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -29,6 +30,8 @@ const decisionIndexStatePath = join(taskReuseDecisionIndexPath, "state.json");
 const decisionLockWaiter = new Int32Array(new SharedArrayBuffer(4));
 const decisionLockTimeoutMs = 5_000;
 const decisionLockStaleMs = 30_000;
+const decisionOrderIndexPath = join(taskReuseDecisionIndexPath, "order.idx");
+const decisionStoreMetrics = { full_ledger_scans: 0, indexed_queries: 0 };
 const candidateStatuses = new Set(["planned", "in_progress", "blocked", "done_claimed"]);
 const decisions = new Set(["reuse", "create_new", "uncertain"]);
 const ignoredTokens = new Set([
@@ -117,7 +120,7 @@ export function recordTaskReuseDecision(input, options = {}) {
   const record = normalizeDecision(input, validNow(options.now));
   const releaseLock = acquireDecisionLock();
   try {
-    ensureDecisionEventIndex();
+    const indexState = ensureDecisionEventIndex();
     const existing = readIndexedDecision(record.event_id);
     if (existing) {
       if (decisionSignature(existing) !== decisionSignature(record)) {
@@ -127,7 +130,8 @@ export function recordTaskReuseDecision(input, options = {}) {
     }
     appendDecisionRecord(record);
     writeDecisionIndexEntry(record);
-    writeDecisionIndexState(sourceIdentity());
+    const queryIndexes = appendDecisionQueryIndexes(record, indexState.query_indexes);
+    writeDecisionIndexState(sourceIdentity(), queryIndexes);
     return { record, idempotent: false };
   } finally {
     releaseLock();
@@ -138,11 +142,23 @@ export function loadTaskReuseDecisions(filters = {}) {
   const workspace = optionalText(filters.workspace, 4_096);
   const projectId = optionalText(filters.project_id ?? filters.projectId, 200);
   const limit = Math.min(500, Math.max(1, Number.parseInt(filters.limit || "100", 10) || 100));
-  return readTaskReuseDecisionRecords()
-    .filter((item) => !workspace || workspaceKey(item.workspace) === workspaceKey(workspace))
-    .filter((item) => !projectId || normalizedId(item.project_id) === normalizedId(projectId))
-    .slice(-limit)
-    .reverse();
+  const releaseLock = acquireDecisionLock();
+  try {
+    let indexState = ensureDecisionEventIndex();
+    try {
+      return readDecisionQueryIndex({ workspace, projectId, limit, indexState });
+    } catch {
+      rmSync(decisionIndexStatePath, { force: true });
+      indexState = ensureDecisionEventIndex();
+      return readDecisionQueryIndex({ workspace, projectId, limit, indexState });
+    }
+  } finally {
+    releaseLock();
+  }
+}
+
+export function taskReuseDecisionStoreDiagnostics() {
+  return { ...decisionStoreMetrics };
 }
 
 export function summarizeTaskReuseDecisions(records) {
@@ -174,6 +190,7 @@ export function summarizeTaskReuseDecisions(records) {
 }
 
 function readTaskReuseDecisionRecords() {
+  decisionStoreMetrics.full_ledger_scans += 1;
   if (!existsSync(taskReuseDecisionsPath)) return [];
   return readFileSync(taskReuseDecisionsPath, "utf8")
     .split("\n")
@@ -259,7 +276,8 @@ function releaseDecisionLock(nonce) {
 
 function ensureDecisionEventIndex() {
   const source = sourceIdentity();
-  if (decisionIndexMatchesSource(source)) return;
+  const currentState = readDecisionIndexState(source);
+  if (currentState) return currentState;
   const records = readTaskReuseDecisionRecords();
   const indexed = new Map();
   for (const record of records) {
@@ -274,38 +292,42 @@ function ensureDecisionEventIndex() {
   rmSync(taskReuseDecisionIndexPath, { recursive: true, force: true });
   mkdirSync(taskReuseDecisionIndexPath, { recursive: true, mode: 0o700 });
   for (const record of indexed.values()) writeDecisionIndexEntry(record);
-  writeDecisionIndexState(source);
+  const queryIndexes = rebuildDecisionQueryIndexes([...indexed.values()]);
+  return writeDecisionIndexState(source, queryIndexes);
 }
 
-function decisionIndexMatchesSource(source) {
-  if (!existsSync(decisionIndexStatePath)) return false;
+function readDecisionIndexState(source) {
+  if (!existsSync(decisionIndexStatePath)) return null;
   try {
     const state = JSON.parse(readFileSync(decisionIndexStatePath, "utf8"));
-    return state?.schema_version === "taskcenter-task-reuse-event-index-v1"
+    const matches = state?.schema_version === "taskcenter-task-reuse-event-index-v2"
       && state.source?.size === source.size
       && state.source?.mtime_ms === source.mtime_ms
       && state.source?.inode === source.inode
-      && state.source?.device === source.device;
+      && state.source?.device === source.device
+      && Number.isInteger(state.query_indexes?.order?.count)
+      && Number.isInteger(state.query_indexes?.order?.size)
+      && state.query_indexes?.projects && typeof state.query_indexes.projects === "object"
+      && state.query_indexes?.workspaces && typeof state.query_indexes.workspaces === "object";
+    return matches ? state : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 function readIndexedDecision(eventId) {
-  const path = decisionIndexEntryPath(eventId);
-  if (!existsSync(path)) return null;
+  const key = decisionIndexKey(eventId);
   try {
-    const entry = JSON.parse(readFileSync(path, "utf8"));
-    if (entry?.event_id !== eventId || !entry.record || decisionSignature(entry.record) !== entry.signature) {
-      throw new Error("index entry mismatch");
-    }
+    const entry = readDecisionIndexEntry(key);
+    if (!entry) return null;
+    if (entry.event_id !== eventId) throw new Error("index entry event mismatch");
     return entry.record;
   } catch {
     rmSync(decisionIndexStatePath, { force: true });
     ensureDecisionEventIndex();
-    if (!existsSync(path)) return null;
-    const recovered = JSON.parse(readFileSync(path, "utf8"));
-    if (recovered?.event_id !== eventId || !recovered.record || decisionSignature(recovered.record) !== recovered.signature) {
+    const recovered = readDecisionIndexEntry(key);
+    if (!recovered) return null;
+    if (recovered.event_id !== eventId) {
       throw new TaskReuseAdvisorError(500, "复用决策幂等索引无法从审计账本恢复。");
     }
     return recovered.record;
@@ -313,14 +335,7 @@ function readIndexedDecision(eventId) {
 }
 
 function appendDecisionRecord(record) {
-  mkdirSync(dirname(taskReuseDecisionsPath), { recursive: true });
-  const descriptor = openSync(taskReuseDecisionsPath, "a", 0o600);
-  try {
-    writeSync(descriptor, `${JSON.stringify(record)}\n`, null, "utf8");
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
+  writeDurably(taskReuseDecisionsPath, `${JSON.stringify(record)}\n`, "a");
 }
 
 function writeDecisionIndexEntry(record) {
@@ -337,19 +352,178 @@ function writeDecisionIndexEntry(record) {
   renameSync(temporaryPath, path);
 }
 
-function writeDecisionIndexState(source) {
+function writeDecisionIndexState(source, queryIndexes) {
   mkdirSync(taskReuseDecisionIndexPath, { recursive: true, mode: 0o700 });
   const temporaryPath = `${decisionIndexStatePath}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify({
-    schema_version: "taskcenter-task-reuse-event-index-v1",
+  const state = {
+    schema_version: "taskcenter-task-reuse-event-index-v2",
     source,
+    query_indexes: queryIndexes,
     updated_at: new Date().toISOString(),
-  })}\n`, { mode: 0o600 });
+  };
+  writeFileSync(temporaryPath, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   renameSync(temporaryPath, decisionIndexStatePath);
+  return state;
 }
 
 function decisionIndexEntryPath(eventId) {
-  return join(taskReuseDecisionIndexPath, `${hashOf(String(eventId))}.json`);
+  return join(taskReuseDecisionIndexPath, `${decisionIndexKey(eventId)}.json`);
+}
+
+function decisionIndexKey(eventId) {
+  return hashOf(String(eventId));
+}
+
+function readDecisionIndexEntry(key) {
+  const path = join(taskReuseDecisionIndexPath, `${key}.json`);
+  if (!existsSync(path)) return null;
+  const entry = JSON.parse(readFileSync(path, "utf8"));
+  if (!entry?.event_id || !entry.record || decisionSignature(entry.record) !== entry.signature) {
+    throw new Error("index entry mismatch");
+  }
+  return entry;
+}
+
+function rebuildDecisionQueryIndexes(records) {
+  const payloads = new Map([[decisionOrderIndexPath, ""]]);
+  const queryIndexes = { order: { count: 0, size: 0 }, projects: {}, workspaces: {} };
+  for (const record of records) {
+    const key = decisionIndexKey(record.event_id);
+    const paths = decisionQueryIndexPaths(record);
+    appendIndexPayload(payloads, paths.order, key);
+    appendIndexPayload(payloads, paths.project, key);
+    appendIndexPayload(payloads, paths.workspace, key);
+    incrementQueryIndexCount(queryIndexes.order);
+    incrementQueryIndexCount(queryIndexes.projects, paths.projectKey);
+    incrementQueryIndexCount(queryIndexes.workspaces, paths.workspaceKey);
+  }
+  for (const [path, content] of payloads) writeDurably(path, content, "w");
+  return queryIndexes;
+}
+
+function appendDecisionQueryIndexes(record, current) {
+  const queryIndexes = {
+    order: { ...current.order },
+    projects: cloneQueryIndexDimensions(current.projects),
+    workspaces: cloneQueryIndexDimensions(current.workspaces),
+  };
+  const key = decisionIndexKey(record.event_id);
+  const paths = decisionQueryIndexPaths(record);
+  writeDurably(paths.order, `${key}\n`, "a");
+  writeDurably(paths.project, `${key}\n`, "a");
+  writeDurably(paths.workspace, `${key}\n`, "a");
+  incrementQueryIndexCount(queryIndexes.order);
+  incrementQueryIndexCount(queryIndexes.projects, paths.projectKey);
+  incrementQueryIndexCount(queryIndexes.workspaces, paths.workspaceKey);
+  return queryIndexes;
+}
+
+function appendIndexPayload(payloads, path, key) {
+  payloads.set(path, `${payloads.get(path) || ""}${key}\n`);
+}
+
+function incrementQueryIndexCount(index, key) {
+  const target = key ? (index[key] ||= { count: 0, size: 0 }) : index;
+  target.count += 1;
+  target.size += 65;
+}
+
+function cloneQueryIndexDimensions(index) {
+  return Object.fromEntries(Object.entries(index).map(([key, value]) => [key, { ...value }]));
+}
+
+function decisionQueryIndexPaths(record) {
+  const projectKey = decisionDimensionKey(normalizedId(record.project_id));
+  const workspaceIndexKey = decisionDimensionKey(workspaceKey(record.workspace));
+  return {
+    order: decisionOrderIndexPath,
+    project: join(taskReuseDecisionIndexPath, `project-${projectKey}.idx`),
+    workspace: join(taskReuseDecisionIndexPath, `workspace-${workspaceIndexKey}.idx`),
+    projectKey,
+    workspaceKey: workspaceIndexKey,
+  };
+}
+
+function decisionDimensionKey(value) {
+  return hashOf(String(value || ""));
+}
+
+function readDecisionQueryIndex({ workspace, projectId, limit, indexState }) {
+  decisionStoreMetrics.indexed_queries += 1;
+  const workspaceValue = workspaceKey(workspace);
+  const projectValue = normalizedId(projectId);
+  const choices = [{ path: decisionOrderIndexPath, ...indexState.query_indexes.order }];
+  if (projectValue) {
+    const key = decisionDimensionKey(projectValue);
+    choices.push({
+      path: join(taskReuseDecisionIndexPath, `project-${key}.idx`),
+      ...(indexState.query_indexes.projects[key] || { count: 0, size: 0 }),
+    });
+  }
+  if (workspaceValue) {
+    const key = decisionDimensionKey(workspaceValue);
+    choices.push({
+      path: join(taskReuseDecisionIndexPath, `workspace-${key}.idx`),
+      ...(indexState.query_indexes.workspaces[key] || { count: 0, size: 0 }),
+    });
+  }
+  const selected = choices.slice(1).sort((left, right) => left.count - right.count)[0] || choices[0];
+  if (selected.count === 0) return [];
+  if (!existsSync(selected.path)) throw new Error("query index missing");
+  if (statSync(selected.path).size !== selected.size) throw new Error("query index size mismatch");
+  return readDecisionIndexBackwards(selected.path, (record) =>
+    (!workspaceValue || workspaceKey(record.workspace) === workspaceValue)
+      && (!projectValue || normalizedId(record.project_id) === projectValue), limit);
+}
+
+function readDecisionIndexBackwards(path, predicate, limit) {
+  const descriptor = openSync(path, "r");
+  const records = [];
+  let position = statSync(path).size;
+  let carry = "";
+  try {
+    while (position > 0 && records.length < limit) {
+      const length = Math.min(64 * 1_024, position);
+      position -= length;
+      const buffer = Buffer.allocUnsafe(length);
+      const bytesRead = readSync(descriptor, buffer, 0, length, position);
+      const lines = `${buffer.subarray(0, bytesRead).toString("ascii")}${carry}`.split("\n");
+      carry = lines.shift() || "";
+      for (let index = lines.length - 1; index >= 0 && records.length < limit; index -= 1) {
+        const key = lines[index].trim();
+        if (!key) continue;
+        if (!/^[0-9a-f]{64}$/.test(key)) throw new Error("query index corrupted");
+        const entry = readDecisionIndexEntry(key);
+        if (!entry) throw new Error("query index entry missing");
+        if (predicate(entry.record)) records.push(entry.record);
+      }
+    }
+    if (position === 0 && carry.trim() && records.length < limit) {
+      const key = carry.trim();
+      if (!/^[0-9a-f]{64}$/.test(key)) throw new Error("query index corrupted");
+      const entry = readDecisionIndexEntry(key);
+      if (!entry) throw new Error("query index entry missing");
+      if (predicate(entry.record)) records.push(entry.record);
+    }
+    return records;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function writeDurably(path, content, flags) {
+  mkdirSync(dirname(path), { recursive: true });
+  const descriptor = openSync(path, flags, 0o600);
+  try {
+    const buffer = Buffer.from(content, "utf8");
+    let offset = 0;
+    while (offset < buffer.length) {
+      offset += writeSync(descriptor, buffer, offset, buffer.length - offset, null);
+    }
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function sourceIdentity() {

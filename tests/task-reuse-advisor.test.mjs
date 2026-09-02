@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -15,6 +15,7 @@ const {
   summarizeTaskReuseDecisions,
   taskReuseCheck,
   taskReuseDecisionIndexPath,
+  taskReuseDecisionStoreDiagnostics,
   taskReuseDecisionsPath,
   TaskReuseAdvisorError,
 } = await import("../scripts/task-reuse-advisor.mjs");
@@ -259,6 +260,39 @@ test("跨进程并发记录保持 event_id 唯一并拒绝冲突 payload", async
   assert.equal(conflictingResults.filter((result) => result.ok && result.idempotent === false).length, 1);
   assert.ok(conflictingResults.some((result) => !result.ok && result.statusCode === 409));
   assert.equal(loadTaskReuseDecisions({ limit: 500 }).filter((record) => record.event_id === conflictingEventId).length, 1);
+});
+
+test("大账本查询只在索引失配时扫描 JSONL，后续按顺序和项目索引有界读取", async () => {
+  const template = loadTaskReuseDecisions({ limit: 1 })[0];
+  const records = Array.from({ length: 1_000 }, (_, index) => ({
+    ...template,
+    event_id: `decision-bulk-${index}`,
+    project_id: index % 2 === 0 ? "alpha" : "beta",
+    workspace: index % 3 === 0 ? "/projects/alpha" : "/projects/shared",
+    recorded_at: new Date(Date.UTC(2026, 8, 2, 3, 0, index)).toISOString(),
+  }));
+  await writeFile(taskReuseDecisionsPath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, { mode: 0o600 });
+
+  const before = taskReuseDecisionStoreDiagnostics();
+  const first = loadTaskReuseDecisions({ project_id: "alpha", limit: 25 });
+  assert.equal(first.length, 25);
+  assert.ok(first.every((record) => record.project_id === "alpha"));
+  const afterRebuild = taskReuseDecisionStoreDiagnostics();
+  assert.equal(afterRebuild.full_ledger_scans - before.full_ledger_scans, 1);
+
+  await writeFile(join(taskReuseDecisionIndexPath, "order.idx"), "corrupted\n", { mode: 0o600 });
+  assert.equal(loadTaskReuseDecisions({ limit: 5 }).length, 5);
+  const afterRecovery = taskReuseDecisionStoreDiagnostics();
+  assert.equal(afterRecovery.full_ledger_scans - afterRebuild.full_ledger_scans, 1, "查询索引损坏后从 JSONL 重建一次");
+
+  for (let index = 0; index < 20; index += 1) {
+    const page = loadTaskReuseDecisions({ workspace: "/projects/shared", project_id: "beta", limit: 10 });
+    assert.equal(page.length, 10);
+    assert.ok(page.every((record) => record.workspace === "/projects/shared" && record.project_id === "beta"));
+  }
+  const afterIndexedQueries = taskReuseDecisionStoreDiagnostics();
+  assert.equal(afterIndexedQueries.full_ledger_scans, afterRecovery.full_ledger_scans);
+  assert.equal(afterIndexedQueries.indexed_queries - afterRecovery.indexed_queries, 20);
 });
 
 function runDecisionWorker(input) {
