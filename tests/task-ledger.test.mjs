@@ -17,6 +17,7 @@ const envPaths = {
   TASKCENTER_TASK_EVENT_IDS_PATH: join(tempDir, "task-event-ids.json"),
   TASKCENTER_TASK_RECONCILE_PATH: join(tempDir, "task-reconcile.jsonl"),
   TASKCENTER_SESSION_REGISTRY_PATH: join(tempDir, "session-registry.json"),
+  TASKCENTER_SESSION_MERGES_PATH: join(tempDir, "session-merges.json"),
   TASKCENTER_CONTEXT_TASK_MAP_PATH: join(tempDir, "context-task-map.json"),
   TASKCENTER_CONTEXT_AUDIT_PATH: join(tempDir, "context-sync-events.jsonl"),
   TASKCENTER_DELEGATIONS_PATH: join(tempDir, "delegations.json"),
@@ -44,6 +45,7 @@ const {
   supersedeContextShadowTask,
   taskCompletionPacket,
   taskCompletionReadiness,
+  taskPhaseReport,
   TaskLedgerError,
   taskTimeState,
 } = await import("../scripts/task-ledger.mjs");
@@ -160,6 +162,84 @@ test("session.register 不误创建任务", async () => {
   assert.equal(result.task, null);
   assert.equal(result.idempotent, undefined);
   assert.equal(loadTasks().length, 0);
+});
+
+test("阶段事件写入任务账本并保持幂等、状态机校验与旧账本兼容", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "session.register", event_id: "phase-session", session_id: "phase-owner", workspace: "/work" });
+  recordTaskEvent({
+    type: "task.create",
+    event_id: "phase-task-create",
+    task_id: "phase-task",
+    session_id: "phase-owner",
+    workspace: "/work",
+    title: "阶段计时",
+    goal: "验证账本接入",
+  });
+  assert.equal(taskPhaseReport("phase-task").status, "unknown");
+  const subject = { type: "artifact", value: "phase-snapshot", observed_at: "2026-09-02T00:00:00.000Z" };
+  const start = {
+    type: "phase.reported",
+    event_id: "phase-start",
+    task_id: "phase-task",
+    session_id: "phase-owner",
+    phase: "planning",
+    transition: "started",
+    occurred_at: "2026-09-02T00:00:00.000Z",
+    subject_ref: subject,
+    reason: "开始规划",
+    activity_source: "agent",
+  };
+  assert.equal(recordTaskEvent(start, { requireRegistered: true }).task.phaseEvents.length, 1);
+  assert.equal(recordTaskEvent(start, { requireRegistered: true }).idempotent, true);
+  assert.throws(() => recordTaskEvent({ ...start, reason: "冲突重试" }, { requireRegistered: true }), /幂等冲突|event_id/);
+  assert.throws(() => recordTaskEvent({ ...start, occurred_at: "2026-09-02T00:01:00.000Z" }, { requireRegistered: true }), /幂等冲突|拒绝重放/);
+  assert.throws(() => recordTaskEvent({ ...start, event_id: "phase-early-finish", transition: "finished", occurred_at: "2026-09-01T23:59:00.000Z" }, { requireRegistered: true }), /时间顺序/);
+  recordTaskEvent({ ...start, event_id: "phase-finish", transition: "finished", occurred_at: "2026-09-02T00:10:00.000Z", reason: "规划结束" }, { requireRegistered: true });
+  const report = taskPhaseReport("phase-task", "2026-09-02T00:20:00.000Z");
+  assert.equal(report.status, "complete");
+  assert.equal(report.phases.planning.phase_wall_ms, 600_000);
+  assert.equal(report.phases.implementing.phase_wall_ms, null);
+  assert.throws(() => taskPhaseReport("phase-task", "not-a-time"), /as_of/);
+});
+
+test("显式 Session merge 配合稳定 activity_id 支持重启续接并保留执行器归因", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "session.register", event_id: "restart-owner-register", session_id: "restart-owner", workspace: "/work" });
+  recordTaskEvent({
+    type: "task.create",
+    event_id: "restart-task-create",
+    task_id: "restart-task",
+    session_id: "restart-owner",
+    workspace: "/work",
+    title: "Session 重启阶段续接",
+    goal: "验证显式授权后的阶段生命周期续接",
+  });
+  const subject = { type: "artifact", value: "restart-snapshot", observed_at: "2026-09-02T00:00:00.000Z" };
+  const base = {
+    type: "phase.reported",
+    task_id: "restart-task",
+    phase: "verifying",
+    subject_ref: subject,
+    activity_source: "agent",
+    activity_id: "verification-run-1",
+  };
+  recordTaskEvent({ ...base, event_id: "restart-start", session_id: "restart-owner", transition: "started", occurred_at: "2026-09-02T00:00:00.000Z", reason: "开始验证" }, { requireRegistered: true });
+  recordTaskEvent({ ...base, event_id: "restart-pause", session_id: "restart-owner", transition: "paused", occurred_at: "2026-09-02T00:10:00.000Z", reason: "Session 重启" }, { requireRegistered: true });
+  assert.throws(() => recordTaskEvent({ ...base, event_id: "restart-unauthorized", session_id: "restart-resumed", transition: "resumed", occurred_at: "2026-09-02T00:20:00.000Z", reason: "未经授权恢复" }, { requireRegistered: true }), /不是该任务的登记 Session/);
+
+  await writeFile(envPaths.TASKCENTER_SESSION_MERGES_PATH, JSON.stringify({ canonicalSessionId: "restart-owner", aliases: ["restart-resumed"] }));
+  recordTaskEvent({ type: "session.register", event_id: "restart-resumed-register", session_id: "restart-resumed", workspace: "/work" });
+  recordTaskEvent({ ...base, event_id: "restart-resume", session_id: "restart-resumed", transition: "resumed", occurred_at: "2026-09-02T00:20:00.000Z", reason: "恢复验证" }, { requireRegistered: true });
+  recordTaskEvent({ ...base, event_id: "restart-finish", session_id: "restart-resumed", transition: "finished", occurred_at: "2026-09-02T00:30:00.000Z", reason: "验证完成" }, { requireRegistered: true });
+
+  const report = taskPhaseReport("restart-task", "2026-09-02T00:30:00.000Z");
+  assert.equal(report.status, "complete");
+  assert.equal(report.phases.verifying.phase_wall_ms, 1_800_000);
+  assert.equal(report.phases.verifying.phase_active_ms, 1_200_000);
+  assert.equal(report.phases.verifying.phase_wait_ms, 600_000);
+  assert.equal(report.executor_active_ms["session:restart-owner"], 600_000);
+  assert.equal(report.executor_active_ms["session:restart-resumed"], 600_000);
 });
 
 test("scheduled_readonly Profile 绑定已登记 Session 且不创建任务", async () => {
@@ -1150,6 +1230,46 @@ test("CLI delegation 附着单个正式主任务并独立记录 Run", async (con
   const resolved = await (await fetch(`${base}/delegations/resolve?session_id=session-cli&workspace=${encodeURIComponent("/work")}`)).json();
   assert.equal(resolved.task.id, "task-delegation-http");
 
+  const phaseSubject = { type: "artifact", value: "delegated-snapshot", observed_at: "2026-09-02T01:00:00.000Z" };
+  const delegatedPhaseStart = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "phase.reported",
+      event_id: "delegation-phase-start",
+      task_id: "task-delegation-http",
+      session_id: "session-cli",
+      phase: "implementing",
+      transition: "started",
+      occurred_at: "2026-09-02T01:00:00.000Z",
+      subject_ref: phaseSubject,
+      reason: "CLI 开始实现",
+      activity_source: "delegated_executor",
+      activity_id: "delegated-run-1",
+      delegation_id: grantPayload.delegation.id,
+    }),
+  });
+  assert.equal(delegatedPhaseStart.status, 200, await delegatedPhaseStart.text());
+  const forgedDelegationPhase = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "phase.reported",
+      event_id: "delegation-phase-forged",
+      task_id: "task-delegation-http",
+      session_id: "session-cli",
+      phase: "implementing",
+      transition: "started",
+      occurred_at: "2026-09-02T01:01:00.000Z",
+      subject_ref: phaseSubject,
+      reason: "伪造 delegation",
+      activity_source: "delegated_executor",
+      activity_id: "forged-run",
+      delegation_id: "missing-delegation",
+    }),
+  });
+  assert.equal(forgedDelegationPhase.status, 404);
+
   const forbiddenParentUpdate = await fetch(`${base}/task-events`, {
     method: "POST",
     headers: taskHeaders(),
@@ -1162,12 +1282,38 @@ test("CLI delegation 附着单个正式主任务并独立记录 Run", async (con
     body: JSON.stringify({ delegation_id: grantPayload.delegation.id, session_id: "session-cli", workspace: "/work", event_id: "delegation-http-run", status: "succeeded", summary: "只上报运行结果", tests: ["node --test"] }),
   });
   assert.equal(run.status, 200);
+  const delegatedPhaseFinish = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "phase.reported",
+      event_id: "delegation-phase-finish",
+      task_id: "task-delegation-http",
+      session_id: "session-cli",
+      phase: "implementing",
+      transition: "finished",
+      occurred_at: "2026-09-02T01:10:00.000Z",
+      subject_ref: phaseSubject,
+      reason: "CLI 实现结束",
+      activity_source: "delegated_executor",
+      activity_id: "delegated-run-1",
+      delegation_id: grantPayload.delegation.id,
+    }),
+  });
+  assert.equal(delegatedPhaseFinish.status, 200, await delegatedPhaseFinish.text());
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].id, "task-delegation-http");
   assert.equal(tasks[0].status, "planned");
   assert.equal(tasks[0].cliRuns.length, 1);
   assert.equal(tasks[0].cliRuns[0].status, "succeeded");
+  assert.equal(tasks[0].phaseTiming.task_wall_ms, 600_000);
+  assert.equal(tasks[0].phaseTiming.executor_active_ms[`delegation:${grantPayload.delegation.id}`], 600_000);
+  const phaseReportResponse = await fetch(`${base}/tasks/task-delegation-http/phase-report?as_of=${encodeURIComponent("2026-09-02T01:10:00.000Z")}`);
+  assert.equal(phaseReportResponse.status, 200);
+  assert.equal((await phaseReportResponse.json()).phaseTiming.task_wall_ms, 600_000);
+  const invalidPhaseReport = await fetch(`${base}/tasks/task-delegation-http/phase-report?as_of=not-a-time`);
+  assert.equal(invalidPhaseReport.status, 400);
   const summaryTasks = (await (await fetch(`${base}/tasks?view=summary&page=1&page_size=40`)).json()).tasks;
   assert.equal(summaryTasks[0].cliRuns[0].status, "succeeded");
   assert.equal("events" in summaryTasks[0].cliRuns[0], false, "摘要列表不携带 delegation 完整事件历史");
@@ -1561,8 +1707,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   for (const expected of [
     "taskcenter_session_register", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report",
     "taskcenter_task_close",
-    "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report", "taskcenter_review_cycle_report", "taskcenter_task_diagnostic_report",
-    "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
+    "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report", "taskcenter_review_cycle_report", "taskcenter_task_phase_report", "taskcenter_task_diagnostic_report",
+    "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_task_export", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
     "taskcenter_delegation_grant", "taskcenter_delegation_claim", "taskcenter_cli_run_report", "taskcenter_delegation_revoke",
     "taskcenter_task_query", "taskcenter_session_status", "taskcenter_session_gate_exemption_status", "taskcenter_session_gate_exemption_set",
     "taskcenter_scheduled_readonly_scan_exemption_status", "taskcenter_scheduled_readonly_scan_exemption_set",
@@ -1889,6 +2035,28 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     },
   });
   assert.equal(JSON.parse(textOf(cycleReport)).task.reviewCycles[0].cycle_id, "cycle-mcp");
+  const reviewPhaseStart = {
+    session_id: "sess-reviewer",
+    task_id: "task-mcp-v2",
+    event_id: "mcp-review-phase-start",
+    phase: "reviewing",
+    transition: "started",
+    occurred_at: "2026-08-17T00:03:00.000Z",
+    subject_ref: reviewSubject,
+    reason: "独立 Review 开始",
+    activity_source: "review_cycle",
+    review_cycle_id: "cycle-mcp",
+    response_mode: "full",
+  };
+  const phaseStarted = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_phase_report", arguments: reviewPhaseStart })));
+  assert.equal(phaseStarted.accepted, true);
+  const phaseReplay = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_phase_report", arguments: reviewPhaseStart })));
+  assert.equal(phaseReplay.idempotent, true);
+  const phaseFinished = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_task_phase_report",
+    arguments: { ...reviewPhaseStart, event_id: "mcp-review-phase-finish", transition: "finished", occurred_at: "2026-08-17T00:05:00.000Z", reason: "独立 Review 结束" },
+  })));
+  assert.equal(phaseFinished.task.phaseTiming.phases.reviewing.phase_active_ms, 60_000);
   await client.callTool({
     name: "taskcenter_task_review_report",
     arguments: {
@@ -1906,6 +2074,16 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(packetPayload.reviewProcess.totalCycles, 1);
   assert.equal(packetPayload.reviewProcess.cycles[0].model, "gpt-review");
   assert.equal(packetPayload.reviewProcess.finalApprovedSubject.value, "revision-mcp");
+  assert.equal(packetPayload.phaseTiming.phases.reviewing.phase_wall_ms, 180_000);
+  assert.equal(packetPayload.phaseTiming.phases.reviewing.phase_wait_ms, 60_000);
+  assert.equal(packetPayload.phaseTiming.data_sources.review_cycles, true);
+  const phaseQuery = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "task-mcp-v2" } })));
+  assert.equal(phaseQuery.tasks[0].phaseTiming.phases.reviewing.active_time_source, "review_cycle");
+  const phaseJsonExport = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_export", arguments: { task_id: "task-mcp-v2", format: "json" } })));
+  assert.equal(phaseJsonExport.completionPacket.phaseTiming.phases.reviewing.phase_active_ms, 60_000);
+  const phaseMarkdownExport = textOf(await client.callTool({ name: "taskcenter_task_export", arguments: { task_id: "task-mcp-v2", format: "markdown" } }));
+  assert.match(phaseMarkdownExport, /## Phase distribution/);
+  assert.match(phaseMarkdownExport, /Data sources: phase_events=yes \/ review_cycles=yes/);
   await client.callTool({
     name: "taskcenter_task_diagnostic_report",
     arguments: {

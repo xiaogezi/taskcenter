@@ -196,6 +196,26 @@ server.registerTool("taskcenter_review_cycle_report", {
   inputSchema: z.object({ session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), response_mode: responseMode, ...reviewCycleFields }).strict(),
 }, async ({ session_id, task_id, event_id, response_mode, occurred_at, ...review_cycle }) => report("review_cycle.reported", { session_id, task_id, event_id, response_mode, occurred_at, review_cycle }));
 
+server.registerTool("taskcenter_task_phase_report", {
+  title: "上报 TaskCenter 任务阶段事件",
+  description: "追加可审计的阶段边界事件并返回更新后的任务；仅用于流程归因，不参与绩效、任务门禁或验收。跨 Session 续接需提供稳定 activity_id，delegated_executor 与 Review Cycle 必须引用已有授权记录。",
+  inputSchema: z.object({
+    task_id: z.string().min(1).max(200),
+    session_id: z.string().min(1).max(200),
+    event_id: z.string().min(1).max(200),
+    phase: z.enum(["planning", "implementing", "verifying", "reviewing", "reworking", "waiting_external"]),
+    transition: z.enum(["started", "paused", "resumed", "finished"]),
+    occurred_at: z.string().datetime({ offset: true }),
+    subject_ref: subjectReference,
+    reason: z.string().min(1).max(1_000),
+    activity_source: z.enum(["agent", "delegated_executor", "review_cycle", "build_wait", "external_wait", "other"]),
+    activity_id: z.string().min(1).max(200).optional(),
+    delegation_id: z.string().min(1).max(200).optional(),
+    review_cycle_id: z.string().min(1).max(120).optional(),
+    response_mode: responseMode,
+  }).strict(),
+}, async (input) => report("phase.reported", input));
+
 server.registerTool("taskcenter_task_diagnostic_report", {
   title: "上报 TaskCenter 调试案例观察",
   description: "追加观察性 Diagnostic Observation，用于复盘根因定位过程；不参与绩效、门禁或任务验收。",

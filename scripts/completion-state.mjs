@@ -1,3 +1,5 @@
+import { buildTaskPhaseTiming, PHASES } from "./task-phase-timing.mjs";
+
 const workflowProfiles = new Set(["fast", "standard", "strict"]);
 const reviewPolicies = new Set(["not_required", "recommended", "required"]);
 const executionEnvironments = new Set(["local", "worktree", "ci", "remote", "other"]);
@@ -288,12 +290,13 @@ export function resolveCompletionSubject(task, subject = null) {
 export function buildCompletionPacket(task) {
   const value = withCompletionState(task);
   const reviewProcess = buildReviewProcess(value);
+  const phaseTiming = buildTaskPhaseTiming(value);
   const normalizedRevision = value.currentSubject?.value || value.currentRevision || "";
   return {
     schemaVersion: "taskcenter-completion-v2", policyVersion: value.policyVersion,
     taskId: value.id,
     taskContract: { contractVersion: value.contractVersion, goal: value.goal, scope: value.scope || [], nonGoals: value.nonGoals || [], acceptanceCriteria: value.acceptanceRequirements, workflowProfile: value.workflowProfile, reviewPolicy: value.reviewPolicy, executionEnvironment: value.executionEnvironment, verificationPlan: value.verificationPlan || [], workspacePolicy: value.workspacePolicy },
-    currentSubject: value.currentSubject || null, requirementResults: value.requirementResults, verificationClaims: value.verificationClaims, reviewAttestations: value.reviewAttestations, reviewCycles: value.reviewCycles, reviewProcess, diagnosticObservations: value.diagnosticObservations, acceptanceRecords: value.acceptanceRecords, completionReadiness: value.completionReadiness,
+    currentSubject: value.currentSubject || null, requirementResults: value.requirementResults, verificationClaims: value.verificationClaims, reviewAttestations: value.reviewAttestations, reviewCycles: value.reviewCycles, reviewProcess, phaseTiming, diagnosticObservations: value.diagnosticObservations, acceptanceRecords: value.acceptanceRecords, completionReadiness: value.completionReadiness,
     currentRevision: normalizedRevision,
     ...(value.currentRevision && value.currentRevision !== normalizedRevision ? { legacyCurrentRevision: value.currentRevision } : {}),
     verificationStatus: value.verificationStatus, reviewStatus: value.reviewStatus, acceptanceStatus: value.acceptanceStatus,
@@ -302,7 +305,58 @@ export function buildCompletionPacket(task) {
 
 export function completionPacketMarkdown(task) {
   const packet = buildCompletionPacket(task), readiness = packet.completionReadiness;
-  return [`# TaskCenter Completion Packet: ${task.title || task.id}`, "", `- Task ID: ${task.id}`, `- Policy: ${packet.policyVersion}`, `- Ready: ${readiness.ready ? "yes" : "no"}`, `- Completion claim allowed: ${readiness.completionClaim.allowed ? "yes" : "no"}`, `- Subject: ${packet.currentSubject ? `${packet.currentSubject.type}:${packet.currentSubject.value || "none"}` : "none"}`, "", "## Readiness", "", ...(readiness.reasons.length ? readiness.reasons.map((item) => `- ${item}`) : ["- ready"]), "", "## Acceptance criteria", "", ...packet.taskContract.acceptanceCriteria.map((item) => `- [${item.required ? "x" : " "}] ${item.id}: ${item.description}`), "", "## Verification claims", "", ...(packet.verificationClaims.length ? packet.verificationClaims.map((item) => `- ${item.id}: ${item.kind} / ${item.status}`) : ["- none"]), "", "## Reviews", "", `- Effective cycles: ${packet.reviewProcess.totalCycles}`, `- Changes requested: ${packet.reviewProcess.changesRequestedCycles}`, `- Fallback occurred: ${packet.reviewProcess.fallbackOccurred ? "yes" : "no"}`, `- Long-tail warnings: ${packet.reviewProcess.reviewLoopWarnings.length}`, `- Final approved subject: ${packet.reviewProcess.finalApprovedSubject ? `${packet.reviewProcess.finalApprovedSubject.type}:${packet.reviewProcess.finalApprovedSubject.value || "none"}` : "none"}`, ...(packet.reviewProcess.cycles.length ? packet.reviewProcess.cycles.map((item) => `- cycle ${item.cycleNumber}: reviewer=${item.reviewer?.id || "unknown"} / model=${item.model || "unknown"} / scope=${item.reviewScope || "legacy"} / verdict=${item.verdict || item.outcome || "pending"}`) : ["- none"]), "", "## Acceptance records", "", ...(packet.acceptanceRecords.length ? packet.acceptanceRecords.map((item) => `- ${item.id}: ${item.outcome} via ${item.source}`) : ["- none"]), ""].join("\n");
+  const phaseLines = PHASES.map((phase) => {
+    const item = packet.phaseTiming.phases[phase];
+    return `- ${phase}: wall=${phaseDuration(item.phase_wall_ms)} / active=${phaseDuration(item.phase_active_ms)} / wait=${phaseDuration(item.phase_wait_ms)} / source=${item.active_time_source} / confidence=${item.measurement_confidence}`;
+  });
+  const wait = packet.phaseTiming.wait_breakdown_ms;
+  return [
+    `# TaskCenter Completion Packet: ${task.title || task.id}`,
+    "",
+    `- Task ID: ${task.id}`,
+    `- Policy: ${packet.policyVersion}`,
+    `- Ready: ${readiness.ready ? "yes" : "no"}`,
+    `- Completion claim allowed: ${readiness.completionClaim.allowed ? "yes" : "no"}`,
+    `- Subject: ${packet.currentSubject ? `${packet.currentSubject.type}:${packet.currentSubject.value || "none"}` : "none"}`,
+    "",
+    "## Readiness",
+    "",
+    ...(readiness.reasons.length ? readiness.reasons.map((item) => `- ${item}`) : ["- ready"]),
+    "",
+    "## Acceptance criteria",
+    "",
+    ...packet.taskContract.acceptanceCriteria.map((item) => `- [${item.required ? "x" : " "}] ${item.id}: ${item.description}`),
+    "",
+    "## Verification claims",
+    "",
+    ...(packet.verificationClaims.length ? packet.verificationClaims.map((item) => `- ${item.id}: ${item.kind} / ${item.status}`) : ["- none"]),
+    "",
+    "## Reviews",
+    "",
+    `- Effective cycles: ${packet.reviewProcess.totalCycles}`,
+    `- Changes requested: ${packet.reviewProcess.changesRequestedCycles}`,
+    `- Fallback occurred: ${packet.reviewProcess.fallbackOccurred ? "yes" : "no"}`,
+    `- Long-tail warnings: ${packet.reviewProcess.reviewLoopWarnings.length}`,
+    `- Final approved subject: ${packet.reviewProcess.finalApprovedSubject ? `${packet.reviewProcess.finalApprovedSubject.type}:${packet.reviewProcess.finalApprovedSubject.value || "none"}` : "none"}`,
+    ...(packet.reviewProcess.cycles.length ? packet.reviewProcess.cycles.map((item) => `- cycle ${item.cycleNumber}: reviewer=${item.reviewer?.id || "unknown"} / model=${item.model || "unknown"} / scope=${item.reviewScope || "legacy"} / verdict=${item.verdict || item.outcome || "pending"}`) : ["- none"]),
+    "",
+    "## Phase distribution",
+    "",
+    `- Status: ${packet.phaseTiming.status}`,
+    `- Deduplicated task wall: ${phaseDuration(packet.phaseTiming.task_wall_ms)}`,
+    `- Data sources: phase_events=${packet.phaseTiming.data_sources.phase_events ? "yes" : "no"} / review_cycles=${packet.phaseTiming.data_sources.review_cycles ? "yes" : "no"}`,
+    `- Wait sources: build=${phaseDuration(wait.build)} / external=${phaseDuration(wait.external)} / paused=${phaseDuration(wait.paused)} / review_queue=${phaseDuration(wait.review_queue)}`,
+    ...phaseLines,
+    "",
+    "## Acceptance records",
+    "",
+    ...(packet.acceptanceRecords.length ? packet.acceptanceRecords.map((item) => `- ${item.id}: ${item.outcome} via ${item.source}`) : ["- none"]),
+    "",
+  ].join("\n");
+}
+
+function phaseDuration(value) {
+  return Number.isFinite(value) ? `${value} ms` : "unknown";
 }
 
 function buildReviewProcess(task) {

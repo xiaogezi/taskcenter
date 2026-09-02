@@ -198,6 +198,7 @@ MCP 工具：
 - `taskcenter_task_verification_report`
 - `taskcenter_task_review_report`
 - `taskcenter_review_cycle_report`
+- `taskcenter_task_phase_report`
 - `taskcenter_task_diagnostic_report`
 - `taskcenter_task_completion_readiness`
 - `taskcenter_task_completion_packet`
@@ -213,7 +214,7 @@ MCP 工具：
 - `taskcenter_cli_run_report`
 - `taskcenter_delegation_revoke`
 
-控制服务提供无 Session 依赖的 `POST /core/task-events`、`POST /tasks/import-evidence`、`GET /tasks/:id/export?format=json|markdown`，以及受令牌保护的 `POST /task-acceptance-report`。旧 `POST /task-acceptance-sync` 继续作为 Context 兼容适配器。令牌只通过进程环境传递，不写入任务、事件、日志或仓库。
+控制服务提供无 Session 依赖的 `POST /core/task-events`、`POST /tasks/import-evidence`、`GET /tasks/:id/phase-report`、`GET /tasks/:id/export?format=json|markdown`，以及受令牌保护的 `POST /task-acceptance-report`。旧 `POST /task-acceptance-sync` 继续作为 Context 兼容适配器。令牌只通过进程环境传递，不写入任务、事件、日志或仓库。
 
 ## 数据文件
 
@@ -228,6 +229,10 @@ MCP 工具：
 普通闭环可用 `taskcenter_task_close` 一次提交最终报告、Requirement Results 与 Verification Claims，并直接取得 readiness；同一 `event_id` 重试幂等。它把典型的 verification、requirements、report、readiness 四次往返压缩为一次，同时保留原有细粒度接口和 OCR 独立 Session/attestation 路径。
 
 Review 过程使用 `taskcenter_review_cycle_report` 按稳定 `cycle_id` 增量记录 `pending_review/reviewing/fixing/verifying/completed` 阶段、墙钟时间和调用方明确测得的 active time。`taskcenter_task_review_report` 的 v3 Attestation 通过 `cycle_id`、`review_scope=full|incremental`、`base_attestation_id`、文件集合与带 fingerprint 的 finding 关联复审；旧 Attestation 保持 `legacy` 或 v2 原样读取，不补造新字段。治理快照和 Completion Packet 会输出轮次、漏斗、P50/P95、finding 质量、fallback 与 `reviewLoopWarnings`；缺少阶段事件或 active time 时返回“数据不足”，这些指标只用于团队流程诊断，不用于 reviewer、模型或个人排名。
+
+任务阶段使用 `taskcenter_task_phase_report` 追加 `planning/implementing/verifying/reviewing/reworking/waiting_external` 的 `started/paused/resumed/finished` 事件。每条事件必须显式携带 `task_id`、`session_id`、`event_id`、`occurred_at`、`subject_ref`、`reason` 与 `activity_source`；同一执行跨 Session 续接时必须复用稳定的 `activity_id`，且新 Session 必须通过既有 Session merge、delegation 或 Review Cycle 身份获得任务授权。delegated executor 还必须引用已领取的 `delegation_id`。阶段账本只追加，重复 `event_id` 仅在语义完全相同时幂等。
+
+`phaseTiming.task_wall_ms` 是所有已观测阶段区间的并集，多个执行器重叠时只计算一次；`executor_active_ms` 按 Session 或 delegation 累计，因此并行时总和可以大于任务墙钟。`phase_wait_ms` 与 `wait_breakdown_ms` 只统计明确上报的暂停、构建等待、外部等待和 Review 排队区间，不用 Token 或“墙钟减 active”猜测有效工时。Review、返工和 Review 后验证继续以现有 Review Cycle 时间为权威来源，阶段事件只补充边界与执行器归因，不重复计账。旧任务或缺失字段返回 `unknown`/`partial` 和 `null`，不会把缺失数据伪装为零；这些数据只用于流程诊断，不参与绩效、任务门禁或验收。
 
 ```bash
 npm run sync

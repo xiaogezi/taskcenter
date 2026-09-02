@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 新增 append-only 任务阶段事件与阶段报告，分别提供并行去重的任务墙钟、各执行器累计活动时间和显式等待来源；复用 Review Cycle 作为 Review 时间权威账本，并让旧任务保持 `unknown` 而非伪造零值。
 - 正式服务改为运行不可变 release worktree 与 production build，开发工作区修改不再被当前实例热加载。
 - 新增隔离候选自检、失败自动回滚、发布阶段事件与 `service:history` 研发效能摘要。
 

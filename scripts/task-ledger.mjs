@@ -10,6 +10,13 @@ import {
   normalizeCompletionEvent,
   withCompletionState,
 } from "./completion-state.mjs";
+import {
+  applyTaskPhaseEvent,
+  buildTaskPhaseTiming,
+  validatePhaseEvent,
+  withTaskPhaseTiming,
+} from "./task-phase-timing.mjs";
+import { listDelegations } from "./delegation-store.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const taskEventsPath = resolve(process.env.TASKCENTER_TASK_EVENTS_PATH || join(projectRoot, "data", "task-events.jsonl"));
@@ -33,13 +40,13 @@ export { taskTimeState, STALE_TASK_MS };
 
 export function loadTasks() {
   const source = readLedger();
-  if (normalizedTasksCache?.source === source) return normalizedTasksCache.tasks;
+  if (normalizedTasksCache?.source === source) return normalizedTasksCache.tasks.map((task) => withTaskPhaseTiming(task));
   const tasks = source
     .filter((task) => task.status !== "removed")
     .map((task) => normalizeDueAtSemantics(task))
     .map((task) => withCompletionState({ ...task, sessionId: canonicalSessionId(task.sessionId) }));
   normalizedTasksCache = { source, tasks };
-  return tasks;
+  return tasks.map((task) => withTaskPhaseTiming(task));
 }
 
 function normalizeDueAtSemantics(task) {
@@ -57,6 +64,16 @@ export function taskCompletionPacket(taskId) {
   const task = loadTasks().find((item) => item.id === taskId);
   if (!task) throw new TaskLedgerError(404, "任务不存在。");
   return buildCompletionPacket(task);
+}
+
+export function taskPhaseReport(taskId, asOf = "") {
+  const task = loadTasks().find((item) => item.id === taskId);
+  if (!task) throw new TaskLedgerError(404, "任务不存在。");
+  if (asOf !== "" && asOf !== undefined && asOf !== null) {
+    const parsed = asOf instanceof Date ? asOf.getTime() : Date.parse(asOf);
+    if (!Number.isFinite(parsed)) throw new TaskLedgerError(400, "as_of 必须是有效 ISO 时间。");
+  }
+  return buildTaskPhaseTiming(task, asOf || undefined);
 }
 
 function contextCompletionTask(contextTaskId, taskCenterTaskId = "") {
@@ -364,9 +381,10 @@ function readLedger() {
 export function recordTaskEvent(input, options = {}) {
   const tasks = loadTasks();
   const current = input?.task_id ? tasks.find((task) => task.id === String(input.task_id)) : null;
-  const event = normalizeEvent(input, current?.currentSubject || null);
+  const event = normalizeEvent(input, current);
   const sessionRegistry = loadSessionRegistry();
-  const isRegistered = Boolean(event.session_id && sessionRegistry[event.session_id]);
+  const eventSessionId = canonicalSessionId(event.session_id);
+  const isRegistered = Boolean(eventSessionId && sessionRegistry[eventSessionId]);
 
   if (options.requireRegistered
     && ["session.register", "task.create"].includes(event.type)
@@ -410,11 +428,15 @@ export function recordTaskEvent(input, options = {}) {
   if (current) {
     // 人工操作事件（event_id 以 "manual-" 开头）绕过归属校验，但必须本机 UI 来源
     const reviewEvidence = ["review.reported", "review_cycle.reported"].includes(event.type);
-    if (!event.event_id.startsWith("manual-") && !reviewEvidence && current.sessionId && event.session_id && current.sessionId !== event.session_id) {
+    const phaseEvidence = event.type === "phase.reported";
+    const ownerSession = canonicalSessionId(current.sessionId);
+    const sameOwnerSession = Boolean(ownerSession && eventSessionId && ownerSession === eventSessionId);
+    const authorizedPhaseSession = phaseEvidence && authorizePhaseSession(current, event, sameOwnerSession);
+    if (!event.event_id.startsWith("manual-") && !reviewEvidence && !authorizedPhaseSession && current.sessionId && event.session_id && !sameOwnerSession) {
       throw new TaskLedgerError(403, "当前 Session 不是该任务的登记 Session。");
     }
-    if (options.requireRegistered && reviewEvidence && !isRegistered) {
-      throw new TaskLedgerError(409, "Reviewer Session 尚未登记。");
+    if (options.requireRegistered && (reviewEvidence || (phaseEvidence && !sameOwnerSession)) && !isRegistered) {
+      throw new TaskLedgerError(409, phaseEvidence ? "阶段事件 Session 尚未登记。" : "Reviewer Session 尚未登记。");
     }
     // 任务幂等：同一 session 的 task.create 对已存在的任务视为幂等更新，不新建。
     if (event.type === "task.create") {
@@ -467,6 +489,26 @@ export function recordTaskEvent(input, options = {}) {
   return { event, task: next, supersededTaskIds };
 }
 
+function authorizePhaseSession(task, event, sameOwnerSession) {
+  let delegated = false;
+  if (event.delegation_id) {
+    const delegation = listDelegations(task.id).find((item) => item.id === event.delegation_id);
+    if (!delegation) throw new TaskLedgerError(404, "阶段事件引用的 delegation 不存在或不属于该任务。");
+    if (canonicalSessionId(delegation.delegateSessionId) !== canonicalSessionId(event.session_id)) {
+      throw new TaskLedgerError(403, "阶段事件 Session 不是该 delegation 的执行 Session。");
+    }
+    delegated = true;
+  }
+  let reviewActor = false;
+  if (event.review_cycle_id) {
+    const cycle = (task.reviewCycles || []).find((item) => item.cycle_id === event.review_cycle_id);
+    if (!cycle) throw new TaskLedgerError(404, "阶段事件引用的 Review Cycle 不存在。");
+    const reviewerSession = cycle.reviewer?.session_id || cycle.reviewer?.id || "";
+    reviewActor = Boolean(reviewerSession && canonicalSessionId(reviewerSession) === canonicalSessionId(event.session_id));
+  }
+  return sameOwnerSession || delegated || reviewActor;
+}
+
 function derivedCompletionEvents(previous, next, source) {
   if (!previous || !next) return [];
   const transitions = [];
@@ -506,6 +548,7 @@ const idempotentEventFields = [
   "fallback_from", "fallback_reason", "retry_after_at", "review_artifacts",
   "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
   "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation", "review_cycle",
+  "phase", "transition", "activity_source", "activity_id", "delegation_id", "review_cycle_id",
   "diagnostic_observation",
   "close_requirements", "close_verifications",
   "context_completion_id", "authorization_id", "reason", "actor", "subject_ref", "acceptance_record", "workspace_policy",
@@ -527,7 +570,10 @@ function findStoredTaskEvent(eventId) {
 }
 
 function sameIdempotentEvent(left, right) {
-  const pick = (event) => Object.fromEntries(idempotentEventFields.map((field) => [field, event[field]]));
+  const fields = left?.type === "phase.reported" || right?.type === "phase.reported"
+    ? [...idempotentEventFields, "occurred_at"]
+    : idempotentEventFields;
+  const pick = (event) => Object.fromEntries(fields.map((field) => [field, event[field]]));
   return JSON.stringify(pick(left)) === JSON.stringify(pick(right));
 }
 
@@ -799,14 +845,14 @@ function persistProcessedEventIds(set) {
   renameSync(temporaryPath, processedEventIdsPath);
 }
 
-function normalizeEvent(input, currentSubject = null) {
+function normalizeEvent(input, current = null) {
   if (!input || typeof input !== "object") throw new TaskLedgerError(400, "任务事件必须是 JSON 对象。");
   const type = String(input.type || "");
   const sessionId = String(input.session_id || "");
   const allowedTypes = new Set([
     "session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.close", "task.review",
     "task.reminder", "tool.call", "routing.decision", "routing.result", "routing.health", "requirement.reported", "verification.reported", "review.reported", "review_cycle.reported",
-    "acceptance.accepted", "acceptance.rejected", "subject.updated", "diagnostic.reported",
+    "acceptance.accepted", "acceptance.rejected", "subject.updated", "diagnostic.reported", "phase.reported",
   ]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
   if (input.status !== undefined && !statuses.has(input.status)) throw new TaskLedgerError(400, "任务状态无效。");
@@ -872,7 +918,13 @@ function normalizeEvent(input, currentSubject = null) {
     active_executors: normalizeNonNegativeInteger(input.active_executors),
     retry_after_at: cleanText(input.retry_after_at, 80),
     review_artifacts: normalizeReviewArtifacts(input.review_artifacts),
-    ...normalizeCompletionEvent(input, currentSubject),
+    ...normalizeCompletionEvent(input, current?.currentSubject || null),
+    phase: cleanText(input.phase, 40),
+    transition: cleanText(input.transition, 40),
+    activity_source: cleanText(input.activity_source, 40),
+    activity_id: cleanText(input.activity_id, 200),
+    delegation_id: cleanText(input.delegation_id, 200),
+    review_cycle_id: cleanText(input.review_cycle_id, 120),
     created_at: new Date().toISOString(),
   };
   event.recorded_at = event.created_at;
@@ -921,6 +973,23 @@ function normalizeEvent(input, currentSubject = null) {
   }
   if (type === "diagnostic.reported" && !event.diagnostic_observation?.case_id) {
     throw new TaskLedgerError(400, "diagnostic.reported 缺少有效 diagnostic_observation。");
+  }
+  if (type === "phase.reported") {
+    if (!String(input.event_id || "").trim()) throw new TaskLedgerError(400, "阶段事件必须显式提供 event_id。");
+    if (!String(input.session_id || "").trim()) throw new TaskLedgerError(400, "阶段事件必须显式提供 session_id。");
+    if (!String(input.occurred_at || "").trim()) throw new TaskLedgerError(400, "阶段事件必须显式提供 occurred_at。");
+    if (!input.subject_ref || typeof input.subject_ref !== "object") throw new TaskLedgerError(400, "阶段事件必须显式提供 subject_ref。");
+    if (!String(input.reason || "").trim()) throw new TaskLedgerError(400, "阶段事件必须显式提供 reason。");
+    try {
+      validatePhaseEvent(event, {
+        taskId: event.task_id,
+        previousEvents: current?.phaseEvents || [],
+        reviewCycles: current?.reviewCycles,
+      });
+    } catch (error) {
+      if (Number.isInteger(error?.statusCode)) throw new TaskLedgerError(error.statusCode, error.message);
+      throw error;
+    }
   }
   return event;
 }
@@ -1038,6 +1107,7 @@ function applyEvent(current, event) {
     routingHistory: [],
     routingHealth: null,
     routingHealthHistory: [],
+    phaseEvents: [],
     createdAt: now,
     timingModelVersion: "estimate-calibration-v1",
     firstStartedAt: "",
@@ -1049,14 +1119,15 @@ function applyEvent(current, event) {
     expectedAtHistory: [],
     dueAtExplicit: false,
   };
+  const preservesTaskOwner = ["review.reported", "review_cycle.reported", "phase.reported"].includes(event.type);
   let next = {
     ...base,
-    sessionId: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.sessionId : (event.session_id || base.sessionId),
+    sessionId: preservesTaskOwner ? base.sessionId : (event.session_id || base.sessionId),
     ownerActor: event.type === "task.create" ? (event.actor || base.ownerActor) : base.ownerActor,
-    agent: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.agent : event.agent !== "unknown" ? event.agent : (base.agent || "unknown"),
-    provider: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.provider : event.provider !== "unknown" ? event.provider : (base.provider || "unknown"),
-    model: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.model : event.model !== "unknown" ? event.model : (base.model || "unknown"),
-    workspace: ["review.reported", "review_cycle.reported"].includes(event.type) ? base.workspace : (event.workspace || base.workspace),
+    agent: preservesTaskOwner ? base.agent : event.agent !== "unknown" ? event.agent : (base.agent || "unknown"),
+    provider: preservesTaskOwner ? base.provider : event.provider !== "unknown" ? event.provider : (base.provider || "unknown"),
+    model: preservesTaskOwner ? base.model : event.model !== "unknown" ? event.model : (base.model || "unknown"),
+    workspace: preservesTaskOwner ? base.workspace : (event.workspace || base.workspace),
     title: event.title || base.title,
     goal: event.goal || base.goal,
     requirementId: event.requirement_id || base.requirementId,
@@ -1100,6 +1171,8 @@ function applyEvent(current, event) {
   if (event.type === "task.review") next.status = event.status || base.status;
   try {
     next = applyCompletionEvent(next, event);
+    if (event.type === "phase.reported") next = applyTaskPhaseEvent(next, event);
+    else if (event.type === "review_cycle.reported") next = withTaskPhaseTiming(next);
   } catch (error) {
     // completion-state 使用 statusCode 表达协议校验失败。这里必须把它转换成
     // TaskLedgerError，否则控制服务会把合法的 4xx 误报成“Session 投递失败”。

@@ -42,6 +42,7 @@ import {
   taskCompletionPacket,
   taskCompletionReadiness,
   taskExport,
+  taskPhaseReport,
   taskEventsPath,
   taskLedgerPath,
   TaskLedgerError,
@@ -608,6 +609,12 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, { taskId: packetMatch[1], completionPacket: taskCompletionPacket(packetMatch[1]) });
       return;
     }
+    const phaseReportMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/phase-report(?:\?as_of=([^&]+))?$/) : null;
+    if (phaseReportMatch) {
+      const asOf = phaseReportMatch[2] ? decodeURIComponent(phaseReportMatch[2]) : "";
+      sendJson(response, 200, { taskId: phaseReportMatch[1], phaseTiming: taskPhaseReport(phaseReportMatch[1], asOf) });
+      return;
+    }
     const contextCompletionMatch = request.method === "POST"
       ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/sync-project-context$/)
       : null;
@@ -990,7 +997,7 @@ function withDelegations(tasks) {
 
 function taskSummary(task) {
   const summary = { ...task };
-  for (const key of ["requirementResults", "verificationClaims", "reviewAttestations", "diagnosticObservations", "acceptanceRecords", "subjectHistory", "evidence", "changedFiles", "tests"]) delete summary[key];
+  for (const key of ["requirementResults", "verificationClaims", "reviewAttestations", "diagnosticObservations", "acceptanceRecords", "subjectHistory", "phaseEvents", "evidence", "changedFiles", "tests"]) delete summary[key];
   return { ...summary, estimateHistory: (task.estimateHistory || []).slice(-3), routingHistory: (task.routingHistory || []).slice(-3), cliRuns: (task.cliRuns || []).map(compactDelegationRun) };
 }
 

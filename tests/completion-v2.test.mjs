@@ -221,7 +221,11 @@ test("Completion Packet 增加 Review 过程但不改变 completionClaim", () =>
   assert.equal(packet.reviewProcess.cycles[0].model, "luna");
   assert.equal(packet.reviewProcess.fallbackOccurred, true);
   assert.equal(packet.reviewProcess.finalApprovedSubject.value, "artifact:v1");
+  assert.equal(packet.phaseTiming.status, "unknown");
+  assert.equal(packet.phaseTiming.phases.planning.phase_wall_ms, null);
   assert.match(completionPacketMarkdown(task), /Effective cycles: 1/);
+  assert.match(completionPacketMarkdown(task), /## Phase distribution/);
+  assert.match(completionPacketMarkdown(task), /Data sources: phase_events=no \/ review_cycles=yes/);
 });
 
 test("Completion Packet 汇总 Review 长尾告警且不把告警作为完成阻断", () => {
