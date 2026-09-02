@@ -28,6 +28,7 @@ import {
 import {
   completeContextTasks,
   completeTasksByReconciliation,
+  canonicalSessionId,
   ensureContextTask,
   getSessionStatuses,
   loadSessionRegistry,
@@ -47,6 +48,13 @@ import {
   taskLedgerPath,
   TaskLedgerError,
 } from "./task-ledger.mjs";
+import {
+  loadTaskReuseDecisions,
+  recordTaskReuseDecision,
+  summarizeTaskReuseDecisions,
+  taskReuseCheck,
+  TaskReuseAdvisorError,
+} from "./task-reuse-advisor.mjs";
 import { syncContextCompletionFromUi, syncContextEvent } from "./context-bridge.mjs";
 import {
   beginReflectionExecution,
@@ -338,6 +346,42 @@ const server = createServer(async (request, response) => {
         });
         return;
       }
+    }
+    if (request.method === "POST" && request.url === "/task-reuse/check") {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      const registry = requireRegisteredReuseSession(body);
+      const advice = taskReuseCheck(body, {
+        tasks: loadVisibleTasks(),
+        sessionRegistry: registry,
+        delegations: listDelegations(),
+        canonicalSessionId,
+      });
+      sendJson(response, 200, advice);
+      return;
+    }
+    if (request.method === "POST" && request.url === "/task-reuse/decisions") {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      requireRegisteredReuseSession(body);
+      const result = recordTaskReuseDecision(body);
+      sendJson(response, result.idempotent ? 200 : 201, { accepted: true, ...result });
+      return;
+    }
+    if (request.method === "GET" && request.url?.startsWith("/task-reuse/decisions")) {
+      const url = new URL(request.url, `http://${host}:${port}`);
+      if (url.pathname !== "/task-reuse/decisions") {
+        sendJson(response, 404, { error: "接口不存在。" });
+        return;
+      }
+      const decisionFilters = {
+        workspace: url.searchParams.get("workspace") || "",
+        project_id: url.searchParams.get("project_id") || "",
+        limit: url.searchParams.get("limit") || "100",
+      };
+      const reuseDecisions = loadTaskReuseDecisions(decisionFilters);
+      sendJson(response, 200, { decisions: reuseDecisions, summary: summarizeTaskReuseDecisions(reuseDecisions) });
+      return;
     }
     if (request.method === "GET" && request.url === "/routing/health") {
       sendJson(response, 200, { models: routingHealth() });
@@ -937,7 +981,7 @@ const server = createServer(async (request, response) => {
     }
     sendJson(response, 404, { error: "接口不存在。" });
   } catch (error) {
-    const known = error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError;
+    const known = error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError;
     const statusCode = known ? error.statusCode : 500;
     if (!known) {
       console.error("TaskCenter control error:", safeError(error));
@@ -1424,6 +1468,20 @@ function verifyTaskRequest(request) {
   if (!String(request.headers["content-type"] || "").startsWith("application/json")) {
     throw new TaskLedgerError(415, "任务事件必须使用 JSON。");
   }
+}
+
+function requireRegisteredReuseSession(input) {
+  const sessionId = String(input?.session_id || "").trim();
+  const workspace = String(input?.workspace || "").trim();
+  if (!sessionId || !workspace) throw new TaskReuseAdvisorError(400, "复用请求缺少 session_id 或 workspace。");
+  const registry = loadSessionRegistry();
+  const canonical = canonicalSessionId(sessionId);
+  const session = registry[canonical] || registry[sessionId];
+  if (!session) throw new TaskReuseAdvisorError(409, "复用请求 Session 尚未登记。");
+  if (resolve(session.workspace || "") !== resolve(workspace)) {
+    throw new TaskReuseAdvisorError(403, "复用请求 workspace 与已登记 Session 不一致。");
+  }
+  return registry;
 }
 
 function verifyBoundMcpRequest(request) {

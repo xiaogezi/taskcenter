@@ -16,6 +16,7 @@ const envPaths = {
   TASKCENTER_TASK_LEDGER_PATH: join(tempDir, "task-ledger.json"),
   TASKCENTER_TASK_EVENT_IDS_PATH: join(tempDir, "task-event-ids.json"),
   TASKCENTER_TASK_RECONCILE_PATH: join(tempDir, "task-reconcile.jsonl"),
+  TASKCENTER_TASK_REUSE_DECISIONS_PATH: join(tempDir, "task-reuse-decisions.jsonl"),
   TASKCENTER_SESSION_REGISTRY_PATH: join(tempDir, "session-registry.json"),
   TASKCENTER_SESSION_MERGES_PATH: join(tempDir, "session-merges.json"),
   TASKCENTER_CONTEXT_TASK_MAP_PATH: join(tempDir, "context-task-map.json"),
@@ -34,6 +35,7 @@ const {
   ensureContextTask,
   getSessionStatuses,
   isContextShadowTask,
+  loadSessionRegistry,
   loadTasks,
   loadVisibleTasks,
   reconcileContextShadowTasks,
@@ -115,6 +117,7 @@ async function registerHttpSession(base, session_id, identity = {}) {
       agent: identity.agent || "codex",
       provider: identity.provider || "openai",
       model: identity.model || "gpt-test",
+      project_id: identity.project_id,
     }),
   });
   assert.equal(response.status, 200);
@@ -158,10 +161,11 @@ await server.connect(new StdioServerTransport());
 
 test("session.register 不误创建任务", async () => {
   await resetLedger();
-  const result = recordTaskEvent({ type: "session.register", session_id: "sess-1", workspace: "/work" });
+  const result = recordTaskEvent({ type: "session.register", session_id: "sess-1", workspace: "/work", project_id: "project-alpha" });
   assert.equal(result.task, null);
   assert.equal(result.idempotent, undefined);
   assert.equal(loadTasks().length, 0);
+  assert.equal(loadSessionRegistry()["sess-1"].projectId, "project-alpha");
 });
 
 test("阶段事件写入任务账本并保持幂等、状态机校验与旧账本兼容", async () => {
@@ -1326,6 +1330,95 @@ test("CLI delegation 附着单个正式主任务并独立记录 Run", async (con
   assert.equal(sessions.find((session) => session.sessionId === "session-cli").taskCount, 0);
 });
 
+test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审计", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "session-reuse", { workspace: "/work" });
+  const created = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create",
+      event_id: "reuse-http-task-create",
+      session_id: "session-reuse",
+      task_id: "task-reuse-http",
+      context_task_id: "context-reuse-http",
+      workspace: "/work",
+      title: "实现 FCM 通知链路",
+      goal: "完成 FCM 通知失败重试和送达验证",
+      status: "in_progress",
+    }),
+  });
+  assert.equal(created.status, 201, await created.text());
+  const ledgerBefore = await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8");
+  const eventsBefore = await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8");
+  const check = await fetch(`${base}/task-reuse/check`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      session_id: "session-reuse",
+      workspace: "/work",
+      project_id: "example",
+      context_task_id: "context-reuse-http",
+      title: "继续完善 FCM 通知链路",
+      goal: "补充 FCM 通知失败重试和送达验证",
+      scope: ["FCM notification delivery"],
+    }),
+  });
+  const advice = await check.json();
+  assert.equal(check.status, 200, advice.error);
+  assert.equal(advice.recommendation, "reuse");
+  assert.equal(advice.candidates[0].task_id, "task-reuse-http");
+  assert.equal(advice.advisory_only, true);
+  assert.equal(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"), ledgerBefore);
+  assert.equal(await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8"), eventsBefore);
+
+  const decision = {
+    event_id: "reuse-http-decision",
+    check_id: advice.check_id,
+    session_id: "session-reuse",
+    workspace: "/work",
+    project_id: "example",
+    context_task_id: "context-reuse-http",
+    recommendation: advice.recommendation,
+    confidence: advice.confidence,
+    candidate_task_ids: advice.candidates.map((candidate) => candidate.task_id),
+    match_reasons: advice.match_reasons,
+    final_decision: "reuse",
+    selected_task_id: "task-reuse-http",
+    occurred_at: "2026-09-02T03:00:00.000Z",
+  };
+  const report = await fetch(`${base}/task-reuse/decisions`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify(decision),
+  });
+  assert.equal(report.status, 201, await report.text());
+  const replay = await fetch(`${base}/task-reuse/decisions`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify(decision),
+  });
+  const replayPayload = await replay.json();
+  assert.equal(replay.status, 200, replayPayload.error);
+  assert.equal(replayPayload.idempotent, true);
+  const conflict = await fetch(`${base}/task-reuse/decisions`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({ ...decision, final_decision: "uncertain", selected_task_id: undefined }),
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"), ledgerBefore);
+  assert.equal(await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8"), eventsBefore);
+  const queried = await (await fetch(`${base}/task-reuse/decisions?project_id=example`)).json();
+  assert.equal(queried.decisions.length, 1);
+  assert.equal(queried.decisions[0].selected_task_id, "task-reuse-http");
+  assert.equal(queried.summary.decision_count, 1);
+  assert.equal(queried.summary.automatic_block_count, 0);
+  assert.equal(queried.summary.automatic_merge_count, 0);
+});
+
 test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计", async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_LUNA: "1" });
@@ -1715,7 +1808,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report", "taskcenter_review_cycle_report", "taskcenter_task_phase_report", "taskcenter_task_diagnostic_report",
     "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_task_export", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
     "taskcenter_delegation_grant", "taskcenter_delegation_claim", "taskcenter_cli_run_report", "taskcenter_delegation_revoke",
-    "taskcenter_task_query", "taskcenter_session_status", "taskcenter_session_gate_exemption_status", "taskcenter_session_gate_exemption_set",
+    "taskcenter_task_query", "taskcenter_task_reuse_check", "taskcenter_task_reuse_decision_report", "taskcenter_task_reuse_decision_query",
+    "taskcenter_session_status", "taskcenter_session_gate_exemption_status", "taskcenter_session_gate_exemption_set",
     "taskcenter_scheduled_readonly_scan_exemption_status", "taskcenter_scheduled_readonly_scan_exemption_set",
     "taskcenter_usage_report", "taskcenter_session_lifecycle", "taskcenter_governance_metrics",
   ]) {
@@ -1874,6 +1968,43 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     tool_input: { cmd: "rtk git ls-files README.md" },
   });
   assert.equal(scanHookBlocked.code, 2);
+
+  const precreateAdvice = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_task_reuse_check",
+    arguments: {
+      session_id: "sess-mcp",
+      workspace: "/work",
+      project_id: "mcp-project",
+      title: "MCP 闸门",
+      goal: "验证 MCP 通道",
+      scope: ["MCP task gate"],
+    },
+  })));
+  assert.equal(precreateAdvice.recommendation, "create_new");
+  assert.equal(precreateAdvice.advisory_only, true);
+  const precreateDecision = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_task_reuse_decision_report",
+    arguments: {
+      event_id: "mcp-reuse-decision",
+      check_id: precreateAdvice.check_id,
+      session_id: "sess-mcp",
+      workspace: "/work",
+      project_id: "mcp-project",
+      recommendation: precreateAdvice.recommendation,
+      confidence: precreateAdvice.confidence,
+      candidate_task_ids: [],
+      match_reasons: [],
+      final_decision: "create_new",
+      occurred_at: "2026-09-02T04:00:00.000Z",
+    },
+  })));
+  assert.equal(precreateDecision.accepted, true);
+  assert.equal(precreateDecision.record.final_decision, "create_new");
+  const queriedDecisions = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_task_reuse_decision_query",
+    arguments: { project_id: "mcp-project" },
+  })));
+  assert.equal(queriedDecisions.decisions.length, 1);
 
   const create = await client.callTool({
     name: "taskcenter_task_create",

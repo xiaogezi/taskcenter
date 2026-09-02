@@ -541,7 +541,7 @@ const activeTaskStatuses = new Set(["planned", "in_progress", "blocked"]);
 
 const idempotentEventFields = [
   "event_id", "type", "task_id", "context_task_id", "requirement_id", "session_id",
-  "agent", "provider", "model", "workspace", "title", "goal", "status", "priority",
+  "agent", "provider", "model", "workspace", "project_id", "title", "goal", "status", "priority",
   "plan", "current_step", "next_action", "blocker", "acceptance_criteria", "changed_files",
   "tests", "evidence", "assumptions", "risks", "tradeoffs", "open_questions", "retrospective",
   "expected_at", "archived_at", "superseded_by", "review_reason", "reviewed_at", "tool_name",
@@ -875,6 +875,7 @@ function normalizeEvent(input, current = null) {
     provider: cleanText(input.provider, 80) || "unknown",
     model: cleanText(input.model, 120) || "unknown",
     workspace: String(input.workspace || ""),
+    project_id: cleanText(input.project_id, 200),
     title: cleanText(input.title, 200),
     goal: cleanText(input.goal, 1_000),
     status: statuses.has(input.status) ? input.status : undefined,
@@ -1210,6 +1211,7 @@ function touchSession(event) {
       provider: event.provider !== "unknown" ? event.provider : (current?.provider || "unknown"),
       model: event.model !== "unknown" ? event.model : (current?.model || "unknown"),
       workspace: event.workspace || current?.workspace || "",
+      projectId: event.project_id || current?.projectId || "",
       registeredAt: current?.registeredAt || now,
       lastSeenAt: now,
     };

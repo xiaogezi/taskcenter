@@ -12,6 +12,7 @@ const callerSessionId = String(process.env.TASKCENTER_CALLER_SESSION_ID || proce
 const localMcpTokenPath = resolve(process.env.TASKCENTER_MCP_TOKEN_PATH || join(import.meta.dirname, "..", ".local", "runtime", "mcp-token"));
 const server = new McpServer({ name: "taskcenter-task-server", version: TASKCENTER_VERSION });
 const verificationKind = z.enum(["test", "build", "lint", "static_check", "device", "manual", "security", "performance", "other"]);
+const taskReuseDecision = z.enum(["reuse", "create_new", "uncertain"]);
 const responseMode = z.enum(["summary", "full"]).default("summary");
 // 路由和 delegation 的调用方必须消费 route_id、selected_model 或 claim_token；
 // 默认压成任务摘要会破坏旧执行器，因此控制面接口保留 full 默认值。
@@ -106,7 +107,7 @@ const taskFields = {
 server.registerTool("taskcenter_session_register", {
   title: "注册 TaskCenter Session",
   description: "开始任务前登记当前 Session、工作目录和任务协议。",
-  inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional(), response_mode: responseMode }).strict(),
+  inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), project_id: z.string().max(200).optional(), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional(), response_mode: responseMode }).strict(),
 }, async (input) => report("session.register", input));
 
 server.registerTool("taskcenter_task_create", {
@@ -360,6 +361,61 @@ server.registerTool("taskcenter_task_query", {
   const payload = await readJson(response);
   const tasks = (payload.tasks || []).filter((task) => (!session_id || task.sessionId === session_id) && (!task_id || task.id === task_id));
   return result({ tasks });
+});
+
+server.registerTool("taskcenter_task_reuse_check", {
+  title: "检查 TaskCenter 活跃任务复用候选",
+  description: "在创建正式任务前只读查询同一业务目标的活跃候选，返回可解释的 reuse/create_new/uncertain 建议；不会创建、合并、阻断或修改任务。",
+  inputSchema: z.object({
+    workspace: z.string().min(1).max(4_096),
+    project_id: z.string().min(1).max(200),
+    session_id: z.string().min(1).max(200),
+    context_task_id: z.string().max(200).optional(),
+    title: z.string().min(1).max(200),
+    goal: z.string().min(1).max(1_000),
+    scope: z.array(z.string().min(1).max(500)).max(50),
+    response_mode: operationalResponseMode,
+  }).strict(),
+}, async (input) => postCore("/task-reuse/check", input));
+
+server.registerTool("taskcenter_task_reuse_decision_report", {
+  title: "记录 TaskCenter 任务复用最终选择",
+  description: "把 Advisor 建议、最终选择和 force_new_reason 写入独立 append-only 审计账本；不会修改任何任务状态或合同。",
+  inputSchema: z.object({
+    event_id: z.string().min(1).max(200),
+    check_id: z.string().min(1).max(200),
+    session_id: z.string().min(1).max(200),
+    workspace: z.string().min(1).max(4_096),
+    project_id: z.string().min(1).max(200),
+    context_task_id: z.string().max(200).optional(),
+    title: z.string().max(200).optional(),
+    advisor_version: z.string().max(80).optional(),
+    recommendation: taskReuseDecision,
+    confidence: z.number().min(0).max(1),
+    candidate_task_ids: z.array(z.string().min(1).max(200)).max(50),
+    match_reasons: z.array(z.string().min(1).max(120)).max(50),
+    final_decision: taskReuseDecision,
+    selected_task_id: z.string().min(1).max(200).optional(),
+    force_new_reason: z.string().min(1).max(1_000).optional(),
+    occurred_at: z.string().datetime({ offset: true }),
+    response_mode: operationalResponseMode,
+  }).strict(),
+}, async (input) => postCore("/task-reuse/decisions", input));
+
+server.registerTool("taskcenter_task_reuse_decision_query", {
+  title: "查询 TaskCenter 任务复用决策审计",
+  description: "只读查询独立的任务复用决策记录，用于 advisory 试点评估。",
+  inputSchema: z.object({
+    workspace: z.string().max(4_096).optional(),
+    project_id: z.string().max(200).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }).strict(),
+}, async ({ workspace, project_id, limit }) => {
+  const params = new URLSearchParams();
+  if (workspace) params.set("workspace", workspace);
+  if (project_id) params.set("project_id", project_id);
+  if (limit) params.set("limit", String(limit));
+  return queryEndpoint(`/task-reuse/decisions${params.size ? `?${params}` : ""}`);
 });
 
 server.registerTool("taskcenter_usage_report", {

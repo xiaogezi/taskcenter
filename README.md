@@ -161,7 +161,7 @@ TaskCenter Core 不依赖 Codex、Context Agent、OCR、GitHub/GitLab、Worktree
 默认情况下，每个 Session 按以下顺序执行：
 
 1. `taskcenter_session_register`：提交真实 `session_id`、`workspace`、`agent`、`provider` 和 `model`。
-2. `taskcenter_task_create`：新任务使用 `contract_version=v2`，提交目标、范围、非目标、计划、结构化验收标准、工作流等级、审查策略、可选执行环境，以及 `standard/strict` 所需的验证计划。
+2. `taskcenter_task_create`：新任务使用 `contract_version=v2`，提交目标、范围、非目标、计划、结构化验收标准、工作流等级、审查策略、可选执行环境，以及 `standard/strict` 所需的验证计划。Session 登记可同时提供稳定的 `project_id`，供后续复用 Advisor 跨 Session 匹配；旧 Session 缺失时保持 unknown，不从仓库名伪造。
 3. 收到 `accepted=true` 与独立 `task_id` 后才能执行写操作。
 4. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
 5. TaskCenter 可用时，Sol 在派发执行器前调用 `taskcenter_routing_select`。它会原子检查模型并发、`Closed/Open/Half-Open` 熔断状态并发放有 TTL 的执行租约；执行结束后调用 `taskcenter_routing_result` 释放租约并回报原始错误。TaskCenter 只给出强建议，不启动 CLI，也不取代 Sol 的风险判断、整合和验收。
@@ -192,6 +192,9 @@ MCP 工具：
 - `taskcenter_scheduled_readonly_scan_exemption_set`
 - `taskcenter_task_create`
 - `taskcenter_task_query`
+- `taskcenter_task_reuse_check`
+- `taskcenter_task_reuse_decision_report`
+- `taskcenter_task_reuse_decision_query`
 - `taskcenter_task_update`
 - `taskcenter_task_report`
 - `taskcenter_task_requirement_report`
@@ -214,11 +217,11 @@ MCP 工具：
 - `taskcenter_cli_run_report`
 - `taskcenter_delegation_revoke`
 
-控制服务提供无 Session 依赖的 `POST /core/task-events`、`POST /tasks/import-evidence`、`GET /tasks/:id/phase-report`、`GET /tasks/:id/export?format=json|markdown`，以及受令牌保护的 `POST /task-acceptance-report`。旧 `POST /task-acceptance-sync` 继续作为 Context 兼容适配器。令牌只通过进程环境传递，不写入任务、事件、日志或仓库。
+控制服务提供无 Session 依赖的 `POST /core/task-events`、`POST /tasks/import-evidence`、`GET /tasks/:id/phase-report`、`GET /tasks/:id/export?format=json|markdown`，以及受令牌保护的 `POST /task-acceptance-report`。任务复用 Advisor 使用 `POST /task-reuse/check` 做无写入查询，并以 `POST/GET /task-reuse/decisions` 独立记录和读取最终选择。旧 `POST /task-acceptance-sync` 继续作为 Context 兼容适配器。令牌只通过进程环境传递，不写入任务、事件、日志或仓库。
 
 ## 数据文件
 
-运行态写入 `data/`，并由 `.gitignore` 排除，包括内容读取白名单 `session-selection.json`、门禁豁免白名单 `gate-session-allowlist.json`、CLI 授权账本 `delegations.json`、路由派生状态 `routing-control.json` 与 `reflection-proposals.json`。`routing-control.json` 是控制服务单写者维护的可变派生状态；不可变任务事件仍是审计依据，不承担锁或租约状态源职责。仓库只保留空白 seed、示例数据和空的 Session 合并配置。删除运行态前请确认范围；TaskCenter 不应删除或改写 `~/.codex` 下的会话与认证数据。
+运行态写入 `data/`，并由 `.gitignore` 排除，包括内容读取白名单 `session-selection.json`、门禁豁免白名单 `gate-session-allowlist.json`、CLI 授权账本 `delegations.json`、append-only 复用决策账本 `task-reuse-decisions.jsonl`、路由派生状态 `routing-control.json` 与 `reflection-proposals.json`。`routing-control.json` 是控制服务单写者维护的可变派生状态；不可变任务事件与复用决策记录仍是审计依据，不承担锁或租约状态源职责。仓库只保留空白 seed、示例数据和空的 Session 合并配置。删除运行态前请确认范围；TaskCenter 不应删除或改写 `~/.codex` 下的会话与认证数据。
 
 ## 开发与验证
 
@@ -233,6 +236,10 @@ Review 过程使用 `taskcenter_review_cycle_report` 按稳定 `cycle_id` 增量
 任务阶段使用 `taskcenter_task_phase_report` 追加 `planning/implementing/verifying/reviewing/reworking/waiting_external` 的 `started/paused/resumed/finished` 事件。每条事件必须显式携带 `task_id`、`session_id`、`event_id`、`occurred_at`、`subject_ref`、`reason` 与 `activity_source`；同一执行跨 Session 续接时必须复用稳定的 `activity_id`，且新 Session 必须通过既有 Session merge、delegation 或 Review Cycle 身份获得任务授权。delegated executor 还必须引用已领取的 `delegation_id`。阶段账本只追加，重复 `event_id` 仅在语义完全相同时幂等。
 
 `phaseTiming.task_wall_ms` 是所有已观测阶段区间的并集，多个执行器重叠时只计算一次；`executor_active_ms` 按 Session 或 delegation 累计，因此并行时总和可以大于任务墙钟。`phase_wait_ms` 与 `wait_breakdown_ms` 只统计明确上报的暂停、构建等待、外部等待和 Review 排队区间，不用 Token 或“墙钟减 active”猜测有效工时。Review、返工和 Review 后验证继续以现有 Review Cycle 时间为权威来源，阶段事件只补充边界与执行器归因，不重复计账。指定 `as_of` 时只聚合截止时刻已经发生的边界，跨越截止时间的区间会截断并标记 `partial`。旧任务或缺失字段返回 `unknown`/`partial` 和 `null`，不会把缺失数据伪装为零；这些数据只用于流程诊断，不参与绩效、任务门禁或验收。
+
+创建正式任务前可调用 `taskcenter_task_reuse_check`。Advisor 只读取已登记 Session 与可见任务投影，候选包含 `planned/in_progress/blocked/done_claimed`，默认排除取消、已验收、归档、移除、被替代和 Context 影子任务。相同 `context_task_id + workspace` 是强证据；同项目、同 Session/delegation、文本相似和 Subject/Worktree 关系只参与排序。语义相似度使用本地、确定性的 Unicode token overlap，不调用远程模型；同仓库、同 Session 或标题相似都不能单独产生强复用建议。返回结果始终标记 `advisory_only=true`，不会自动创建、合并、阻断或修改任务。
+
+调用方用 `taskcenter_task_reuse_decision_report` 把 Advisor 建议与最终 `reuse/create_new/uncertain` 选择写入独立 append-only 账本；覆盖 `reuse/uncertain` 建议而新建时必须填写 `force_new_reason`。相同 `event_id` 只有在语义完全一致时幂等，冲突重放会被拒绝。`taskcenter_task_reuse_decision_query` 用于试点评估；在完成 3 个项目、至少 10 次创建决策的观察前，不增加 Hook 提示、软门禁、自动阻断或自动合并。
 
 ```bash
 npm run sync

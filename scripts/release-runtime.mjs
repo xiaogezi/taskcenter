@@ -28,6 +28,7 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_TASK_LEDGER_PATH: join(dataRoot, "task-ledger.json"),
     TASKCENTER_TASK_EVENT_IDS_PATH: join(dataRoot, "task-event-ids.json"),
     TASKCENTER_TASK_RECONCILE_PATH: join(dataRoot, "task-reconcile.jsonl"),
+    TASKCENTER_TASK_REUSE_DECISIONS_PATH: join(dataRoot, "task-reuse-decisions.jsonl"),
     TASKCENTER_SESSION_REGISTRY_PATH: join(dataRoot, "session-registry.json"),
     TASKCENTER_SESSION_MERGES_PATH: join(dataRoot, "session-merges.json"),
     TASKCENTER_DELEGATIONS_PATH: join(dataRoot, "delegations.json"),
