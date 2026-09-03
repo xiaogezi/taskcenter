@@ -49,6 +49,8 @@ next-env.d.ts
 /data/task-ledger.json
 /data/task-event-ids.json
 /data/task-reconcile.jsonl
+/data/task-reuse-decisions.jsonl
+/data/task-reuse-decisions.jsonl.event-index/
 /data/session-registry.json
 /data/session-selection.json
 /data/gate-session-allowlist.json
