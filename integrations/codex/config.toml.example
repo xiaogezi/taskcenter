@@ -3,7 +3,7 @@ hooks = true
 
 [mcp_servers.taskcenter]
 command = "node"
-args = ["__TASKCENTER_ROOT__/scripts/taskcenter-mcp.mjs"]
+args = ["__TASKCENTER_ROOT__/scripts/taskcenter-mcp-launcher.mjs"]
 enabled = true
 startup_timeout_sec = 10
 tool_timeout_sec = 60

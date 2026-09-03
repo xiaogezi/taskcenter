@@ -99,7 +99,7 @@ npm run integrations:print
 注册本地 STDIO MCP：
 
 ```bash
-codex mcp add taskcenter -- node "/absolute/path/to/taskcenter/scripts/taskcenter-mcp.mjs"
+codex mcp add taskcenter -- node "/absolute/path/to/taskcenter/scripts/taskcenter-mcp-launcher.mjs"
 codex mcp list
 ```
 
@@ -120,7 +120,7 @@ v2 任务不能通过普通 `taskcenter_task_report(done_claimed)` 绕过闭环�
 
 ```bash
 claude mcp add --scope user --transport stdio taskcenter -- \
-  node "/absolute/path/to/taskcenter/scripts/taskcenter-mcp.mjs"
+  node "/absolute/path/to/taskcenter/scripts/taskcenter-mcp-launcher.mjs"
 claude mcp list
 ```
 

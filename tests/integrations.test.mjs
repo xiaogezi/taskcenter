@@ -13,10 +13,10 @@ import {
 const root = resolve("Task Center");
 
 test("integration config generators use the selected absolute root", () => {
-  assert.ok(codexToml(root).includes(join(root, "scripts", "taskcenter-mcp.mjs").replaceAll("\\", "\\\\")));
+  assert.ok(codexToml(root).includes(join(root, "scripts", "taskcenter-mcp-launcher.mjs").replaceAll("\\", "\\\\")));
   assert.equal(
     claudeMcp(root).mcpServers.taskcenter.args[0],
-    join(root, "scripts", "taskcenter-mcp.mjs"),
+    join(root, "scripts", "taskcenter-mcp-launcher.mjs"),
   );
   assert.match(
     codexHooks(root).hooks.SessionStart[0].hooks[0].command,

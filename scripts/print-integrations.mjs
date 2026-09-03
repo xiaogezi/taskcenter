@@ -107,7 +107,7 @@ export function claudeSettings(root = defaultRoot) {
 }
 
 export function codexToml(root = defaultRoot) {
-  const mcp = resolve(root, "scripts", "taskcenter-mcp.mjs");
+  const mcp = resolve(root, "scripts", "taskcenter-mcp-launcher.mjs");
   return `[features]
 hooks = true
 
@@ -125,7 +125,7 @@ export function claudeMcp(root = defaultRoot) {
       taskcenter: {
         type: "stdio",
         command: "node",
-        args: [resolve(root, "scripts", "taskcenter-mcp.mjs")],
+        args: [resolve(root, "scripts", "taskcenter-mcp-launcher.mjs")],
         env: {},
       },
     },
@@ -133,7 +133,7 @@ export function claudeMcp(root = defaultRoot) {
 }
 
 export function cliCommands(root = defaultRoot) {
-  const mcp = commandQuote(resolve(root, "scripts", "taskcenter-mcp.mjs"));
+  const mcp = commandQuote(resolve(root, "scripts", "taskcenter-mcp-launcher.mjs"));
   return {
     codex: `codex mcp add taskcenter -- node ${mcp}`,
     claude: `claude mcp add --scope user --transport stdio taskcenter -- node ${mcp}`,

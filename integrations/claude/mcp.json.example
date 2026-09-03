@@ -3,7 +3,7 @@
     "taskcenter": {
       "type": "stdio",
       "command": "node",
-      "args": ["__TASKCENTER_ROOT__/scripts/taskcenter-mcp.mjs"],
+      "args": ["__TASKCENTER_ROOT__/scripts/taskcenter-mcp-launcher.mjs"],
       "env": {}
     }
   }
