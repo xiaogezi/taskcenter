@@ -77,7 +77,10 @@ async function waitForHealth(port, child) {
       throw new Error(`control-server 在健康检查前退出：${child.signalCode || child.exitCode}`);
     }
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/health`);
+      const probeTimeoutMs = Math.max(1, Math.min(1_000, deadline - Date.now()));
+      const response = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(probeTimeoutMs),
+      });
       if (response.ok) return;
     } catch {}
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
