@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
+import { enrichSessionTitles, groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
 import { detectLunaRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
 import { matchesTaskLifecycleFilter, taskClosureReasonLabels, taskLifecycleFilterCounts, taskLifecycleFilters } from "./task-lifecycle-filter.mjs";
@@ -327,7 +327,8 @@ export default function Home() {
   }, []);
 
   const dashboardThreads = dashboard.source?.availableThreads ?? dashboard.threads ?? [];
-  const selectionThreads = liveAvailableThreads.length > 0 ? liveAvailableThreads : dashboardThreads;
+  const rawSelectionThreads = liveAvailableThreads.length > 0 ? liveAvailableThreads : dashboardThreads;
+  const selectionThreads = useMemo(() => enrichSessionTitles(rawSelectionThreads, tasks), [rawSelectionThreads, tasks]);
   const allowlistIds = dashboard.source?.sessionSelection?.threadIds ?? [];
   const whitelistedThreads = selectionThreads.filter((thread) => allowlistIds.includes(asText(thread.id, "")));
   const pickerGroups = useMemo(() => groupSessions(selectionThreads), [selectionThreads]);

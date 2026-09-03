@@ -9,6 +9,41 @@ export function sessionDisplayTitle(title, sessionId) {
   return `未命名会话 · ${suffix}`;
 }
 
+function isFallbackSessionTitle(title, sessionId) {
+  const canonical = cleanTitle(title);
+  return !canonical || canonical === sessionDisplayTitle("", sessionId);
+}
+
+export function enrichSessionTitles(threads, tasks) {
+  const taskTitlesBySession = new Map();
+  for (const task of tasks) {
+    const sessionId = typeof task?.sessionId === "string" ? task.sessionId.trim() : "";
+    const title = cleanTitle(task?.title);
+    if (!sessionId || !title || task.status === "removed") continue;
+    const createdAt = Date.parse(task.createdAt ?? "");
+    const candidate = {
+      title,
+      createdAt: Number.isFinite(createdAt) ? createdAt : Number.POSITIVE_INFINITY,
+      id: String(task.id ?? ""),
+    };
+    const current = taskTitlesBySession.get(sessionId);
+    if (
+      !current
+      || candidate.createdAt < current.createdAt
+      || (candidate.createdAt === current.createdAt && candidate.id.localeCompare(current.id) < 0)
+    ) {
+      taskTitlesBySession.set(sessionId, candidate);
+    }
+  }
+
+  return threads.map((thread) => {
+    const sessionId = typeof thread?.id === "string" ? thread.id : "";
+    if (!sessionId || !isFallbackSessionTitle(thread.title, sessionId)) return thread;
+    const taskTitle = taskTitlesBySession.get(sessionId)?.title;
+    return taskTitle ? { ...thread, title: taskTitle, titleSource: "task" } : thread;
+  });
+}
+
 export function sessionGroupKey(thread) {
   const title = cleanTitle(thread.title);
   return title ? `title:${title.toLocaleLowerCase("zh-CN")}` : `session:${thread.id ?? "unknown"}`;
@@ -50,7 +85,9 @@ export function groupSessions(threads) {
 }
 
 export function mergeTaskSessions(threads, tasks, availableThreads = threads) {
-  const merged = [...threads];
+  const titledThreads = enrichSessionTitles(threads, tasks);
+  const titledAvailableThreads = enrichSessionTitles(availableThreads, tasks);
+  const merged = [...titledThreads];
   const knownIds = new Set(threads.flatMap((thread) => [thread.id, ...(thread.sessionIds ?? [])]).filter(Boolean));
   const latestTaskBySession = new Map();
   for (const task of tasks) {
@@ -62,7 +99,7 @@ export function mergeTaskSessions(threads, tasks, availableThreads = threads) {
   }
   for (const sessionId of latestTaskBySession.keys()) {
     if (knownIds.has(sessionId)) continue;
-    const source = availableThreads.find((thread) => thread.id === sessionId || thread.sessionIds?.includes(sessionId));
+    const source = titledAvailableThreads.find((thread) => thread.id === sessionId || thread.sessionIds?.includes(sessionId));
     if (!source) continue;
     merged.push({
       ...source,
