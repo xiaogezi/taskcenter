@@ -23,8 +23,9 @@ test("没有标题的会话不会被错误合并", () => {
 
   assert.equal(groups.length, 2);
   assert.deepEqual(sessionIdsForGroup(groups[0].id, groups), ["session-1"]);
-  assert.equal(groups.find((group) => group.sessionIds.includes("session-1"))?.title, "未命名会话 · session-…");
-  assert.equal(sessionDisplayTitle("", "019ffae8-80bf-7aa2-88ab-8746b37d7b6f"), "未命名会话 · 019ffae8…");
+  assert.equal(groups.find((group) => group.sessionIds.includes("session-1"))?.title, "Codex 会话 · session-…");
+  assert.equal(sessionDisplayTitle("", "019ffae8-80bf-7aa2-88ab-8746b37d7b6f"), "Codex 会话 · 019ffae8…");
+  assert.equal(sessionDisplayTitle("", "019ffae8-80bf-7aa2-88ab-8746b37d7b6f", "/work/ReqRadar"), "ReqRadar · 019ffae8…");
 });
 
 test("会话组按组内最新修改时间倒序排列", () => {
@@ -161,6 +162,16 @@ test("mergeTaskSessions 对缺少索引标题的真实 Session 应用任务标�
 
   assert.equal(merged[0]?.title, "任务回填标题");
   assert.equal(merged[0]?.titleSource, "task");
+});
+
+test("项目元数据回退标题仍允许任务标题覆盖", () => {
+  const enriched = enrichSessionTitles(
+    [{ id: "session-1", title: "ReqRadar · session-…", titleSource: "metadata" }],
+    [{ id: "task-1", sessionId: "session-1", title: "任务回填标题", createdAt: "2026-08-31T01:00:00Z" }],
+  );
+
+  assert.equal(enriched[0]?.title, "任务回填标题");
+  assert.equal(enriched[0]?.titleSource, "task");
 });
 
 test("已有同一个真实 Session 时不会重复补齐", () => {

@@ -2,16 +2,26 @@ function cleanTitle(title) {
   return typeof title === "string" ? title.trim().replace(/\s+/g, " ") : "";
 }
 
-export function sessionDisplayTitle(title, sessionId) {
+function workspaceLabel(cwd) {
+  const canonical = cleanTitle(cwd).replace(/[\\/]+$/, "");
+  if (!canonical) return "Codex 会话";
+  return canonical.split(/[\\/]/).filter(Boolean).at(-1) || "Codex 会话";
+}
+
+export function sessionDisplayTitle(title, sessionId, cwd = "") {
   const canonical = cleanTitle(title);
   if (canonical) return canonical;
   const suffix = typeof sessionId === "string" && sessionId ? `${sessionId.slice(0, 8)}…` : "未知 ID";
-  return `未命名会话 · ${suffix}`;
+  return `${workspaceLabel(cwd)} · ${suffix}`;
 }
 
-function isFallbackSessionTitle(title, sessionId) {
-  const canonical = cleanTitle(title);
-  return !canonical || canonical === sessionDisplayTitle("", sessionId);
+function isFallbackSessionTitle(thread, sessionId) {
+  const canonical = cleanTitle(thread?.title);
+  const suffix = typeof sessionId === "string" && sessionId ? `${sessionId.slice(0, 8)}…` : "未知 ID";
+  return thread?.titleSource === "metadata"
+    || !canonical
+    || canonical === `未命名会话 · ${suffix}`
+    || canonical === sessionDisplayTitle("", sessionId, thread?.cwd);
 }
 
 export function enrichSessionTitles(threads, tasks) {
@@ -38,7 +48,7 @@ export function enrichSessionTitles(threads, tasks) {
 
   return threads.map((thread) => {
     const sessionId = typeof thread?.id === "string" ? thread.id : "";
-    if (!sessionId || !isFallbackSessionTitle(thread.title, sessionId)) return thread;
+    if (!sessionId || !isFallbackSessionTitle(thread, sessionId)) return thread;
     const taskTitle = taskTitlesBySession.get(sessionId)?.title;
     return taskTitle ? { ...thread, title: taskTitle, titleSource: "task" } : thread;
   });
@@ -61,7 +71,7 @@ export function groupSessions(threads) {
         ...thread,
         id: key,
         groupKey: key,
-        title: sessionDisplayTitle(thread.title, sessionId),
+        title: sessionDisplayTitle(thread.title, sessionId, thread.cwd),
         sessionIds: [sessionId],
         sessionCount: 1,
       });

@@ -195,7 +195,7 @@ test("sync 按 canonical Session 聚合子 Agent，标题只来自 session_index
   }
 });
 
-test("sync 缺少权威标题时显示明确未知态，不泄漏任务或 rollout ID", () => {
+test("sync 缺少权威标题时使用安全的项目元数据标题，不泄漏任务或 rollout ID", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "taskcenter-missing-title-test-"));
   const codexHome = join(tempDir, "codex");
   const sessionsDir = join(codexHome, "sessions");
@@ -204,7 +204,7 @@ test("sync 缺少权威标题时显示明确未知态，不泄漏任务或 rollo
   mkdirSync(sessionsDir, { recursive: true });
   writeFileSync(join(codexHome, "session_index.jsonl"), "");
   writeFileSync(join(codexHome, "selection.json"), `${JSON.stringify({ version: 1, mode: "allowlist", threadIds: [parentSessionId] })}\n`);
-  writeFileSync(join(sessionsDir, "rollout-review-01a01ee6-ad17-7500-8fe4-980d5e948c3e.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { session_id: parentSessionId, id: "01a01ee6-ad17-7500-8fe4-980d5e948c3e", parent_thread_id: parentSessionId, thread_source: "subagent" } })}\n`);
+  writeFileSync(join(sessionsDir, "rollout-review-01a01ee6-ad17-7500-8fe4-980d5e948c3e.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { session_id: parentSessionId, id: "01a01ee6-ad17-7500-8fe4-980d5e948c3e", parent_thread_id: parentSessionId, thread_source: "subagent", cwd: "/work/ReqRadar" } })}\n`);
 
   try {
     runSync({
@@ -215,7 +215,7 @@ test("sync 缺少权威标题时显示明确未知态，不泄漏任务或 rollo
       TASKCENTER_DASHBOARD_PATH: dashboardPath,
     });
     const dashboard = JSON.parse(readFileSync(dashboardPath, "utf8"));
-    assert.equal(dashboard.source.availableThreads[0].title, "未命名会话 · 019ffae8…");
+    assert.equal(dashboard.source.availableThreads[0].title, "ReqRadar · 019ffae8…");
     assert.doesNotMatch(dashboard.source.availableThreads[0].title, /cyberrole-home-sections|01a01ee6/);
     assert.equal(dashboard.threads[0].userRequirements, undefined);
   } finally {
@@ -251,7 +251,7 @@ test("Watcher 监听 session_index，Codex 补齐标题后自动纠正显示", a
     },
   });
   try {
-    await waitFor(() => dashboardTitle(dashboardPath) === "未命名会话 · 019ffae8…");
+    await waitFor(() => dashboardTitle(dashboardPath) === "Codex 会话 · 019ffae8…");
     writeFileSync(indexPath, `${JSON.stringify({ id: parentSessionId, thread_name: "实现首页三分区" })}\n`);
     await waitFor(() => dashboardTitle(dashboardPath) === "实现首页三分区");
   } finally {

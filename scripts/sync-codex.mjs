@@ -299,8 +299,16 @@ async function main() {
   const allowedSessions = candidateSessions.filter((session) => normalizedSelectedIds.has(session.threadId));
   const allThreads = [];
   for (const session of allowedSessions) {
-    const title = sessionDisplayTitle(names.get(session.threadId) || defaultThreadNames.get(session.threadId), session.threadId);
-    allThreads.push(await parseSessionFiles(session, title));
+    const sourceTitle = names.get(session.threadId) || defaultThreadNames.get(session.threadId);
+    const title = sessionDisplayTitle(
+      sourceTitle,
+      session.threadId,
+      session.cwd,
+    );
+    allThreads.push({
+      ...await parseSessionFiles(session, title),
+      titleSource: sourceTitle ? "codex" : "metadata",
+    });
   }
   const threads = allThreads;
 
@@ -368,7 +376,12 @@ async function main() {
       sessionSelection: effectiveSessionSelection,
       availableThreads: candidateSessions.map((session) => ({
         id: session.threadId,
-        title: sessionDisplayTitle(names.get(session.threadId) || defaultThreadNames.get(session.threadId), session.threadId),
+        title: sessionDisplayTitle(
+          names.get(session.threadId) || defaultThreadNames.get(session.threadId),
+          session.threadId,
+          session.cwd,
+        ),
+        titleSource: names.get(session.threadId) || defaultThreadNames.get(session.threadId) ? "codex" : "metadata",
         updatedAt: new Date(session.mtimeMs).toISOString(),
         allowed: normalizedSelectedIds.has(session.threadId),
         requirementCount: allThreads.find((thread) => thread.id === session.threadId)?.userRequirements.length || 0,
@@ -390,6 +403,7 @@ async function main() {
     threads: threads.map((thread) => ({
       id: thread.id,
       title: thread.title,
+      titleSource: thread.titleSource,
       cwd: thread.cwd,
       updatedAt: thread.updatedAt,
       requirementCount: thread.userRequirements.length,
