@@ -30,7 +30,7 @@ test("launcher resolves the current immutable release and follows later cutovers
   assert.equal(resolved.revision, revisionB);
 });
 
-test("launcher spawns Node in the release root with inherited stdio and environment", (t) => {
+test("launcher spawns Node in the release root and binds the controller MCP credential", (t) => {
   const fixture = createFixture(t);
   const release = fixture.addRelease(revisionA);
   fixture.activate(release);
@@ -50,8 +50,37 @@ test("launcher spawns Node in the release root with inherited stdio and environm
   assert.deepEqual(calls, [{
     command: process.execPath,
     args: [join(release.sourceRoot, "scripts/taskcenter-mcp.mjs")],
-    options: { cwd: release.sourceRoot, env: environment, stdio: "inherit" },
+    options: {
+      cwd: release.sourceRoot,
+      env: {
+        ...environment,
+        TASKCENTER_MCP_TOKEN_PATH: join(fixture.root, ".local/runtime/mcp-token"),
+      },
+      stdio: "inherit",
+    },
   }]);
+});
+
+test("launcher preserves an explicitly configured MCP credential path", (t) => {
+  const fixture = createFixture(t);
+  const release = fixture.addRelease(revisionA);
+  fixture.activate(release);
+  const child = new EventEmitter();
+  child.kill = () => true;
+  const calls = [];
+  const configuredPath = join(fixture.root, "custom-runtime/mcp-token");
+
+  launchActiveMcp({
+    ...fixture.options,
+    environment: { TASKCENTER_MCP_TOKEN_PATH: configuredPath },
+    spawnProcess: (command, args, options) => {
+      calls.push({ command, args, options });
+      return child;
+    },
+  });
+  child.emit("exit", 0, null);
+
+  assert.equal(calls[0].options.env.TASKCENTER_MCP_TOKEN_PATH, configuredPath);
 });
 
 test("launcher rejects missing, corrupt, and inconsistent active metadata", (t) => {

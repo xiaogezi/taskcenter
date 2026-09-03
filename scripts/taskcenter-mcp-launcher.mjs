@@ -54,9 +54,19 @@ export function resolveActiveMcp(options = {}) {
 export function launchActiveMcp(options = {}) {
   const release = resolveActiveMcp(options);
   const spawnProcess = options.spawnProcess || spawn;
+  const projectRoot = resolve(options.projectRoot || defaultProjectRoot);
+  const inheritedEnvironment = options.environment || process.env;
+  const environment = {
+    ...inheritedEnvironment,
+    TASKCENTER_MCP_TOKEN_PATH: resolve(
+      options.mcpTokenPath
+      || inheritedEnvironment.TASKCENTER_MCP_TOKEN_PATH
+      || resolve(projectRoot, ".local/runtime/mcp-token"),
+    ),
+  };
   const child = spawnProcess(process.execPath, [release.entryPath], {
     cwd: release.sourceRoot,
-    env: options.environment || process.env,
+    env: environment,
     stdio: "inherit",
   });
   const signalHandlers = new Map();
