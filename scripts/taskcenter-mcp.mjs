@@ -4,11 +4,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
+import { resolveTrustedMcpSession } from "./mcp-session-context.mjs";
 import { TASKCENTER_VERSION } from "./version.mjs";
 
 const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001";
 const acceptanceToken = process.env.TASKCENTER_ACCEPTANCE_TOKEN || "";
-const callerSessionId = String(process.env.TASKCENTER_CALLER_SESSION_ID || process.env.CODEX_SESSION_ID || process.env.CODEX_THREAD_ID || "").trim().toLowerCase();
 const localMcpTokenPath = resolve(process.env.TASKCENTER_MCP_TOKEN_PATH || join(import.meta.dirname, "..", ".local", "runtime", "mcp-token"));
 const server = new McpServer({ name: "taskcenter-task-server", version: TASKCENTER_VERSION });
 const verificationKind = z.enum(["test", "build", "lint", "static_check", "device", "manual", "security", "performance", "other"]);
@@ -454,17 +454,23 @@ server.registerTool("taskcenter_session_gate_exemption_status", {
   title: "查询当前 Session 门禁豁免",
   description: "查询运行时绑定的当前 Codex Session 是否免除 active task 前置条件；不接受目标 Session 参数，也不修改白名单。",
   inputSchema: z.object({}).strict(),
-}, async () => callerSessionId
-  ? postLocal("/gate-session-exemption/status", { session_id: callerSessionId, response_mode: "full" })
-  : result({ error: "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE", message: "MCP 运行时没有可信的当前 Codex Session ID。" }));
+}, async (_input, extra) => {
+  const context = resolveTrustedMcpSession(extra);
+  return context.sessionId
+    ? postLocal("/gate-session-exemption/status", { session_id: context.sessionId, response_mode: "full" })
+    : result(context);
+});
 
 server.registerTool("taskcenter_session_gate_exemption_set", {
   title: "切换当前 Session 门禁豁免",
   description: "仅为运行时绑定的当前已登记 Codex Session 加入或退出 active task 门禁豁免；不接受目标 Session 参数，不创建任务、不批量修改，命令安全检查仍然有效。",
   inputSchema: z.object({ enabled: z.boolean() }).strict(),
-}, async ({ enabled }) => callerSessionId
-  ? postLocal("/gate-session-exemption/set", { session_id: callerSessionId, enabled, response_mode: "full" })
-  : result({ error: "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE", message: "MCP 运行时没有可信的当前 Codex Session ID。" }));
+}, async ({ enabled }, extra) => {
+  const context = resolveTrustedMcpSession(extra);
+  return context.sessionId
+    ? postLocal("/gate-session-exemption/set", { session_id: context.sessionId, enabled, response_mode: "full" })
+    : result(context);
+});
 
 server.registerTool("taskcenter_scheduled_readonly_scan_exemption_status", {
   title: "查询 scheduled_readonly 扫描豁免",

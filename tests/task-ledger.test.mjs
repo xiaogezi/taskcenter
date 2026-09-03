@@ -51,6 +51,24 @@ const {
   TaskLedgerError,
   taskTimeState,
 } = await import("../scripts/task-ledger.mjs");
+const { resolveTrustedMcpSession } = await import("../scripts/mcp-session-context.mjs");
+
+test("MCP Session 上下文：请求 threadId 优先、兼容环境变量且冲突时拒绝", () => {
+  const requestSessionId = "019f0000-0000-7000-8000-000000000112";
+  const otherSessionId = "019f0000-0000-7000-8000-000000000113";
+
+  assert.deepEqual(resolveTrustedMcpSession({ _meta: { threadId: requestSessionId } }, {}), {
+    sessionId: requestSessionId,
+  });
+  assert.deepEqual(resolveTrustedMcpSession({}, { TASKCENTER_CALLER_SESSION_ID: requestSessionId }), {
+    sessionId: requestSessionId,
+  });
+  assert.equal(resolveTrustedMcpSession({ _meta: { threadId: "not-a-uuid" } }, {}).error, "TASKCENTER_SESSION_CONTEXT_INVALID");
+  assert.equal(resolveTrustedMcpSession({ _meta: { threadId: requestSessionId } }, {
+    TASKCENTER_CALLER_SESSION_ID: otherSessionId,
+  }).error, "TASKCENTER_SESSION_CONTEXT_MISMATCH");
+  assert.equal(resolveTrustedMcpSession({}, {}).error, "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE");
+});
 
 async function resetLedger() {
   for (const path of Object.values(envPaths)) {
@@ -1859,7 +1877,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["scripts/taskcenter-mcp.mjs"],
-    env: { ...process.env, TASKCENTER_CONTROL_URL: base, TASKCENTER_CALLER_SESSION_ID: gateSessionId },
+    env: Object.fromEntries(Object.entries({ ...process.env, TASKCENTER_CONTROL_URL: base })
+      .filter(([key]) => !["TASKCENTER_CALLER_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"].includes(key))),
     cwd: root,
   });
   const client = new Client({ name: "taskcenter-test", version: "0.0.0" });
@@ -1882,6 +1901,25 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     assert.ok(toolNames.includes(expected), `MCP 应暴露 ${expected}`);
   }
 
+  const missingGateContext = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_session_gate_exemption_status",
+    arguments: {},
+  })));
+  assert.equal(missingGateContext.error, "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE");
+  const invalidGateContext = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_session_gate_exemption_status",
+    arguments: {},
+    _meta: { threadId: "not-a-uuid" },
+  })));
+  assert.equal(invalidGateContext.error, "TASKCENTER_SESSION_CONTEXT_INVALID");
+  const spoofedGateTarget = await client.callTool({
+    name: "taskcenter_session_gate_exemption_set",
+    arguments: { enabled: true, session_id: "019f0000-0000-7000-8000-000000000113" },
+    _meta: { threadId: gateSessionId },
+  });
+  assert.equal(spoofedGateTarget.isError, true);
+  assert.match(textOf(spoofedGateTarget), /session_id|unrecognized/i);
+
   const register = await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-mcp", agent: "codex", provider: "openai", model: "gpt-test", workspace: "/work", project_id: "mcp-project", response_mode: "full" } });
   const registerPayload = JSON.parse(textOf(register));
   assert.equal(registerPayload.accepted, true);
@@ -1890,12 +1928,14 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const gateStatusBefore = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_session_gate_exemption_status",
     arguments: {},
+    _meta: { threadId: gateSessionId },
   })));
   assert.equal(gateStatusBefore.session.registered, false);
   assert.equal(gateStatusBefore.session.gateExempt, false);
   const unregisteredGateSet = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_session_gate_exemption_set",
     arguments: { enabled: true },
+    _meta: { threadId: gateSessionId },
   })));
   assert.equal(unregisteredGateSet.error, "TASKCENTER_REQUEST_FAILED");
   assert.match(unregisteredGateSet.message, /尚未登记/);
@@ -1908,6 +1948,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const gateJoin = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_session_gate_exemption_set",
     arguments: { enabled: true },
+    _meta: { threadId: gateSessionId },
   })));
   assert.equal(gateJoin.session.gateExempt, true);
   const gateHookAllowed = await runTaskcenterHook(base, {
@@ -1929,11 +1970,13 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const gateStatusJoined = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_session_gate_exemption_status",
     arguments: {},
+    _meta: { threadId: gateSessionId },
   })));
   assert.equal(gateStatusJoined.session.gateExempt, true);
   const gateLeave = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_session_gate_exemption_set",
     arguments: { enabled: false },
+    _meta: { threadId: gateSessionId },
   })));
   assert.equal(gateLeave.session.gateExempt, false);
   const gateHookBlocked = await runTaskcenterHook(base, {

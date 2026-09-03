@@ -180,7 +180,7 @@ scope 为文件工具提供可执行的路径边界；可识别路径超出 scop
 
 如果 Hook 明确输出“门禁豁免白名单放行”，当前 Session 可以不执行登记和建任务步骤。该例外只来自独立的门禁豁免白名单，不能由内容读取白名单推断；命令安全检查仍然有效。
 
-在已加载新版 MCP 的 Codex Session 中，可以直接对 Agent 说“查询当前 Session 的门禁豁免”“把当前 Session 加入门禁豁免”或“把当前 Session 退出门禁豁免”。Agent 分别调用 `taskcenter_session_gate_exemption_status` 或 `taskcenter_session_gate_exemption_set`；目标 Session ID 由 Codex 运行时注入，工具不接受调用方指定其他 Session，内部控制端点还要求本机 MCP 进程凭据。加入前要求 Session 已登记，不创建正式任务，也不提供项目级、标题匹配或批量豁免。首次新增工具后需要新建或重启 Codex Session，让客户端重新加载 MCP 工具清单。
+在已加载新版 MCP 的 Codex Session 中，可以直接对 Agent 说“查询当前 Session 的门禁豁免”“把当前 Session 加入门禁豁免”或“把当前 Session 退出门禁豁免”。Agent 分别调用 `taskcenter_session_gate_exemption_status` 或 `taskcenter_session_gate_exemption_set`；目标 Session ID 优先取自 Codex 为每次 MCP 请求注入的 `_meta.threadId`，仅为旧宿主兼容回退到进程环境变量。两路身份冲突、缺失或格式非法时均拒绝操作。工具不接受调用方指定其他 Session，内部控制端点还要求本机 MCP 进程凭据。加入前要求 Session 已登记，不创建正式任务，也不提供项目级、标题匹配或批量豁免。首次新增工具后需要新建或重启 Codex Session，让客户端重新加载 MCP 工具清单。
 
 MCP 工具：
 
