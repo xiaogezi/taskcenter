@@ -71,7 +71,8 @@ function allocatePort() {
 }
 
 async function waitForHealth(port, child) {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(`control-server 在健康检查前退出：${child.signalCode || child.exitCode}`);
     }
