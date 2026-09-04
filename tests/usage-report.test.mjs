@@ -21,6 +21,13 @@ test("只累计 last_token_usage，区分缓存输入并按模型计费", () => 
   assert.equal("samples" in report.windows["24h"].byModel[0], false);
   assert.equal("rows" in report.windows["24h"], false);
   assert.ok(Buffer.byteLength(JSON.stringify(report)) < 20_000);
+  assert.deepEqual(report.lifetime.byTask[0], {
+    id: "t1",
+    usage: { input: 100, cachedInput: 25, output: 15, reasoning: 0 },
+    totalTokens: 115,
+    count: 2,
+    attribution: "estimated",
+  });
 });
 
 test("多任务 Session 不重复分摊 Token，续调按次数预警", () => {
@@ -37,6 +44,23 @@ test("多任务 Session 不重复分摊 Token，续调按次数预警", () => {
   assert.deepEqual(report.windows["24h"].byTask.map((item) => item.id), ["unattributed"]);
   assert.ok(report.alerts.some((item) => item.code === "MODEL_CONTINUATIONS_HIGH" && item.count === 81));
   assert.ok(report.alerts.some((item) => item.code === "MULTIPLE_INDEPENDENT_TASKS"));
+  assert.equal(report.lifetime.byTask[0].id, "unattributed");
+  assert.equal(report.lifetime.attributedTokenRatio, 0);
+});
+
+test("生命周期切分同一 Session 的顺序任务，并归入 CLI delegate Session", () => {
+  const records = [
+    { type: "turn_context", payload: { model: "gpt-test" } },
+    { type: "event_msg", timestamp: "2026-08-20T00:30:00Z", payload: { info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 50, output_tokens: 10, reasoning_output_tokens: 4, total_tokens: 110 } } } },
+    { type: "event_msg", timestamp: "2026-08-20T01:30:00Z", payload: { info: { last_token_usage: { input_tokens: 200, cached_input_tokens: 100, output_tokens: 20, reasoning_output_tokens: 8, total_tokens: 220 } } } },
+  ];
+  const ledger = [
+    { id: "first", sessionId: "shared", status: "done_claimed", firstStartedAt: "2026-08-20T00:00:00Z", actualAt: "2026-08-20T01:00:00Z" },
+    { id: "second", sessionId: "other", status: "in_progress", firstStartedAt: "2026-08-20T01:00:01Z", cliRuns: [{ delegateSessionId: "shared" }] },
+  ];
+  const report = collectUsage({ sessions: [{ sessionId: "shared", records }], ledger, rates: {}, now: "2026-08-20T02:00:00Z" });
+  assert.deepEqual(report.lifetime.byTask.map((row) => [row.id, row.totalTokens, row.usage.reasoning]), [["first", 110, 4], ["second", 220, 8]]);
+  assert.equal(report.lifetime.attributedTokenRatio, 1);
 });
 
 test("Spark 无费率标记 unestimable，缺任务归属标记 unattributed", () => {

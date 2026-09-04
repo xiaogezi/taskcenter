@@ -1028,7 +1028,7 @@ function readSnapshot(path, fallback) {
 function emptyUsageReport(now = Date.now()) {
   const generatedAt = new Date(now).toISOString();
   const window = (id, durationMs) => ({ id, durationMs, generatedAt, byModel: [], byProject: [], bySession: [], byTask: [], totals: { usage: { input: 0, cachedInput: 0, output: 0 }, statistics: { average: null, p50: null, p95: null }, cost: null, costEstimation: "unestimable" }, modelContinuations: 0 });
-  return { generatedAt, windows: { "5h": window("5h", 18_000_000), "24h": window("24h", 86_400_000), "7d": window("7d", 604_800_000) }, warnings: [], alerts: [], overall: { estimatedCredits: null, creditsEstimation: "unestimable", modelContinuations: 0, input: { average: null, p50: null, p95: null }, usage: { input: 0, cachedInput: 0, output: 0 } }, source: { mode: "snapshot_pending" } };
+  return { generatedAt, windows: { "5h": window("5h", 18_000_000), "24h": window("24h", 86_400_000), "7d": window("7d", 604_800_000) }, lifetime: { attribution: "estimated", method: "last_token_usage_by_task_lifecycle", byTask: [], totals: { id: "all", usage: { input: 0, cachedInput: 0, output: 0, reasoning: 0 }, totalTokens: 0, count: 0, attribution: "estimated" }, attributedTokenRatio: 0, missingTimestampEvents: 0 }, warnings: [], alerts: [], overall: { estimatedCredits: null, creditsEstimation: "unestimable", modelContinuations: 0, input: { average: null, p50: null, p95: null }, usage: { input: 0, cachedInput: 0, output: 0 } }, source: { mode: "snapshot_pending" } };
 }
 
 function withDelegations(tasks) {

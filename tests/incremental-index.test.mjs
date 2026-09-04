@@ -41,13 +41,16 @@ test("Session 用量增量索引不重复累计并处理截断", async () => {
   const indexPath = join(dir, "usage-index.json");
   const now = Date.parse("2026-08-22T08:00:00.000Z");
   const context = { type: "turn_context", payload: { model: "gpt-5.6-luna", model_context_window: 100000 } };
-  const usage = (time, input) => ({ timestamp: time, payload: { info: { last_token_usage: { input_tokens: input, cached_input_tokens: 10, output_tokens: 5 } } } });
+  const usage = (time, input) => ({ timestamp: time, payload: { info: { last_token_usage: { input_tokens: input, cached_input_tokens: 10, output_tokens: 5, reasoning_output_tokens: 2, total_tokens: input + 5 } } } });
   await writeFile(session, `${JSON.stringify(context)}\n${JSON.stringify(usage("2026-08-22T07:00:00.000Z", 100))}\n`);
   const options = { sessionsRoot, indexPath, ledger: [], rates: { "gpt-5.6-luna": { input: 1, cachedInput: 1, output: 1 } }, now };
   let result = await updateUsageIndex(options);
   assert.equal(result.report.windows["5h"].modelContinuations, 1);
+  assert.equal(result.report.lifetime.totals.totalTokens, 105);
+  assert.equal(result.report.lifetime.totals.usage.reasoning, 2);
   result = await updateUsageIndex(options);
   assert.equal(result.report.windows["5h"].modelContinuations, 1);
+  assert.equal(result.report.lifetime.totals.totalTokens, 105, "重复扫描不能重复累计生命周期 Token");
   await appendFile(session, `${JSON.stringify(usage("2026-08-22T07:30:00.000Z", 200))}\n`);
   result = await updateUsageIndex(options);
   assert.equal(result.report.windows["5h"].modelContinuations, 2);
@@ -58,6 +61,33 @@ test("Session 用量增量索引不重复累计并处理截断", async () => {
   await writeFile(session, `${JSON.stringify(context)}\n${rewrittenUsage.map((item) => JSON.stringify(item)).join("\n")}\n`);
   result = await updateUsageIndex(options);
   assert.equal(result.report.windows["5h"].modelContinuations, 4, "同 inode 扩容重写必须重建，不能混入旧游标状态");
+  assert.equal(result.report.lifetime.totals.totalTokens, 400 + 500 + 600 + 700 + 4 * 5, "文件重写后生命周期累计必须随文件状态重建");
+});
+
+test("任务生命周期累计在七日原始事件裁剪后仍保留", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "taskcenter-lifetime-usage-"));
+  const sessionsRoot = join(dir, "sessions");
+  await mkdir(sessionsRoot, { recursive: true });
+  const sessionId = "019ffa8c-c737-72f1-b7f7-4566e77c0999";
+  const session = join(sessionsRoot, `rollout-${sessionId}.jsonl`);
+  const indexPath = join(dir, "usage-index.json");
+  await writeFile(session, [
+    JSON.stringify({ type: "turn_context", payload: { model: "gpt-test" } }),
+    JSON.stringify({ timestamp: "2026-08-01T00:30:00.000Z", payload: { info: { last_token_usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 10, reasoning_output_tokens: 3, total_tokens: 130 } } } }),
+  ].join("\n") + "\n");
+  const options = {
+    sessionsRoot,
+    indexPath,
+    ledger: [{ id: "old-task", sessionId, status: "done_claimed", firstStartedAt: "2026-08-01T00:00:00.000Z", actualAt: "2026-08-01T01:00:00.000Z" }],
+    rates: {},
+    now: Date.parse("2026-08-22T08:00:00.000Z"),
+  };
+  let result = await updateUsageIndex(options);
+  assert.equal(result.report.windows["7d"].modelContinuations, 0);
+  assert.equal(result.report.lifetime.byTask[0].id, "old-task");
+  assert.equal(result.report.lifetime.byTask[0].totalTokens, 130);
+  result = await updateUsageIndex(options);
+  assert.equal(result.report.lifetime.byTask[0].totalTokens, 130);
 });
 
 test("任务事件索引仅追加新事件并保留窗口内记录", async () => {

@@ -126,6 +126,14 @@ test("会话主动任务只保留一套生命周期筛选", async () => {
   assert.doesNotMatch(source, /attentionCounts/);
 });
 
+test("任务表展示生命周期 Token 估算与明细维度", async () => {
+  const source = await readFile(new URL("app/page.tsx", root), "utf8");
+  assert.match(source, /Token（估算）/);
+  assert.match(source, /last_token_usage/);
+  assert.match(source, /usagePayload\.lifetime\?\.byTask/);
+  assert.match(source, /推理 \{formatTokens\(tokenUsage\.usage\.reasoning\)\}/);
+});
+
 test("已完成反思提案使用单一全局复查入口并降级历史派发错误", async () => {
   const source = await readFile(new URL("app/page.tsx", root), "utf8");
   assert.match(source, /复查已完成提案/);

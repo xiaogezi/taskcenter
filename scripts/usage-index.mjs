@@ -3,9 +3,9 @@ import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promi
 import { basename, dirname, join } from "node:path";
 
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
-import { buildUsageReportFromParsed } from "./usage-report.mjs";
+import { buildUsageReportFromParsed, createTaskUsageAttributor } from "./usage-report.mjs";
 
-const INDEX_VERSION = 3;
+const INDEX_VERSION = 4;
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
 
 export async function updateUsageIndex(options) {
@@ -14,6 +14,7 @@ export async function updateUsageIndex(options) {
   const existing = await readJson(options.indexPath, { version: INDEX_VERSION, files: {} });
   const index = existing?.version === INDEX_VERSION && existing.files ? existing : { version: INDEX_VERSION, files: {} };
   const seen = new Set(files);
+  const attributeTask = createTaskUsageAttributor(options.ledger);
 
   for (const path of files) {
     const info = await stat(path);
@@ -29,7 +30,7 @@ export async function updateUsageIndex(options) {
       const result = await consumeJsonl(path, {
         start: Number(state.offset || 0),
         end: info.size - 1,
-        onLine: (line) => consumeRecord(state, line),
+        onLine: (line) => consumeRecord(state, line, attributeTask),
       });
       state.offset = result.offset;
       state.skippedOversizedLines = Number(state.skippedOversizedLines || 0) + result.skippedOversizedLines;
@@ -52,7 +53,8 @@ export async function updateUsageIndex(options) {
     events: state.events || [],
     compressionAfterPhase: Number(state.compressionAfterPhase || 0),
     missingTimestampUsage: Number(state.missingTimestampUsage || 0),
-  })).filter((session) => session.events.length);
+    lifetimeByTask: state.lifetimeByTask || {},
+  })).filter((session) => session.events.length || Object.keys(session.lifetimeByTask).length);
   return {
     report: buildUsageReportFromParsed(parsed, {
       ledger: options.ledger,
@@ -80,10 +82,11 @@ function emptyFileState(path, identity) {
     checkpointHash: "",
     headHash: "",
     events: [],
+    lifetimeByTask: {},
   };
 }
 
-function consumeRecord(state, line) {
+function consumeRecord(state, line, attributeTask) {
   let record;
   try { record = JSON.parse(line.toString("utf8")); } catch { return; }
   if (record.type === "session_meta") state.cwd = record.payload?.cwd || state.cwd;
@@ -106,14 +109,30 @@ function consumeRecord(state, line) {
     state.missingTimestampUsage += 1;
     return;
   }
-  state.events.push([
+  const event = [
     at,
     state.model,
     number(usage.input_tokens),
     number(usage.cached_input_tokens),
     number(usage.output_tokens),
     number(record.payload?.model_context_window || record.payload?.info?.model_context_window, state.contextWindow),
-  ]);
+    number(usage.reasoning_output_tokens),
+    number(usage.total_tokens, number(usage.input_tokens) + number(usage.output_tokens)),
+  ];
+  state.events.push(event);
+  const taskIds = attributeTask(state.sessionId, at);
+  for (const taskId of taskIds) mergeLifetime(state, taskId, event);
+}
+
+function mergeLifetime(state, taskId, event) {
+  const current = state.lifetimeByTask[taskId] || { input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0, count: 0 };
+  current.input += number(event[2]);
+  current.cachedInput += number(event[3]);
+  current.output += number(event[4]);
+  current.reasoning += number(event[6]);
+  current.total += number(event[7], number(event[2]) + number(event[4]));
+  current.count += 1;
+  state.lifetimeByTask[taskId] = current;
 }
 
 async function filesUnder(root) {

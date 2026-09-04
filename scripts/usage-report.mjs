@@ -47,8 +47,8 @@ function taskIndex(ledger) {
     if (!task.id && !task.taskId) continue;
     const id = task.id || task.taskId;
     if (task.session_id || task.sessionId || task.workspace || task.cwd) tasks.set(id, { ...tasks.get(id), ...task, id });
-    const sid = task.session_id || task.sessionId;
-    if (sid && id) sessions.set(sid, [...(sessions.get(sid) || []), id]);
+    const sessionIds = [task.session_id || task.sessionId, ...(task.cliRuns || []).map((run) => run.delegateSessionId || run.delegate_session_id)].filter(Boolean);
+    for (const sid of sessionIds) if (id) sessions.set(sid, [...(sessions.get(sid) || []), id]);
   }
   return { tasks, sessions };
 }
@@ -65,7 +65,15 @@ function price(usage, rate) {
 function usageFrom(record) {
   const u = record?.payload?.info?.last_token_usage;
   if (!u || typeof u !== "object") return null;
-  return { input: value(u.input_tokens), cachedInput: value(u.cached_input_tokens), output: value(u.output_tokens) };
+  const input = value(u.input_tokens);
+  const output = value(u.output_tokens);
+  return {
+    input,
+    cachedInput: value(u.cached_input_tokens),
+    output,
+    reasoning: value(u.reasoning_output_tokens),
+    total: value(u.total_tokens, input + output),
+  };
 }
 function timestampFrom(record) {
   const raw = record?.timestamp ?? record?.created_at ?? record?.payload?.timestamp;
@@ -126,7 +134,7 @@ export function buildUsageReportFromParsed(parsed, { ledger = DEFAULT_LEDGER, ra
     return [name, summary];
   }));
   return {
-    generatedAt: new Date(at).toISOString(), windows, warnings, alerts: warnings,
+    generatedAt: new Date(at).toISOString(), windows, lifetime: buildLifetime(parsed, index), warnings, alerts: warnings,
     overall: {
       estimatedCredits: day.totals.cost,
       creditsEstimation: day.totals.costEstimation,
@@ -169,7 +177,16 @@ function finishAggregate(item) { const { samples, ...summary } = item; return { 
 function finishAggregates(map) { return [...map.values()].map(finishAggregate); }
 function eventAt(event) { return Array.isArray(event) ? Number(event[0]) : Number(event.at); }
 function eventModel(event) { return Array.isArray(event) ? String(event[1] || "unknown") : String(event.model || "unknown"); }
-function eventUsage(event) { return Array.isArray(event) ? { input: value(event[2]), cachedInput: value(event[3]), output: value(event[4]) } : event.usage; }
+function eventUsage(event) {
+  if (!Array.isArray(event)) return event.usage;
+  const input = value(event[2]);
+  const output = value(event[4]);
+  return { input, cachedInput: value(event[3]), output, reasoning: value(event[6]), total: value(event[7], input + output) };
+}
+export function createTaskUsageAttributor(ledger) {
+  const index = taskIndex(readJson(ledger, ledger));
+  return (sessionId, eventAt) => taskIdsAt(index, sessionId, eventAt);
+}
 function taskIdsAt(index, sessionId, eventAt) {
   const candidates = (index.sessions.get(sessionId) || []).filter((taskId, position, all) => all.indexOf(taskId) === position).filter((taskId) => {
     const task = index.tasks.get(taskId) || {};
@@ -179,6 +196,53 @@ function taskIdsAt(index, sessionId, eventAt) {
     return (!Number.isFinite(start) || eventAt >= start) && (!Number.isFinite(end) || eventAt <= end);
   });
   return candidates.length === 1 ? candidates : ["unattributed"];
+}
+function buildLifetime(parsed, index) {
+  const byTask = new Map();
+  for (const session of parsed) {
+    if (session.lifetimeByTask && Object.keys(session.lifetimeByTask).length) {
+      for (const [taskId, aggregate] of Object.entries(session.lifetimeByTask)) mergeLifetime(byTask, taskId, aggregate);
+      continue;
+    }
+    for (const event of session.events) {
+      const taskIds = taskIdsAt(index, session.sessionId, eventAt(event));
+      for (const taskId of taskIds) mergeLifetime(byTask, taskId, { usage: eventUsage(event), count: 1 });
+    }
+  }
+  const rows = [...byTask.entries()].map(([id, aggregate]) => finishLifetime(id, aggregate));
+  const totals = rows.reduce((sum, row) => mergeLifetimeUsage(sum, row), emptyLifetime());
+  const unattributed = rows.find((row) => row.id === "unattributed") || finishLifetime("unattributed", emptyLifetime());
+  const totalTokens = totals.total;
+  return {
+    attribution: "estimated",
+    method: "last_token_usage_by_task_lifecycle",
+    byTask: rows,
+    totals: finishLifetime("all", totals),
+    attributedTokenRatio: totalTokens > 0 ? (totalTokens - unattributed.totalTokens) / totalTokens : 0,
+    missingTimestampEvents: parsed.reduce((sum, session) => sum + Number(session.missingTimestampUsage || 0), 0),
+  };
+}
+function emptyLifetime() { return { input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0, count: 0 }; }
+function mergeLifetime(map, taskId, aggregate) {
+  const current = map.get(taskId) || emptyLifetime();
+  const usage = aggregate.usage || aggregate;
+  mergeLifetimeUsage(current, { ...usage, count: aggregate.count });
+  map.set(taskId, current);
+}
+function mergeLifetimeUsage(target, source) {
+  for (const key of ["input", "cachedInput", "output", "reasoning"]) target[key] += value(source[key] ?? source.usage?.[key]);
+  target.total += value(source.total ?? source.totalTokens ?? source.usage?.total, value(source.input ?? source.usage?.input) + value(source.output ?? source.usage?.output));
+  target.count += value(source.count);
+  return target;
+}
+function finishLifetime(id, aggregate) {
+  return {
+    id,
+    usage: { input: aggregate.input, cachedInput: aggregate.cachedInput, output: aggregate.output, reasoning: aggregate.reasoning },
+    totalTokens: aggregate.total,
+    count: aggregate.count,
+    attribution: id === "unattributed" ? "unattributed" : "estimated",
+  };
 }
 function buildWarnings(parsed, index, windows, now) {
   const warnings = [];

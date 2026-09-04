@@ -514,6 +514,9 @@ button { cursor: pointer; }
 .task-session-cell small { display: block; font-size: 10px; color: var(--muted); margin-top: 2px; }
 .task-session-cell .no-session { color: var(--rose); }
 .task-metrics-cell { color: var(--muted); line-height: 1.55; white-space: normal; overflow-wrap: anywhere; }
+.task-token-usage { border-bottom: 1px solid var(--line); color: var(--ink); margin-bottom: 5px; padding-bottom: 5px; }
+.task-token-usage strong, .task-token-usage small { display: block; }
+.task-token-usage small { color: var(--muted); font-size: 9px; margin-top: 2px; }
 .task-tools { color: var(--ink-soft); margin-top: 4px; }
 .task-updated-cell { color: var(--muted); white-space: nowrap; }
 .task-actions-cell { white-space: normal; }

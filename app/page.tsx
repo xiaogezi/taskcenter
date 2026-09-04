@@ -194,6 +194,22 @@ type GovernanceMetrics = {
   comparisons?: { strategy?: string; note?: string };
   snapshotStatus?: { stale: boolean; ageMs: number | null; lastRefreshError?: string; updatedAt?: string };
 };
+type TaskTokenUsage = {
+  id: string;
+  usage: { input: number; cachedInput: number; output: number; reasoning: number };
+  totalTokens: number;
+  count: number;
+  attribution: "estimated" | "unattributed";
+};
+type UsageReport = {
+  lifetime?: {
+    attribution: "estimated";
+    method: string;
+    byTask: TaskTokenUsage[];
+    attributedTokenRatio: number;
+    missingTimestampEvents: number;
+  };
+};
 
 // 控制服务 URL：优先使用环境变量，默认 IPv4 localhost
 const controlServerUrl = typeof process !== "undefined" && process.env?.TASKCENTER_CONTROL_URL
@@ -232,6 +248,10 @@ function normalizeDate(value?: string) {
   }).format(date);
 }
 
+function formatTokens(value: number) {
+  return Math.max(0, Number(value || 0)).toLocaleString("zh-CN");
+}
+
 async function copyToClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -268,6 +288,7 @@ export default function Home() {
   const [health, setHealth] = useState<HealthState>({ ok: false });
   const [reflections, setReflections] = useState<ReflectionState>({ version: 1, generatedAt: "", dataBoundary: { sessionMode: "allowlist", allowedSessionCount: 0, taskCount: 0 }, proposals: [] });
   const [governanceMetrics, setGovernanceMetrics] = useState<GovernanceMetrics | null>(null);
+  const [taskTokenUsage, setTaskTokenUsage] = useState<Record<string, TaskTokenUsage>>({});
 
   const refreshLiveData = async (manual = false) => {
     if (refreshInFlight.current) return;
@@ -277,7 +298,7 @@ export default function Home() {
       setRefreshMessage("");
     }
     try {
-      const [dashboardResponse, tasksPayload, sessionStatusResponse, threadsResponse, reflectionsResponse, gateAllowlistResponse, governanceResponse] = await Promise.all([
+      const [dashboardResponse, tasksPayload, sessionStatusResponse, threadsResponse, reflectionsResponse, gateAllowlistResponse, governanceResponse, usageResponse] = await Promise.all([
         fetch(`${controlServerUrl}/dashboard`),
         fetchTaskSummaries(),
         fetch(`${controlServerUrl}/session-status`),
@@ -285,20 +306,22 @@ export default function Home() {
         fetch(`${controlServerUrl}/reflections`),
         fetch(`${controlServerUrl}/gate-session-allowlist`),
         fetch(`${controlServerUrl}/governance-metrics`),
+        fetch(`${controlServerUrl}/usage-report`),
       ]);
       const healthResponse = await fetch(`${controlServerUrl}/health`);
       if (!healthResponse.ok) throw new Error("本地控制服务健康检查失败");
       setHealth(await healthResponse.json() as HealthState);
-      if (!dashboardResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok || !reflectionsResponse.ok || !gateAllowlistResponse.ok || !governanceResponse.ok) {
+      if (!dashboardResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok || !reflectionsResponse.ok || !gateAllowlistResponse.ok || !governanceResponse.ok || !usageResponse.ok) {
         throw new Error("本地控制服务返回异常");
       }
-      const [dashboardPayload, sessionStatusPayload, threadsPayload, reflectionsPayload, gateAllowlistPayload, governancePayload] = await Promise.all([
+      const [dashboardPayload, sessionStatusPayload, threadsPayload, reflectionsPayload, gateAllowlistPayload, governancePayload, usagePayload] = await Promise.all([
         dashboardResponse.json() as Promise<Dashboard>,
         sessionStatusResponse.json() as Promise<{ sessions?: SessionStatus[] }>,
         threadsResponse.json() as Promise<{ availableThreads?: Thread[] }>,
         reflectionsResponse.json() as Promise<ReflectionState>,
         gateAllowlistResponse.json() as Promise<{ selection?: SessionSelection }>,
         governanceResponse.json() as Promise<GovernanceMetrics>,
+        usageResponse.json() as Promise<UsageReport>,
       ]);
       setDashboard(dashboardPayload);
       setTasks(tasksPayload.tasks ?? []);
@@ -307,6 +330,7 @@ export default function Home() {
       setReflections(reflectionsPayload);
       setGateAllowlistIds(gateAllowlistPayload.selection?.threadIds ?? []);
       setGovernanceMetrics(governancePayload);
+      setTaskTokenUsage(Object.fromEntries((usagePayload.lifetime?.byTask ?? []).filter((item) => item.id !== "unattributed").map((item) => [item.id, item])));
       if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
     } catch (error) {
       setHealth({ ok: false });
@@ -612,6 +636,7 @@ export default function Home() {
           <GovernancePanel metrics={governanceMetrics} />
           <TaskLedger
             tasks={tasks}
+            taskTokenUsage={taskTokenUsage}
             availableThreads={mergedThreads}
             sessionGroups={mergedThreads}
             selectedSessionId={selectedThread}
@@ -800,7 +825,7 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
   );
 }
 
-function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, routingModels, onTaskUpdated }: { tasks: TaskRecord[]; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; routingModels: RoutingHealth[]; onTaskUpdated: (task: TaskRecord) => void }) {
+function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, routingModels, onTaskUpdated }: { tasks: TaskRecord[]; taskTokenUsage: Record<string, TaskTokenUsage>; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; routingModels: RoutingHealth[]; onTaskUpdated: (task: TaskRecord) => void }) {
   // 筛选逻辑：全部任务显示全局，具体 Session 优先精确 session_id，不可用时按显式项目标识回退
   const selectedSessionIds = sessionIdsForGroup(selectedSessionId, sessionGroups);
   const filteredTasks = selectedSessionId === "全部任务"
@@ -865,7 +890,7 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
               </tr>
             </thead>
             <tbody>
-              {visibleTasks.map((task) => <TaskRow key={task.id} task={task} availableThreads={threadsForTask} sessionStatuses={sessionStatuses} onTaskUpdated={onTaskUpdated} />)}
+              {visibleTasks.map((task) => <TaskRow key={task.id} task={task} tokenUsage={taskTokenUsage[task.id]} availableThreads={threadsForTask} sessionStatuses={sessionStatuses} onTaskUpdated={onTaskUpdated} />)}
             </tbody>
           </table>
           </div>
@@ -882,7 +907,7 @@ function TaskLedger({ tasks, availableThreads: threadsForTask, sessionGroups, se
   );
 }
 
-function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTaskUpdated }: { task: TaskRecord; availableThreads: Thread[]; sessionStatuses: Record<string, SessionStatus>; onTaskUpdated: (task: TaskRecord) => void }) {
+function TaskRow({ task, tokenUsage, availableThreads: threadsForTask, sessionStatuses, onTaskUpdated }: { task: TaskRecord; tokenUsage?: TaskTokenUsage; availableThreads: Thread[]; sessionStatuses: Record<string, SessionStatus>; onTaskUpdated: (task: TaskRecord) => void }) {
   const [actionState, setActionState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [actionError, setActionError] = useState("");
   const [scheduleEditing, setScheduleEditing] = useState(false);
@@ -1059,6 +1084,10 @@ function TaskRow({ task, availableThreads: threadsForTask, sessionStatuses, onTa
         )}
       </td>
       <td data-label="时间 / 工具" className="task-cell task-metrics-cell">
+        <div className="task-token-usage" title="读取 Codex last_token_usage，并按任务生命周期时间窗估算归属；共享或重叠部分不会重复分摊。">
+          <strong>Token（估算）：{tokenUsage ? formatTokens(tokenUsage.totalTokens) : "暂无归属"}</strong>
+          {tokenUsage && <small>输入 {formatTokens(tokenUsage.usage.input)} · 缓存 {formatTokens(tokenUsage.usage.cachedInput)} · 输出 {formatTokens(tokenUsage.usage.output)} · 推理 {formatTokens(tokenUsage.usage.reasoning)}</small>}
+        </div>
         <div>创建：{normalizeDate(task.createdAt)}</div>
         <div>首次执行：{normalizeDate(task.firstStartedAt)}</div>
         <div>交付截止：{normalizeDate(task.dueAt)}</div>
