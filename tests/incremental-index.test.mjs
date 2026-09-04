@@ -47,6 +47,7 @@ test("Session 用量增量索引不重复累计并处理截断", async () => {
   let result = await updateUsageIndex(options);
   assert.equal(result.report.windows["5h"].modelContinuations, 1);
   assert.equal(result.report.lifetime.totals.totalTokens, 105);
+  assert.equal(result.report.lifetime.bySession[0].totalTokens, 105);
   assert.equal(result.report.lifetime.totals.usage.reasoning, 2);
   result = await updateUsageIndex(options);
   assert.equal(result.report.windows["5h"].modelContinuations, 1);
@@ -86,6 +87,7 @@ test("任务生命周期累计在七日原始事件裁剪后仍保留", async ()
   assert.equal(result.report.windows["7d"].modelContinuations, 0);
   assert.equal(result.report.lifetime.byTask[0].id, "old-task");
   assert.equal(result.report.lifetime.byTask[0].totalTokens, 130);
+  assert.equal(result.report.lifetime.bySession[0].totalTokens, 130, "会话累计在原始事件裁剪后仍保留");
   result = await updateUsageIndex(options);
   assert.equal(result.report.lifetime.byTask[0].totalTokens, 130);
 });

@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
 import { buildUsageReportFromParsed, createTaskUsageAttributor } from "./usage-report.mjs";
 
-const INDEX_VERSION = 4;
+const INDEX_VERSION = 5;
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
 
 export async function updateUsageIndex(options) {
@@ -53,8 +53,9 @@ export async function updateUsageIndex(options) {
     events: state.events || [],
     compressionAfterPhase: Number(state.compressionAfterPhase || 0),
     missingTimestampUsage: Number(state.missingTimestampUsage || 0),
+    lifetimeTotal: state.lifetimeTotal || emptyLifetime(),
     lifetimeByTask: state.lifetimeByTask || {},
-  })).filter((session) => session.events.length || Object.keys(session.lifetimeByTask).length);
+  })).filter((session) => session.events.length || session.lifetimeTotal.count || Object.keys(session.lifetimeByTask).length);
   return {
     report: buildUsageReportFromParsed(parsed, {
       ledger: options.ledger,
@@ -82,6 +83,7 @@ function emptyFileState(path, identity) {
     checkpointHash: "",
     headHash: "",
     events: [],
+    lifetimeTotal: emptyLifetime(),
     lifetimeByTask: {},
   };
 }
@@ -103,6 +105,7 @@ function consumeRecord(state, line, attributeTask) {
   }
   const usage = record?.payload?.info?.last_token_usage;
   if (!usage || typeof usage !== "object") return;
+  mergeLifetimeTotal(state.lifetimeTotal, usage);
   const rawTime = record.timestamp ?? record.created_at ?? record.payload?.timestamp;
   const at = Date.parse(rawTime || "");
   if (!Number.isFinite(at)) {
@@ -122,6 +125,19 @@ function consumeRecord(state, line, attributeTask) {
   state.events.push(event);
   const taskIds = attributeTask(state.sessionId, at);
   for (const taskId of taskIds) mergeLifetime(state, taskId, event);
+}
+
+function emptyLifetime() {
+  return { input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 0, count: 0 };
+}
+
+function mergeLifetimeTotal(target, usage) {
+  target.input += number(usage.input_tokens);
+  target.cachedInput += number(usage.cached_input_tokens);
+  target.output += number(usage.output_tokens);
+  target.reasoning += number(usage.reasoning_output_tokens);
+  target.total += number(usage.total_tokens, number(usage.input_tokens) + number(usage.output_tokens));
+  target.count += 1;
 }
 
 function mergeLifetime(state, taskId, event) {

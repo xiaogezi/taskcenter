@@ -88,6 +88,7 @@ export function parseSession(input, options = {}) {
   let contextWindow = 0;
   let cwd = "";
   const events = [];
+  const lifetimeTotal = emptyLifetime();
   let missingTimestampUsage = 0;
   let phaseEnded = false;
   let compressionAfterPhase = 0;
@@ -106,12 +107,13 @@ export function parseSession(input, options = {}) {
     }
     const usage = usageFrom(record);
     if (usage) {
+      mergeLifetimeUsage(lifetimeTotal, { ...usage, count: 1 });
       const at = timestampFrom(record);
       if (at === null) missingTimestampUsage++;
       else events.push({ at, model, usage, contextWindow: value(record.payload?.model_context_window || record.payload?.info?.model_context_window, contextWindow), credits: record.rate_limits?.credits || null });
     }
   }
-  return { sessionId, cwd, events, compressionAfterPhase, missingTimestampUsage };
+  return { sessionId, cwd, events, lifetimeTotal, compressionAfterPhase, missingTimestampUsage };
 }
 
 export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date() } = {}) {
@@ -199,7 +201,15 @@ function taskIdsAt(index, sessionId, eventAt) {
 }
 function buildLifetime(parsed, index) {
   const byTask = new Map();
+  const bySession = new Map();
   for (const session of parsed) {
+    if (session.lifetimeTotal) {
+      mergeLifetime(bySession, session.sessionId, session.lifetimeTotal);
+    } else if (session.lifetimeByTask && Object.keys(session.lifetimeByTask).length) {
+      for (const aggregate of Object.values(session.lifetimeByTask)) mergeLifetime(bySession, session.sessionId, aggregate);
+    } else {
+      for (const event of session.events) mergeLifetime(bySession, session.sessionId, { usage: eventUsage(event), count: 1 });
+    }
     if (session.lifetimeByTask && Object.keys(session.lifetimeByTask).length) {
       for (const [taskId, aggregate] of Object.entries(session.lifetimeByTask)) mergeLifetime(byTask, taskId, aggregate);
       continue;
@@ -216,6 +226,7 @@ function buildLifetime(parsed, index) {
   return {
     attribution: "estimated",
     method: "last_token_usage_by_task_lifecycle",
+    bySession: [...bySession.entries()].map(([sessionId, aggregate]) => finishSessionLifetime(sessionId, aggregate)),
     byTask: rows,
     totals: finishLifetime("all", totals),
     attributedTokenRatio: totalTokens > 0 ? (totalTokens - unattributed.totalTokens) / totalTokens : 0,
@@ -242,6 +253,14 @@ function finishLifetime(id, aggregate) {
     totalTokens: aggregate.total,
     count: aggregate.count,
     attribution: id === "unattributed" ? "unattributed" : "estimated",
+  };
+}
+function finishSessionLifetime(sessionId, aggregate) {
+  return {
+    sessionId,
+    usage: { input: aggregate.input, cachedInput: aggregate.cachedInput, output: aggregate.output, reasoning: aggregate.reasoning },
+    totalTokens: aggregate.total,
+    count: aggregate.count,
   };
 }
 function buildWarnings(parsed, index, windows, now) {

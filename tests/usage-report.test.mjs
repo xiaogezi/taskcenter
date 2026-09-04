@@ -28,6 +28,12 @@ test("只累计 last_token_usage，区分缓存输入并按模型计费", () => 
     count: 2,
     attribution: "estimated",
   });
+  assert.deepEqual(report.lifetime.bySession[0], {
+    sessionId: "s1",
+    usage: { input: 100, cachedInput: 25, output: 15, reasoning: 0 },
+    totalTokens: 115,
+    count: 2,
+  });
 });
 
 test("多任务 Session 不重复分摊 Token，续调按次数预警", () => {
@@ -93,6 +99,7 @@ test("Token 事件兼容 created_at 与 payload.timestamp，缺失时间戳显�
   ];
   const report = collectUsage({ sessions: [{ sessionId: "timestamps", records }], ledger: [], rates: { "gpt-test": { input: 1 } }, now: "2026-08-20T02:00:00Z" });
   assert.equal(report.windows["24h"].totals.usage.input, 30);
+  assert.equal(report.lifetime.bySession[0].totalTokens, 60, "会话累计不需要时间戳也能保留真实 Token");
   assert.ok(report.alerts.some((alert) => alert.code === "USAGE_TIMESTAMP_MISSING" && alert.count === 1));
 });
 

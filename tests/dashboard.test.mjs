@@ -131,6 +131,9 @@ test("任务表展示生命周期 Token 估算与明细维度", async () => {
   assert.match(source, /Token（估算）/);
   assert.match(source, /last_token_usage/);
   assert.match(source, /usagePayload\.lifetime\?\.byTask/);
+  assert.match(source, /usagePayload\.lifetime\?\.bySession/);
+  assert.match(source, /session-token-total/);
+  assert.match(source, /会话精确值：\$\{formatExactTokens\(sessionTotalTokens\)\} Token/);
   assert.match(source, /notation: "compact"/);
   assert.match(source, /maximumSignificantDigits: 3/);
   assert.match(source, /精确值：\$\{formatExactTokens\(tokenUsage\.totalTokens\)\} Token/);

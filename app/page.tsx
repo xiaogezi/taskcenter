@@ -201,10 +201,17 @@ type TaskTokenUsage = {
   count: number;
   attribution: "estimated" | "unattributed";
 };
+type SessionTokenUsage = {
+  sessionId: string;
+  usage: { input: number; cachedInput: number; output: number; reasoning: number };
+  totalTokens: number;
+  count: number;
+};
 type UsageReport = {
   lifetime?: {
     attribution: "estimated";
     method: string;
+    bySession: SessionTokenUsage[];
     byTask: TaskTokenUsage[];
     attributedTokenRatio: number;
     missingTimestampEvents: number;
@@ -299,6 +306,7 @@ export default function Home() {
   const [reflections, setReflections] = useState<ReflectionState>({ version: 1, generatedAt: "", dataBoundary: { sessionMode: "allowlist", allowedSessionCount: 0, taskCount: 0 }, proposals: [] });
   const [governanceMetrics, setGovernanceMetrics] = useState<GovernanceMetrics | null>(null);
   const [taskTokenUsage, setTaskTokenUsage] = useState<Record<string, TaskTokenUsage>>({});
+  const [sessionTokenUsage, setSessionTokenUsage] = useState<Record<string, SessionTokenUsage>>({});
 
   const refreshLiveData = async (manual = false) => {
     if (refreshInFlight.current) return;
@@ -341,6 +349,7 @@ export default function Home() {
       setGateAllowlistIds(gateAllowlistPayload.selection?.threadIds ?? []);
       setGovernanceMetrics(governancePayload);
       setTaskTokenUsage(Object.fromEntries((usagePayload.lifetime?.byTask ?? []).filter((item) => item.id !== "unattributed").map((item) => [item.id, item])));
+      setSessionTokenUsage(Object.fromEntries((usagePayload.lifetime?.bySession ?? []).map((item) => [item.sessionId, item])));
       if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
     } catch (error) {
       setHealth({ ok: false });
@@ -606,6 +615,8 @@ export default function Home() {
             const registeredSession = sessionIds.map((sessionId) => sessionStatuses[sessionId]).find((session) => session?.status === "registered");
             const sessionStatus = registeredSession ?? sessionIds.map((sessionId) => sessionStatuses[sessionId]).find(Boolean);
             const threadCount = tasks.filter((task) => sessionIds.includes(task.sessionId)).length;
+            const sessionTokenRows = [...new Set(sessionIds)].map((sessionId) => sessionTokenUsage[sessionId]).filter((item): item is SessionTokenUsage => Boolean(item));
+            const sessionTotalTokens = sessionTokenRows.reduce((sum, item) => sum + item.totalTokens, 0);
             return (
               <div className="thread-row" key={id}>
                 <button
@@ -620,6 +631,7 @@ export default function Home() {
                     <span className={`session-health session-health-${sessionStatus?.status ?? "unknown"}`}>
                       {sessionStatus?.status === "registered" ? `${sessionStatus.agent} 已登记` : "未登记"}
                     </span>
+                    {sessionTokenRows.length > 0 && <span className="session-token-total" title={`会话精确值：${formatExactTokens(sessionTotalTokens)} Token`}> · {formatTokens(sessionTotalTokens)} Token</span>}
                   </small>
                 </span>
                 <span className="thread-arrow">↗</span>
