@@ -39,6 +39,12 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_MODEL_RATES_PATH: join(sourceRoot, "config", "model-rates.json"),
     TASKCENTER_MCP_TOKEN_PATH: join(runtimeRoot, "mcp-token"),
     TASKCENTER_WATCHER_HEARTBEAT_PATH: join(runtimeRoot, "watcher-heartbeat.json"),
+    TASKCENTER_USAGE_INDEX_PATH: join(runtimeRoot, "usage-index.json"),
+    TASKCENTER_USAGE_REPORT_PATH: join(runtimeRoot, "usage-report.json"),
+    TASKCENTER_USAGE_HEALTH_PATH: join(runtimeRoot, "usage-worker-health.json"),
+    TASKCENTER_GOVERNANCE_METRICS_PATH: join(runtimeRoot, "governance-metrics.json"),
+    TASKCENTER_GOVERNANCE_HEALTH_PATH: join(runtimeRoot, "governance-worker-health.json"),
+    TASKCENTER_TASK_EVENT_INDEX_PATH: join(runtimeRoot, "task-event-index.json"),
     TASKCENTER_CONTEXT_ROOT: resolve(controllerRoot, "..", "ProjectContextAgent"),
   };
   if (config.candidateCodex) {

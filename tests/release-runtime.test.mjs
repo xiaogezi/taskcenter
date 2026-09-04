@@ -22,6 +22,12 @@ test("正式 release 从不可变源码运行但继续绑定正式数据目录",
   assert.equal(environment.TASKCENTER_TASK_LEDGER_PATH, "/taskcenter/data/task-ledger.json");
   assert.equal(environment.TASKCENTER_TASK_REUSE_DECISIONS_PATH, "/taskcenter/data/task-reuse-decisions.jsonl");
   assert.equal(environment.TASKCENTER_DASHBOARD_PATH, "/taskcenter/data/dashboard.json");
+  assert.equal(environment.TASKCENTER_USAGE_INDEX_PATH, "/taskcenter/runtime/usage-index.json");
+  assert.equal(environment.TASKCENTER_USAGE_REPORT_PATH, "/taskcenter/runtime/usage-report.json");
+  assert.equal(environment.TASKCENTER_USAGE_HEALTH_PATH, "/taskcenter/runtime/usage-worker-health.json");
+  assert.equal(environment.TASKCENTER_GOVERNANCE_METRICS_PATH, "/taskcenter/runtime/governance-metrics.json");
+  assert.equal(environment.TASKCENTER_GOVERNANCE_HEALTH_PATH, "/taskcenter/runtime/governance-worker-health.json");
+  assert.equal(environment.TASKCENTER_TASK_EVENT_INDEX_PATH, "/taskcenter/runtime/task-event-index.json");
 });
 
 test("候选 release 隔离 Codex、账本、runtime、端口并强制 dry-run", () => {
