@@ -248,7 +248,17 @@ function normalizeDate(value?: string) {
   }).format(date);
 }
 
+const compactTokenFormatter = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  compactDisplay: "short",
+  maximumSignificantDigits: 3,
+});
+
 function formatTokens(value: number) {
+  return compactTokenFormatter.format(Math.max(0, Number(value || 0)));
+}
+
+function formatExactTokens(value: number) {
   return Math.max(0, Number(value || 0)).toLocaleString("zh-CN");
 }
 
@@ -1085,8 +1095,8 @@ function TaskRow({ task, tokenUsage, availableThreads: threadsForTask, sessionSt
       </td>
       <td data-label="时间 / 工具" className="task-cell task-metrics-cell">
         <div className="task-token-usage" title="读取 Codex last_token_usage，并按任务生命周期时间窗估算归属；共享或重叠部分不会重复分摊。">
-          <strong>Token（估算）：{tokenUsage ? formatTokens(tokenUsage.totalTokens) : "暂无归属"}</strong>
-          {tokenUsage && <small>输入 {formatTokens(tokenUsage.usage.input)} · 缓存 {formatTokens(tokenUsage.usage.cachedInput)} · 输出 {formatTokens(tokenUsage.usage.output)} · 推理 {formatTokens(tokenUsage.usage.reasoning)}</small>}
+          <strong title={tokenUsage ? `精确值：${formatExactTokens(tokenUsage.totalTokens)} Token` : undefined}>Token（估算）：{tokenUsage ? formatTokens(tokenUsage.totalTokens) : "暂无归属"}</strong>
+          {tokenUsage && <small title={`精确值：输入 ${formatExactTokens(tokenUsage.usage.input)} · 缓存 ${formatExactTokens(tokenUsage.usage.cachedInput)} · 输出 ${formatExactTokens(tokenUsage.usage.output)} · 推理 ${formatExactTokens(tokenUsage.usage.reasoning)}`}>输入 {formatTokens(tokenUsage.usage.input)} · 缓存 {formatTokens(tokenUsage.usage.cachedInput)} · 输出 {formatTokens(tokenUsage.usage.output)} · 推理 {formatTokens(tokenUsage.usage.reasoning)}</small>}
         </div>
         <div>创建：{normalizeDate(task.createdAt)}</div>
         <div>首次执行：{normalizeDate(task.firstStartedAt)}</div>
