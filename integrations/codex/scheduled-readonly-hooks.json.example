@@ -1,12 +1,12 @@
 {
-  "description": "Conditional additions for the CyberRole scheduled read-only automation; merge with the normal TaskCenter hooks",
+  "description": "Conditional additions for the inStory scheduled read-only automation; merge with the normal TaskCenter hooks",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs\" scheduled-profile-detect --agent codex --profile scheduled_readonly --automation-id cyberrole-agent-context --project-id cyberrole --workspace-root \"__CYBERROLE_ROOT__\" --report-path \"__ROLLING_REPORT__\" --task-mutation false --pca-mutation false --report-mutation true --network false",
+            "command": "node \"__TASKCENTER_ROOT__/scripts/taskcenter-hook.mjs\" scheduled-profile-detect --agent codex --profile scheduled_readonly --automation-id instory --project-id instory --workspace-root \"__INSTORY_ROOT__\" --report-path \"__INSTORY_ROOT__/project-context/90-Agent提案/自动化报告/附件-项目研发效能夜间优化探索.md\" --task-mutation false --pca-mutation false --report-mutation true --network false",
             "timeout": 10,
             "statusMessage": "Detecting scheduled read-only TaskCenter profile",
             "additionalContextLimit": 2000

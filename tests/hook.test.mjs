@@ -124,28 +124,30 @@ test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async
   assert.equal(tasks.length, 0);
 });
 
-test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只读能力", async () => {
+test("scheduled_readonly 仅绕过 active task 并限制为 inStory 精确只读能力", async () => {
   const sessionId = "019f0000-0000-7000-8000-00000000008a";
-  const cyberRoleRoot = join(tempDir, "CyberRole");
-  const reportPath = join(tempDir, "cyberrole-agent-context.md");
-  await mkdir(join(cyberRoleRoot, "project-context"), { recursive: true });
-  await writeFile(join(cyberRoleRoot, "README.md"), "CyberRole\n");
-  await writeFile(join(cyberRoleRoot, "project-context", "status.md"), "status\n");
+  const instoryRoot = join(tempDir, "inStory");
+  const reportPath = join(instoryRoot, "project-context", "90-Agent提案", "自动化报告", "instory.md");
+  await mkdir(join(instoryRoot, "project-context"), { recursive: true });
+  await writeFile(join(instoryRoot, "README.md"), "inStory\n");
+  await writeFile(join(instoryRoot, "project-context", "status.md"), "status\n");
   const initialReport = managedReport("rolling report");
   const updatedReport = managedReport("rolling report updated");
+  await mkdir(join(instoryRoot, "project-context", "90-Agent提案", "自动化报告"), { recursive: true });
   await writeFile(reportPath, initialReport);
   const profileArgs = [
     "--profile", "scheduled_readonly",
-    "--automation-id", "cyberrole-agent-context",
-    "--project-id", "cyberrole",
-    "--workspace-root", cyberRoleRoot,
+    "--automation-id", "instory",
+    "--project-id", "instory",
+    "--workspace-root", instoryRoot,
     "--report-path", reportPath,
     "--task-mutation", "false",
     "--pca-mutation", "false",
     "--report-mutation", "true",
     "--network", "false",
   ];
-  assert.equal((await runHook("session-start", "codex", { session_id: sessionId, cwd: cyberRoleRoot }, profileArgs)).code, 0);
+  const startResult = await runHook("session-start", "codex", { session_id: sessionId, cwd: instoryRoot }, profileArgs);
+  assert.equal(startResult.code, 0, startResult.stderr);
   const forgedActivation = await fetch(`${base}/sessions/scheduled-readonly`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" },
@@ -154,18 +156,64 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   assert.equal(forgedActivation.status, 404);
   const detected = await runHook("scheduled-profile-detect", "codex", {
     session_id: sessionId,
-    cwd: cyberRoleRoot,
-    prompt: "在 CyberRole 当前主工作区执行“夜间项目交付系统优化探索”\ntrial_id：cyberrole-context-lifecycle-20260820\n<!-- AUTO-MANAGED-BEGIN -->",
+    cwd: instoryRoot,
+    prompt: `Automation ID: instory\n${reportPath}\n<!-- AUTO-MANAGED-BEGIN -->`,
   }, profileArgs);
   assert.equal(detected.code, 0);
   assert.match(detected.stdout, /scheduled_readonly Profile 已绑定/);
   assert.match(detected.stdout, /scheduled-report-probe\.mjs/);
 
+  const createContent = initialReport.slice(initialReport.indexOf("<!-- AUTO-MANAGED-BEGIN -->"), initialReport.indexOf("<!-- AUTO-MANAGED-END -->") + "<!-- AUTO-MANAGED-END -->".length) + "\n";
+  const addPatch = (content, path = reportPath) => `*** Begin Patch\n*** Add File: ${path}\n${content.trimEnd().split("\n").map((line) => `+${line}`).join("\n")}\n*** End Patch`;
+  const checkPatch = (patch, action = "pre-tool-use") => runHook(action, "codex", {
+    session_id: sessionId, cwd: instoryRoot, tool_name: "apply_patch", tool_input: { command: patch },
+  });
+  assert.equal((await checkPatch(addPatch(createContent))).code, 2, "Add must not overwrite an existing report");
+  await rm(join(instoryRoot, "project-context", "90-Agent提案"), { recursive: true });
+  const firstCreate = await checkPatch(addPatch(createContent.replace("rolling report", "first creation")));
+  assert.equal(firstCreate.code, 0, firstCreate.stderr);
+  const rewrittenCreate = JSON.parse(firstCreate.stdout).hookSpecificOutput.updatedInput.command;
+  const createdContent = rewrittenCreate.split("\n").slice(2, -1).map((line) => line.slice(1)).join("\n") + "\n";
+  for (const invalid of [
+    addPatch("manual preface\n" + createContent),
+    addPatch(createContent + "manual footer\n"),
+    addPatch(createContent.replace("<!-- AUTO-MANAGED-END -->", "")),
+    addPatch(createContent.replace("<!-- AUTO-MANAGED-END -->", "<!-- AUTO-MANAGED-BEGIN -->\n<!-- AUTO-MANAGED-END -->")),
+    addPatch(createContent, reportPath + ".other.md"),
+    addPatch(createContent).replace("*** End Patch", `*** Add File: ${reportPath}.other.md\n+other\n*** End Patch`),
+    addPatch(createContent).replace("+<!-- AUTO-MANAGED-BEGIN -->", "@@"),
+  ]) assert.equal((await checkPatch(invalid)).code, 2, invalid);
+  await mkdir(join(instoryRoot, "project-context", "90-Agent提案", "自动化报告"), { recursive: true });
+  await writeFile(reportPath, createdContent);
+  assert.equal((await checkPatch(rewrittenCreate, "post-tool-use")).code, 0);
+  if (process.platform !== "win32") {
+    await rm(reportPath);
+    await symlink(join(tempDir, "missing-report.md"), reportPath);
+    assert.equal((await checkPatch(addPatch(createContent))).code, 2, "dangling file symlink");
+    await rm(reportPath);
+    await rm(join(instoryRoot, "project-context", "90-Agent提案", "自动化报告"), { recursive: true });
+    await symlink(tempDir, join(instoryRoot, "project-context", "90-Agent提案", "自动化报告"));
+    assert.equal((await checkPatch(addPatch(createContent))).code, 2, "ancestor symlink");
+    await rm(join(instoryRoot, "project-context", "90-Agent提案", "自动化报告"));
+    await mkdir(join(instoryRoot, "project-context", "90-Agent提案", "自动化报告"));
+  }
+  await writeFile(reportPath, initialReport);
+  for (const prompt of [
+    "ordinary project question",
+    `Automation ID: other\n${reportPath}\n<!-- AUTO-MANAGED-BEGIN -->`,
+    "在 CyberRole 当前主工作区执行“夜间项目交付系统优化探索”\ntrial_id：cyberrole-context-lifecycle-20260820\n<!-- AUTO-MANAGED-BEGIN -->",
+    `Automation ID: instory\n<!-- AUTO-MANAGED-BEGIN -->`,
+  ]) {
+    const result = await runHook("scheduled-profile-detect", "codex", { session_id: sessionId, cwd: instoryRoot, prompt }, profileArgs);
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, "", "unmatched prompt must be a no-op");
+  }
+
   const reportPatch = reportUpdatePatch(reportPath, initialReport, updatedReport);
   const allowedCases = [
-    { tool_name: "Read", tool_input: { file_path: join(cyberRoleRoot, "README.md") } },
-    { tool_name: "Grep", tool_input: { path: join(cyberRoleRoot, "project-context"), pattern: "status" } },
-    { tool_name: "Glob", tool_input: { path: cyberRoleRoot, pattern: "project-context/**/*.md" } },
+    { tool_name: "Read", tool_input: { file_path: join(instoryRoot, "README.md") } },
+    { tool_name: "Grep", tool_input: { path: join(instoryRoot, "project-context"), pattern: "status" } },
+    { tool_name: "Glob", tool_input: { path: instoryRoot, pattern: "project-context/**/*.md" } },
     { tool_name: "exec_command", tool_input: { cmd: "git status --short" } },
     { tool_name: "Bash", tool_input: { command: "git rev-parse HEAD" } },
     { tool_name: "exec_command", tool_input: { cmd: "rtk sed -n '1,20p' 'project-context/status.md'" } },
@@ -178,15 +226,15 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     { tool_name: "apply_patch", tool_input: reportPatch },
     { tool_name: "mcp__context__context_capabilities", tool_input: {} },
     { tool_name: "mcp__context__context_health_check", tool_input: {} },
-    { tool_name: "mcp__context__context_list_active_tasks", tool_input: { project_id: "cyberrole" } },
-    { tool_name: "mcp__taskcenter__taskcenter_session_register", tool_input: { session_id: sessionId, workspace: cyberRoleRoot } },
+    { tool_name: "mcp__context__context_list_active_tasks", tool_input: { project_id: "instory" } },
+    { tool_name: "mcp__taskcenter__taskcenter_session_register", tool_input: { session_id: sessionId, workspace: instoryRoot } },
     { tool_name: "mcp__taskcenter__taskcenter_session_status", tool_input: { session_id: sessionId } },
     { tool_name: "mcp__taskcenter__taskcenter_task_query", tool_input: { session_id: sessionId } },
     { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_status", tool_input: { session_id: sessionId } },
     { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_set", tool_input: { session_id: sessionId, enabled: true } },
   ];
   for (const payload of allowedCases) {
-    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: cyberRoleRoot, ...payload });
+    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: instoryRoot, ...payload });
     assert.equal(result.code, 0, payload.tool_name || payload.tool_input?.cmd);
     assert.match(result.stdout, /scheduled_readonly 放行/);
   }
@@ -194,7 +242,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   const staleHashPatch = reportUpdatePatch(reportPath, initialReport, initialReport.replace("rolling report", "rolling report updated"));
   const rewritten = await runHook("pre-tool-use", "codex", {
     session_id: sessionId,
-    cwd: cyberRoleRoot,
+    cwd: instoryRoot,
     tool_name: "apply_patch",
     tool_input: { command: staleHashPatch },
   });
@@ -220,7 +268,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   ].join("\n");
   const orderedRewrite = await runHook("pre-tool-use", "codex", {
     session_id: sessionId,
-    cwd: cyberRoleRoot,
+    cwd: instoryRoot,
     tool_name: "apply_patch",
     tool_input: { command: orderedPatch },
   });
@@ -235,7 +283,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   await writeFile(reportPath, updatedReport);
   const postValid = await runHook("post-tool-use", "codex", {
     session_id: sessionId,
-    cwd: cyberRoleRoot,
+    cwd: instoryRoot,
     hook_event_name: "PostToolUse",
     tool_name: "apply_patch",
     tool_input: { command: reportPatch },
@@ -250,7 +298,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   const crLfPatch = reportUpdatePatch(reportPath, initialCrLfReport, updatedCrLfReport);
   const crLfAllowed = await runHook("pre-tool-use", "codex", {
     session_id: sessionId,
-    cwd: cyberRoleRoot,
+    cwd: instoryRoot,
     tool_name: "apply_patch",
     tool_input: { command: crLfPatch },
   });
@@ -260,13 +308,13 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   const blockedCases = [
     { cwd: "/other", tool_name: "Read", tool_input: { file_path: "/other/private.md" } },
     { tool_name: "Read", tool_input: { file_path: join(tempDir, "other.md") } },
-    { tool_name: "Glob", tool_input: { path: cyberRoleRoot, pattern: "../**/*" } },
+    { tool_name: "Glob", tool_input: { path: instoryRoot, pattern: "../**/*" } },
     { tool_name: "exec_command", tool_input: { cmd: "git branch --show-current" } },
     { tool_name: "exec_command", tool_input: { cmd: "git status | cat" } },
     { tool_name: "exec_command", tool_input: { cmd: `rtk sed -i '' '1d' '${reportPath}'` } },
-    { tool_name: "exec_command", tool_input: { cmd: `rtk sed -n '1,20p' '${reportPath}' '${join(cyberRoleRoot, "README.md")}'` } },
+    { tool_name: "exec_command", tool_input: { cmd: `rtk sed -n '1,20p' '${reportPath}' '${join(instoryRoot, "README.md")}'` } },
     { tool_name: "exec_command", tool_input: { cmd: `rtk sed -n '1,20d' '${reportPath}'` } },
-    { tool_name: "exec_command", tool_input: { cmd: `rtk cat '${reportPath}' '${join(cyberRoleRoot, "README.md")}'` } },
+    { tool_name: "exec_command", tool_input: { cmd: `rtk cat '${reportPath}' '${join(instoryRoot, "README.md")}'` } },
     { tool_name: "exec_command", tool_input: { cmd: `rtk head -c 20 '${reportPath}'` } },
     { tool_name: "exec_command", tool_input: { cmd: `rtk tail -n 20 '${join(tempDir, "other.md")}'` } },
     { tool_name: "exec_command", tool_input: { cmd: `rtk cat '${reportPath}' > '${join(tempDir, "copy.md")}'` } },
@@ -286,8 +334,8 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
     { tool_name: "mcp__taskcenter__taskcenter_session_register", tool_input: { session_id: sessionId, workspace: join(tempDir, "Other") } },
     { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_status", tool_input: { session_id: "019f0000-0000-7000-8000-000000000999" } },
     { tool_name: "mcp__taskcenter__taskcenter_scheduled_readonly_scan_exemption_set", tool_input: { enabled: true, session_id: "019f0000-0000-7000-8000-000000000999" } },
-    { tool_name: "apply_patch", tool_input: { patch: `*** Begin Patch\n*** Update File: ${join(cyberRoleRoot, "README.md")}\n@@\n-CyberRole\n+changed\n*** End Patch` } },
-    { tool_name: "apply_patch", tool_input: { command: `${reportPatch}\n*** Begin Patch\n*** Update File: ${join(cyberRoleRoot, "README.md")}\n@@\n-CyberRole\n+changed\n*** End Patch` } },
+    { tool_name: "apply_patch", tool_input: { patch: `*** Begin Patch\n*** Update File: ${join(instoryRoot, "README.md")}\n@@\n-inStory\n+changed\n*** End Patch` } },
+    { tool_name: "apply_patch", tool_input: { command: `${reportPatch}\n*** Begin Patch\n*** Update File: ${join(instoryRoot, "README.md")}\n@@\n-inStory\n+changed\n*** End Patch` } },
     { tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Add File: ${reportPath}.new\n+new\n*** End Patch` } },
     { tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Delete File: ${reportPath}\n*** End Patch` } },
     { tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n*** Update File: ${reportPath}\n*** Move to: ${reportPath}.moved\n@@\n-${initialReport.split("\n")[0]}\n+changed\n*** End Patch` } },
@@ -297,41 +345,41 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   ];
   await writeFile(join(tempDir, "other.md"), "outside\n");
   if (process.platform !== "win32") {
-    const outsideLink = join(cyberRoleRoot, "outside-link.md");
+    const outsideLink = join(instoryRoot, "outside-link.md");
     await symlink(join(tempDir, "other.md"), outsideLink);
     blockedCases.push({ tool_name: "Read", tool_input: { file_path: outsideLink } });
   }
   for (const payload of blockedCases) {
-    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: payload.cwd || cyberRoleRoot, ...payload });
+    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: payload.cwd || instoryRoot, ...payload });
     assert.equal(result.code, 2, payload.tool_name || payload.tool_input?.cmd);
     assert.match(result.stderr, /scheduled_readonly/);
   }
 
   const badIdentity = [...profileArgs];
-  badIdentity[badIdentity.indexOf("cyberrole-agent-context")] = "other-automation";
-  const rejected = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: cyberRoleRoot, tool_name: "Read", tool_input: { file_path: join(cyberRoleRoot, "README.md") } }, badIdentity);
+  badIdentity[badIdentity.indexOf("instory")] = "other-automation";
+  const rejected = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: instoryRoot, tool_name: "Read", tool_input: { file_path: join(instoryRoot, "README.md") } }, badIdentity);
   assert.equal(rejected.code, 2);
   assert.match(rejected.stderr, /automationId/);
 
   const payloadIdentity = await runHook("pre-tool-use", "codex", {
     session_id: sessionId,
-    cwd: cyberRoleRoot,
+    cwd: instoryRoot,
     profile: "scheduled_readonly",
-    automation_id: "cyberrole-agent-context",
-    project_id: "cyberrole",
-    workspace_root: cyberRoleRoot,
+    automation_id: "instory",
+    project_id: "instory",
+    workspace_root: instoryRoot,
     report_path: reportPath,
     task_mutation: false,
     pca_mutation: false,
     report_mutation: true,
     network: false,
     tool_name: "Read",
-    tool_input: { file_path: join(cyberRoleRoot, "README.md") },
+    tool_input: { file_path: join(instoryRoot, "README.md") },
   });
   assert.equal(payloadIdentity.code, 0);
   const scheduledMcp = await runHook("scheduled-pre-tool-use", "codex", {
     session_id: sessionId,
-    cwd: cyberRoleRoot,
+    cwd: instoryRoot,
     tool_name: "mcp__context__context_health_check",
     tool_input: {},
   });
@@ -340,7 +388,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 CyberRole 精确只�
   await writeFile(reportPath, updatedReport.replace(/`[0-9a-f]{64}`/, "`" + "0".repeat(64) + "`"));
   const postInvalid = await runHook("post-tool-use", "codex", {
     session_id: sessionId,
-    cwd: cyberRoleRoot,
+    cwd: instoryRoot,
     hook_event_name: "PostToolUse",
     tool_name: "apply_patch",
     tool_input: reportPatch,

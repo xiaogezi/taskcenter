@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -274,8 +274,8 @@ test("scheduled_readonly Profile 绑定已登记 Session 且不创建任务", as
   recordTaskEvent({ type: "session.register", event_id: "sess-scheduled-register", session_id: "sess-scheduled", workspace: "/work" });
   const profile = setSessionScheduledReadonlyProfile("sess-scheduled", {
     profile: "scheduled_readonly",
-    automation_id: "cyberrole-agent-context",
-    project_id: "cyberrole",
+    automation_id: "instory",
+    project_id: "instory",
     workspace_root: "/work",
     report_path: "/work/report.md",
     report_mutation: true,
@@ -283,7 +283,7 @@ test("scheduled_readonly Profile 绑定已登记 Session 且不创建任务", as
   assert.equal(profile.reportMutation, true);
   assert.equal(setSessionScheduledReadonlyScanExemption("sess-scheduled", true).scanExempt, true);
   assert.equal(setSessionScheduledReadonlyScanExemption("sess-scheduled", false).scanExempt, false);
-  assert.equal(getSessionStatuses([], [])[0].scheduledReadonly.automationId, "cyberrole-agent-context");
+  assert.equal(getSessionStatuses([], [])[0].scheduledReadonly.automationId, "instory");
   assert.equal(loadTasks().length, 0);
   assert.throws(() => setSessionScheduledReadonlyProfile("missing", profile), /尚未登记/);
   recordTaskEvent({ type: "session.register", session_id: "sess-normal", workspace: "/work" });
@@ -1988,12 +1988,13 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(gateHookBlocked.code, 2);
   assert.match(gateHookBlocked.stderr, /无活跃任务/);
 
-  const scheduledReportPath = join(tempDir, "scheduled-report.md");
+  const scheduledReportPath = join(tempDir, "project-context", "90-Agent提案", "自动化报告", "scheduled-report.md");
+  await mkdir(dirname(scheduledReportPath), { recursive: true });
   await writeFile(scheduledReportPath, "report\n");
   setSessionScheduledReadonlyProfile(gateSessionId, {
     profile: "scheduled_readonly",
-    automation_id: "cyberrole-agent-context",
-    project_id: "cyberrole",
+    automation_id: "instory",
+    project_id: "instory",
     workspace_root: tempDir,
     report_path: scheduledReportPath,
     report_mutation: true,
@@ -2011,8 +2012,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(scanJoin.session.scanExempt, true);
   setSessionScheduledReadonlyProfile(gateSessionId, {
     profile: "scheduled_readonly",
-    automation_id: "cyberrole-agent-context",
-    project_id: "cyberrole",
+    automation_id: "instory",
+    project_id: "instory",
     workspace_root: tempDir,
     report_path: scheduledReportPath,
     report_mutation: true,
@@ -2024,8 +2025,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(scanStatusAfterDetect.session.scanExempt, true);
   const scheduledIdentity = {
     profile: "scheduled_readonly",
-    automation_id: "cyberrole-agent-context",
-    project_id: "cyberrole",
+    automation_id: "instory",
+    project_id: "instory",
     workspace_root: tempDir,
     report_path: scheduledReportPath,
     task_mutation: false,

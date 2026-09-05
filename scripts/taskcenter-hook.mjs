@@ -2,7 +2,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -145,8 +145,8 @@ function eventIdentityValue(...keys) {
 function validateScheduledReadonlyIdentity() {
   if (scheduledReadonly.profile !== "scheduled_readonly") throw new Error(`未知 Hook profile: ${scheduledReadonly.profile}`);
   const expected = {
-    automationId: "cyberrole-agent-context",
-    projectId: "cyberrole",
+    automationId: "instory",
+    projectId: "instory",
     taskMutation: "false",
     pcaMutation: "false",
     reportMutation: "true",
@@ -162,13 +162,13 @@ function validateScheduledReadonlyIdentity() {
     throw new Error("scheduled_readonly 必须绑定绝对 workspace-root 与 report-path。");
   }
   scheduledReadonly.workspaceRoot = canonicalExistingPath(scheduledReadonly.workspaceRoot);
-  scheduledReadonly.reportPath = canonicalExistingPath(scheduledReadonly.reportPath);
+  scheduledReadonly.reportPath = canonicalScheduledReportPath(scheduledReadonly.reportPath);
   const canonicalWorkspace = canonicalExistingPath(workspace);
   if (!scheduledReadonly.workspaceRoot || !scheduledReadonly.reportPath || !canonicalWorkspace) {
-    throw new Error("scheduled_readonly 绑定的 workspace-root、report-path 与当前 cwd 必须真实存在。");
+    throw new Error("scheduled_readonly workspace-root 与 cwd 必须存在，报告必须绑定在 project-context/90-Agent提案/自动化报告 下的单个 Markdown 文件且不得经过符号链接。");
   }
   if (!isWithinPath(canonicalWorkspace, scheduledReadonly.workspaceRoot)) {
-    throw new Error("scheduled_readonly 只能用于绑定的 CyberRole 工作区。");
+    throw new Error("scheduled_readonly 只能用于绑定的项目工作区。");
   }
 }
 
@@ -185,9 +185,26 @@ function isScheduledReportPatch(payload) {
   if (scheduledReadonly.reportMutation !== "true") return false;
   if (!isBoundScheduledReportPatch(payload)) return false;
   try {
+    const originalPatch = extractApplyPatch(payload);
+    if (/^\*\*\* Add File:/m.test(originalPatch)) {
+      try {
+        lstatSync(scheduledReadonly.reportPath);
+        return false;
+      } catch (error) {
+        if (error.code !== "ENOENT") return false;
+      }
+      const lines = originalPatch.replaceAll("\r\n", "\n").trimEnd().split("\n").slice(2, -1);
+      if (!lines.length || lines.some((line) => !line.startsWith("+"))) return false;
+      const created = `${lines.map((line) => line.slice(1)).join("\n")}\n`;
+      // First creation has no human-owned envelope to preserve: allow only the managed block.
+      if (!created.startsWith("<!-- AUTO-MANAGED-BEGIN -->\n") || !created.endsWith("<!-- AUTO-MANAGED-END -->\n")) return false;
+      const repaired = repairManagedReportHash(created);
+      if (!inspectManagedReportContent(repaired, scheduledReadonly.reportPath).valid) return false;
+      scheduledPatchRewrite = `*** Begin Patch\n*** Add File: ${scheduledReadonly.reportPath}\n${repaired.trimEnd().split("\n").map((line) => `+${line}`).join("\n")}\n*** End Patch`;
+      return true;
+    }
     const current = readFileSync(scheduledReadonly.reportPath, "utf8");
     if (!inspectManagedReportContent(current, scheduledReadonly.reportPath).valid) return false;
-    const originalPatch = extractApplyPatch(payload);
     const updated = simulateScheduledReportPatch(current, originalPatch);
     if (!managedEnvelopeUnchanged(current, updated)) return false;
     const repaired = repairManagedReportHash(updated);
@@ -238,10 +255,10 @@ function isBoundScheduledReportPatch(payload) {
   if (scheduledReadonly.reportMutation !== "true") return false;
   const patch = extractApplyPatch(payload);
   if (!patch || !/^\*\*\* Begin Patch\r?\n/.test(patch) || !/\r?\n\*\*\* End Patch\s*$/.test(patch)) return false;
-  if (/^\*\*\* (?:Add|Delete) File:/m.test(patch) || /^\*\*\* Move to:/m.test(patch)) return false;
-  const headers = [...patch.matchAll(/^\*\*\* Update File:\s*(.+)$/gm)];
+  if (/^\*\*\* Delete File:/m.test(patch) || /^\*\*\* Move to:/m.test(patch)) return false;
+  const headers = [...patch.matchAll(/^\*\*\* (?:Update|Add) File:\s*(.+)$/gm)];
   if (headers.length !== 1) return false;
-  const canonical = canonicalExistingPath(resolveInputPath(headers[0][1].trim(), workspace));
+  const canonical = canonicalScheduledReportPath(resolveInputPath(headers[0][1].trim(), workspace));
   return Boolean(canonical) && samePath(canonical, scheduledReadonly.reportPath);
 }
 
@@ -495,6 +512,32 @@ function isAllowedScheduledPath(path) {
   return Boolean(canonical) && (isWithinPath(canonical, scheduledReadonly.workspaceRoot) || samePath(canonical, scheduledReadonly.reportPath));
 }
 
+// Resolve missing descendants without following symlinks, including dangling links.
+function canonicalScheduledReportPath(path) {
+  if (!scheduledReadonly.workspaceRoot) return "";
+  let target = resolve(path);
+  let ancestor = dirname(target);
+  while (canonicalExistingPath(ancestor) !== scheduledReadonly.workspaceRoot) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return "";
+    ancestor = parent;
+  }
+  target = resolve(scheduledReadonly.workspaceRoot, relative(ancestor, target));
+  const reportRoot = resolve(scheduledReadonly.workspaceRoot, "project-context", "90-Agent提案", "自动化报告");
+  if (dirname(target) !== reportRoot || !target.endsWith(".md")) return "";
+  let candidate = target;
+  while (candidate !== scheduledReadonly.workspaceRoot) {
+    try {
+      const stat = lstatSync(candidate);
+      if (stat.isSymbolicLink() || (candidate === target ? !stat.isFile() : !stat.isDirectory())) return "";
+    } catch (error) {
+      if (error.code !== "ENOENT") return "";
+    }
+    candidate = dirname(candidate);
+  }
+  return target;
+}
+
 function canonicalExistingPath(path) {
   try {
     return realpathSync.native(resolve(path));
@@ -576,11 +619,9 @@ async function detectScheduledReadonlyProfile() {
 
 function matchesScheduledReadonlyPrompt(prompt) {
   const value = String(prompt || "");
-  return [
-    "在 CyberRole 当前主工作区执行“夜间项目交付系统优化探索”",
-    "trial_id：cyberrole-context-lifecycle-20260820",
-    "<!-- AUTO-MANAGED-BEGIN -->",
-  ].every((marker) => value.includes(marker));
+  return /^Automation ID: instory\s*$/m.test(value)
+    && value.includes(scheduledReadonly.reportPath)
+    && value.includes("<!-- AUTO-MANAGED-BEGIN -->");
 }
 
 function shellQuote(value) {

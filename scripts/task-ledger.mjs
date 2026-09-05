@@ -273,7 +273,7 @@ export function setSessionScheduledReadonlyProfile(sessionId, profile) {
     scanExempt: current.scheduledReadonly?.scanExempt === true,
     scanExemptUpdatedAt: current.scheduledReadonly?.scanExemptUpdatedAt || "",
   };
-  if (next.profile !== "scheduled_readonly" || next.automationId !== "cyberrole-agent-context" || next.projectId !== "cyberrole") {
+  if (next.profile !== "scheduled_readonly" || next.automationId !== "instory" || next.projectId !== "instory") {
     throw new TaskLedgerError(400, "scheduled_readonly Session Profile 身份无效。");
   }
   if (!next.workspaceRoot || !next.reportPath || !next.reportMutation) {
