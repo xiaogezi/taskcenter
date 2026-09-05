@@ -101,7 +101,7 @@ test("SessionStart Hook 登记真实会话且可幂等重放", async () => {
 test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async () => {
   const sessionId = "019f0000-0000-7000-8000-000000000089";
   assert.equal((await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" })).code, 0);
-  for (const command of ["pwd", "cat README.md", "sed -n '1,2p' README.md", "sed -n '/hello/p' README.md", "git status", "git diff", "git ls-files", "find . -maxdepth 1", "rtk rg TaskCenter README.md"]) {
+  for (const command of ["pwd", "cat README.md", "sed -n '1,2p' README.md", "sed -n '/hello/p' README.md", "git status", "git diff", "git ls-files", "find . -maxdepth 1", "rtk rg TaskCenter README.md", "rtk rg 'foo|bar' README.md", "rtk proxy rg 'foo|bar' README.md", "adb devices -l", "/opt/android/adb version"]) {
     const allowed = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: command } });
     assert.equal(allowed.code, 0, command);
     assert.match(allowed.stdout, /L0/);
@@ -110,6 +110,10 @@ test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async
     const blocked = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: command } });
     assert.equal(blocked.code, 2, command);
     assert.match(blocked.stderr, /不满足 L0 确定性只读规则/);
+  }
+  for (const command of ['rtk rg --pre="touch sentinel" x', 'rg --hostname-bin=evil x', 'adb shell id', 'adb devices -l; adb reboot', 'cat /tmp/auth.json', 'rtk proxy rg "$(touch sentinel)" .']) {
+    const blocked = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: command } });
+    assert.equal(blocked.code, 2, command);
   }
   for (const tool_name of ["Read", "Grep", "Glob"]) {
     const allowed = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name, tool_input: { path: "README.md" } });
