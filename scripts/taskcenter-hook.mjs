@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { taskTimeState } from "../app/task-time-state.mjs";
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
+import { inspectionWords } from "./inspection-command.mjs";
 
 class ControlUnavailableError extends Error {}
 
@@ -663,14 +664,18 @@ function isReadOnlyInspection(payload) {
     : {};
   const command = String(input.cmd || input.command || payload.command || "").trim();
   if (!command) return false;
-  // L0 只接受单条、无重定向/管道/命令替换的确定性检查命令。
-  if (/[\n\r;&<>`]/.test(command) || /\|\||\||\$\(/.test(command)) return false;
-  const tokens = splitCommandWords(command);
-  if (basename(tokens[0]) === "rtk") tokens.shift();
+  const tokens = inspectionWords(command);
+  if (!tokens?.length) return false;
+  if (basename(tokens[0]) === "rtk") {
+    tokens.shift();
+    if (tokens[0] === "proxy") tokens.shift();
+  }
   const executable = basename(tokens[0]);
   const args = tokens.slice(1);
+  if (args.some((token) => /(?:^|[/\\])(?:auth\.json|\.env(?:\.[^/\\]+)?|id_rsa|id_ed25519)(?:$|[/\\])/.test(token))) return false;
+  if (executable === "adb") return args.length === 1 && args[0] === "version" || args[0] === "devices" && (args.length === 1 || args.length === 2 && args[1] === "-l");
   if (["pwd", "ls", "cat", "head", "tail", "wc", "du", "stat", "file"].includes(executable)) return true;
-  if (executable === "rg") return !args.some((token) => token === "--pre" || token.startsWith("--pre="));
+  if (executable === "rg") return !args.some((token) => /^--(?:pre|hostname-bin)(?:=|$)/.test(token));
   if (executable === "sed") return isReadOnlySed(args);
   if (executable === "find") return isReadOnlyFind(args);
   if (executable !== "git") return false;

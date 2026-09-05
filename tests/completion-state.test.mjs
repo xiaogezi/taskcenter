@@ -60,6 +60,18 @@ test("standard done_claimed 缺少 required verification 时保持 pending", () 
   assert.ok(task.completionReadiness.reasons.includes("required_verification_missing"));
 });
 
+test("验证引用错用验收 ID 时提供合法计划 ID 且不修改原任务", () => {
+  const task = standardTask();
+  const event = verification();
+  event.verification_claim.requirement_id = "acceptance-1";
+  assert.throws(() => applyCompletionEvent(task, event), /UNKNOWN_VERIFICATION_REFERENCE.*verification_plan.id.*tests/);
+  assert.equal(task.verificationClaims.length, 0);
+  event.verification_claim.requirement_id = "tests";
+  assert.equal(applyCompletionEvent(task, event).verificationStatus, "passed");
+  event.verification_claim.kind = "lint";
+  assert.throws(() => applyCompletionEvent(task, event), /VERIFICATION_KIND_MISMATCH/);
+});
+
 test("当前 revision 的成功验证使 standard 任务进入 ready", () => {
   const task = applyCompletionEvent(standardTask(), verification());
   assert.equal(task.verificationStatus, "passed");

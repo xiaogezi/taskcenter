@@ -114,7 +114,7 @@ export function applyCompletionEvent(task, event) {
   if (event.type === "requirement.reported") {
     const result = event.requirement_result;
     if (!result.requirement_id || !result.status) throw failure("Requirement Result 缺少 requirement_id 或 status。");
-    if (!criteria(next).some((item) => item.id === result.requirement_id)) throw failure("requirement_id 不属于该任务的 acceptance criteria。", 404);
+    if (!criteria(next).some((item) => item.id === result.requirement_id)) throw failure(`UNKNOWN_ACCEPTANCE_REFERENCE: requirement_id=${result.requirement_id} 不属于该任务的 acceptance criteria；允许的验收项 ID: ${criteria(next).map((item) => item.id).join(", ") || "(none)"}。验证计划 ID 应填写在 verification claim 中。`, 400);
     if (result.status === "not_applicable" && !result.note) throw failure("not_applicable 必须填写原因。");
     if (["passed", "failed"].includes(result.status) && !result.evidence_refs.length) throw failure("验收条件通过或失败时必须引用证据。");
     next.requirementResults = [...(next.requirementResults || []), { ...result, checked_at: result.checked_at || event.occurred_at || event.created_at }];
@@ -122,6 +122,12 @@ export function applyCompletionEvent(task, event) {
   if (event.type === "verification.reported") {
     const claim = normalizeVerificationClaim(event.verification_claim, event.occurred_at || event.created_at);
     if (!claim.id || !claim.kind || !claim.status || !claim.observed_at || !claim.producer) throw failure("Verification Claim 字段不完整。");
+    if (claim.requirement_id) {
+      const plan = next.verificationPlan || [];
+      const entry = plan.find((item) => item.id === claim.requirement_id);
+      if (!entry) throw failure(`UNKNOWN_VERIFICATION_REFERENCE: claim=${claim.id}, requirement_id=${claim.requirement_id}；该字段必须引用 verification_plan.id，允许值: ${plan.map((item) => item.id).join(", ") || "(none)"}。不能填写验收项 ID。`);
+      if (entry.kind !== claim.kind) throw failure(`VERIFICATION_KIND_MISMATCH: claim=${claim.id}, plan=${entry.id}；期望 kind=${entry.kind}，实际 kind=${claim.kind}。`);
+    }
     if (["standard", "strict"].includes(next.workflowProfile) && !claim.subject_ref) throw failure(`${next.workflowProfile} 验证证据必须绑定 SubjectReference。`);
     if ((next.verificationClaims || []).some((item) => item.id === claim.id)) throw failure("Verification Claim id 已存在；请使用新 id 追加证据。", 409);
     rejectSecrets([claim.command_or_probe, claim.evidence_ref, claim.summary, ...(claim.artifact_refs || [])]);

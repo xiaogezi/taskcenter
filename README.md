@@ -154,6 +154,18 @@ TaskCenter 与 ProjectContextAgent 关联后，Completion Packet 是交付完成
 
 TaskCenter Core 不依赖 Codex、Context Agent、OCR、GitHub/GitLab、Worktree 或 MCP，也不能成为外部项目 build、test、commit、merge 或 release 的强制条件。服务离线时工作可以继续，恢复后通过 `taskcenter_task_import_evidence` 补录；事件同时保存原始 `occurred_at` 与账本 `recorded_at`。
 
+### 只读诊断与闭环引用
+
+已登记但没有活跃任务的普通 Session 可使用 L0 只读查询，包括带引号的正则检索（如 `rtk rg 'foo|bar' README.md`）、`rtk proxy` 包装以及固定 `adb devices [-l]` / `adb version` 探针。引号内的正则符号按字面参数处理；管道、重定向、命令替换、变量展开、不完整引号和执行型参数继续拒绝。`npm run service:status` 不属于固定只读探针，因为任意工作区的同名 npm script 可执行任意代码。L0 不等同于文件系统沙箱，也不会恢复 Codex 尚未挂载的 MCP；服务不可用仍遵循离线恢复门禁。
+
+闭环的两个 `requirement_id` 指向不同集合：`close_requirements[].requirement_id` 引用 `acceptance_criteria[].id`；`close_verifications[].requirement_id` 引用 `verification_plan[].id`，其 `kind` 必须匹配计划。Claim 自身 `id` 是唯一证据记录 ID。引用错误返回 `UNKNOWN_ACCEPTANCE_REFERENCE` / `UNKNOWN_VERIFICATION_REFERENCE` 和合法 ID，类型不符返回 `VERIFICATION_KIND_MISMATCH`。应在一次 `task_close` 中提交整包证据。请求校验失败后可修正再提交；已成功落账的 event_id 只能重放相同内容，不能用幂等键覆盖已记录事实。
+
+### TaskCenter 与 ProjectContext 的职责边界
+
+TaskCenter 是执行合同、运行状态、验证、Review、验收与路由审计的权威来源。ProjectContext 管理项目事实、决策、待审核知识与跨 Session 上下文，其语义任务用于组织上下文，不应替代 TaskCenter 的执行状态。现有 `scripts/context-bridge.mjs` 与 completion adapter 已承载映射和 Completion Packet 投递；这是已有能力，而非新增桥接。
+
+后续整合优先复用稳定 task/context 关联和摘要投递，避免 Agent 手动维护两套执行状态。Context 投递失败保留 TaskCenter 已落账事实并走补偿，不能回滚或伪造验收。现有 Context 语义任务和生命周期适配仍保留；删除重复接口或迁移状态机需要独立设计与兼容性验证。
+
 任务契约使用结构化 `AcceptanceCriterion { id, description, required }`。验证和审查绑定 `SubjectReference`，支持 `git_commit`、`git_worktree_snapshot`、`pull_request_head`、`artifact`、`document_version`、`external` 和 `none`。主体变化后旧证据自动 stale。参与者使用 `ActorIdentity`，审查独立性与验收身份由版本化 Workspace Policy 决定，而不是硬编码 Session 是否相同。绝对本地路径不能作为 standard/strict 的唯一跨团队证据。
 
 以下步骤是 Codex/Hook 适配器的门禁流程，不是 TaskCenter Core 的通用前置条件：
