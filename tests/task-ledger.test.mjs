@@ -1507,7 +1507,7 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   await resetLedger();
   const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_LUNA: "1" });
   context.after(() => child.kill("SIGTERM"));
-  await registerHttpSession(base, "session-routing-control", { model: "gpt-5.6-sol" });
+  await registerHttpSession(base, "session-routing-control", { model: "gpt-user-selected-current" });
   const created = await fetch(`${base}/task-events`, {
     method: "POST",
     headers: taskHeaders(),
@@ -1518,13 +1518,15 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   const selectedResponse = await fetch(`${base}/routing/select`, {
     method: "POST",
     headers: taskHeaders(),
-    body: JSON.stringify({ task_id: "task-routing-control", preferred_model: "gpt-5.3-codex-spark", task_class: "implementation", channel: "cli", event_id: "routing-control-select" }),
+    body: JSON.stringify({ task_id: "task-routing-control", task_class: "implementation", channel: "cli", event_id: "routing-control-select" }),
   });
   const selected = await selectedResponse.json();
   assert.equal(selectedResponse.status, 201, selected.error);
   assert.equal(selected.route.preferred_model, "gpt-5.6-luna");
   assert.equal(selected.route.selected_model, "gpt-5.6-luna");
-  assert.equal(selected.route.reason, "spark_preference_normalized_to_luna");
+  assert.equal(selected.route.orchestrator_model, "gpt-user-selected-current");
+  assert.equal(selected.route.reason, "executor_model_from_config");
+  assert.equal(selected.roles.reviewer.model, "gpt-5.6-luna");
   assert.equal(selected.route.available, true);
 
   const resultResponse = await fetch(`${base}/routing/result`, {
@@ -1561,7 +1563,7 @@ test("路由状态已持久化但审计首次失败时，同 event_id 可补偿�
   });
   assert.equal(created.status, 201);
 
-  const selectBody = { task_id: "task-routing-audit-retry", preferred_model: "gpt-5.3-codex-spark", task_class: "implementation", channel: "cli", event_id: "routing-audit-select", route_id: "route-audit-retry" };
+  const selectBody = { task_id: "task-routing-audit-retry", task_class: "implementation", channel: "cli", event_id: "routing-audit-select", route_id: "route-audit-retry" };
   await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o400);
   const failedSelect = await fetch(`${base}/routing/select`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(selectBody) });
   assert.equal(failedSelect.status, 500);

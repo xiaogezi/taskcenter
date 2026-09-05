@@ -83,6 +83,7 @@ import {
   routingControlPath,
   routingHealth,
   routingResult,
+  routingRoles,
   routingSelect,
 } from "./routing-control.mjs";
 import { recommendSessionLifecycle } from "./session-lifecycle.mjs";
@@ -147,7 +148,7 @@ const server = createServer(async (request, response) => {
       const heartbeat = inspectFile(watcherHeartbeatPath, true);
       const watcherFresh = heartbeat.readable && Date.now() - Date.parse(heartbeat.updatedAt) < 30_000;
       const memory = process.memoryUsage();
-      sendJson(response, 200, { ok: true, dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()), rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable, delegationsReadable: inspectFile(delegationsPath).readable, routingControlReadable: inspectFile(routingControlPath).readable }, metrics: { usage: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000), governance: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) }, routing: { models: routingHealth() }, watcher: { ...heartbeat, healthy: watcherFresh } });
+      sendJson(response, 200, { ok: true, dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()), rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable, delegationsReadable: inspectFile(delegationsPath).readable, routingControlReadable: inspectFile(routingControlPath).readable }, metrics: { usage: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000), governance: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) }, routing: { models: routingHealth(), roles: routingRoles() }, watcher: { ...heartbeat, healthy: watcherFresh } });
       return;
     }
     if (request.method === "POST" && request.url === "/sync") {
@@ -386,7 +387,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "GET" && request.url === "/routing/health") {
-      sendJson(response, 200, { models: routingHealth() });
+      sendJson(response, 200, { models: routingHealth(), roles: routingRoles() });
       return;
     }
     if (request.method === "POST" && request.url === "/routing/select") {
@@ -394,7 +395,13 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody(request);
       const task = loadTasks().find((item) => item.id === body.task_id);
       if (!task || !["planned", "in_progress", "blocked"].includes(task.status)) throw new RoutingControlError(409, "routing_select 要求存在活跃正式任务。");
-      const result = routingSelect(body);
+      const sessionId = canonicalSessionId(task.sessionId);
+      const sessionModel = loadSessionRegistry()[sessionId]?.model;
+      const orchestratorModel = sessionModel && sessionModel !== "unknown"
+        ? sessionModel
+        : task.model && task.model !== "unknown" ? task.model : "";
+      if (!orchestratorModel) throw new RoutingControlError(409, "任务所属 Session 未登记当前主模型；请重新登记 Session 后再选择路由。");
+      const result = routingSelect({ ...body, orchestrator_model: orchestratorModel });
       recordRoutingAudit(result.auditEvents, task);
       sendJson(response, result.idempotent ? 200 : 201, { accepted: true, ...result, auditEvents: undefined });
       return;

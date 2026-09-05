@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { enrichSessionTitles, groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
-import { detectLunaRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
+import { detectRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
 import { matchesTaskLifecycleFilter, taskClosureReasonLabels, taskLifecycleFilterCounts, taskLifecycleFilters } from "./task-lifecycle-filter.mjs";
 import { taskTimeState } from "./task-time-state.mjs";
 
@@ -154,7 +154,8 @@ type SessionStatus = {
   lastTaskAt: string;
 };
 type RoutingHealth = { model: string; state: "closed" | "open" | "half_open"; consecutive_failures: number; active_executors: number; concurrency_limit: number; retry_after_at?: string | null };
-type HealthState = { ok: boolean; dashboard?: { generatedAt?: string; readable?: boolean }; watcher?: { healthy?: boolean; updatedAt?: string }; routing?: { models?: RoutingHealth[] } };
+type ModelRole = { model: string; reasoning_effort: string; fallback_models: string[]; concurrency_limit: number; fail_closed: boolean };
+type HealthState = { ok: boolean; dashboard?: { generatedAt?: string; readable?: boolean }; watcher?: { healthy?: boolean; updatedAt?: string }; routing?: { models?: RoutingHealth[]; roles?: { schema_version: string; executor: ModelRole; reviewer: ModelRole } } };
 
 type Dashboard = {
   generatedAt?: string;
@@ -665,6 +666,7 @@ export default function Home() {
             sessionStatuses={sessionStatuses}
             serviceHealthy={health.ok && health.watcher?.healthy !== false}
             routingModels={health.routing?.models ?? []}
+            executorModel={health.routing?.roles?.executor.model ?? ""}
             onTaskUpdated={(updatedTask) => {
               setTasks((current) => current.map((task) => task.id === updatedTask.id ? updatedTask : task));
             }}
@@ -847,7 +849,7 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
   );
 }
 
-function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, routingModels, onTaskUpdated }: { tasks: TaskRecord[]; taskTokenUsage: Record<string, TaskTokenUsage>; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; routingModels: RoutingHealth[]; onTaskUpdated: (task: TaskRecord) => void }) {
+function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, routingModels, executorModel, onTaskUpdated }: { tasks: TaskRecord[]; taskTokenUsage: Record<string, TaskTokenUsage>; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; routingModels: RoutingHealth[]; executorModel: string; onTaskUpdated: (task: TaskRecord) => void }) {
   // 筛选逻辑：全部任务显示全局，具体 Session 优先精确 session_id，不可用时按显式项目标识回退
   const selectedSessionIds = sessionIdsForGroup(selectedSessionId, sessionGroups);
   const filteredTasks = selectedSessionId === "全部任务"
@@ -874,7 +876,7 @@ function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, s
   return (
     <section className="task-ledger" aria-label="会话主动任务">
       <div className={`session-health-bar ${serviceHealthy ? "healthy" : "unhealthy"}`} role="status">{serviceHealthy ? "● 控制服务正常 · 同步 watcher 正常" : "! 控制服务或同步 watcher 异常，正在重试"} · 最近数据生成时间以 dashboard 为准</div>
-      {routingModels.length > 0 && <div className="session-health-bar healthy" aria-label="模型路由健康">模型路由：{routingModels.map((item) => `${item.model.replace("gpt-5.3-codex-", "").replace("gpt-5.6-", "")} ${item.state} ${item.active_executors}/${item.concurrency_limit}`).join(" · ")}</div>}
+      {routingModels.length > 0 && <div className="session-health-bar healthy" aria-label="模型路由健康">模型路由：{routingModels.map((item) => `${shortModelName(item.model)} ${item.state} ${item.active_executors}/${item.concurrency_limit}`).join(" · ")}</div>}
       <div className="ledger-heading">
         <p className="eyebrow orange">SESSION TASK GATE</p>
         <h2>会话主动任务<span>{filteredTasks.length}</span></h2>
@@ -912,7 +914,7 @@ function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, s
               </tr>
             </thead>
             <tbody>
-              {visibleTasks.map((task) => <TaskRow key={task.id} task={task} tokenUsage={taskTokenUsage[task.id]} availableThreads={threadsForTask} sessionStatuses={sessionStatuses} onTaskUpdated={onTaskUpdated} />)}
+              {visibleTasks.map((task) => <TaskRow key={task.id} task={task} tokenUsage={taskTokenUsage[task.id]} availableThreads={threadsForTask} sessionStatuses={sessionStatuses} executorModel={executorModel} onTaskUpdated={onTaskUpdated} />)}
             </tbody>
           </table>
           </div>
@@ -929,7 +931,7 @@ function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, s
   );
 }
 
-function TaskRow({ task, tokenUsage, availableThreads: threadsForTask, sessionStatuses, onTaskUpdated }: { task: TaskRecord; tokenUsage?: TaskTokenUsage; availableThreads: Thread[]; sessionStatuses: Record<string, SessionStatus>; onTaskUpdated: (task: TaskRecord) => void }) {
+function TaskRow({ task, tokenUsage, availableThreads: threadsForTask, sessionStatuses, executorModel, onTaskUpdated }: { task: TaskRecord; tokenUsage?: TaskTokenUsage; availableThreads: Thread[]; sessionStatuses: Record<string, SessionStatus>; executorModel: string; onTaskUpdated: (task: TaskRecord) => void }) {
   const [actionState, setActionState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [actionError, setActionError] = useState("");
   const [scheduleEditing, setScheduleEditing] = useState(false);
@@ -954,7 +956,7 @@ function TaskRow({ task, tokenUsage, availableThreads: threadsForTask, sessionSt
     { label: "估时调整", items: (task.estimateHistory ?? []).slice(-3).reverse().map((item) => `${item.previousDueAt ? normalizeDate(item.previousDueAt) : "未设置"} → ${item.dueAt ? normalizeDate(item.dueAt) : "不变"} · ${item.estimatedEffortMs ? formatElapsed(item.estimatedEffortMs) : "工时不变"} · ${item.reason || "未说明"}`) },
     { label: "CLI 执行", items: (task.cliRuns ?? []).slice().reverse().map((run) => `${run.executorModel || "unknown"} · ${run.status} · Session ${run.delegateSessionId ? run.delegateSessionId.slice(0, 12) : "待领取"} · scope ${(run.scope ?? []).join(", ") || "未声明"}${run.completedAt ? ` · ${normalizeDate(run.completedAt)}` : ""}`) },
   ];
-  const routingAdvisory = detectLunaRoutingAdvisory(task);
+  const routingAdvisory = detectRoutingAdvisory(task, executorModel);
   const nonEmptyDetails = detailItems.filter((item) => item.items.length > 0);
   const hasEventDetails = hasTaskEventDetails(task, nonEmptyDetails.length > 0 || Boolean(routingAdvisory?.triggered));
   const stepText = task.currentStep ?? task.nextAction;
@@ -1208,4 +1210,8 @@ function formatElapsed(duration: number) {
   if (!Number.isFinite(duration) || duration < 0) return "—";
   const seconds = Math.floor(duration / 1000);
   return seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+}
+
+function shortModelName(model: string) {
+  return model.replace(/^gpt-\d+(?:\.\d+)?-(?:codex-)?/, "");
 }

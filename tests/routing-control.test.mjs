@@ -6,11 +6,23 @@ import test from "node:test";
 
 const directory = await mkdtemp(join(tmpdir(), "taskcenter-routing-"));
 const statePath = join(directory, "routing-control.json");
+const roleConfigPath = join(directory, "model-roles.json");
 process.env.TASKCENTER_ROUTING_CONTROL_PATH = statePath;
+process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH = roleConfigPath;
 process.env.TASKCENTER_ROUTING_FAILURE_THRESHOLD = "2";
 process.env.TASKCENTER_ROUTING_COOLDOWN_MS = "1000";
 process.env.TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_LUNA = "1";
 process.env.TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_TERRA = "2";
+
+const roleConfig = {
+  schema_version: "taskcenter-model-roles-v1",
+  roles: {
+    executor: { model: "gpt-5.6-luna", reasoning_effort: "medium", fallback_models: ["gpt-5.6-terra"], concurrency_limit: 1 },
+    reviewer: { model: "gpt-5.6-luna", reasoning_effort: "medium", fallback_models: [], concurrency_limit: 1 },
+  },
+  retired_models: ["gpt-5.3-codex-spark"],
+};
+await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 
 const {
   RoutingControlError,
@@ -22,7 +34,7 @@ const {
 const spark = "gpt-5.3-codex-spark";
 const luna = "gpt-5.6-luna";
 const terra = "gpt-5.6-terra";
-const baseInput = { task_id: "task-routing", preferred_model: luna, task_class: "implementation", channel: "cli" };
+const baseInput = { task_id: "task-routing", orchestrator_model: "gpt-current-main", task_class: "implementation", channel: "cli" };
 const reviewArtifacts = {
   subject: { fingerprint: "sha256:subject" },
   bundle: { ref: "bundle://ocr/review-1", fingerprint: "sha256:bundle" },
@@ -35,6 +47,8 @@ test.beforeEach(async () => rm(statePath, { force: true }));
 test("routing_select 原子发放租约、幂等重放并在并发满时回退", () => {
   const first = routingSelect({ ...baseInput, event_id: "select-1" }, "2026-08-18T08:00:00.000Z");
   assert.equal(first.route.selected_model, luna);
+  assert.equal(first.route.orchestrator_model, "gpt-current-main");
+  assert.equal(first.roles.executor.model, luna);
   assert.equal(first.route.available, true);
   assert.equal(first.route.requires_new_session, true);
   assert.equal(first.health.find((item) => item.model === luna).active_executors, 1);
@@ -92,15 +106,15 @@ test("高风险任务优先回退 Terra", () => {
   assert.equal(complex.route.selected_model, terra);
 });
 
-test("旧 Spark 首选请求会归一化为 Luna", () => {
+test("已退役首选请求会归一化为集中配置的执行器", () => {
   const selected = routingSelect({ ...baseInput, preferred_model: spark, event_id: "legacy-spark-select" }, "2026-08-18T08:00:00.000Z");
   assert.equal(selected.route.preferred_model, luna);
   assert.equal(selected.route.selected_model, luna);
-  assert.equal(selected.route.reason, "spark_preference_normalized_to_luna");
+  assert.equal(selected.route.reason, "retired_preference_normalized_to_executor");
   assert.equal(selected.health.some((item) => item.model === spark), false);
 });
 
-test("OCR 直接选择 Luna，并保留审查输入证据", () => {
+test("OCR 选择集中配置的 Reviewer，并保留审查输入证据", () => {
   const ocrInput = { ...baseInput, task_class: "ocr_review", event_id: "ocr-select", review_artifacts: reviewArtifacts };
   const ocr = routingSelect(ocrInput, "2026-08-18T08:00:00.000Z");
   assert.equal(ocr.route.available, true);
@@ -115,7 +129,8 @@ test("OCR 直接选择 Luna，并保留审查输入证据", () => {
   const decision = ocr.auditEvents.find((event) => event.type === "routing.decision");
   assert.equal(decision.preferred_executor_model, luna);
   assert.equal(decision.selected_executor_model, luna);
-  assert.equal(decision.policy_version, "routing-control-v2");
+  assert.equal(decision.orchestrator_model, "gpt-current-main");
+  assert.equal(decision.policy_version, "routing-control-v3");
   assert.deepEqual(decision.review_artifacts, ocr.route.review_artifacts);
 
   const replay = routingSelect(ocrInput, "2026-08-18T08:00:00.100Z");
@@ -126,7 +141,7 @@ test("OCR 直接选择 Luna，并保留审查输入证据", () => {
   );
 });
 
-test("OCR 缺少冻结输入或 Luna 也不可用时 fail closed", () => {
+test("OCR 缺少冻结输入或配置 Reviewer 不可用时 fail closed", () => {
   assert.throws(
     () => routingSelect({ ...baseInput, task_class: "ocr_review", event_id: "ocr-missing-artifacts" }, "2026-08-18T08:00:00.000Z"),
     (error) => error instanceof RoutingControlError && error.statusCode === 400,
@@ -141,7 +156,7 @@ test("OCR 缺少冻结输入或 Luna 也不可用时 fail closed", () => {
   }, "2026-08-18T08:00:01.200Z");
   assert.equal(unavailable.route.available, false);
   assert.equal(unavailable.route.selected_model, null);
-  assert.equal(unavailable.route.reason, "ocr_luna_unavailable");
+  assert.equal(unavailable.route.reason, "reviewer_model_unavailable");
   assert.equal(unavailable.route.fallback_from, luna);
 });
 

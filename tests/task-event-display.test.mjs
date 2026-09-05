@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { detectLunaRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "../app/task-event-display.mjs";
+import { detectRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "../app/task-event-display.mjs";
 
 test("路由事件时间线显示模型、通道、结果和原因", () => {
   const event = {
@@ -48,47 +48,47 @@ test("仅有路由记录的任务仍可打开事件详情", () => {
   assert.equal(hasTaskEventDetails({}, false), false);
 });
 
-test("代码文件≥3 且未启动 Luna 时给出路由偏离建议", () => {
+test("代码文件≥3 且未启动配置执行器时给出路由偏离建议", () => {
   assert.deepEqual(
-    detectLunaRoutingAdvisory({
+    detectRoutingAdvisory({
       routingHistory: [
         { selectedExecutorModel: "gpt-5.6-sol", preferredExecutorModel: "gpt-5.6-sol", dispatch_channel: "direct", outcome: "selected", reason: "任务边界清晰" },
         { selectedExecutorModel: "gpt-5.6-sol", preferredExecutorModel: "gpt-5.6-sol", dispatch_channel: "direct", outcome: "selected", reason: "继续采用 Sol 直接执行" },
       ],
       changedFiles: ["src/a.ts", "src/b.ts", "src/c.ts", "README.md"],
-    }),
-    { triggered: true, title: "模型路由偏离提醒", message: "当前任务为实质性代码改动，但未形成 gpt-5.6-luna 的 started/succeeded 路由记录。", suggestion: "请确认现有偏离理由是否具体且仍成立；若存在可安全隔离的搜索、实现、测试或审查阶段，优先派发 Luna。" },
+    }, "gpt-5.6-luna"),
+    { triggered: true, title: "模型路由偏离提醒", message: "当前任务为实质性代码改动，但未形成 gpt-5.6-luna 的 started/succeeded 路由记录。", suggestion: "请确认现有偏离理由是否具体且仍成立；若存在可安全隔离的搜索、实现、测试或审查阶段，优先使用集中配置中的执行器。" },
   );
 });
 
-test("Luna 派发已启动或成功时不发出建议", () => {
+test("配置执行器已启动或成功时不发出建议", () => {
   assert.equal(
-    detectLunaRoutingAdvisory({
+    detectRoutingAdvisory({
       routingHistory: [
         { selectedExecutorModel: "gpt-5.6-luna", preferredExecutorModel: "gpt-5.6-luna", dispatch_channel: "native", outcome: "succeeded", reason: "独立子代理执行" },
       ],
       changedFiles: ["src/a.ts", "src/b.ts", "src/c.ts"],
-    }),
+    }, "gpt-5.6-luna"),
     null,
   );
 });
 
 test("无效偏离原因即使改动较少也给出建议", () => {
   assert.equal(
-    detectLunaRoutingAdvisory({
+    detectRoutingAdvisory({
       routingHistory: [{ selectedExecutorModel: "gpt-5.6-sol", outcome: "selected", reason: "用户未要求子代理" }],
       changedFiles: ["README.md"],
-    })?.triggered,
+    }, "gpt-5.6-luna")?.triggered,
     true,
   );
 });
 
 test("非实质改动且无无效偏离原因不建议", () => {
   assert.equal(
-    detectLunaRoutingAdvisory({
+    detectRoutingAdvisory({
       routingHistory: [{ selectedExecutorModel: "gpt-5.6-sol", outcome: "selected", reason: "仅执行本地修订" }],
       changedFiles: ["README.md", "assets/logo.svg", "docs/index.md"],
-    }),
+    }, "gpt-5.6-luna"),
     null,
   );
 });

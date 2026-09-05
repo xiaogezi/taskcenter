@@ -288,10 +288,10 @@ server.registerTool("taskcenter_routing_record", {
 
 server.registerTool("taskcenter_routing_select", {
   title: "选择 TaskCenter 执行模型",
-  description: "原子检查模型熔断、并发和 Half-Open 探测租约，返回强建议路由；TaskCenter 不会启动执行器。Luna 是普通执行和 OCR 的首选，旧 Spark 首选请求会归一化为 Luna；OCR 保留同一 Subject、Bundle 和规则证据，并在 Luna 不可用时 fail closed。",
+  description: "按集中模型角色配置原子检查熔断、并发和 Half-Open 探测租约，返回强建议路由；TaskCenter 不会启动执行器。普通执行使用 executor 角色，OCR 使用 fail-closed reviewer 角色并保留同一 Subject、Bundle 和规则证据。",
   inputSchema: z.object({
     task_id: z.string().min(1).max(200),
-    preferred_model: z.string().min(1).max(120),
+    preferred_model: z.string().min(1).max(120).optional().describe("可选的单次执行覆盖；省略时使用集中配置中的角色模型"),
     task_class: z.enum(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", "ocr", "ocr_review", "independent_review"]),
     channel: z.enum(["direct", "native", "cli", "other"]),
     event_id: z.string().max(200).optional(),

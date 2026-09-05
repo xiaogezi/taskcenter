@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { loadModelRoleConfig, publicModelRoleConfig } from "./model-role-config.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const routingControlPath = resolve(process.env.TASKCENTER_ROUTING_CONTROL_PATH || resolve(projectRoot, "data", "routing-control.json"));
@@ -8,16 +9,9 @@ export const routingControlPath = resolve(process.env.TASKCENTER_ROUTING_CONTROL
 const defaultFailureThreshold = integerEnv("TASKCENTER_ROUTING_FAILURE_THRESHOLD", 3, 1, 20);
 const defaultCooldownMs = integerEnv("TASKCENTER_ROUTING_COOLDOWN_MS", 300_000, 1_000, 86_400_000);
 const defaultLeaseTtlMs = integerEnv("TASKCENTER_ROUTING_LEASE_TTL_MS", 3_600_000, 60_000, 28_800_000);
-const lunaModel = "gpt-5.6-luna";
-const retiredSparkModel = "gpt-5.3-codex-spark";
-const defaultConcurrency = Object.freeze({
-  [lunaModel]: 2,
-  "gpt-5.6-terra": 1,
-});
 const terminalOutcomes = new Set(["succeeded", "failed", "cancelled", "unavailable", "overloaded"]);
 const circuitFailureTypes = new Set(["server_overloaded", "capacity", "model_unavailable", "rate_limit", "timeout"]);
 const immediateOpenFailureTypes = new Set(["server_overloaded", "capacity", "model_unavailable", "rate_limit"]);
-const complexTaskClasses = new Set(["architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk"]);
 const ocrTaskClasses = new Set(["ocr", "ocr_review", "independent_review"]);
 
 export class RoutingControlError extends Error {
@@ -28,39 +22,45 @@ export class RoutingControlError extends Error {
 }
 
 export function routingSelect(input, now = new Date().toISOString()) {
+  const config = loadModelRoleConfig();
   const requestedPreferredModel = clean(input.preferred_model, 120);
   const taskId = clean(input.task_id, 200);
   const taskClass = clean(input.task_class, 80) || "general";
-  const preferredModel = ocrTaskClasses.has(taskClass)
-    ? lunaModel
-    : normalizePreferredModel(requestedPreferredModel);
+  const orchestratorModel = clean(input.orchestrator_model, 120);
+  const roleName = ocrTaskClasses.has(taskClass) ? "reviewer" : "executor";
+  const role = config.roles[roleName];
+  const preferredModel = roleName === "reviewer"
+    ? role.model
+    : normalizePreferredModel(requestedPreferredModel || role.model, config);
   const channel = clean(input.channel, 40) || "cli";
   const eventId = clean(input.event_id, 200) || `routing-select-${randomUUID()}`;
-  if (!taskId || !requestedPreferredModel) throw new RoutingControlError(400, "routing_select 缺少 task_id 或 preferred_model。");
+  if (!taskId || !orchestratorModel) throw new RoutingControlError(400, "routing_select 缺少 task_id 或 orchestrator_model。");
   if (!["direct", "native", "cli", "other"].includes(channel)) throw new RoutingControlError(400, "routing_select channel 无效。");
   const reviewArtifacts = normalizeReviewArtifacts(input.review_artifacts, ocrTaskClasses.has(taskClass));
 
   const state = readState();
   expireRoutes(state, now);
-  const signatureInput = { taskId, preferredModel, taskClass, channel };
+  const signatureInput = { taskId, orchestratorModel, preferredModel, taskClass, channel, configVersion: config.schemaVersion };
   if (reviewArtifacts) signatureInput.reviewArtifacts = reviewArtifacts;
   const signature = signatureOf(signatureInput);
   const replay = state.routes.find((route) => route.selectEventId === eventId);
   if (replay) {
     if (replay.selectSignature !== signature) throw new RoutingControlError(409, "event_id 已被不同 routing_select 请求使用。");
-    const auditEvents = replayAuditEvents(state, replay, "select", now);
+    const auditEvents = replayAuditEvents(state, replay, "select", now, config);
     persistState(state, now);
-    return { route: publicRoute(replay), health: healthSnapshot(state, now), idempotent: true, auditEvents };
+    return { route: publicRoute(replay), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: true, auditEvents };
   }
 
-  const preferred = ensureHealth(state, preferredModel, now);
+  const preferred = ensureHealth(state, preferredModel, now, config);
   advanceCircuit(preferred, now);
   let selectedModel = preferredModel;
-  let reason = requestedPreferredModel === preferredModel
-    ? "preferred_model_available"
-    : ocrTaskClasses.has(taskClass)
-      ? "ocr_preference_normalized_to_luna"
-      : "spark_preference_normalized_to_luna";
+  let reason = roleName === "reviewer"
+    ? "reviewer_model_from_config"
+    : !requestedPreferredModel
+      ? "executor_model_from_config"
+      : requestedPreferredModel === preferredModel
+        ? "preferred_model_available"
+        : "retired_preference_normalized_to_executor";
   let fallbackFrom = "";
   let fallbackReason = "";
   let retryAfterAt = "";
@@ -70,29 +70,31 @@ export function routingSelect(input, now = new Date().toISOString()) {
     fallbackFrom = preferredModel;
     fallbackReason = fallbackReasonFor(preferred);
     retryAfterAt = preferred.retryAfterAt;
-    const fallback = ocrTaskClasses.has(taskClass) ? null : chooseFallback(state, taskClass, preferredModel, now);
+    const fallback = chooseFallback(state, role, preferredModel, now, config);
     if (!fallback) {
       const route = buildUnavailableRoute({
-        eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now,
-        reason: ocrTaskClasses.has(taskClass) ? "ocr_luna_unavailable" : "no_model_capacity_available",
+        eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now,
+        reason: role.failClosed ? "reviewer_model_unavailable" : "no_model_capacity_available",
         fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
+        configVersion: config.schemaVersion,
       });
       state.routes.push(route);
       route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
       persistState(state, now);
-      return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: route.selectAuditEvents };
+      return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
     }
     selectedModel = fallback.model;
     reason = detailedFallbackReason(preferredModel, preferred);
     probe = fallback.state === "half_open";
   }
 
-  const selected = ensureHealth(state, selectedModel, now);
+  const selected = ensureHealth(state, selectedModel, now, config);
   const route = {
     id: clean(input.route_id, 200) || `route_${randomUUID()}`,
     selectEventId: eventId,
     selectSignature: signature,
     taskId,
+    orchestratorModel,
     preferredModel,
     selectedModel,
     taskClass,
@@ -103,6 +105,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
     fallbackReason,
     retryAfterAt,
     reviewArtifacts,
+    configVersion: config.schemaVersion,
     requiresNewSession: selectedModel !== preferredModel || channel === "cli",
     available: true,
     probe,
@@ -121,10 +124,11 @@ export function routingSelect(input, now = new Date().toISOString()) {
   selected.updatedAt = now;
   route.selectAuditEvents = auditEventsFor(route, selected, "lease_acquired", "select");
   persistState(state, now);
-  return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: route.selectAuditEvents };
+  return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
 }
 
 export function routingResult(input, now = new Date().toISOString()) {
+  const config = loadModelRoleConfig();
   const routeId = clean(input.route_id, 200);
   const outcome = clean(input.outcome, 40);
   const eventId = clean(input.event_id, 200) || `routing-result-${randomUUID()}`;
@@ -146,13 +150,13 @@ export function routingResult(input, now = new Date().toISOString()) {
   if (route.result) {
     if (route.resultEventId !== eventId && route.resultSignature !== signature) throw new RoutingControlError(409, "route 已上报不同结果。");
     if (route.resultSignature !== signature) throw new RoutingControlError(409, "event_id 已被不同 routing_result 使用。");
-    const auditEvents = replayAuditEvents(state, route, "result", now);
+    const auditEvents = replayAuditEvents(state, route, "result", now, config);
     persistState(state, now);
-    return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: true, auditEvents };
+    return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: true, auditEvents };
   }
   if (route.status !== "leased") throw new RoutingControlError(409, "route 租约已过期或不可用。");
 
-  const health = ensureHealth(state, route.selectedModel, now);
+  const health = ensureHealth(state, route.selectedModel, now, config);
   const previousState = health.state;
   route.status = outcome;
   route.completedAt = now;
@@ -178,24 +182,26 @@ export function routingResult(input, now = new Date().toISOString()) {
   const transition = previousState === health.state ? "result_recorded" : `${previousState}_to_${health.state}`;
   route.resultAuditEvents = auditEventsFor(route, health, transition, "result");
   persistState(state, now);
-  return { route: publicRoute(route), health: healthSnapshot(state, now), idempotent: false, auditEvents: route.resultAuditEvents };
+  return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.resultAuditEvents };
 }
 
 export function routingHealth(now = new Date().toISOString()) {
+  const config = loadModelRoleConfig();
   const state = readState();
   expireRoutes(state, now);
   for (const health of Object.values(state.models)) advanceCircuit(health, now);
   persistState(state, now);
-  return healthSnapshot(state, now);
+  return healthSnapshot(state, now, config);
 }
 
-function chooseFallback(state, taskClass, preferredModel, now) {
-  const candidates = complexTaskClasses.has(taskClass)
-    ? ["gpt-5.6-terra", "gpt-5.6-luna"]
-    : ["gpt-5.6-luna", "gpt-5.6-terra"];
-  return candidates
+export function routingRoles() {
+  return publicModelRoleConfig(loadModelRoleConfig());
+}
+
+function chooseFallback(state, role, preferredModel, now, config) {
+  return role.fallbackModels
     .filter((model) => model !== preferredModel)
-    .map((model) => ensureHealth(state, model, now))
+    .map((model) => ensureHealth(state, model, now, config))
     .find((health) => {
       advanceCircuit(health, now);
       return canLease(state, health, now);
@@ -231,14 +237,16 @@ function isCircuitFailure(result) {
 }
 
 function buildUnavailableRoute({
-  eventId, signature, taskId, preferredModel, taskClass, channel, preferred, now, reason,
+  eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now, reason,
   fallbackFrom = "", fallbackReason = "", retryAfterAt = "", reviewArtifacts = null,
+  configVersion = "",
 }) {
   return {
     id: `route_${randomUUID()}`,
     selectEventId: eventId,
     selectSignature: signature,
     taskId,
+    orchestratorModel,
     preferredModel,
     selectedModel: "",
     taskClass,
@@ -249,6 +257,7 @@ function buildUnavailableRoute({
     fallbackReason,
     retryAfterAt,
     reviewArtifacts,
+    configVersion,
     requiresNewSession: false,
     available: false,
     probe: false,
@@ -262,7 +271,7 @@ function buildUnavailableRoute({
   };
 }
 
-function ensureHealth(state, model, now) {
+function ensureHealth(state, model, now, config) {
   state.models[model] ||= {
     model,
     state: "closed",
@@ -271,7 +280,7 @@ function ensureHealth(state, model, now) {
     retryAfterAt: "",
     halfOpenLease: "",
     activeExecutors: 0,
-    concurrencyLimit: concurrencyLimit(model),
+    concurrencyLimit: concurrencyLimit(model, config),
     failureThreshold: defaultFailureThreshold,
     cooldownMs: defaultCooldownMs,
     lastErrorCode: "",
@@ -279,6 +288,7 @@ function ensureHealth(state, model, now) {
     lastSuccessAt: "",
     updatedAt: now,
   };
+  state.models[model].concurrencyLimit = concurrencyLimit(model, config);
   return state.models[model];
 }
 
@@ -304,9 +314,9 @@ function activeRoutes(state, model, now) {
   return state.routes.filter((route) => route.selectedModel === model && route.status === "leased" && Date.parse(route.expiresAt || "") > Date.parse(now));
 }
 
-function healthSnapshot(state, now) {
+function healthSnapshot(state, now, config) {
   refreshActiveExecutors(state, now);
-  return Object.values(state.models).filter((health) => health.model !== retiredSparkModel).map((health) => ({
+  return Object.values(state.models).filter((health) => !config.retiredModels.includes(health.model)).map((health) => ({
     model: health.model,
     state: health.state,
     consecutive_failures: health.consecutiveFailures,
@@ -326,6 +336,7 @@ function publicRoute(route) {
   return {
     route_id: route.id,
     task_id: route.taskId,
+    orchestrator_model: route.orchestratorModel || "unknown",
     preferred_model: route.preferredModel,
     selected_model: route.selectedModel || null,
     task_class: route.taskClass,
@@ -336,6 +347,7 @@ function publicRoute(route) {
     fallback_reason: route.fallbackReason || null,
     retry_after_at: route.retryAfterAt || null,
     review_artifacts: route.reviewArtifacts || null,
+    config_version: route.configVersion || null,
     requires_new_session: route.requiresNewSession,
     available: route.available,
     probe: route.probe,
@@ -365,11 +377,11 @@ function auditEventsFor(route, health, transition, phase = "select") {
           ? "delegate_native"
           : route.channel === "cli"
             ? "fallback_cli"
-            : route.channel === "direct" && selected === "gpt-5.6-sol"
+            : route.channel === "direct" && selected === route.orchestratorModel
               ? "direct_execute"
               : "reasoned_override"
         : "reasoned_override",
-      orchestrator_model: "gpt-5.6-sol",
+      orchestrator_model: route.orchestratorModel || "unknown",
       preferred_executor_model: route.preferredModel,
       selected_executor_model: selected,
       dispatch_channel: route.channel,
@@ -379,7 +391,7 @@ function auditEventsFor(route, health, transition, phase = "select") {
       retry_after_at: route.retryAfterAt,
       review_artifacts: route.reviewArtifacts,
       routing_outcome: route.status === "succeeded" ? "succeeded" : ["failed", "overloaded", "unavailable"].includes(route.status) ? "failed" : "selected",
-      policy_version: "routing-control-v2",
+      policy_version: "routing-control-v3",
       route_id: route.id,
       task_class: route.taskClass,
       circuit_state: route.circuitState,
@@ -405,10 +417,10 @@ function auditEventsFor(route, health, transition, phase = "select") {
   ];
 }
 
-function replayAuditEvents(state, route, phase, now) {
+function replayAuditEvents(state, route, phase, now, config) {
   const key = phase === "select" ? "selectAuditEvents" : "resultAuditEvents";
   if (Array.isArray(route[key]) && route[key].length) return route[key];
-  const health = ensureHealth(state, route.selectedModel || route.preferredModel, now);
+  const health = ensureHealth(state, route.selectedModel || route.preferredModel, now, config);
   const transition = phase === "select"
     ? route.available ? "lease_acquired" : "selection_unavailable"
     : "result_recorded";
@@ -456,9 +468,10 @@ function migrateState(state) {
   state.version = 3;
 }
 
-function concurrencyLimit(model) {
+function concurrencyLimit(model, config) {
   const envKey = `TASKCENTER_ROUTING_CONCURRENCY_${model.replace(/[^A-Za-z0-9]/g, "_").toUpperCase()}`;
-  return integerEnv(envKey, defaultConcurrency[model] || 1, 1, 64);
+  const roleLimit = Object.values(config.roles).find((role) => role.model === model)?.concurrencyLimit || 1;
+  return integerEnv(envKey, roleLimit, 1, 64);
 }
 
 function normalizeTtlMs(value) {
@@ -483,8 +496,8 @@ function clean(value, limit) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, limit) : "";
 }
 
-function normalizePreferredModel(model) {
-  return model === retiredSparkModel ? lunaModel : model;
+function normalizePreferredModel(model, config) {
+  return config.retiredModels.includes(model) ? config.roles.executor.model : model;
 }
 
 function normalizeReviewArtifacts(value, required) {

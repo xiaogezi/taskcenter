@@ -173,7 +173,7 @@ test("sync 按 canonical Session 聚合子 Agent，标题只来自 session_index
     JSON.stringify({ type: "session_meta", payload: { session_id: parentSessionId, id: "01a01ee5-b7e8-7543-97cf-07f32c0724b7", cwd: "/work/CyberRole", thread_source: "root" } }),
     JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "补充首页 Stories" }, timestamp: "2026-08-20T10:05:00Z" }),
   ].join("\n"));
-  writeFileSync(join(sessionsDir, "rollout-review-01a01ee6-ad17-7500-8fe4-980d5e948c3e.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { session_id: "01a01ee6-ad17-7500-8fe4-980d5e948c3e", id: "01a01ee6-ad17-7500-8fe4-980d5e948c3e", parent_thread_id: parentSessionId, cwd: "/work/CyberRole", thread_source: "subagent", agent_role: "ocr_reviewer_luna" } })}\n`);
+  writeFileSync(join(sessionsDir, "rollout-review-01a01ee6-ad17-7500-8fe4-980d5e948c3e.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { session_id: "01a01ee6-ad17-7500-8fe4-980d5e948c3e", id: "01a01ee6-ad17-7500-8fe4-980d5e948c3e", parent_thread_id: parentSessionId, cwd: "/work/CyberRole", thread_source: "subagent", agent_role: "ocr_reviewer" } })}\n`);
 
   try {
     runSync({
