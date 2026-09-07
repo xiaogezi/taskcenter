@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -258,4 +258,47 @@ test("历史 Spark 健康状态不再作为活跃候选返回", async () => {
     routes: [],
   })}\n`, "utf8");
   assert.equal(routingHealth("2026-08-18T08:00:01.000Z").some((item) => item.model === spark), false);
+});
+
+test("实际集中策略按任务分层，Astra 执行与审查共享容量且不降级", async () => {
+  const actual = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
+  await writeFile(roleConfigPath, actual, "utf8");
+  try {
+    const astra = "gpt-6-astra";
+    const expected = {
+      general: luna, search: luna, mechanical: luna, documentation: luna,
+      implementation: terra, test: terra,
+      architecture: astra, security: astra, migration: astra,
+      data_migration: astra, complex_diagnosis: astra, high_risk: astra,
+      ocr_review: astra,
+    };
+    for (const [task_class, model] of Object.entries(expected)) {
+      const input = { ...baseInput, task_class, event_id: `actual-${task_class}`, ...(task_class === "ocr_review" ? { review_artifacts: reviewArtifacts } : {}) };
+      const selected = routingSelect(input);
+      assert.equal(selected.route.selected_model, model);
+      assert.equal(selected.roles.executor.reasoning_effort, "medium");
+      assert.deepEqual(selected.roles.executor.fallback_models, [terra, astra]);
+      assert.equal(selected.roles.reviewer.model, astra);
+      assert.equal(selected.roles.reviewer.reasoning_effort, "medium");
+      assert.equal(selected.roles.reviewer.fail_closed, true);
+      assert.deepEqual(selected.roles.reviewer.fallback_models, []);
+      assert.equal(routingSelect(input).route.route_id, selected.route.route_id);
+      routingResult({ route_id: selected.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
+    }
+    const leased = [];
+    try {
+      for (let i = 0; i < 2; i += 1) {
+        leased.push(routingSelect({ ...baseInput, task_class: "high_risk", event_id: `actual-capacity-${i}` }).route);
+        assert.equal(leased.at(-1).selected_model, astra);
+      }
+      assert.equal(routingSelect({ ...baseInput, task_class: "complex_diagnosis", event_id: "actual-complex-full" }).route.available, false);
+      const reviewer = routingSelect({ ...baseInput, task_class: "ocr_review", event_id: "actual-review-full", review_artifacts: reviewArtifacts });
+      assert.equal(reviewer.route.available, false);
+      assert.equal(reviewer.route.reason, "reviewer_model_unavailable");
+    } finally {
+      for (const route of leased) routingResult({ route_id: route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
+    }
+  } finally {
+    await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
+  }
 });

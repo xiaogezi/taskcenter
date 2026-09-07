@@ -1522,11 +1522,11 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   });
   const selected = await selectedResponse.json();
   assert.equal(selectedResponse.status, 201, selected.error);
-  assert.equal(selected.route.preferred_model, "gpt-5.6-luna");
-  assert.equal(selected.route.selected_model, "gpt-5.6-luna");
+  assert.equal(selected.route.preferred_model, "gpt-5.6-terra");
+  assert.equal(selected.route.selected_model, "gpt-5.6-terra");
   assert.equal(selected.route.orchestrator_model, "gpt-user-selected-current");
-  assert.equal(selected.route.reason, "executor_model_from_config");
-  assert.equal(selected.roles.reviewer.model, "gpt-5.6-luna");
+  assert.equal(selected.route.reason, "executor_model_from_task_class:implementation");
+  assert.equal(selected.roles.reviewer.model, "gpt-6-astra");
   assert.equal(selected.route.available, true);
 
   const resultResponse = await fetch(`${base}/routing/result`, {
@@ -1537,7 +1537,7 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   const result = await resultResponse.json();
   assert.equal(resultResponse.status, 200, result.error);
   assert.equal(result.route.status, "succeeded");
-  assert.equal(result.health.find((item) => item.model === "gpt-5.6-luna").active_executors, 0);
+  assert.equal(result.health.find((item) => item.model === "gpt-5.6-terra").active_executors, 0);
 
   const task = (await (await fetch(`${base}/tasks`)).json()).tasks.find((item) => item.id === "task-routing-control");
   assert.equal(task.routing.routeId, selected.route.route_id);
