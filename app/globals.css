@@ -793,27 +793,65 @@ button:disabled, select:disabled, input:disabled { cursor: not-allowed; opacity:
   .rail-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-/* Product-console skin: keep this final so operational fallbacks cannot cover the rail offset. */
-:root { --paper: #f7f8fa; --paper-deep: #eef0f4; --ink: #172333; --ink-soft: #566273; --muted: #7c8796; --line: #dfe3e8; --orange: #be4e2c; --orange-pale: #f8e5df; --shadow: 0 8px 24px rgba(23,35,51,.07); }
-body, html { background: #f7f8fa; }
-.app-shell { padding: 0 32px 32px 284px; }
-.grain { display: none; }
-.masthead { background: #1b2a3a; border: 0; color: #fff; left: 0; min-height: 64px; padding: 0 32px; position: fixed; right: 0; top: 0; z-index: 5; }
-.masthead .brand-name, .masthead .masthead-note { color: #fff; }
-.hero-section { background: transparent; border: 0; padding: 120px 0 18px; }
-.hero-section h1 { font-size: 30px; letter-spacing: -.035em; }
-.hero-description { font-size: 13px; line-height: 1.55; }
-.hero-stamp { display: none; }
-.metrics-grid { gap: 12px; margin-bottom: 20px; }
-.metric-card, .task-ledger, .routing-policy, .governance-panel { background: #fff; border: 1px solid var(--line); box-shadow: none; }
+/* Calm DevWorkbench console skin: the sole final visual layer. */
+:root { --paper: #f7f8fa; --paper-deep: #eef1f4; --ink: #17222e; --ink-soft: #52606f; --muted: #778494; --line: #e4e8ed; --orange: #be4e2c; --orange-pale: #fae9e3; --shadow: 0 1px 2px rgba(23,34,46,.03); }
+html, body { background: var(--paper); }
+body, button, input, select, .hero-section h1, .rail-heading h2, .board-header h2, .inbox-heading h2, .metric-value, .task-title, .requirement-card h3 { font-family: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+.app-shell { min-height: 100vh; overflow: visible; padding: 0 40px 48px 274px; }
+.grain, .hero-stamp { display: none; }
+.masthead { background: #fff; border-bottom: 1px solid var(--line); justify-content: flex-end; left: 226px; min-height: 64px; padding: 0 40px; position: fixed; right: 0; top: 0; z-index: 6; }
+.masthead .brand-lockup { align-items: center; background: var(--ink); color: #fff; height: 72px; left: 0; padding: 0 18px; position: fixed; top: 0; width: 226px; }
+.masthead .brand-name, .masthead .eyebrow { color: #fff; }
+.masthead .brand-name span { color: #f17a54; }
+.masthead .brand-mark span { font-family: inherit; }
+.masthead-note { color: var(--ink-soft); }
+.masthead-note .live-dot { box-shadow: 0 0 0 3px #dff2ed; }
+.hero-section, .metrics-grid, .content-layout, .footer-bar { margin-left: auto; margin-right: auto; max-width: 1680px; width: 100%; }
+.hero-section { align-items: flex-start; background: transparent; border: 0; display: block; padding: 96px 0 32px; }
+.hero-copy { max-width: 760px; }
+.hero-section h1 { color: var(--ink); font-size: 30px; font-weight: 700; letter-spacing: -.035em; line-height: 1.2; margin: 0 0 8px; }
+.hero-description { color: var(--ink-soft); font-size: 14px; line-height: 1.6; }
+.metrics-grid { gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 32px; }
+.metric-card, .task-ledger, .routing-policy, .governance-panel { background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+.metric-card { border-left-width: 3px; min-height: 116px; padding: 18px 20px; }
+.metric-card p { color: var(--muted); font-size: 11px; letter-spacing: .08em; margin-bottom: 14px; }
+.metric-value { color: var(--ink); font-size: 30px; font-weight: 700; letter-spacing: -.035em; }
+.metric-card > span { font-size: 12px; margin-top: 10px; }
 .content-layout { display: block; }
-.thread-rail { background: #1b2a3a; border: 0; bottom: 0; color: #d6dee7; left: 0; overflow-y: auto; padding: 22px 16px; position: fixed; top: 64px; width: 252px; z-index: 4; }
-.thread-rail .eyebrow, .thread-rail strong, .thread-rail p { color: #fff; }
-.thread-item { border-radius: 8px; color: #d6dee7; }
-.thread-item.selected { background: rgba(190,78,44,.2); border-color: #be4e2c; }
+.thread-rail { background: var(--ink); border: 0; bottom: 0; color: #dce4ec; left: 0; overflow-y: auto; padding: 88px 14px 28px; position: fixed; top: 0; width: 226px; z-index: 5; }
+.thread-rail .eyebrow, .thread-rail h2, .thread-rail strong, .thread-rail p { color: #f7f8fa; }
+.thread-rail .rail-heading { display: block; }
+.rail-actions { gap: 8px; grid-template-columns: 1fr 1fr; margin-top: 14px; }
+.rail-actions > button, .policy-presets button, .policy-custom button, .task-action-button { border-radius: 8px; min-height: 44px; }
+.refresh-button { background: #fff; border-color: #fff; color: var(--ink); }
+.manage-sessions-button { border-color: #657384; color: #dce4ec; }
+.scan-button { border-color: #e47755; color: #f19a80; }
+.rail-actions .count-pill { border-color: #657384; color: #dce4ec; }
+.count-pill strong { color: #fff; }
+.thread-item { border-radius: 8px; color: #dce4ec; min-height: 62px; padding: 10px; }
 .thread-item:hover { background: rgba(255,255,255,.08); }
-.task-ledger { padding-top: 14px; }
-.routing-policy-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid rgba(190,78,44,.45); outline-offset: 2px; }
-@media (max-width: 900px) { .app-shell { padding-left: 32px; } .thread-rail { position: static; width: auto; margin-bottom: 18px; } .masthead { position: static; margin: 0 -32px; } .hero-section { padding-top: 22px; } .routing-policy-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
-@media (max-width: 680px) { .app-shell { padding: 0 16px 20px; } .masthead { margin: 0 -16px; padding: 0 16px; } .masthead-note { display: none; } .metrics-grid, .routing-policy-grid { grid-template-columns: 1fr; } .thread-rail { margin-left: -16px; margin-right: -16px; } }
+.thread-item.selected { background: rgba(190,78,44,.24); border-color: #be4e2c; color: #fff; }
+.thread-content small, .thread-arrow { color: #9eabb8; }
+.task-ledger { margin: 0 0 36px; padding: 20px 20px 0; }
+.routing-policy { margin: 0 0 36px; padding: 20px; }
+.routing-policy-heading h3 { font-size: 17px; }
+.routing-policy-grid { gap: 20px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.routing-policy-grid p, .routing-latest { font-size: 12px; line-height: 1.6; }
+.routing-policy-grid strong, .routing-latest strong { font-size: 12px; }
+.policy-presets, .policy-custom { gap: 8px; }
+.policy-presets button, .policy-custom button { background: #fff; border-color: var(--line); color: var(--ink); padding: 0 13px; }
+.policy-presets button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+.policy-custom input { border-radius: 8px; min-height: 44px; padding: 0 10px; width: 64px; }
+.ledger-heading { margin-bottom: 18px; }
+.ledger-heading h2 { font-size: 23px; }
+.task-table-wrapper { margin: 0 -20px; overflow-x: auto; padding: 0 20px; }
+.task-table { font-size: 12px; min-width: 1400px; table-layout: auto; }
+.task-table th { background: #f8fafb; border-bottom: 1px solid var(--line); font-size: 11px; padding: 12px 14px; }
+.task-table td { font-size: 12px; line-height: 1.55; padding: 14px; }
+.task-table th:nth-child(9), .task-cell.task-actions-cell { background: #fff; }
+.task-actions-cell .task-action-button { padding: 0 11px; }
+.requirement-section { margin-top: 40px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid rgba(190,78,44,.35); outline-offset: 2px; }
+@media (min-width: 2200px) { .metrics-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 1100px) { .app-shell { padding-left: 258px; padding-right: 32px; } .masthead { left: 226px; padding-left: 32px; padding-right: 32px; } .routing-policy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .app-shell { padding: 0 20px 32px; } .masthead { left: 0; padding: 0 20px; position: static; } .masthead .brand-lockup { height: 64px; left: 0; position: static; width: auto; } .masthead-note { display: none; } .hero-section { padding: 28px 0; } .thread-rail { margin: 0 0 24px; max-height: none; padding: 20px; position: static; width: auto; } .metrics-grid, .routing-policy-grid { grid-template-columns: 1fr; } .task-ledger { padding: 16px 16px 0; } .task-table-wrapper { margin: 0 -16px; padding: 0 16px; } .task-table, .task-table tbody, .task-table tr, .task-table td { display: table; min-width: 1400px; width: auto; } .task-table { display: table; } .task-table thead { display: table-header-group; } .task-table tbody { display: table-row-group; } .task-table tr { display: table-row; } .task-table td, .task-table th { display: table-cell; } }
