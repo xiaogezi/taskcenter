@@ -149,6 +149,8 @@ test("页面展示可审计的模型编排策略与用量不可用态", async ()
   assert.match(source, /preferred_model=\{escalationModel/);
   assert.match(source, /Reviewer：/);
   assert.match(source, /最近真实路由/);
+  assert.match(source, /可选增强控制/);
+  assert.match(source, /自定义 Astra 阈值/);
 });
 
 test("已完成反思提案使用单一全局复查入口并降级历史派发错误", async () => {

@@ -31,7 +31,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const orchestratorModel = clean(input.orchestrator_model, 120);
   const roleName = ocrTaskClasses.has(taskClass) ? "reviewer" : "executor";
   const role = config.roles[roleName];
-  const mappedModel = role.taskClassModels?.[taskClass] || role.model;
+  const mappedModel = optionalAstraModel(taskClass, role, config) || role.taskClassModels?.[taskClass] || role.model;
   const preferredModel = roleName === "reviewer"
     ? role.model
     : normalizePreferredModel(requestedPreferredModel || mappedModel, config);
@@ -528,6 +528,16 @@ function clean(value, limit) {
 
 function normalizePreferredModel(model, config) {
   return config.retiredModels.includes(model) ? config.roles.executor.model : model;
+}
+
+function optionalAstraModel(taskClass, role, config) {
+  if (!["architecture", "migration", "complex_diagnosis"].includes(taskClass)) return "";
+  const candidate = role.fallbackModels.at(-1);
+  if (!candidate) return "";
+  const reportPath = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local", "runtime"), "usage-report.json");
+  let usage = NaN;
+  try { usage = Number(JSON.parse(readFileSync(reportPath, "utf8")).rate_limits?.primary?.used_percent); } catch {}
+  return Number.isFinite(usage) && usage <= config.optionalAstraPolicy.threshold_percent ? candidate : "";
 }
 
 function matchedRule(roleName, requestedPreferredModel, role, taskClass) {

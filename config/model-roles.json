@@ -1,5 +1,11 @@
 {
   "schema_version": "taskcenter-model-roles-v1",
+  "optional_astra_policy": {
+    "preset": "saving",
+    "threshold_percent": 0,
+    "updated_at": "2026-09-07T07:49:32.216Z",
+    "updated_by": "default"
+  },
   "roles": {
     "executor": {
       "model": "gpt-5.6-luna",

@@ -156,6 +156,7 @@ type SessionStatus = {
 };
 type RoutingHealth = { model: string; state: "closed" | "open" | "half_open"; consecutive_failures: number; active_executors: number; concurrency_limit: number; retry_after_at?: string | null };
 type ModelRole = { model: string; reasoning_effort: string; fallback_models: string[]; concurrency_limit: number; fail_closed: boolean; task_class_models?: Record<string, string> };
+type OptionalAstraPolicy = { preset: "saving" | "balanced" | "quality" | "custom"; threshold_percent: number; updated_at?: string; updated_by?: string };
 type HealthState = { ok: boolean; dashboard?: { generatedAt?: string; readable?: boolean }; watcher?: { healthy?: boolean; updatedAt?: string }; routing?: { models?: RoutingHealth[]; roles?: { schema_version: string; executor: ModelRole; reviewer: ModelRole } } };
 
 type Dashboard = {
@@ -320,6 +321,7 @@ export default function Home() {
   const [taskTokenUsage, setTaskTokenUsage] = useState<Record<string, TaskTokenUsage>>({});
   const [sessionTokenUsage, setSessionTokenUsage] = useState<Record<string, SessionTokenUsage>>({});
   const [usageReport, setUsageReport] = useState<UsageReport>();
+  const [optionalAstraPolicy, setOptionalAstraPolicy] = useState<OptionalAstraPolicy>();
 
   const refreshLiveData = async (manual = false) => {
     if (refreshInFlight.current) return;
@@ -329,7 +331,7 @@ export default function Home() {
       setRefreshMessage("");
     }
     try {
-      const [dashboardResponse, tasksPayload, sessionStatusResponse, threadsResponse, reflectionsResponse, gateAllowlistResponse, governanceResponse, usageResponse] = await Promise.all([
+      const [dashboardResponse, tasksPayload, sessionStatusResponse, threadsResponse, reflectionsResponse, gateAllowlistResponse, governanceResponse, usageResponse, policyResponse] = await Promise.all([
         fetch(`${controlServerUrl}/dashboard`),
         fetchTaskSummaries(),
         fetch(`${controlServerUrl}/session-status`),
@@ -337,15 +339,15 @@ export default function Home() {
         fetch(`${controlServerUrl}/reflections`),
         fetch(`${controlServerUrl}/gate-session-allowlist`),
         fetch(`${controlServerUrl}/governance-metrics`),
-        fetch(`${controlServerUrl}/usage-report`),
+        fetch(`${controlServerUrl}/usage-report`), fetch(`${controlServerUrl}/routing/optional-astra-policy`),
       ]);
       const healthResponse = await fetch(`${controlServerUrl}/health`);
       if (!healthResponse.ok) throw new Error("本地控制服务健康检查失败");
       setHealth(await healthResponse.json() as HealthState);
-      if (!dashboardResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok || !reflectionsResponse.ok || !gateAllowlistResponse.ok || !governanceResponse.ok || !usageResponse.ok) {
+      if (!dashboardResponse.ok || !sessionStatusResponse.ok || !threadsResponse.ok || !reflectionsResponse.ok || !gateAllowlistResponse.ok || !governanceResponse.ok || !usageResponse.ok || !policyResponse.ok) {
         throw new Error("本地控制服务返回异常");
       }
-      const [dashboardPayload, sessionStatusPayload, threadsPayload, reflectionsPayload, gateAllowlistPayload, governancePayload, usagePayload] = await Promise.all([
+      const [dashboardPayload, sessionStatusPayload, threadsPayload, reflectionsPayload, gateAllowlistPayload, governancePayload, usagePayload, policyPayload] = await Promise.all([
         dashboardResponse.json() as Promise<Dashboard>,
         sessionStatusResponse.json() as Promise<{ sessions?: SessionStatus[] }>,
         threadsResponse.json() as Promise<{ availableThreads?: Thread[] }>,
@@ -353,6 +355,7 @@ export default function Home() {
         gateAllowlistResponse.json() as Promise<{ selection?: SessionSelection }>,
         governanceResponse.json() as Promise<GovernanceMetrics>,
         usageResponse.json() as Promise<UsageReport>,
+        policyResponse.json() as Promise<{ policy?: OptionalAstraPolicy }>,
       ]);
       setDashboard(dashboardPayload);
       setTasks(tasksPayload.tasks ?? []);
@@ -362,6 +365,7 @@ export default function Home() {
       setGateAllowlistIds(gateAllowlistPayload.selection?.threadIds ?? []);
       setGovernanceMetrics(governancePayload);
       setUsageReport(usagePayload);
+      setOptionalAstraPolicy(policyPayload.policy);
       setTaskTokenUsage(Object.fromEntries((usagePayload.lifetime?.byTask ?? []).filter((item) => item.id !== "unattributed").map((item) => [item.id, item])));
       setSessionTokenUsage(Object.fromEntries((usagePayload.lifetime?.bySession ?? []).map((item) => [item.sessionId, item])));
       if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
@@ -680,7 +684,7 @@ export default function Home() {
             serviceHealthy={health.ok && health.watcher?.healthy !== false}
             routingModels={health.routing?.models ?? []}
             modelRoles={health.routing?.roles}
-            usageReport={usageReport}
+            usageReport={usageReport} optionalAstraPolicy={optionalAstraPolicy} onOptionalAstraPolicy={setOptionalAstraPolicy}
             onTaskUpdated={(updatedTask) => {
               setTasks((current) => current.map((task) => task.id === updatedTask.id ? updatedTask : task));
             }}
@@ -863,7 +867,7 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
   );
 }
 
-function RoutingPolicyPanel({ tasks, routingModels, modelRoles, usageReport }: { tasks: TaskRecord[]; routingModels: RoutingHealth[]; modelRoles?: { executor: ModelRole; reviewer: ModelRole }; usageReport?: UsageReport }) {
+function RoutingPolicyPanel({ tasks, routingModels, modelRoles, usageReport, optionalAstraPolicy, onOptionalAstraPolicy }: { tasks: TaskRecord[]; routingModels: RoutingHealth[]; modelRoles?: { executor: ModelRole; reviewer: ModelRole }; usageReport?: UsageReport; optionalAstraPolicy?: OptionalAstraPolicy; onOptionalAstraPolicy: (policy: OptionalAstraPolicy) => void }) {
   const escalationModel = modelRoles?.reviewer.model;
   const astra = escalationModel ? routingModels.find((item) => item.model === escalationModel) : undefined;
   const latestRoute = tasks.flatMap((task) => (task.routingHistory ?? []).map((route) => ({ ...route, taskTitle: task.title })))
@@ -872,11 +876,13 @@ function RoutingPolicyPanel({ tasks, routingModels, modelRoles, usageReport }: {
   const usageUnavailable = !primaryRateLimit || usageReport?.snapshotStatus?.readable === false || usageReport?.snapshotStatus?.stale === true;
   const usage = usageReport?.windows?.["5h"]?.totals?.usage;
   const recentTokens = (usage?.input ?? 0) + (usage?.cachedInput ?? 0) + (usage?.output ?? 0);
+  const save = async (preset: OptionalAstraPolicy["preset"], threshold?: number) => { const response = await fetch(`${controlServerUrl}/routing/optional-astra-policy`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" }, body: JSON.stringify({ preset, threshold_percent: threshold }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "策略保存失败"); onOptionalAstraPolicy(payload.policy); };
 
   return (
     <section className="routing-policy" aria-label="模型编排策略">
       <div className="routing-policy-heading"><p className="eyebrow orange">ROUTING POLICY</p><h3>额度与证据驱动的模型编排</h3></div>
       <div className="routing-policy-grid">
+        <p><strong>可选增强控制</strong>当前 {optionalAstraPolicy?.preset ?? "saving"} · 阈值 {optionalAstraPolicy?.threshold_percent ?? 0}%<small>真实额度 {primaryRateLimit?.used_percent ?? "未知"}%；{primaryRateLimit && primaryRateLimit.used_percent <= (optionalAstraPolicy?.threshold_percent ?? 0) ? "允许可选增强" : "关闭可选增强"}。最近修改：{optionalAstraPolicy?.updated_at ?? "默认"} / {optionalAstraPolicy?.updated_by ?? "default"}<br/><button onClick={() => void save("saving")}>节省</button> <button onClick={() => void save("balanced")}>均衡</button> <button onClick={() => void save("quality")}>质量优先</button> <input aria-label="自定义 Astra 阈值" type="number" min="0" max="100" defaultValue={optionalAstraPolicy?.threshold_percent ?? 0} onBlur={(event) => void save("custom", Number(event.currentTarget.value))}/></small></p>
         <p><strong>当前用量压力</strong>{usageUnavailable ? "额度快照不可用，不以猜测升级高级模型。" : `Pro 周窗口已用 ${primaryRateLimit.used_percent}% · 重置 ${normalizeRateLimitReset(primaryRateLimit.resets_at)}`}<small>5h Token 观测 {formatTokens(recentTokens)}，不等于额度百分比；高级模型执行槽：{astra ? `${astra.state} · ${astra.active_executors}/${astra.concurrency_limit}` : "暂未观测"}</small></p>
         <p><strong>普通与实现</strong>Luna：general / search / mechanical / documentation。<small>Terra：implementation / test / architecture / migration / complex diagnosis。</small></p>
         <p><strong>{shortModelName(escalationModel ?? "高级模型")}升级</strong>默认仅 security、data migration、high risk；真实失败或风险证据可显式 <code>preferred_model={escalationModel ?? "高级模型"}</code>，并记录理由。<small>不作为普通容量兜底。</small></p>

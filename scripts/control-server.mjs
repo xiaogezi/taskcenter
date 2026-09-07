@@ -20,6 +20,7 @@ import {
   DispatchError,
   loadDispatchTarget,
 } from "./dispatch-core.mjs";
+import { updateOptionalAstraPolicy } from "./model-role-config.mjs";
 import {
   defaultSessionsRoot,
   inspectSessionState,
@@ -388,6 +389,19 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/routing/health") {
       sendJson(response, 200, { models: routingHealth(), roles: routingRoles() });
+      return;
+    }
+    if (request.method === "GET" && request.url === "/routing/optional-astra-policy") {
+      const usage = currentUsageReport().rate_limits?.primary?.used_percent;
+      const policy = routingRoles().optional_astra_policy;
+      sendJson(response, 200, { policy, used_percent: Number.isFinite(Number(usage)) ? Number(usage) : null, optional_enhancement_allowed: Number.isFinite(Number(usage)) && Number(usage) <= policy.threshold_percent });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/routing/optional-astra-policy") {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      const policy = updateOptionalAstraPolicy(body, "local-ui");
+      sendJson(response, 200, { accepted: true, policy });
       return;
     }
     if (request.method === "POST" && request.url === "/routing/select") {
