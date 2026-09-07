@@ -41,9 +41,12 @@ test("项目筛选把项目 worktree 归并到主项目", () => {
   assert.deepEqual(projectInfo("/Users/name/.codex/worktrees/hash/ReqRadar"), { id: "project:reqradar", label: "ReqRadar" });
 });
 
-test("同源代理只允许任务只读 GET 路径", () => {
+test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(isAllowedControlPath("/tasks/task-1/actions"), false);
-  assert.equal(isAllowedControlPath("/health"), false);
+  assert.equal(isAllowedControlPath("/health", "POST"), false);
+  assert.equal(isAllowedControlPath("/health", "GET"), true);
+  assert.equal(isAllowedControlPath("/routing/optional-astra-policy", "POST"), true);
+  assert.equal(isAllowedControlPath("/routing/select", "POST"), false);
   assert.equal(controlProxyTarget("/tasks", "?view=summary&project=/work&bucket=attention&query=api&page=2&page_size=50&ignored=yes")?.toString(), "http://127.0.0.1:3001/tasks?view=summary&project=%2Fwork&bucket=attention&query=api&page=2&page_size=50");
   assert.equal(controlProxyTarget("/tasks/task-1/events", "?limit=30")?.toString(), "http://127.0.0.1:3001/tasks/task-1/events?limit=30");
 });
