@@ -800,7 +800,7 @@ body, html { background: #f7f8fa; }
 .grain { display: none; }
 .masthead { background: #1b2a3a; border: 0; color: #fff; left: 0; min-height: 64px; padding: 0 32px; position: fixed; right: 0; top: 0; z-index: 5; }
 .masthead .brand-name, .masthead .masthead-note { color: #fff; }
-.hero-section { background: transparent; border: 0; padding: 88px 0 18px; }
+.hero-section { background: transparent; border: 0; padding: 120px 0 18px; }
 .hero-section h1 { font-size: 30px; letter-spacing: -.035em; }
 .hero-description { font-size: 13px; line-height: 1.55; }
 .hero-stamp { display: none; }
