@@ -89,6 +89,7 @@ import {
 } from "./routing-control.mjs";
 import { recommendSessionLifecycle } from "./session-lifecycle.mjs";
 import { buildGovernanceMetrics } from "./governance-metrics.mjs";
+import { taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const dashboardPath = resolve(process.env.TASKCENTER_DASHBOARD_PATH || join(projectRoot, "data", "dashboard.json"));
@@ -335,16 +336,29 @@ const server = createServer(async (request, response) => {
           sendJson(response, 200, { tasks: withDelegations(tasks) });
           return;
         }
+        const sessionRegistry = loadSessionRegistry();
+        const presentedTasks = tasks.map((task) => taskPresentation({ ...task, workspace: task.workspace || sessionRegistry[task.sessionId]?.workspace || "" }));
+        const project = url.searchParams.get("project") || "all";
+        const bucket = url.searchParams.get("bucket") || "all";
+        const query = url.searchParams.get("query") || "";
+        const projectTasks = presentedTasks.filter((task) => project === "all" || task.project.id === project);
+        const filteredTasks = projectTasks.filter((task) => taskMatchesQuery(task, query) && taskMatchesBucket(task, bucket));
         const page = Math.max(1, Number.parseInt(url.searchParams.get("page") || "1", 10) || 1);
         const pageSize = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("page_size") || "40", 10) || 40));
         const start = (page - 1) * pageSize;
-        const pageTasks = withDelegations(tasks.slice(start, start + pageSize));
+        const pageTasks = withDelegations(filteredTasks.slice(start, start + pageSize));
+        const actionCounts = Object.fromEntries(["attention", "in_progress", "awaiting_verification", "awaiting_acceptance", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
+        actionCounts.all = projectTasks.length;
+        const projects = new Map();
+        for (const task of presentedTasks) if (!projects.has(task.project.id)) projects.set(task.project.id, task.project);
         sendJson(response, 200, {
           tasks: url.searchParams.get("view") === "summary" ? pageTasks.map(taskSummary) : pageTasks,
           page,
           pageSize,
-          total: tasks.length,
-          totalPages: Math.max(1, Math.ceil(tasks.length / pageSize)),
+          total: filteredTasks.length,
+          totalPages: Math.max(1, Math.ceil(filteredTasks.length / pageSize)),
+          actionCounts,
+          projects: [...projects.values()].sort((left, right) => left.label.localeCompare(right.label, "zh-CN")),
         });
         return;
       }
@@ -652,6 +666,14 @@ const server = createServer(async (request, response) => {
         automaticallySuperseded: automatic.reconciled,
         completed: completed.completed,
       });
+      return;
+    }
+    const taskDetailMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)$/) : null;
+    if (taskDetailMatch) {
+      const task = loadTasks().find((item) => item.id === taskDetailMatch[1]);
+      if (!task) throw new TaskLedgerError(404, "任务不存在。");
+      const workspace = task.workspace || loadSessionRegistry()[task.sessionId]?.workspace || "";
+      sendJson(response, 200, { task: taskPresentation({ ...withDelegations([task])[0], workspace }) });
       return;
     }
     const taskEventsMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/events(?:\?limit=(\d+))?$/) : null;

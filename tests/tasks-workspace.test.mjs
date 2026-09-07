@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { controlProxyTarget, isAllowedControlPath } from "../lib/control-proxy.mjs";
+import { actionReasons, parseTaskWorkspaceSearch, projectInfo, taskAxes, taskListRequestKey, taskMatchesBucket, taskViewBuckets } from "../lib/task-workspace.mjs";
+
+test("任务工作区 URL 仅用列表条件构造请求 key", () => {
+  const state = parseTaskWorkspaceSearch("?project=/work&bucket=attention&query=api&page=2&task=t-1&tab=evidence");
+  assert.deepEqual(state, { project: "/work", bucket: "attention", query: "api", page: 2, task: "t-1", tab: "evidence" });
+  assert.equal(taskListRequestKey(state), taskListRequestKey({ ...state, task: "t-2", tab: "activity" }));
+});
+
+test("四轴状态与需处理判定忽略通用 completion pending", () => {
+  const task = { status: "in_progress", verificationStatus: "passed", reviewStatus: "pending", acceptanceStatus: "pending", completionReadiness: { reasons: ["缺少独立审查"] } };
+  assert.deepEqual(taskAxes(task), [["执行", "in_progress"], ["验证", "passed"], ["审查", "pending"], ["验收", "pending"]]);
+  assert.deepEqual(actionReasons(task), []);
+  assert.equal(taskMatchesBucket(task, "attention"), false);
+});
+
+test("失败或过期的验证、审查和验收进入需处理", () => {
+  for (const task of [{ verificationStatus: "failed" }, { verificationStatus: "stale" }, { reviewStatus: "changes_requested" }, { reviewStatus: "stale" }, { acceptanceStatus: "rejected" }]) {
+    assert.equal(actionReasons(task).length > 0, true);
+    assert.equal(taskViewBuckets(task).attention, true);
+  }
+});
+
+test("项目筛选把项目 worktree 归并到主项目", () => {
+  assert.deepEqual(projectInfo("/work/inStory-worktrees/feat-a"), { id: "project:instory", label: "inStory" });
+  assert.deepEqual(projectInfo("/Users/name/.codex/worktrees/hash/ReqRadar"), { id: "project:reqradar", label: "ReqRadar" });
+});
+
+test("同源代理只允许任务只读 GET 路径", () => {
+  assert.equal(isAllowedControlPath("/tasks/task-1/actions"), false);
+  assert.equal(isAllowedControlPath("/health"), false);
+  assert.equal(controlProxyTarget("/tasks", "?view=summary&project=/work&bucket=attention&query=api&page=2&page_size=50&ignored=yes")?.toString(), "http://127.0.0.1:3001/tasks?view=summary&project=%2Fwork&bucket=attention&query=api&page=2&page_size=50");
+  assert.equal(controlProxyTarget("/tasks/task-1/events", "?limit=30")?.toString(), "http://127.0.0.1:3001/tasks/task-1/events?limit=30");
+});

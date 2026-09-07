@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { enrichSessionTitles, groupSessions, mergeTaskSessions, sessionIdsForGroup, filterThreadsWithTasks } from "./session-groups.mjs";
 import { resolveTaskSessionDisplay, taskMatchesSession } from "./task-session-display.mjs";
 import { detectRoutingAdvisory, hasTaskEventDetails, taskEventStatus, taskEventSummary } from "./task-event-display.mjs";
@@ -298,7 +299,7 @@ async function copyToClipboard(text: string) {
   if (!copied) throw new Error("浏览器拒绝访问剪贴板");
 }
 
-export default function Home() {
+export function LegacyHome() {
   const [selectedThread, setSelectedThread] = useState("全部任务");
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
@@ -706,6 +707,15 @@ export default function Home() {
       </footer>
     </main>
   );
+}
+
+function RootRedirect() {
+  useEffect(() => { window.location.replace("/tasks"); }, []);
+  return null;
+}
+
+export default function Home() {
+  return usePathname() === "/" ? <RootRedirect /> : <LegacyHome />;
 }
 
 function GovernancePanel({ metrics }: { metrics: GovernanceMetrics | null }) {

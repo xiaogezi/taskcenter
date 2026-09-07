@@ -70,6 +70,47 @@ test("MCP Session 上下文：请求 threadId 优先、兼容环境变量且冲�
   assert.equal(resolveTrustedMcpSession({}, {}).error, "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE");
 });
 
+test("Control API 返回单任务完整详情，摘要列表仍不携带证据", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "task-detail-session");
+  const created = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create", event_id: "task-detail-create", task_id: "task-detail-1", session_id: "task-detail-session",
+      workspace: "/work", title: "任务详情", goal: "验证完整详情接口", evidence: ["probe:detail"],
+    }),
+  });
+  assert.equal(created.status, 201);
+  const detail = await (await fetch(`${base}/tasks/task-detail-1`)).json();
+  assert.deepEqual(detail.task.evidence, ["probe:detail"]);
+  const summary = await (await fetch(`${base}/tasks?view=summary&page=1&page_size=10`)).json();
+  assert.equal("evidence" in summary.tasks[0], false);
+});
+
+test("Control API 在全量任务上筛选后分页，并返回项目范围 action counts", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "task-filter-session");
+  for (const [task_id, title, workspace, status, blocker] of [
+    ["filter-alpha-1", "Alpha 第一条", "/workspaces/Alpha", "in_progress", ""],
+    ["filter-alpha-2", "Alpha 需阻塞", "/workspaces/Alpha", "blocked", "等待依赖"],
+    ["filter-beta-1", "Beta 条目", "/workspaces/Beta", "planned", ""],
+  ]) {
+    const response = await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.create", event_id: `create-${task_id}`, task_id, session_id: "task-filter-session", title, workspace, status, blocker }) });
+    assert.equal(response.status, 201);
+  }
+  const filtered = await (await fetch(`${base}/tasks?view=summary&project=project:alpha&query=${encodeURIComponent("需阻塞")}&page=1&page_size=1`)).json();
+  assert.equal(filtered.total, 1, "query must filter the full project range before pagination");
+  assert.equal(filtered.tasks[0].id, "filter-alpha-2");
+  assert.equal(filtered.actionCounts.all, 2, "counts must not be based on the single result page");
+  assert.equal(filtered.actionCounts.blocked, 1);
+  assert.deepEqual(filtered.projects.find((item) => item.id === "project:alpha"), { id: "project:alpha", label: "Alpha" });
+});
+
 async function resetLedger() {
   for (const path of Object.values(envPaths)) {
     await rm(path, { force: true });

@@ -11,12 +11,12 @@ async function readDashboard() {
   return JSON.parse(await readFile(new URL(dashboardPath, root), "utf8"));
 }
 
-async function render() {
+async function render(pathname = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
   return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html" } }),
+    new Request(new URL(pathname, "http://localhost"), { headers: { accept: "text/html" } }),
     { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
     { waitUntil() {}, passThroughOnException() {} },
   );
@@ -95,18 +95,19 @@ test("只把持续能力和缺陷反馈识别为需求", () => {
   }
 });
 
-test("服务端渲染 TaskCenter 看板", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-  const html = await response.text();
-  assert.match(html, /<title>TaskCenter/);
-  assert.match(html, /本地任务工作台/);
-  assert.match(html, /Codex/);
-  assert.match(html, /会话主动任务/);
-  assert.doesNotMatch(html, /待整理 inbox/);
-  assert.doesNotMatch(html, /需求卡片/);
-  assert.doesNotMatch(html, /react-loading-skeleton/);
+test("服务端提供新版任务入口并保留旧版路由", async () => {
+  for (const pathname of ["/", "/tasks", "/legacy"]) {
+    const response = await render(pathname);
+    assert.equal(response.status, 200, pathname);
+    assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+    assert.match(await response.text(), /<title>TaskCenter/);
+  }
+  const rootSource = await readFile(new URL("app/page.tsx", root), "utf8");
+  const workspaceSource = await readFile(new URL("features/tasks/TaskWorkspace.tsx", root), "utf8");
+  const legacySource = await readFile(new URL("app/legacy/page.tsx", root), "utf8");
+  assert.match(rootSource, /window\.location\.replace\("\/tasks"\)/);
+  assert.match(workspaceSource, /任务工作区/);
+  assert.match(legacySource, /\.\.\/page/);
 });
 
 test("治理 Review 诊断默认折叠并保留完整内容", async () => {
