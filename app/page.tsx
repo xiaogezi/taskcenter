@@ -893,7 +893,7 @@ function RoutingPolicyPanel({ tasks, routingModels, modelRoles, usageReport, opt
   );
 }
 
-function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, routingModels, modelRoles, usageReport, onTaskUpdated }: { tasks: TaskRecord[]; taskTokenUsage: Record<string, TaskTokenUsage>; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; routingModels: RoutingHealth[]; modelRoles?: { executor: ModelRole; reviewer: ModelRole }; usageReport?: UsageReport; onTaskUpdated: (task: TaskRecord) => void }) {
+function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, routingModels, modelRoles, usageReport, optionalAstraPolicy, onOptionalAstraPolicy, onTaskUpdated }: { tasks: TaskRecord[]; taskTokenUsage: Record<string, TaskTokenUsage>; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; routingModels: RoutingHealth[]; modelRoles?: { executor: ModelRole; reviewer: ModelRole }; usageReport?: UsageReport; optionalAstraPolicy?: OptionalAstraPolicy; onOptionalAstraPolicy: (policy: OptionalAstraPolicy) => void; onTaskUpdated: (task: TaskRecord) => void }) {
   // 筛选逻辑：全部任务显示全局，具体 Session 优先精确 session_id，不可用时按显式项目标识回退
   const selectedSessionIds = sessionIdsForGroup(selectedSessionId, sessionGroups);
   const filteredTasks = selectedSessionId === "全部任务"
@@ -921,7 +921,7 @@ function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, s
     <section className="task-ledger" aria-label="会话主动任务">
       <div className={`session-health-bar ${serviceHealthy ? "healthy" : "unhealthy"}`} role="status">{serviceHealthy ? "● 控制服务正常 · 同步 watcher 正常" : "! 控制服务或同步 watcher 异常，正在重试"} · 最近数据生成时间以 dashboard 为准</div>
       {routingModels.length > 0 && <div className="session-health-bar healthy" aria-label="模型路由健康">模型路由：{routingModels.map((item) => `${shortModelName(item.model)} ${item.state} ${item.active_executors}/${item.concurrency_limit}`).join(" · ")}</div>}
-      <RoutingPolicyPanel tasks={tasks} routingModels={routingModels} modelRoles={modelRoles} usageReport={usageReport} />
+      <RoutingPolicyPanel tasks={tasks} routingModels={routingModels} modelRoles={modelRoles} usageReport={usageReport} optionalAstraPolicy={optionalAstraPolicy} onOptionalAstraPolicy={onOptionalAstraPolicy} />
       <div className="ledger-heading">
         <p className="eyebrow orange">SESSION TASK GATE</p>
         <h2>会话主动任务<span>{filteredTasks.length}</span></h2>
