@@ -20,7 +20,7 @@ import {
   DispatchError,
   loadDispatchTarget,
 } from "./dispatch-core.mjs";
-import { updateOptionalAstraPolicy } from "./model-role-config.mjs";
+import { ModelRoleConfigError, updateOptionalAstraPolicy } from "./model-role-config.mjs";
 import {
   defaultSessionsRoot,
   inspectSessionState,
@@ -1004,7 +1004,7 @@ const server = createServer(async (request, response) => {
     }
     sendJson(response, 404, { error: "接口不存在。" });
   } catch (error) {
-    const known = error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError;
+    const known = error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError;
     const statusCode = known ? error.statusCode : 500;
     if (!known) {
       console.error("TaskCenter control error:", safeError(error));
