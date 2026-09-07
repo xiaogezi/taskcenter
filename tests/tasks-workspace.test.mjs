@@ -7,6 +7,9 @@ test("任务工作区 URL 仅用列表条件构造请求 key", () => {
   const state = parseTaskWorkspaceSearch("?project=/work&bucket=attention&query=api&page=2&task=t-1&tab=evidence");
   assert.deepEqual(state, { project: "/work", bucket: "attention", query: "api", page: 2, task: "t-1", tab: "evidence" });
   assert.equal(taskListRequestKey(state), taskListRequestKey({ ...state, task: "t-2", tab: "activity" }));
+
+  const withRoutingTab = parseTaskWorkspaceSearch("?task=task-taskcenter-ui-refresh-20260907&tab=routing&bucket=attention");
+  assert.equal(withRoutingTab.tab, "routing");
 });
 
 test("四轴状态与需处理判定忽略通用 completion pending", () => {
