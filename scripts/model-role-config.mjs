@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const modelRoleConfigPath = resolve(
   process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH
     || resolve(projectRoot, "config", "model-roles.json"),
 );
+const optionalAstraPolicyPath = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local", "runtime"), "optional-astra-policy.json");
 
 const allowedReasoningEfforts = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const supportedTaskClasses = new Set(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", "ocr", "ocr_review", "independent_review"]);
@@ -37,7 +38,7 @@ export function loadModelRoleConfig() {
   const executor = normalizeRole(input.roles?.executor, "executor", false);
   const reviewer = normalizeRole(input.roles?.reviewer, "reviewer", true);
   const retiredModels = uniqueModels(input.retired_models, "retired_models");
-  const optionalAstraPolicy = normalizeOptionalAstraPolicy(input.optional_astra_policy);
+  const optionalAstraPolicy = readOptionalAstraPolicy(input.optional_astra_policy);
   const activeModels = new Set([
     executor.model,
     reviewer.model,
@@ -65,16 +66,16 @@ export function publicModelRoleConfig(config = loadModelRoleConfig()) {
 }
 
 export function updateOptionalAstraPolicy(input, actor = "local-ui", now = new Date().toISOString()) {
-  const current = JSON.parse(readFileSync(modelRoleConfigPath, "utf8"));
   loadModelRoleConfig();
   const preset = String(input?.preset || "").trim();
   const thresholds = { saving: 0, balanced: 35, quality: 60, custom: Number(input?.threshold_percent) };
   if (!(preset in thresholds) || !Number.isInteger(thresholds[preset]) || thresholds[preset] < 0 || thresholds[preset] > 100) throw new ModelRoleConfigError("可选 Astra 策略必须是有效预设或 0–100 阈值。");
-  current.optional_astra_policy = { preset, threshold_percent: thresholds[preset], updated_at: now, updated_by: actor };
-  const temporary = `${modelRoleConfigPath}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporary, modelRoleConfigPath);
-  return loadModelRoleConfig().optionalAstraPolicy;
+  const policy = { preset, threshold_percent: thresholds[preset], updated_at: now, updated_by: actor };
+  if (!existsSync(dirname(optionalAstraPolicyPath))) throw new ModelRoleConfigError("本地策略目录不可用。");
+  const temporary = `${optionalAstraPolicyPath}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(policy, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, optionalAstraPolicyPath);
+  return policy;
 }
 
 function normalizeRole(value, name, failClosed) {
@@ -139,6 +140,10 @@ function normalizeOptionalAstraPolicy(value) {
   const threshold = Number(value?.threshold_percent ?? 0);
   if (!(["saving", "balanced", "quality", "custom"].includes(preset)) || !Number.isInteger(threshold) || threshold < 0 || threshold > 100) throw new ModelRoleConfigError("optional_astra_policy 无效。");
   return { preset, threshold_percent: threshold, updated_at: String(value?.updated_at || ""), updated_by: String(value?.updated_by || "default") };
+}
+
+function readOptionalAstraPolicy(fallback) {
+  try { return normalizeOptionalAstraPolicy(JSON.parse(readFileSync(optionalAstraPolicyPath, "utf8"))); } catch { return normalizeOptionalAstraPolicy(fallback); }
 }
 
 function publicRole(role) {
