@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { controlProxyTarget, isAllowedControlPath } from "../lib/control-proxy.mjs";
 import { actionReasons, parseTaskWorkspaceSearch, projectInfo, taskAxes, taskListRequestKey, taskMatchesBucket, taskViewBuckets } from "../lib/task-workspace.mjs";
 
@@ -10,6 +11,15 @@ test("任务工作区 URL 仅用列表条件构造请求 key", () => {
 
   const withRoutingTab = parseTaskWorkspaceSearch("?task=task-taskcenter-ui-refresh-20260907&tab=routing&bucket=attention");
   assert.equal(withRoutingTab.tab, "routing");
+});
+
+test("桌面详情展开时主工作区应开启三列网格", () => {
+  const componentSource = readFileSync("features/tasks/TaskWorkspace.tsx", "utf8");
+  const styleSource = readFileSync("app/globals.css", "utf8");
+
+  assert.match(componentSource, /className=\{state\.task \? "task-workspace with-open-detail" : "task-workspace"\}/);
+  assert.match(styleSource, /\.task-workspace\.with-open-detail \{\s*grid-template-columns:\s*220px minmax\(0, 1fr\) minmax\(320px, min\(390px, 34vw\)\);\s*\}/);
+  assert.match(styleSource, /\.task-detail \{[\s\S]*width: 100%;[\s\S]*min-width: 0;/);
 });
 
 test("四轴状态与需处理判定忽略通用 completion pending", () => {

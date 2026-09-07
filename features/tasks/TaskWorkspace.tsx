@@ -85,7 +85,7 @@ export function TaskWorkspace() {
   const projects = payload.projects || [];
   const counts = payload.actionCounts || {};
 
-  return <main className="task-workspace">
+  return <main className={state.task ? "task-workspace with-open-detail" : "task-workspace"}>
     <aside className="task-nav"><a className="task-logo" href="/tasks">TASK<span>CENTER</span></a><nav><a className="active" href="/tasks">任务工作区</a><span>会话（后续）</span><a href="/legacy#routing-policy-control">模型调度（后续）</a><span>改进建议（后续）</span><a href="/legacy">旧版首页</a></nav></aside>
     <section className="task-main"><header className="task-header"><div><p>LOCAL CONTROL API</p><h1>任务工作区</h1><small>任务事实、证据与活动均来自本地 Control API。</small></div><a href="/legacy">查看旧版看板</a></header>
       <section className="task-stats" aria-label="任务统计">{([['attention','需处理'],['in_progress','执行中'],['awaiting_verification','待验证'],['awaiting_acceptance','待验收'],['blocked','阻塞'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
