@@ -14,6 +14,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
+    if (request.method !== "GET") headers.set("origin", "http://localhost:3000");
     const upstream = await fetch(target, { method: request.method, headers, body: request.method === "GET" ? undefined : await request.text(), cache: "no-store", signal: controller.signal });
     const body = await upstream.text();
     return new NextResponse(body, {
