@@ -96,6 +96,13 @@ const taskFields = {
   workflow_profile: z.enum(["fast", "standard", "strict"]).optional(),
   review_policy: z.enum(["not_required", "recommended", "required"]).optional(),
   execution_environment: z.enum(["local", "worktree", "ci", "remote", "other"]).optional(),
+  execution_model_policy: z.object({
+    mode: z.enum(["auto", "quota_preferred"]),
+    preferred_model: z.string().min(1).max(120).optional(),
+    quota_limit_id: z.string().min(1).max(120).optional(),
+    fallback_on_exhaustion: z.boolean().optional(),
+    authorization_reason: z.string().max(500).optional(),
+  }).strict().optional(),
   verification_plan: z.array(verificationRequirement).max(30).optional(),
   revision: z.string().max(200).optional().describe("Git revision 或明确的工作区快照标识"),
   subject_ref: subjectReference.optional(),
@@ -291,7 +298,7 @@ server.registerTool("taskcenter_routing_select", {
   description: "按集中模型角色配置原子检查熔断、并发和 Half-Open 探测租约，返回强建议路由；TaskCenter 不会启动执行器。普通执行使用 executor 角色，OCR 使用 fail-closed reviewer 角色并保留同一 Subject、Bundle 和规则证据。",
   inputSchema: z.object({
     task_id: z.string().min(1).max(200),
-    preferred_model: z.string().min(1).max(120).optional().describe("可选的单次执行覆盖；省略时使用集中配置中的角色模型"),
+    preferred_model: z.string().min(1).max(120).optional().describe("兼容单次执行覆盖；任务配置 quota_preferred 时由持久化策略接管"),
     task_class: z.enum(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", "ocr", "ocr_review", "independent_review"]),
     channel: z.enum(["direct", "native", "cli", "other"]),
     event_id: z.string().max(200).optional(),
@@ -311,6 +318,8 @@ server.registerTool("taskcenter_routing_result", {
     error_type: z.string().max(120).optional(),
     error_code: z.string().max(160).optional(),
     request_id: z.string().max(300).optional(),
+    quota_limit_id: z.string().max(120).optional(),
+    quota_retry_after_at: z.string().datetime({ offset: true }).optional(),
     event_id: z.string().max(200).optional(), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input) => postLocal("/routing/result", input));

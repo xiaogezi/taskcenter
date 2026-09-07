@@ -33,7 +33,9 @@
       "concurrency_limit": 2
     }
   },
-  "retired_models": [
+  "manual_only_models": [
     "gpt-5.3-codex-spark"
+  ],
+  "retired_models": [
   ]
 }

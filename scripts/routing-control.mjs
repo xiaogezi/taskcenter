@@ -9,6 +9,7 @@ export const routingControlPath = resolve(process.env.TASKCENTER_ROUTING_CONTROL
 const defaultFailureThreshold = integerEnv("TASKCENTER_ROUTING_FAILURE_THRESHOLD", 3, 1, 20);
 const defaultCooldownMs = integerEnv("TASKCENTER_ROUTING_COOLDOWN_MS", 300_000, 1_000, 86_400_000);
 const defaultLeaseTtlMs = integerEnv("TASKCENTER_ROUTING_LEASE_TTL_MS", 3_600_000, 60_000, 28_800_000);
+const quotaSnapshotMaxAgeMs = integerEnv("TASKCENTER_QUOTA_SNAPSHOT_MAX_AGE_MS", 120_000, 10_000, 3_600_000);
 const terminalOutcomes = new Set(["succeeded", "failed", "cancelled", "unavailable", "overloaded"]);
 const circuitFailureTypes = new Set(["server_overloaded", "capacity", "model_unavailable", "rate_limit", "timeout"]);
 const immediateOpenFailureTypes = new Set(["server_overloaded", "capacity", "model_unavailable", "rate_limit"]);
@@ -25,6 +26,7 @@ export class RoutingControlError extends Error {
 export function routingSelect(input, now = new Date().toISOString()) {
   const config = loadModelRoleConfig();
   const requestedPreferredModel = clean(input.preferred_model, 120);
+  const executionModelPolicy = normalizeExecutionModelPolicy(input.execution_model_policy);
   const taskId = clean(input.task_id, 200);
   const taskClass = clean(input.task_class, 80) || "general";
   if (!knownTaskClasses.has(taskClass)) throw new RoutingControlError(400, `未知 task_class：${taskClass}。`);
@@ -32,9 +34,15 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const roleName = ocrTaskClasses.has(taskClass) ? "reviewer" : "executor";
   const role = config.roles[roleName];
   const mappedModel = optionalAstraModel(taskClass, role, config) || role.taskClassModels?.[taskClass] || role.model;
+  const quotaPreferred = roleName === "executor" && executionModelPolicy.mode === "quota_preferred";
+  if (quotaPreferred && !config.manualOnlyModels.includes(executionModelPolicy.preferredModel)) {
+    throw new RoutingControlError(409, `额度优先模型未配置为 manual_only: ${executionModelPolicy.preferredModel}`);
+  }
   const preferredModel = roleName === "reviewer"
     ? role.model
-    : normalizePreferredModel(requestedPreferredModel || mappedModel, config);
+    : quotaPreferred
+      ? executionModelPolicy.preferredModel
+      : normalizePreferredModel(requestedPreferredModel || mappedModel, config);
   const channel = clean(input.channel, 40) || "cli";
   const eventId = clean(input.event_id, 200) || `routing-select-${randomUUID()}`;
   if (!taskId || !orchestratorModel) throw new RoutingControlError(400, "routing_select 缺少 task_id 或 orchestrator_model。");
@@ -43,7 +51,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
 
   const state = readState();
   expireRoutes(state, now);
-  const signatureInput = { taskId, orchestratorModel, requestedPreferredModel, taskClass, channel };
+  const signatureInput = { taskId, orchestratorModel, requestedPreferredModel, executionModelPolicy, taskClass, channel };
   if (reviewArtifacts) signatureInput.reviewArtifacts = reviewArtifacts;
   const signature = signatureOf(signatureInput);
   const replay = state.routes.find((route) => route.selectEventId === eventId);
@@ -67,22 +75,53 @@ export function routingSelect(input, now = new Date().toISOString()) {
 
   const preferred = ensureHealth(state, preferredModel, now, config);
   advanceCircuit(preferred, now);
+  const quota = quotaPreferred
+    ? quotaDecision(input.quota_snapshot, executionModelPolicy.quotaLimitId, preferred, now)
+    : null;
   let selectedModel = preferredModel;
   let reason = roleName === "reviewer"
     ? "reviewer_model_from_config"
+    : quotaPreferred
+      ? quota.status === "available" ? "quota_preferred_model_available" : "quota_snapshot_unknown_probe"
     : !requestedPreferredModel && role.taskClassModels?.[taskClass]
       ? `executor_model_from_task_class:${taskClass}`
       : !requestedPreferredModel
         ? "executor_model_from_config"
       : requestedPreferredModel === preferredModel
         ? "preferred_model_available"
-        : "retired_preference_normalized_to_executor";
+        : config.manualOnlyModels.includes(requestedPreferredModel)
+          ? "manual_only_preference_requires_task_policy"
+          : "retired_preference_normalized_to_executor";
   let fallbackFrom = "";
   let fallbackReason = "";
   let retryAfterAt = "";
-  let probe = preferred.state === "half_open";
+  let probe = preferred.state === "half_open" || quota?.status === "unknown";
 
-  if (!canLease(state, preferred, now)) {
+  if (quota?.status === "exhausted") {
+    fallbackFrom = preferredModel;
+    fallbackReason = "preferred_model_quota_exhausted";
+    retryAfterAt = quota.retryAfterAt;
+    const fallback = ensureHealth(state, mappedModel, now, config);
+    advanceCircuit(fallback, now);
+    if (!canLease(state, fallback, now)) {
+      const route = buildUnavailableRoute({
+        eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred: fallback, now,
+        reason: "quota_fallback_model_unavailable", fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
+        configVersion: config.contentHash, policyVersion: config.schemaVersion,
+        matchedRule: "task.execution_model_policy.quota_preferred",
+        preferenceMode: executionModelPolicy.mode, quota,
+      });
+      state.routes.push(route);
+      route.selectAuditEvents = auditEventsFor(route, fallback, "selection_unavailable");
+      persistState(state, now);
+      return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
+    }
+    selectedModel = mappedModel;
+    reason = `quota_exhausted_fallback_to_${modelSlug(mappedModel)}`;
+    probe = fallback.state === "half_open";
+  }
+
+  if (quota?.status !== "exhausted" && !canLease(state, preferred, now)) {
     fallbackFrom = preferredModel;
     fallbackReason = fallbackReasonFor(preferred);
     retryAfterAt = preferred.retryAfterAt;
@@ -97,7 +136,8 @@ export function routingSelect(input, now = new Date().toISOString()) {
         fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
         configVersion: config.contentHash,
         policyVersion: config.schemaVersion,
-        matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass),
+        matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPreferred),
+        preferenceMode: executionModelPolicy.mode, quota,
       });
       state.routes.push(route);
       route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
@@ -126,9 +166,14 @@ export function routingSelect(input, now = new Date().toISOString()) {
     fallbackReason,
     retryAfterAt,
     reviewArtifacts,
+    preferenceMode: executionModelPolicy.mode,
+    quotaLimitId: quota?.limitId || "",
+    quotaSnapshotObservedAt: quota?.observedAt || "",
+    quotaUsedPercent: quota?.usedPercent,
+    quotaResetAt: quota?.retryAfterAt || "",
     configVersion: config.contentHash,
     policyVersion: config.schemaVersion,
-    matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass),
+    matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPreferred),
     requiresNewSession: selectedModel !== preferredModel || channel === "cli",
     available: true,
     probe,
@@ -168,6 +213,8 @@ export function routingResult(input, now = new Date().toISOString()) {
     errorType: clean(input.error_type, 120),
     errorCode: clean(input.error_code, 160),
     requestId: clean(input.request_id, 300),
+    quotaLimitId: clean(input.quota_limit_id, 120) || route.quotaLimitId || "",
+    quotaRetryAfterAt: clean(input.quota_retry_after_at, 80) || route.quotaResetAt || "",
   };
   const signature = signatureOf(result);
   if (route.result) {
@@ -194,6 +241,14 @@ export function routingResult(input, now = new Date().toISOString()) {
     health.openedAt = "";
     health.retryAfterAt = "";
     health.lastSuccessAt = now;
+    health.quotaRetryAfterAt = "";
+    health.quotaLimitId = "";
+  } else if (isQuotaFailure(result) && config.manualOnlyModels.includes(route.selectedModel)) {
+    health.lastErrorCode = result.errorCode || result.errorType || String(result.httpStatus || "");
+    health.lastRequestId = result.requestId;
+    health.quotaLimitId = result.quotaLimitId;
+    health.quotaRetryAfterAt = validFutureTime(result.quotaRetryAfterAt, now)
+      || new Date(Date.parse(now) + defaultCooldownMs).toISOString();
   } else if (isCircuitFailure(result)) {
     health.consecutiveFailures += 1;
     health.lastErrorCode = result.errorCode || result.errorType || String(result.httpStatus || "");
@@ -242,6 +297,11 @@ function canLease(state, health, now) {
 }
 
 function advanceCircuit(health, now) {
+  if (health.quotaRetryAfterAt && Date.parse(health.quotaRetryAfterAt) <= Date.parse(now)) {
+    health.quotaRetryAfterAt = "";
+    health.quotaLimitId = "";
+    health.updatedAt = now;
+  }
   if (health.state === "open" && Date.parse(health.retryAfterAt || "") <= Date.parse(now)) {
     health.state = "half_open";
     health.halfOpenLease = "";
@@ -262,10 +322,14 @@ function isCircuitFailure(result) {
     || /overload|capacity|unavailable|rate.?limit|timeout/i.test(`${result.errorType} ${result.errorCode}`);
 }
 
+function isQuotaFailure(result) {
+  return result.httpStatus === 429 || result.errorType === "rate_limit" || /quota|rate.?limit/i.test(`${result.errorType} ${result.errorCode}`);
+}
+
 function buildUnavailableRoute({
   eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now, reason,
   fallbackFrom = "", fallbackReason = "", retryAfterAt = "", reviewArtifacts = null,
-  configVersion = "", policyVersion = "", matchedRule = "",
+  configVersion = "", policyVersion = "", matchedRule = "", preferenceMode = "auto", quota = null,
 }) {
   return {
     id: `route_${randomUUID()}`,
@@ -286,6 +350,11 @@ function buildUnavailableRoute({
     configVersion,
     policyVersion,
     matchedRule,
+    preferenceMode,
+    quotaLimitId: quota?.limitId || "",
+    quotaSnapshotObservedAt: quota?.observedAt || "",
+    quotaUsedPercent: quota?.usedPercent,
+    quotaResetAt: quota?.retryAfterAt || "",
     requiresNewSession: false,
     available: false,
     probe: false,
@@ -314,6 +383,8 @@ function ensureHealth(state, model, now, config) {
     lastErrorCode: "",
     lastRequestId: "",
     lastSuccessAt: "",
+    quotaLimitId: "",
+    quotaRetryAfterAt: "",
     updatedAt: now,
   };
   state.models[model].concurrencyLimit = concurrencyLimit(model, config);
@@ -356,6 +427,8 @@ function healthSnapshot(state, now, config) {
     last_error_code: health.lastErrorCode || null,
     last_request_id: health.lastRequestId || null,
     last_success_at: health.lastSuccessAt || null,
+    quota_limit_id: health.quotaLimitId || null,
+    quota_retry_after_at: health.quotaRetryAfterAt || null,
     updated_at: health.updatedAt,
   })).sort((left, right) => left.model.localeCompare(right.model));
 }
@@ -378,6 +451,11 @@ function publicRoute(route) {
     config_version: route.configVersion || null,
     policy_version: route.policyVersion || null,
     matched_rule: route.matchedRule || null,
+    preference_mode: route.preferenceMode || "auto",
+    quota_limit_id: route.quotaLimitId || null,
+    quota_snapshot_observed_at: route.quotaSnapshotObservedAt || null,
+    quota_used_percent: Number.isFinite(route.quotaUsedPercent) ? route.quotaUsedPercent : null,
+    quota_reset_at: route.quotaResetAt || null,
     requires_new_session: route.requiresNewSession,
     available: route.available,
     probe: route.probe,
@@ -391,6 +469,8 @@ function publicRoute(route) {
       error_type: route.result.errorType || null,
       error_code: route.result.errorCode || null,
       request_id: route.result.requestId || null,
+      quota_limit_id: route.result.quotaLimitId || null,
+      quota_retry_after_at: route.result.quotaRetryAfterAt || null,
     } : null,
   };
 }
@@ -419,9 +499,14 @@ function auditEventsFor(route, health, transition, phase = "select") {
       fallback_from: route.fallbackFrom,
       fallback_reason: route.fallbackReason,
       retry_after_at: route.retryAfterAt,
+      preference_mode: route.preferenceMode,
+      quota_limit_id: route.quotaLimitId,
+      quota_snapshot_observed_at: route.quotaSnapshotObservedAt,
+      ...(Number.isFinite(route.quotaUsedPercent) ? { quota_used_percent: route.quotaUsedPercent } : {}),
+      quota_reset_at: route.quotaResetAt,
       review_artifacts: route.reviewArtifacts,
       routing_outcome: route.status === "succeeded" ? "succeeded" : ["failed", "overloaded", "unavailable"].includes(route.status) ? "failed" : "selected",
-      policy_version: "routing-control-v3",
+      policy_version: "routing-control-v4",
       route_id: route.id,
       task_class: route.taskClass,
       circuit_state: route.circuitState,
@@ -527,7 +612,47 @@ function clean(value, limit) {
 }
 
 function normalizePreferredModel(model, config) {
-  return config.retiredModels.includes(model) ? config.roles.executor.model : model;
+  return config.retiredModels.includes(model) || config.manualOnlyModels.includes(model) ? config.roles.executor.model : model;
+}
+
+function normalizeExecutionModelPolicy(value) {
+  if (!value || value.mode !== "quota_preferred") return { mode: "auto", preferredModel: "", quotaLimitId: "" };
+  const preferredModel = clean(value.preferred_model, 120);
+  const quotaLimitId = clean(value.quota_limit_id, 120);
+  if (!preferredModel || !quotaLimitId || value.fallback_on_exhaustion !== true) {
+    throw new RoutingControlError(400, "任务 quota_preferred 策略不完整。");
+  }
+  return { mode: "quota_preferred", preferredModel, quotaLimitId };
+}
+
+function quotaDecision(snapshot, limitId, health, now) {
+  if (health.quotaRetryAfterAt && Date.parse(health.quotaRetryAfterAt) > Date.parse(now)) {
+    return { status: "exhausted", limitId, observedAt: "", usedPercent: 100, retryAfterAt: health.quotaRetryAfterAt };
+  }
+  if (!snapshot || snapshot.limit_id !== limitId) return { status: "unknown", limitId, observedAt: "", usedPercent: undefined, retryAfterAt: "" };
+  const observedAt = clean(snapshot.observed_at, 80);
+  const observedMs = Date.parse(observedAt);
+  const nowMs = Date.parse(now);
+  const windows = [snapshot.primary, snapshot.secondary].filter(Boolean);
+  const exhausted = windows.find((window) => Number(window.used_percent) >= 100 && futureTime(window.resets_at, now));
+  const reached = clean(snapshot.rate_limit_reached_type, 80);
+  if (exhausted || reached) {
+    const retryAfterAt = windows.map((window) => futureTime(window.resets_at, now)).filter(Boolean).sort().at(-1) || "";
+    return { status: "exhausted", limitId, observedAt, usedPercent: Math.max(...windows.map((window) => Number(window.used_percent) || 0)), retryAfterAt };
+  }
+  if (!Number.isFinite(observedMs) || !Number.isFinite(nowMs) || nowMs - observedMs > quotaSnapshotMaxAgeMs) {
+    return { status: "unknown", limitId, observedAt, usedPercent: Number(snapshot.primary?.used_percent), retryAfterAt: "" };
+  }
+  return { status: "available", limitId, observedAt, usedPercent: Number(snapshot.primary?.used_percent), retryAfterAt: "" };
+}
+
+function futureTime(value, now) {
+  const parsed = typeof value === "number" ? value * 1_000 : Date.parse(String(value || ""));
+  return Number.isFinite(parsed) && parsed > Date.parse(now) ? new Date(parsed).toISOString() : "";
+}
+
+function validFutureTime(value, now) {
+  return futureTime(value, now);
 }
 
 function optionalAstraModel(taskClass, role, config) {
@@ -540,8 +665,9 @@ function optionalAstraModel(taskClass, role, config) {
   return Number.isFinite(usage) && usage <= config.optionalAstraPolicy.threshold_percent ? candidate : "";
 }
 
-function matchedRule(roleName, requestedPreferredModel, role, taskClass) {
+function matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPreferred = false) {
   if (roleName === "reviewer") return "reviewer_model_from_config";
+  if (quotaPreferred) return "task.execution_model_policy.quota_preferred";
   if (requestedPreferredModel) return "preferred_model";
   return role.taskClassModels?.[taskClass] ? `task_class_models.${taskClass}` : "executor_model_from_config";
 }

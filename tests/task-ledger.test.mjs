@@ -23,6 +23,7 @@ const envPaths = {
   TASKCENTER_CONTEXT_AUDIT_PATH: join(tempDir, "context-sync-events.jsonl"),
   TASKCENTER_DELEGATIONS_PATH: join(tempDir, "delegations.json"),
   TASKCENTER_ROUTING_CONTROL_PATH: join(tempDir, "routing-control.json"),
+  TASKCENTER_USAGE_REPORT_PATH: join(tempDir, "usage-report.json"),
   TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(tempDir, "gate-session-allowlist.json"),
   TASKCENTER_MCP_TOKEN_PATH: join(tempDir, "mcp-token"),
 };
@@ -514,6 +515,32 @@ test("task.create 返回 accepted 与 task_id 并持久化", async () => {
   assert.equal(result.task.title, "实现闸门");
   assert.equal(result.task.goal, "完成会话任务闸门");
   assert.equal(loadTasks().length, 1);
+});
+
+test("任务持久化额度优先执行模型策略并在更新后保留", async () => {
+  await resetLedger();
+  const policy = {
+    mode: "quota_preferred",
+    preferred_model: "gpt-5.3-codex-spark",
+    quota_limit_id: "codex_bengalfox",
+    fallback_on_exhaustion: true,
+    authorization_reason: "用户明确要求优先使用 Spark 额度",
+  };
+  const created = recordTaskEvent({
+    type: "task.create",
+    session_id: "sess-policy",
+    task_id: "task-policy",
+    title: "额度优先",
+    goal: "验证任务策略",
+    execution_model_policy: policy,
+  });
+  assert.deepEqual(created.task.executionModelPolicy, policy);
+  recordTaskEvent({ type: "task.update", session_id: "sess-policy", task_id: "task-policy", current_step: "继续执行" });
+  assert.deepEqual(loadTasks()[0].executionModelPolicy, policy);
+  assert.throws(
+    () => recordTaskEvent({ type: "task.update", session_id: "sess-policy", task_id: "task-policy", execution_model_policy: { mode: "quota_preferred", preferred_model: "x", quota_limit_id: "q", fallback_on_exhaustion: false } }),
+    (error) => error instanceof TaskLedgerError && error.statusCode === 400,
+  );
 });
 
 test("Context semantic task 跨 Turn 复用同一执行任务，只有 complete 才结束", async () => {
@@ -1587,6 +1614,30 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   assert.equal(task.routingHealth.state, "closed");
   assert.equal(task.routingHealthHistory.length, 2);
   assert.equal(task.status, "planned");
+
+  const observedAt = new Date().toISOString();
+  await writeFile(envPaths.TASKCENTER_USAGE_REPORT_PATH, JSON.stringify({ rate_limits: { by_limit_id: { codex_bengalfox: {
+    limit_id: "codex_bengalfox", limit_name: "GPT-5.3-Codex-Spark", observed_at: observedAt,
+    primary: { used_percent: 0, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 18_000 },
+    secondary: { used_percent: 0, window_minutes: 10080, resets_at: Math.floor(Date.now() / 1000) + 604_800 },
+  } } } }), "utf8");
+  const policyResponse = await fetch(`${base}/task-events`, {
+    method: "POST", headers: taskHeaders(), body: JSON.stringify({
+      type: "task.update", event_id: "routing-control-policy", session_id: "session-routing-control", task_id: "task-routing-control",
+      execution_model_policy: { mode: "quota_preferred", preferred_model: "gpt-5.3-codex-spark", quota_limit_id: "codex_bengalfox", fallback_on_exhaustion: true, authorization_reason: "用户指定" },
+    }),
+  });
+  assert.equal(policyResponse.status, 200);
+  const sparkResponse = await fetch(`${base}/routing/select`, {
+    method: "POST", headers: taskHeaders(), body: JSON.stringify({ task_id: "task-routing-control", task_class: "implementation", channel: "cli", event_id: "routing-control-spark" }),
+  });
+  const sparkRoute = await sparkResponse.json();
+  assert.equal(sparkResponse.status, 201, sparkRoute.error);
+  assert.equal(sparkRoute.route.preferred_model, "gpt-5.3-codex-spark");
+  assert.equal(sparkRoute.route.selected_model, "gpt-5.3-codex-spark");
+  assert.equal(sparkRoute.route.quota_limit_id, "codex_bengalfox");
+  assert.equal(sparkRoute.route.quota_used_percent, 0);
+  await fetch(`${base}/routing/result`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ route_id: sparkRoute.route.route_id, outcome: "succeeded", event_id: "routing-control-spark-result" }) });
 });
 
 test("路由状态已持久化但审计首次失败时，同 event_id 可补偿重放且不重复", async (context) => {

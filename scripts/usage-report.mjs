@@ -80,13 +80,24 @@ function timestampFrom(record) {
   const parsed = Date.parse(raw || "");
   return Number.isFinite(parsed) ? parsed : null;
 }
-function primaryRateLimitFrom(record) {
-  const primary = record?.payload?.rate_limits?.primary;
+function rateLimitFrom(record) {
+  const source = record?.payload?.rate_limits;
+  const primary = source?.primary;
   if (!primary || typeof primary !== "object" || !Number.isFinite(Number(primary.used_percent))) return null;
   return {
-    used_percent: Number(primary.used_percent),
-    window_minutes: Number.isFinite(Number(primary.window_minutes)) ? Number(primary.window_minutes) : null,
-    resets_at: primary.resets_at ?? null,
+    limit_id: typeof source.limit_id === "string" && source.limit_id.trim() ? source.limit_id.trim() : "codex",
+    limit_name: typeof source.limit_name === "string" && source.limit_name.trim() ? source.limit_name.trim() : null,
+    primary: normalizeRateWindow(primary),
+    secondary: normalizeRateWindow(source.secondary),
+    rate_limit_reached_type: source.rate_limit_reached_type ?? null,
+  };
+}
+function normalizeRateWindow(window) {
+  if (!window || typeof window !== "object" || !Number.isFinite(Number(window.used_percent))) return null;
+  return {
+    used_percent: Number(window.used_percent),
+    window_minutes: Number.isFinite(Number(window.window_minutes)) ? Number(window.window_minutes) : null,
+    resets_at: window.resets_at ?? null,
   };
 }
 function mergeUsage(target, usage) { for (const key of ["input", "cachedInput", "output"]) target[key] += usage[key]; }
@@ -113,7 +124,7 @@ export function parseSession(input, options = {}) {
   let missingTimestampUsage = 0;
   let phaseEnded = false;
   let compressionAfterPhase = 0;
-  let latestPrimaryRateLimit = null;
+  const latestRateLimits = {};
   for (const record of records) {
     if (record.type === "session_meta") cwd = record.payload?.cwd || cwd;
     if (record.type === "event_msg" && ["task_complete", "task_done", "phase_complete"].includes(record.payload?.type)) phaseEnded = true;
@@ -127,10 +138,10 @@ export function parseSession(input, options = {}) {
       model = record.payload?.model || model;
       contextWindow = value(record.payload?.model_context_window, contextWindow);
     }
-    const rateLimit = primaryRateLimitFrom(record);
+    const rateLimit = rateLimitFrom(record);
     const rateLimitAt = timestampFrom(record);
-    if (rateLimit && rateLimitAt !== null && (!latestPrimaryRateLimit || rateLimitAt > latestPrimaryRateLimit.at)) {
-      latestPrimaryRateLimit = { ...rateLimit, at: rateLimitAt };
+    if (rateLimit && rateLimitAt !== null && (!latestRateLimits[rateLimit.limit_id] || rateLimitAt > latestRateLimits[rateLimit.limit_id].at)) {
+      latestRateLimits[rateLimit.limit_id] = { ...rateLimit, at: rateLimitAt };
     }
     const usage = usageFrom(record);
     if (usage) {
@@ -140,12 +151,12 @@ export function parseSession(input, options = {}) {
       else events.push({ at, model, usage, contextWindow: value(record.payload?.model_context_window || record.payload?.info?.model_context_window, contextWindow), credits: record.rate_limits?.credits || null });
     }
   }
-  return { sessionId, cwd, events, lifetimeTotal, compressionAfterPhase, missingTimestampUsage, latestPrimaryRateLimit };
+  return { sessionId, cwd, events, lifetimeTotal, compressionAfterPhase, missingTimestampUsage, latestRateLimits };
 }
 
 export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date(), providerAttempts, providerAttemptsPath } = {}) {
   const inputs = sessions || filesUnder(sessionsRoot).map((file) => ({ file, sessionId: sessionIdFromFile(file) }));
-  const parsed = inputs.map((item) => parseSession(item.records || item.lines || item.file || item, { sessionId: item.sessionId })).filter((s) => s.events.length || s.latestPrimaryRateLimit);
+  const parsed = inputs.map((item) => parseSession(item.records || item.lines || item.file || item, { sessionId: item.sessionId })).filter((s) => s.events.length || Object.keys(s.latestRateLimits || {}).length);
   const report = buildUsageReportFromParsed(parsed, { ledger, rates, now });
   if (providerAttempts !== undefined || providerAttemptsPath) report.providerAttempts = collectProviderAttemptUsage(providerAttempts ?? providerAttemptsPath);
   return report;
@@ -235,7 +246,7 @@ export function buildUsageReportFromParsed(parsed, { ledger = DEFAULT_LEDGER, ra
   }));
   return {
     generatedAt: new Date(at).toISOString(), windows, lifetime: buildLifetime(parsed, index), warnings, alerts: warnings,
-    rate_limits: { primary: latestPrimaryRateLimit(parsed) },
+    rate_limits: rateLimitSummary(parsed),
     overall: {
       estimatedCredits: day.totals.cost,
       creditsEstimation: day.totals.costEstimation,
@@ -246,15 +257,20 @@ export function buildUsageReportFromParsed(parsed, { ledger = DEFAULT_LEDGER, ra
   };
 }
 
-function latestPrimaryRateLimit(parsed) {
-  const latest = parsed.map((session) => session.latestPrimaryRateLimit).filter(Boolean)
-    .sort((left, right) => right.at - left.at)[0];
-  return latest && {
-    used_percent: latest.used_percent,
-    window_minutes: latest.window_minutes,
-    resets_at: latest.resets_at,
-    observed_at: new Date(latest.at).toISOString(),
-  };
+function rateLimitSummary(parsed) {
+  const latest = {};
+  for (const session of parsed) for (const [limitId, snapshot] of Object.entries(session.latestRateLimits || {})) {
+    if (!latest[limitId] || snapshot.at > latest[limitId].at) latest[limitId] = snapshot;
+  }
+  const byLimitId = Object.fromEntries(Object.entries(latest).map(([limitId, snapshot]) => [limitId, {
+    limit_id: limitId,
+    limit_name: snapshot.limit_name,
+    primary: snapshot.primary,
+    secondary: snapshot.secondary,
+    rate_limit_reached_type: snapshot.rate_limit_reached_type,
+    observed_at: new Date(snapshot.at).toISOString(),
+  }]));
+  return { primary: byLimitId.codex?.primary ? { ...byLimitId.codex.primary, observed_at: byLimitId.codex.observed_at } : null, by_limit_id: byLimitId };
 }
 
 function buildWindow(parsed, index, rates, start, end) {

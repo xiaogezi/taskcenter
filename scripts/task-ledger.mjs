@@ -549,7 +549,9 @@ const idempotentEventFields = [
   "tool_use_id", "routing_action", "orchestrator_model", "preferred_executor_model",
   "selected_executor_model", "dispatch_channel", "routing_reason", "routing_outcome", "policy_version",
   "fallback_from", "fallback_reason", "retry_after_at", "review_artifacts",
+  "preference_mode", "quota_limit_id", "quota_snapshot_observed_at", "quota_used_percent", "quota_reset_at",
   "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
+  "execution_model_policy",
   "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation", "review_cycle",
   "phase", "transition", "activity_source", "activity_id", "delegation_id", "review_cycle_id",
   "diagnostic_observation",
@@ -921,7 +923,13 @@ function normalizeEvent(input, current = null) {
     consecutive_failures: normalizeNonNegativeInteger(input.consecutive_failures),
     active_executors: normalizeNonNegativeInteger(input.active_executors),
     retry_after_at: cleanText(input.retry_after_at, 80),
+    preference_mode: cleanText(input.preference_mode, 40),
+    quota_limit_id: cleanText(input.quota_limit_id, 120),
+    quota_snapshot_observed_at: cleanText(input.quota_snapshot_observed_at, 80),
+    quota_used_percent: normalizePercentage(input.quota_used_percent),
+    quota_reset_at: cleanText(input.quota_reset_at, 80),
     review_artifacts: normalizeReviewArtifacts(input.review_artifacts),
+    execution_model_policy: normalizeExecutionModelPolicy(input.execution_model_policy),
     ...normalizeCompletionEvent(input, current?.currentSubject || null),
     phase: cleanText(input.phase, 40),
     transition: cleanText(input.transition, 40),
@@ -1044,6 +1052,11 @@ function applyEvent(current, event) {
       fallbackReason: event.fallback_reason || undefined,
       retryAfterAt: event.retry_after_at || undefined,
       reviewArtifacts: event.review_artifacts || undefined,
+      preferenceMode: event.preference_mode || "auto",
+      quotaLimitId: event.quota_limit_id || undefined,
+      quotaSnapshotObservedAt: event.quota_snapshot_observed_at || undefined,
+      quotaUsedPercent: event.quota_used_percent,
+      quotaResetAt: event.quota_reset_at || undefined,
     };
     return {
       ...current,
@@ -1169,6 +1182,7 @@ function applyEvent(current, event) {
     reviewedAt: event.reviewed_at || base.reviewedAt || "",
     toolCalls: { ...(base.toolCalls || {}) },
     diagnosticObservations: [...(base.diagnosticObservations || [])],
+    executionModelPolicy: event.execution_model_policy || base.executionModelPolicy || { mode: "auto" },
   };
   next = applyTimingTransition(current, base, next, event, now);
   if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;
@@ -1256,6 +1270,25 @@ function normalizeReviewArtifacts(value) {
   return subject && bundle && rules ? { subject, bundle, rules } : undefined;
 }
 
+function normalizeExecutionModelPolicy(value) {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TaskLedgerError(400, "execution_model_policy 必须是对象。");
+  const mode = cleanText(value.mode, 40);
+  if (mode === "auto") return { mode: "auto" };
+  const preferredModel = cleanText(value.preferred_model, 120);
+  const quotaLimitId = cleanText(value.quota_limit_id, 120);
+  if (mode !== "quota_preferred" || !preferredModel || !quotaLimitId || value.fallback_on_exhaustion !== true) {
+    throw new TaskLedgerError(400, "quota_preferred 必须提供 preferred_model、quota_limit_id，并允许额度耗尽回退。");
+  }
+  return {
+    mode,
+    preferred_model: preferredModel,
+    quota_limit_id: quotaLimitId,
+    fallback_on_exhaustion: true,
+    authorization_reason: cleanText(value.authorization_reason, 500),
+  };
+}
+
 function normalizePositiveInteger(value) {
   if (value === undefined || value === null || value === "") return undefined;
   const parsed = Number(value);
@@ -1266,6 +1299,12 @@ function normalizeNonNegativeInteger(value) {
   if (value === undefined || value === null || value === "") return undefined;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function normalizePercentage(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : undefined;
 }
 
 function applyTimingTransition(current, base, next, event, now) {

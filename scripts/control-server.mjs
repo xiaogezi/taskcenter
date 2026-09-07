@@ -429,7 +429,14 @@ const server = createServer(async (request, response) => {
         ? sessionModel
         : task.model && task.model !== "unknown" ? task.model : "";
       if (!orchestratorModel) throw new RoutingControlError(409, "任务所属 Session 未登记当前主模型；请重新登记 Session 后再选择路由。");
-      const result = routingSelect({ ...body, orchestrator_model: orchestratorModel });
+      const executionModelPolicy = task.executionModelPolicy || { mode: "auto" };
+      if (executionModelPolicy.mode === "quota_preferred" && body.preferred_model && body.preferred_model !== executionModelPolicy.preferred_model) {
+        throw new RoutingControlError(409, "routing_select 的 preferred_model 与任务持久化策略不一致。");
+      }
+      const quotaSnapshot = executionModelPolicy.quota_limit_id
+        ? currentUsageReport().rate_limits?.by_limit_id?.[executionModelPolicy.quota_limit_id] || null
+        : null;
+      const result = routingSelect({ ...body, orchestrator_model: orchestratorModel, execution_model_policy: executionModelPolicy, quota_snapshot: quotaSnapshot });
       recordRoutingAudit(result.auditEvents, task);
       sendJson(response, result.idempotent ? 200 : 201, { accepted: true, ...result, auditEvents: undefined });
       return;

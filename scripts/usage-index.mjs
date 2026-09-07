@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
 import { buildUsageReportFromParsed, createTaskUsageAttributor, sessionIdentityFromRecord } from "./usage-report.mjs";
 
-const INDEX_VERSION = 6;
+const INDEX_VERSION = 7;
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
 
 export async function updateUsageIndex(options) {
@@ -56,8 +56,8 @@ export async function updateUsageIndex(options) {
     missingTimestampUsage: Number(state.missingTimestampUsage || 0),
     lifetimeTotal: state.lifetimeTotal || emptyLifetime(),
     lifetimeByTask: state.lifetimeByTask || {},
-    latestPrimaryRateLimit: state.latestPrimaryRateLimit || null,
-  })).filter((session) => session.events.length || session.lifetimeTotal.count || Object.keys(session.lifetimeByTask).length || session.latestPrimaryRateLimit);
+    latestRateLimits: state.latestRateLimits || migrateLatestRateLimit(state.latestPrimaryRateLimit),
+  })).filter((session) => session.events.length || session.lifetimeTotal.count || Object.keys(session.lifetimeByTask).length || Object.keys(session.latestRateLimits || {}).length || session.latestPrimaryRateLimit);
   return {
     report: buildUsageReportFromParsed(parsed, {
       ledger: options.ledger,
@@ -87,7 +87,7 @@ function emptyFileState(path, identity, sessionId = sessionIdFromFile(path)) {
     events: [],
     lifetimeTotal: emptyLifetime(),
     lifetimeByTask: {},
-    latestPrimaryRateLimit: null,
+    latestRateLimits: {},
   };
 }
 
@@ -109,15 +109,20 @@ function consumeRecord(state, line, attributeTask) {
     state.model = record.payload?.model || state.model;
     state.contextWindow = number(record.payload?.model_context_window, state.contextWindow);
   }
-  const primary = record?.payload?.rate_limits?.primary;
+  const rateLimits = record?.payload?.rate_limits;
+  const primary = rateLimits?.primary;
   const rawTime = record.timestamp ?? record.created_at ?? record.payload?.timestamp;
   const rateLimitAt = Date.parse(rawTime || "");
+  const limitId = typeof rateLimits?.limit_id === "string" && rateLimits.limit_id.trim() ? rateLimits.limit_id.trim() : "codex";
   if (primary && typeof primary === "object" && Number.isFinite(Number(primary.used_percent)) && Number.isFinite(rateLimitAt)
-    && (!state.latestPrimaryRateLimit || rateLimitAt > state.latestPrimaryRateLimit.at)) {
-    state.latestPrimaryRateLimit = {
-      used_percent: Number(primary.used_percent),
-      window_minutes: Number.isFinite(Number(primary.window_minutes)) ? Number(primary.window_minutes) : null,
-      resets_at: primary.resets_at ?? null,
+    && (!state.latestRateLimits?.[limitId] || rateLimitAt > state.latestRateLimits[limitId].at)) {
+    state.latestRateLimits ||= {};
+    state.latestRateLimits[limitId] = {
+      limit_id: limitId,
+      limit_name: typeof rateLimits.limit_name === "string" ? rateLimits.limit_name : null,
+      primary: normalizeRateWindow(primary),
+      secondary: normalizeRateWindow(rateLimits.secondary),
+      rate_limit_reached_type: rateLimits.rate_limit_reached_type ?? null,
       at: rateLimitAt,
     };
   }
@@ -142,6 +147,20 @@ function consumeRecord(state, line, attributeTask) {
   state.events.push(event);
   const taskIds = attributeTask(state.sessionId, at);
   for (const taskId of taskIds) mergeLifetime(state, taskId, event);
+}
+
+function normalizeRateWindow(window) {
+  if (!window || typeof window !== "object" || !Number.isFinite(Number(window.used_percent))) return null;
+  return {
+    used_percent: Number(window.used_percent),
+    window_minutes: Number.isFinite(Number(window.window_minutes)) ? Number(window.window_minutes) : null,
+    resets_at: window.resets_at ?? null,
+  };
+}
+
+function migrateLatestRateLimit(snapshot) {
+  if (!snapshot) return {};
+  return { codex: { limit_id: "codex", limit_name: null, primary: { used_percent: snapshot.used_percent, window_minutes: snapshot.window_minutes, resets_at: snapshot.resets_at }, secondary: null, rate_limit_reached_type: null, at: snapshot.at } };
 }
 
 function emptyLifetime() {

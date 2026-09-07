@@ -52,6 +52,25 @@ test("活跃角色不能引用已退役模型", async () => {
   assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /已退役模型/.test(error.message));
 });
 
+test("manual_only 模型不能进入自动角色池或同时退役", async () => {
+  const base = {
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "model-executor", reasoning_effort: "medium", fallback_models: [], concurrency_limit: 1 },
+      reviewer: { model: "model-reviewer", reasoning_effort: "medium", fallback_models: [], concurrency_limit: 1 },
+    },
+    manual_only_models: ["model-manual"],
+    retired_models: [],
+  };
+  await writeFile(configPath, `${JSON.stringify(base)}\n`, "utf8");
+  assert.deepEqual(loadModelRoleConfig().manualOnlyModels, ["model-manual"]);
+  assert.deepEqual(publicModelRoleConfig().manual_only_models, ["model-manual"]);
+  await writeFile(configPath, `${JSON.stringify({ ...base, retired_models: ["model-manual"] })}\n`, "utf8");
+  assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /同时标记为已退役/.test(error.message));
+  await writeFile(configPath, `${JSON.stringify({ ...base, manual_only_models: ["model-executor"] })}\n`, "utf8");
+  assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /不能进入自动角色池/.test(error.message));
+});
+
 test("task_class_models 只允许 executor 的非 Reviewer 类别", async () => {
   await writeFile(configPath, `${JSON.stringify({
     schema_version: "taskcenter-model-roles-v1",

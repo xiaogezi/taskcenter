@@ -20,7 +20,8 @@ const roleConfig = {
     executor: { model: "gpt-5.6-luna", reasoning_effort: "medium", fallback_models: ["gpt-5.6-terra"], task_class_models: { architecture: "gpt-5.6-terra", security: "gpt-5.6-terra", migration: "gpt-5.6-terra", data_migration: "gpt-5.6-terra", complex_diagnosis: "gpt-5.6-terra", high_risk: "gpt-5.6-terra" }, concurrency_limit: 1 },
     reviewer: { model: "gpt-5.6-luna", reasoning_effort: "medium", fallback_models: [], concurrency_limit: 1 },
   },
-  retired_models: ["gpt-5.3-codex-spark"],
+  manual_only_models: ["gpt-5.3-codex-spark"],
+  retired_models: [],
 };
 await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 
@@ -153,12 +154,66 @@ test("配置热更新只影响新 event，同一 event_id 重放原选择", asyn
   await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 });
 
-test("已退役首选请求会归一化为集中配置的执行器", () => {
+test("manual_only 首选不能通过旧单次覆盖进入自动路由", () => {
   const selected = routingSelect({ ...baseInput, preferred_model: spark, event_id: "legacy-spark-select" }, "2026-08-18T08:00:00.000Z");
   assert.equal(selected.route.preferred_model, luna);
   assert.equal(selected.route.selected_model, luna);
-  assert.equal(selected.route.reason, "retired_preference_normalized_to_executor");
+  assert.equal(selected.route.reason, "manual_only_preference_requires_task_policy");
   assert.equal(selected.health.some((item) => item.model === spark), false);
+});
+
+test("额度优先任务使用 Spark，耗尽时回退且重置后重新探测", () => {
+  const policy = { mode: "quota_preferred", preferred_model: spark, quota_limit_id: "codex_bengalfox", fallback_on_exhaustion: true };
+  const available = routingSelect({
+    ...baseInput,
+    event_id: "spark-available",
+    execution_model_policy: policy,
+    quota_snapshot: { limit_id: "codex_bengalfox", observed_at: "2026-08-18T08:00:00.000Z", primary: { used_percent: 10, window_minutes: 300, resets_at: 1787043900 }, secondary: { used_percent: 20, window_minutes: 10080, resets_at: 1787600000 } },
+  }, "2026-08-18T08:00:01.000Z");
+  assert.equal(available.route.preferred_model, spark);
+  assert.equal(available.route.selected_model, spark);
+  assert.equal(available.route.preference_mode, "quota_preferred");
+  assert.equal(available.route.quota_limit_id, "codex_bengalfox");
+  assert.equal(available.route.quota_used_percent, 10);
+  assert.equal(available.route.matched_rule, "task.execution_model_policy.quota_preferred");
+
+  const limited = routingResult({
+    route_id: available.route.route_id,
+    outcome: "failed",
+    http_status: 429,
+    error_type: "rate_limit",
+    error_code: "spark_quota_exhausted",
+    quota_limit_id: "codex_bengalfox",
+    quota_retry_after_at: "2026-08-18T08:05:00.000Z",
+  }, "2026-08-18T08:00:02.000Z");
+  const sparkHealth = limited.health.find((item) => item.model === spark);
+  assert.equal(sparkHealth.state, "closed", "额度耗尽不能污染质量熔断");
+  assert.equal(sparkHealth.consecutive_failures, 0);
+  assert.equal(sparkHealth.quota_retry_after_at, "2026-08-18T08:05:00.000Z");
+
+  const fallback = routingSelect({ ...baseInput, event_id: "spark-cooldown", execution_model_policy: policy }, "2026-08-18T08:01:00.000Z");
+  assert.equal(fallback.route.selected_model, luna);
+  assert.equal(fallback.route.fallback_reason, "preferred_model_quota_exhausted");
+  routingResult({ route_id: fallback.route.route_id, outcome: "succeeded" }, "2026-08-18T08:01:01.000Z");
+
+  const restored = routingSelect({ ...baseInput, event_id: "spark-restored", execution_model_policy: policy }, "2026-08-18T08:05:01.000Z");
+  assert.equal(restored.route.selected_model, spark);
+  assert.equal(restored.route.probe, true, "重置后额度仍未知时只在新派发边界探测");
+});
+
+test("派发前额度快照已耗尽时直接回退到现有执行模型", () => {
+  const selected = routingSelect({
+    ...baseInput,
+    event_id: "spark-preflight-exhausted",
+    execution_model_policy: { mode: "quota_preferred", preferred_model: spark, quota_limit_id: "codex_bengalfox", fallback_on_exhaustion: true },
+    quota_snapshot: { limit_id: "codex_bengalfox", observed_at: "2026-08-18T08:00:00.000Z", primary: { used_percent: 100, window_minutes: 300, resets_at: 1787043900 } },
+  }, "2026-08-18T08:00:01.000Z");
+
+  assert.equal(selected.route.preferred_model, spark);
+  assert.equal(selected.route.selected_model, luna);
+  assert.equal(selected.route.fallback_reason, "preferred_model_quota_exhausted");
+  assert.equal(selected.route.quota_used_percent, 100);
+  assert.equal(selected.route.probe, false);
 });
 
 test("OCR 选择集中配置的 Reviewer，并保留审查输入证据", () => {
@@ -177,7 +232,7 @@ test("OCR 选择集中配置的 Reviewer，并保留审查输入证据", () => {
   assert.equal(decision.preferred_executor_model, luna);
   assert.equal(decision.selected_executor_model, luna);
   assert.equal(decision.orchestrator_model, "gpt-current-main");
-  assert.equal(decision.policy_version, "routing-control-v3");
+  assert.equal(decision.policy_version, "routing-control-v4");
   assert.deepEqual(decision.review_artifacts, ocr.route.review_artifacts);
 
   const replay = routingSelect(ocrInput, "2026-08-18T08:00:00.100Z");
@@ -249,7 +304,7 @@ test("v1 容量失败状态迁移为 Open，升级后不会继续撞同一模型
   assert.equal(health.find((item) => item.model === luna).state, "open");
 });
 
-test("历史 Spark 健康状态不再作为活跃候选返回", async () => {
+test("manual_only Spark 健康状态可观察，退役后隐藏", async () => {
   await writeFile(statePath, `${JSON.stringify({
     version: 3,
     models: {
@@ -257,7 +312,10 @@ test("历史 Spark 健康状态不再作为活跃候选返回", async () => {
     },
     routes: [],
   })}\n`, "utf8");
-  assert.equal(routingHealth("2026-08-18T08:00:01.000Z").some((item) => item.model === spark), false);
+  assert.equal(routingHealth("2026-08-18T08:00:01.000Z").some((item) => item.model === spark), true);
+  await writeFile(roleConfigPath, `${JSON.stringify({ ...roleConfig, manual_only_models: [], retired_models: [spark] })}\n`, "utf8");
+  assert.equal(routingHealth("2026-08-18T08:00:02.000Z").some((item) => item.model === spark), false);
+  await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 });
 
 test("实际集中策略节制 Astra，受保护任务与 Reviewer 均不降级", async () => {

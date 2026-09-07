@@ -37,6 +37,7 @@ export function loadModelRoleConfig() {
   }
   const executor = normalizeRole(input.roles?.executor, "executor", false);
   const reviewer = normalizeRole(input.roles?.reviewer, "reviewer", true);
+  const manualOnlyModels = uniqueModels(input.manual_only_models || [], "manual_only_models");
   const retiredModels = uniqueModels(input.retired_models, "retired_models");
   const optionalAstraPolicy = readOptionalAstraPolicy(input.optional_astra_policy);
   const activeModels = new Set([
@@ -47,11 +48,15 @@ export function loadModelRoleConfig() {
   ]);
   const conflict = retiredModels.find((model) => activeModels.has(model));
   if (conflict) throw new ModelRoleConfigError(`已退役模型不能同时用于活跃角色: ${conflict}`);
+  const manualRetiredConflict = manualOnlyModels.find((model) => retiredModels.includes(model));
+  if (manualRetiredConflict) throw new ModelRoleConfigError(`手动模型不能同时标记为已退役: ${manualRetiredConflict}`);
+  const manualActiveConflict = manualOnlyModels.find((model) => activeModels.has(model));
+  if (manualActiveConflict) throw new ModelRoleConfigError(`手动模型不能进入自动角色池: ${manualActiveConflict}`);
   return {
     schemaVersion: input.schema_version,
     contentHash: createHash("sha256").update(raw).digest("hex"),
     roles: { executor, reviewer },
-    retiredModels, optionalAstraPolicy,
+    manualOnlyModels, retiredModels, optionalAstraPolicy,
   };
 }
 
@@ -61,6 +66,7 @@ export function publicModelRoleConfig(config = loadModelRoleConfig()) {
     content_hash: config.contentHash,
     executor: publicRole(config.roles.executor),
     reviewer: publicRole(config.roles.reviewer),
+    manual_only_models: config.manualOnlyModels,
     optional_astra_policy: config.optionalAstraPolicy,
   };
 }

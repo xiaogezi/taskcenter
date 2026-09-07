@@ -114,6 +114,23 @@ test("按时间戳暴露最新 primary rate limit 快照", () => {
   assert.deepEqual(report.rate_limits.primary, { used_percent: 34, window_minutes: 10080, resets_at: 1780003600, observed_at: "2026-08-20T01:00:00.000Z" });
 });
 
+test("按额度池分别保留 Spark 五小时和周窗口", () => {
+  const records = [
+    { type: "event_msg", timestamp: "2026-08-20T01:00:00Z", payload: { rate_limits: { limit_id: "codex", primary: { used_percent: 34, window_minutes: 10080, resets_at: 1780003600 } } } },
+    { type: "event_msg", timestamp: "2026-08-20T01:30:00Z", payload: { rate_limits: { limit_id: "codex_bengalfox", limit_name: "GPT-5.3-Codex-Spark", primary: { used_percent: 12, window_minutes: 300, resets_at: 1780007200 }, secondary: { used_percent: 48, window_minutes: 10080, resets_at: 1780500000 } } } },
+  ];
+  const report = collectUsage({ sessions: [{ sessionId: "limits", records }], ledger: [], rates: {}, now: "2026-08-20T02:00:00Z" });
+  assert.equal(report.rate_limits.primary.used_percent, 34);
+  assert.deepEqual(report.rate_limits.by_limit_id.codex_bengalfox, {
+    limit_id: "codex_bengalfox",
+    limit_name: "GPT-5.3-Codex-Spark",
+    primary: { used_percent: 12, window_minutes: 300, resets_at: 1780007200 },
+    secondary: { used_percent: 48, window_minutes: 10080, resets_at: 1780500000 },
+    rate_limit_reached_type: null,
+    observed_at: "2026-08-20T01:30:00.000Z",
+  });
+});
+
 test("多任务 Session 不重复分摊 Token，续调按次数预警", () => {
   const records = [{ type: "turn_context", payload: { model: "gpt-test" } }];
   for (let index = 0; index < 81; index++) records.push({
