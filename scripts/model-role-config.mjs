@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -8,6 +9,8 @@ export const modelRoleConfigPath = resolve(
 );
 
 const allowedReasoningEfforts = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const supportedTaskClasses = new Set(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", "ocr", "ocr_review", "independent_review"]);
+const reviewerTaskClasses = new Set(["ocr", "ocr_review", "independent_review"]);
 
 export class ModelRoleConfigError extends Error {
   constructor(message) {
@@ -20,9 +23,11 @@ export function loadModelRoleConfig() {
   if (!existsSync(modelRoleConfigPath)) {
     throw new ModelRoleConfigError(`模型角色配置不存在: ${modelRoleConfigPath}`);
   }
+  let raw;
   let input;
   try {
-    input = JSON.parse(readFileSync(modelRoleConfigPath, "utf8"));
+    raw = readFileSync(modelRoleConfigPath, "utf8");
+    input = JSON.parse(raw);
   } catch {
     throw new ModelRoleConfigError(`模型角色配置不是有效 JSON: ${modelRoleConfigPath}`);
   }
@@ -42,6 +47,7 @@ export function loadModelRoleConfig() {
   if (conflict) throw new ModelRoleConfigError(`已退役模型不能同时用于活跃角色: ${conflict}`);
   return {
     schemaVersion: input.schema_version,
+    contentHash: createHash("sha256").update(raw).digest("hex"),
     roles: { executor, reviewer },
     retiredModels,
   };
@@ -50,6 +56,7 @@ export function loadModelRoleConfig() {
 export function publicModelRoleConfig(config = loadModelRoleConfig()) {
   return {
     schema_version: config.schemaVersion,
+    content_hash: config.contentHash,
     executor: publicRole(config.roles.executor),
     reviewer: publicRole(config.roles.reviewer),
   };
@@ -74,7 +81,31 @@ function normalizeRole(value, name, failClosed) {
   if (failClosed && fallbackModels.length > 0) {
     throw new ModelRoleConfigError("Reviewer 必须 fail closed，不能配置 fallback_models。");
   }
-  return { model, reasoningEffort, fallbackModels, concurrencyLimit, failClosed };
+  const taskClassModels = normalizeTaskClassModels(value.task_class_models, model, fallbackModels, name);
+  return { model, reasoningEffort, fallbackModels, concurrencyLimit, failClosed, taskClassModels };
+}
+
+function normalizeTaskClassModels(value, model, fallbackModels, roleName) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ModelRoleConfigError(`roles.${roleName}.task_class_models 必须是对象。`);
+  }
+  const allowedModels = new Set([model, ...fallbackModels]);
+  const result = {};
+  for (const [taskClass, candidate] of Object.entries(value)) {
+    if (!supportedTaskClasses.has(taskClass)) {
+      throw new ModelRoleConfigError(`roles.${roleName}.task_class_models 含未知 task_class：${taskClass}。`);
+    }
+    if (roleName === "reviewer" || reviewerTaskClasses.has(taskClass)) {
+      throw new ModelRoleConfigError(`roles.${roleName}.task_class_models 不支持 Reviewer/OCR task_class：${taskClass}。`);
+    }
+    const normalized = cleanModel(candidate);
+    if (!allowedModels.has(normalized)) {
+      throw new ModelRoleConfigError(`roles.${roleName}.task_class_models.${taskClass} 必须引用当前角色模型池。`);
+    }
+    result[taskClass] = normalized;
+  }
+  return result;
 }
 
 function uniqueModels(value, name) {
@@ -95,5 +126,6 @@ function publicRole(role) {
     fallback_models: role.fallbackModels,
     concurrency_limit: role.concurrencyLimit,
     fail_closed: role.failClosed,
+    task_class_models: role.taskClassModels,
   };
 }

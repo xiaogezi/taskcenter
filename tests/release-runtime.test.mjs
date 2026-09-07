@@ -18,6 +18,7 @@ test("正式 release 从不可变源码运行但继续绑定正式数据目录",
     controlPort: 3001,
   }, { controllerRoot: "/taskcenter", baseEnvironment: {} });
   assert.equal(environment.TASKCENTER_SOURCE_ROOT, "/release/abc");
+  assert.equal(environment.TASKCENTER_MODEL_ROLE_CONFIG_PATH, "/taskcenter/config/model-roles.json");
   assert.equal(environment.TASKCENTER_WEB_MODE, "start");
   assert.equal(environment.TASKCENTER_TASK_LEDGER_PATH, "/taskcenter/data/task-ledger.json");
   assert.equal(environment.TASKCENTER_TASK_REUSE_DECISIONS_PATH, "/taskcenter/data/task-reuse-decisions.jsonl");

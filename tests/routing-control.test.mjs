@@ -17,7 +17,7 @@ process.env.TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_TERRA = "2";
 const roleConfig = {
   schema_version: "taskcenter-model-roles-v1",
   roles: {
-    executor: { model: "gpt-5.6-luna", reasoning_effort: "medium", fallback_models: ["gpt-5.6-terra"], concurrency_limit: 1 },
+    executor: { model: "gpt-5.6-luna", reasoning_effort: "medium", fallback_models: ["gpt-5.6-terra"], task_class_models: { architecture: "gpt-5.6-terra", security: "gpt-5.6-terra", migration: "gpt-5.6-terra", data_migration: "gpt-5.6-terra", complex_diagnosis: "gpt-5.6-terra", high_risk: "gpt-5.6-terra" }, concurrency_limit: 1 },
     reviewer: { model: "gpt-5.6-luna", reasoning_effort: "medium", fallback_models: [], concurrency_limit: 1 },
   },
   retired_models: ["gpt-5.3-codex-spark"],
@@ -104,6 +104,53 @@ test("高风险任务优先回退 Terra", () => {
   routingSelect({ ...baseInput, event_id: "occupy-luna" }, "2026-08-18T08:00:00.000Z");
   const complex = routingSelect({ ...baseInput, task_class: "security", event_id: "complex-select" }, "2026-08-18T08:00:01.000Z");
   assert.equal(complex.route.selected_model, terra);
+});
+
+test("策略命中规则和内容 hash 可见，高要求模型容量不足时不降级", () => {
+  const first = routingSelect({ ...baseInput, task_class: "security", event_id: "security-select" }, "2026-08-18T08:00:00.000Z");
+  assert.equal(first.route.selected_model, terra);
+  assert.equal(first.route.matched_rule, "task_class_models.security");
+  assert.match(first.route.config_version, /^[a-f0-9]{64}$/);
+  routingResult({ route_id: first.route.route_id, outcome: "overloaded", error_type: "server_overloaded" }, "2026-08-18T08:00:01.000Z");
+  const unavailable = routingSelect({ ...baseInput, task_class: "security", event_id: "security-capacity" }, "2026-08-18T08:00:01.100Z");
+  assert.equal(unavailable.route.available, false);
+  assert.equal(unavailable.route.selected_model, null);
+});
+
+test("显式模型覆盖优先，未知 task_class 拒绝静默降级", () => {
+  const selected = routingSelect({ ...baseInput, task_class: "security", preferred_model: luna, event_id: "security-explicit" }, "2026-08-18T08:00:00.000Z");
+  assert.equal(selected.route.selected_model, luna);
+  assert.equal(selected.route.matched_rule, "preferred_model");
+  assert.throws(() => routingSelect({ ...baseInput, task_class: "securty", event_id: "unknown-class" }), (error) => error instanceof RoutingControlError && error.statusCode === 400);
+});
+
+test("旧版持久化签名在升级后仍可幂等重放", async () => {
+  const first = routingSelect({ ...baseInput, event_id: "legacy-replay" }, "2026-08-18T08:00:00.000Z");
+  const state = JSON.parse(await (await import("node:fs/promises")).readFile(statePath, "utf8"));
+  const route = state.routes.find((item) => item.id === first.route.route_id);
+  route.configVersion = "taskcenter-model-roles-v1";
+  const { createHash } = await import("node:crypto");
+  route.selectSignature = createHash("sha256").update(JSON.stringify({ taskId: route.taskId, orchestratorModel: route.orchestratorModel, preferredModel: route.preferredModel, taskClass: route.taskClass, channel: route.channel, configVersion: route.configVersion })).digest("hex");
+  await writeFile(statePath, `${JSON.stringify(state)}\n`, "utf8");
+  const replay = routingSelect({ ...baseInput, event_id: "legacy-replay" }, "2026-08-18T08:00:01.000Z");
+  assert.equal(replay.idempotent, true);
+  assert.equal(replay.route.route_id, first.route.route_id);
+  assert.throws(() => routingSelect({ ...baseInput, task_id: "changed-task", event_id: "legacy-replay" }), (error) => error instanceof RoutingControlError && error.statusCode === 409);
+  assert.throws(() => routingSelect({ ...baseInput, task_class: "security", event_id: "legacy-replay" }), (error) => error instanceof RoutingControlError && error.statusCode === 409);
+  assert.throws(() => routingSelect({ ...baseInput, channel: "direct", event_id: "legacy-replay" }), (error) => error instanceof RoutingControlError && error.statusCode === 409);
+  assert.throws(() => routingSelect({ ...baseInput, preferred_model: terra, event_id: "legacy-replay" }), (error) => error instanceof RoutingControlError && error.statusCode === 409);
+});
+
+test("配置热更新只影响新 event，同一 event_id 重放原选择", async () => {
+  const first = routingSelect({ ...baseInput, task_class: "security", event_id: "hot-reload-select" }, "2026-08-18T08:00:00.000Z");
+  const updated = { ...roleConfig, roles: { ...roleConfig.roles, executor: { ...roleConfig.roles.executor, task_class_models: { ...roleConfig.roles.executor.task_class_models, security: luna } } } };
+  await writeFile(roleConfigPath, `${JSON.stringify(updated)}\n`, "utf8");
+  const replay = routingSelect({ ...baseInput, task_class: "security", event_id: "hot-reload-select" }, "2026-08-18T08:00:01.000Z");
+  assert.equal(replay.idempotent, true);
+  assert.equal(replay.route.selected_model, first.route.selected_model);
+  const fresh = routingSelect({ ...baseInput, task_class: "security", event_id: "hot-reload-fresh" }, "2026-08-18T08:00:02.000Z");
+  assert.equal(fresh.route.selected_model, luna);
+  await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 });
 
 test("已退役首选请求会归一化为集中配置的执行器", () => {

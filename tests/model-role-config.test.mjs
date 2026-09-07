@@ -51,3 +51,25 @@ test("活跃角色不能引用已退役模型", async () => {
   })}\n`, "utf8");
   assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /已退役模型/.test(error.message));
 });
+
+test("task_class_models 只允许 executor 的非 Reviewer 类别", async () => {
+  await writeFile(configPath, `${JSON.stringify({
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "model-executor", reasoning_effort: "medium", fallback_models: ["model-fallback"], task_class_models: { ocr_review: "model-fallback" }, concurrency_limit: 1 },
+      reviewer: { model: "model-reviewer", reasoning_effort: "medium", fallback_models: [], concurrency_limit: 1 },
+    },
+    retired_models: [],
+  })}\n`, "utf8");
+  assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /不支持 Reviewer\/OCR/.test(error.message));
+
+  await writeFile(configPath, `${JSON.stringify({
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "model-executor", reasoning_effort: "medium", fallback_models: [], concurrency_limit: 1 },
+      reviewer: { model: "model-reviewer", reasoning_effort: "medium", fallback_models: [], task_class_models: { security: "model-reviewer" }, concurrency_limit: 1 },
+    },
+    retired_models: [],
+  })}\n`, "utf8");
+  assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /不支持 Reviewer\/OCR/.test(error.message));
+});

@@ -46,6 +46,8 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_GOVERNANCE_HEALTH_PATH: join(runtimeRoot, "governance-worker-health.json"),
     TASKCENTER_TASK_EVENT_INDEX_PATH: join(runtimeRoot, "task-event-index.json"),
     TASKCENTER_CONTEXT_ROOT: resolve(controllerRoot, "..", "ProjectContextAgent"),
+    TASKCENTER_MODEL_ROLE_CONFIG_PATH: process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH
+      || join(controllerRoot, "config", "model-roles.json"),
   };
   if (config.candidateCodex) {
     environment.CODEX_HOME = resolve(config.candidateCodex);

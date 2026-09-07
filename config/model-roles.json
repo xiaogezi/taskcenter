@@ -7,6 +7,14 @@
       "fallback_models": [
         "gpt-5.6-terra"
       ],
+      "task_class_models": {
+        "architecture": "gpt-5.6-terra",
+        "security": "gpt-5.6-terra",
+        "migration": "gpt-5.6-terra",
+        "data_migration": "gpt-5.6-terra",
+        "complex_diagnosis": "gpt-5.6-terra",
+        "high_risk": "gpt-5.6-terra"
+      },
       "concurrency_limit": 2
     },
     "reviewer": {

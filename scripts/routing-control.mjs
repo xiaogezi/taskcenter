@@ -13,6 +13,7 @@ const terminalOutcomes = new Set(["succeeded", "failed", "cancelled", "unavailab
 const circuitFailureTypes = new Set(["server_overloaded", "capacity", "model_unavailable", "rate_limit", "timeout"]);
 const immediateOpenFailureTypes = new Set(["server_overloaded", "capacity", "model_unavailable", "rate_limit"]);
 const ocrTaskClasses = new Set(["ocr", "ocr_review", "independent_review"]);
+const knownTaskClasses = new Set(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", ...ocrTaskClasses]);
 
 export class RoutingControlError extends Error {
   constructor(statusCode, message) {
@@ -26,12 +27,14 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const requestedPreferredModel = clean(input.preferred_model, 120);
   const taskId = clean(input.task_id, 200);
   const taskClass = clean(input.task_class, 80) || "general";
+  if (!knownTaskClasses.has(taskClass)) throw new RoutingControlError(400, `未知 task_class：${taskClass}。`);
   const orchestratorModel = clean(input.orchestrator_model, 120);
   const roleName = ocrTaskClasses.has(taskClass) ? "reviewer" : "executor";
   const role = config.roles[roleName];
+  const mappedModel = role.taskClassModels?.[taskClass] || role.model;
   const preferredModel = roleName === "reviewer"
     ? role.model
-    : normalizePreferredModel(requestedPreferredModel || role.model, config);
+    : normalizePreferredModel(requestedPreferredModel || mappedModel, config);
   const channel = clean(input.channel, 40) || "cli";
   const eventId = clean(input.event_id, 200) || `routing-select-${randomUUID()}`;
   if (!taskId || !orchestratorModel) throw new RoutingControlError(400, "routing_select 缺少 task_id 或 orchestrator_model。");
@@ -40,12 +43,23 @@ export function routingSelect(input, now = new Date().toISOString()) {
 
   const state = readState();
   expireRoutes(state, now);
-  const signatureInput = { taskId, orchestratorModel, preferredModel, taskClass, channel, configVersion: config.schemaVersion };
+  const signatureInput = { taskId, orchestratorModel, requestedPreferredModel, taskClass, channel };
   if (reviewArtifacts) signatureInput.reviewArtifacts = reviewArtifacts;
   const signature = signatureOf(signatureInput);
   const replay = state.routes.find((route) => route.selectEventId === eventId);
   if (replay) {
-    if (replay.selectSignature !== signature) throw new RoutingControlError(409, "event_id 已被不同 routing_select 请求使用。");
+    const legacySignature = signatureOf({
+      taskId,
+      orchestratorModel,
+      preferredModel: requestedPreferredModel || replay.preferredModel,
+      taskClass,
+      channel,
+      configVersion: replay.configVersion || config.schemaVersion,
+      ...(reviewArtifacts ? { reviewArtifacts } : {}),
+    });
+    if (replay.selectSignature !== signature && replay.selectSignature !== legacySignature) {
+      throw new RoutingControlError(409, "event_id 已被不同 routing_select 请求使用。");
+    }
     const auditEvents = replayAuditEvents(state, replay, "select", now, config);
     persistState(state, now);
     return { route: publicRoute(replay), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: true, auditEvents };
@@ -56,8 +70,10 @@ export function routingSelect(input, now = new Date().toISOString()) {
   let selectedModel = preferredModel;
   let reason = roleName === "reviewer"
     ? "reviewer_model_from_config"
-    : !requestedPreferredModel
-      ? "executor_model_from_config"
+    : !requestedPreferredModel && role.taskClassModels?.[taskClass]
+      ? `executor_model_from_task_class:${taskClass}`
+      : !requestedPreferredModel
+        ? "executor_model_from_config"
       : requestedPreferredModel === preferredModel
         ? "preferred_model_available"
         : "retired_preference_normalized_to_executor";
@@ -70,13 +86,16 @@ export function routingSelect(input, now = new Date().toISOString()) {
     fallbackFrom = preferredModel;
     fallbackReason = fallbackReasonFor(preferred);
     retryAfterAt = preferred.retryAfterAt;
-    const fallback = chooseFallback(state, role, preferredModel, now, config);
+    const protectedTaskClass = roleName === "executor" && !requestedPreferredModel && mappedModel !== role.model;
+    const fallback = protectedTaskClass ? null : chooseFallback(state, role, preferredModel, now, config);
     if (!fallback) {
       const route = buildUnavailableRoute({
         eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now,
         reason: role.failClosed ? "reviewer_model_unavailable" : "no_model_capacity_available",
         fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
-        configVersion: config.schemaVersion,
+        configVersion: config.contentHash,
+        policyVersion: config.schemaVersion,
+        matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass),
       });
       state.routes.push(route);
       route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
@@ -105,7 +124,9 @@ export function routingSelect(input, now = new Date().toISOString()) {
     fallbackReason,
     retryAfterAt,
     reviewArtifacts,
-    configVersion: config.schemaVersion,
+    configVersion: config.contentHash,
+    policyVersion: config.schemaVersion,
+    matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass),
     requiresNewSession: selectedModel !== preferredModel || channel === "cli",
     available: true,
     probe,
@@ -239,7 +260,7 @@ function isCircuitFailure(result) {
 function buildUnavailableRoute({
   eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now, reason,
   fallbackFrom = "", fallbackReason = "", retryAfterAt = "", reviewArtifacts = null,
-  configVersion = "",
+  configVersion = "", policyVersion = "", matchedRule = "",
 }) {
   return {
     id: `route_${randomUUID()}`,
@@ -258,6 +279,8 @@ function buildUnavailableRoute({
     retryAfterAt,
     reviewArtifacts,
     configVersion,
+    policyVersion,
+    matchedRule,
     requiresNewSession: false,
     available: false,
     probe: false,
@@ -348,6 +371,8 @@ function publicRoute(route) {
     retry_after_at: route.retryAfterAt || null,
     review_artifacts: route.reviewArtifacts || null,
     config_version: route.configVersion || null,
+    policy_version: route.policyVersion || null,
+    matched_rule: route.matchedRule || null,
     requires_new_session: route.requiresNewSession,
     available: route.available,
     probe: route.probe,
@@ -470,7 +495,7 @@ function migrateState(state) {
 
 function concurrencyLimit(model, config) {
   const envKey = `TASKCENTER_ROUTING_CONCURRENCY_${model.replace(/[^A-Za-z0-9]/g, "_").toUpperCase()}`;
-  const roleLimit = Object.values(config.roles).find((role) => role.model === model)?.concurrencyLimit || 1;
+  const roleLimit = Object.values(config.roles).find((role) => [role.model, ...role.fallbackModels].includes(model))?.concurrencyLimit || 1;
   return integerEnv(envKey, roleLimit, 1, 64);
 }
 
@@ -498,6 +523,12 @@ function clean(value, limit) {
 
 function normalizePreferredModel(model, config) {
   return config.retiredModels.includes(model) ? config.roles.executor.model : model;
+}
+
+function matchedRule(roleName, requestedPreferredModel, role, taskClass) {
+  if (roleName === "reviewer") return "reviewer_model_from_config";
+  if (requestedPreferredModel) return "preferred_model";
+  return role.taskClassModels?.[taskClass] ? `task_class_models.${taskClass}` : "executor_model_from_config";
 }
 
 function normalizeReviewArtifacts(value, required) {
