@@ -232,7 +232,7 @@ test("OCR 选择集中配置的 Reviewer，并保留审查输入证据", () => {
   assert.equal(decision.preferred_executor_model, luna);
   assert.equal(decision.selected_executor_model, luna);
   assert.equal(decision.orchestrator_model, "gpt-current-main");
-  assert.equal(decision.policy_version, "routing-control-v4");
+  assert.equal(decision.policy_version, "routing-control-v5");
   assert.deepEqual(decision.review_artifacts, ocr.route.review_artifacts);
 
   const replay = routingSelect(ocrInput, "2026-08-18T08:00:00.100Z");
@@ -334,10 +334,11 @@ test("实际集中策略节制 Astra，受保护任务与 Reviewer 均不降级"
       const input = { ...baseInput, task_class, event_id: `actual-${task_class}`, ...(task_class === "ocr_review" ? { review_artifacts: reviewArtifacts } : {}) };
       const selected = routingSelect(input);
       assert.equal(selected.route.selected_model, model);
-      assert.equal(selected.roles.executor.reasoning_effort, "medium");
+      assert.equal(selected.roles.executor.reasoning_effort, "low");
+      assert.equal(selected.route.reasoning_effort, ["security", "data_migration", "complex_diagnosis", "high_risk"].includes(task_class) ? "medium" : "low");
       assert.deepEqual(selected.roles.executor.fallback_models, [terra, astra]);
       assert.equal(selected.roles.reviewer.model, astra);
-      assert.equal(selected.roles.reviewer.reasoning_effort, "medium");
+      assert.equal(selected.roles.reviewer.reasoning_effort, "low");
       assert.equal(selected.roles.reviewer.fail_closed, true);
       assert.deepEqual(selected.roles.reviewer.fallback_models, []);
       assert.equal(routingSelect(input).route.route_id, selected.route.route_id);

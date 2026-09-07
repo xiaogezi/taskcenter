@@ -104,7 +104,25 @@ function normalizeRole(value, name, failClosed) {
     throw new ModelRoleConfigError("Reviewer 必须 fail closed，不能配置 fallback_models。");
   }
   const taskClassModels = normalizeTaskClassModels(value.task_class_models, model, fallbackModels, name);
-  return { model, reasoningEffort, fallbackModels, concurrencyLimit, failClosed, taskClassModels };
+  const taskClassReasoningEfforts = normalizeTaskClassReasoningEfforts(value.task_class_reasoning_efforts, name);
+  return { model, reasoningEffort, fallbackModels, concurrencyLimit, failClosed, taskClassModels, taskClassReasoningEfforts };
+}
+
+function normalizeTaskClassReasoningEfforts(value, roleName) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ModelRoleConfigError(`roles.${roleName}.task_class_reasoning_efforts 必须是对象。`);
+  }
+  const result = {};
+  for (const [taskClass, effort] of Object.entries(value)) {
+    if (!supportedTaskClasses.has(taskClass)) throw new ModelRoleConfigError(`roles.${roleName}.task_class_reasoning_efforts 含未知 task_class：${taskClass}。`);
+    if (roleName === "reviewer" ? !reviewerTaskClasses.has(taskClass) : reviewerTaskClasses.has(taskClass)) {
+      throw new ModelRoleConfigError(`roles.${roleName}.task_class_reasoning_efforts 的 task_class 与角色不匹配：${taskClass}。`);
+    }
+    if (!allowedReasoningEfforts.has(effort)) throw new ModelRoleConfigError(`roles.${roleName}.task_class_reasoning_efforts.${taskClass} 无效。`);
+    result[taskClass] = effort;
+  }
+  return result;
 }
 
 function normalizeTaskClassModels(value, model, fallbackModels, roleName) {
@@ -160,5 +178,6 @@ function publicRole(role) {
     concurrency_limit: role.concurrencyLimit,
     fail_closed: role.failClosed,
     task_class_models: role.taskClassModels,
+    task_class_reasoning_efforts: role.taskClassReasoningEfforts,
   };
 }

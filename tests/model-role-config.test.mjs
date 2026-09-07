@@ -16,7 +16,7 @@ test("加载执行器与 Reviewer 的单一模型角色配置", async () => {
   await writeFile(configPath, `${JSON.stringify({
     schema_version: "taskcenter-model-roles-v1",
     roles: {
-      executor: { model: "model-executor", reasoning_effort: "medium", fallback_models: ["model-fallback"], concurrency_limit: 2 },
+      executor: { model: "model-executor", reasoning_effort: "low", task_class_reasoning_efforts: { security: "medium" }, fallback_models: ["model-fallback"], concurrency_limit: 2 },
       reviewer: { model: "model-reviewer", reasoning_effort: "low", fallback_models: [], concurrency_limit: 1 },
     },
     retired_models: ["model-retired"],
@@ -25,6 +25,8 @@ test("加载执行器与 Reviewer 的单一模型角色配置", async () => {
   assert.equal(config.roles.executor.model, "model-executor");
   assert.equal(config.roles.reviewer.model, "model-reviewer");
   assert.deepEqual(config.roles.executor.fallbackModels, ["model-fallback"]);
+  assert.equal(config.roles.executor.taskClassReasoningEfforts.security, "medium");
+  assert.equal(publicModelRoleConfig(config).executor.task_class_reasoning_efforts.security, "medium");
   assert.equal(publicModelRoleConfig(config).reviewer.fail_closed, true);
 });
 

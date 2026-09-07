@@ -9,7 +9,7 @@
   "roles": {
     "executor": {
       "model": "gpt-5.6-luna",
-      "reasoning_effort": "medium",
+      "reasoning_effort": "low",
       "fallback_models": [
         "gpt-5.6-terra",
         "gpt-6-astra"
@@ -24,11 +24,17 @@
         "complex_diagnosis": "gpt-5.6-terra",
         "high_risk": "gpt-6-astra"
       },
+      "task_class_reasoning_efforts": {
+        "security": "medium",
+        "data_migration": "medium",
+        "complex_diagnosis": "medium",
+        "high_risk": "medium"
+      },
       "concurrency_limit": 2
     },
     "reviewer": {
       "model": "gpt-6-astra",
-      "reasoning_effort": "medium",
+      "reasoning_effort": "low",
       "fallback_models": [],
       "concurrency_limit": 2
     }

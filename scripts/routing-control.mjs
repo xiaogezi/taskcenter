@@ -33,6 +33,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const orchestratorModel = clean(input.orchestrator_model, 120);
   const roleName = ocrTaskClasses.has(taskClass) ? "reviewer" : "executor";
   const role = config.roles[roleName];
+  const selectedReasoningEffort = role.taskClassReasoningEfforts?.[taskClass] || role.reasoningEffort;
   const mappedModel = optionalAstraModel(taskClass, role, config) || role.taskClassModels?.[taskClass] || role.model;
   const quotaPreferred = roleName === "executor" && executionModelPolicy.mode === "quota_preferred";
   if (quotaPreferred && !config.manualOnlyModels.includes(executionModelPolicy.preferredModel)) {
@@ -109,7 +110,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
         reason: "quota_fallback_model_unavailable", fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
         configVersion: config.contentHash, policyVersion: config.schemaVersion,
         matchedRule: "task.execution_model_policy.quota_preferred",
-        preferenceMode: executionModelPolicy.mode, quota,
+        preferenceMode: executionModelPolicy.mode, quota, selectedReasoningEffort,
       });
       state.routes.push(route);
       route.selectAuditEvents = auditEventsFor(route, fallback, "selection_unavailable");
@@ -137,7 +138,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
         configVersion: config.contentHash,
         policyVersion: config.schemaVersion,
         matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPreferred),
-        preferenceMode: executionModelPolicy.mode, quota,
+        preferenceMode: executionModelPolicy.mode, quota, selectedReasoningEffort,
       });
       state.routes.push(route);
       route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
@@ -158,6 +159,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
     orchestratorModel,
     preferredModel,
     selectedModel,
+    selectedReasoningEffort,
     taskClass,
     channel,
     circuitState: selected.state,
@@ -330,6 +332,7 @@ function buildUnavailableRoute({
   eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now, reason,
   fallbackFrom = "", fallbackReason = "", retryAfterAt = "", reviewArtifacts = null,
   configVersion = "", policyVersion = "", matchedRule = "", preferenceMode = "auto", quota = null,
+  selectedReasoningEffort = "low",
 }) {
   return {
     id: `route_${randomUUID()}`,
@@ -339,6 +342,7 @@ function buildUnavailableRoute({
     orchestratorModel,
     preferredModel,
     selectedModel: "",
+    selectedReasoningEffort,
     taskClass,
     channel,
     circuitState: preferred.state,
@@ -440,6 +444,7 @@ function publicRoute(route) {
     orchestrator_model: route.orchestratorModel || "unknown",
     preferred_model: route.preferredModel,
     selected_model: route.selectedModel || null,
+    reasoning_effort: route.selectedReasoningEffort || "low",
     task_class: route.taskClass,
     channel: route.channel,
     circuit_state: route.circuitState,
@@ -494,6 +499,7 @@ function auditEventsFor(route, health, transition, phase = "select") {
       orchestrator_model: route.orchestratorModel || "unknown",
       preferred_executor_model: route.preferredModel,
       selected_executor_model: selected,
+      reasoning_effort: route.selectedReasoningEffort || "low",
       dispatch_channel: route.channel,
       routing_reason: route.reason,
       fallback_from: route.fallbackFrom,
@@ -506,7 +512,7 @@ function auditEventsFor(route, health, transition, phase = "select") {
       quota_reset_at: route.quotaResetAt,
       review_artifacts: route.reviewArtifacts,
       routing_outcome: route.status === "succeeded" ? "succeeded" : ["failed", "overloaded", "unavailable"].includes(route.status) ? "failed" : "selected",
-      policy_version: "routing-control-v4",
+      policy_version: "routing-control-v5",
       route_id: route.id,
       task_class: route.taskClass,
       circuit_state: route.circuitState,
