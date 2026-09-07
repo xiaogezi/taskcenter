@@ -1039,6 +1039,7 @@ function applyEvent(current, event) {
       orchestratorModel: event.orchestrator_model,
       preferredExecutorModel: event.preferred_executor_model,
       selectedExecutorModel: event.selected_executor_model,
+      reasoningEffort: event.reasoning_effort || "low",
       dispatchChannel: event.dispatch_channel,
       reason: event.routing_reason,
       outcome: event.routing_outcome,
