@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { collectUsage } from "../scripts/usage-report.mjs";
+import { collectProviderAttemptUsage, collectUsage } from "../scripts/usage-report.mjs";
 
 const session = [
   { type: "session_meta", payload: { cwd: "/repo/app" } },
@@ -11,6 +11,75 @@ const session = [
   { type: "event_msg", timestamp: "2026-08-20T00:00:00Z", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 80, cached_input_tokens: 20, output_tokens: 10 }, total_token_usage: { input_tokens: 999999 } } } },
   { type: "event_msg", timestamp: "2026-08-20T01:00:00Z", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 20, cached_input_tokens: 5, output_tokens: 5 } } } },
 ];
+
+test("隔离消费 ProjectContext provider attempts，按 provider+attempt_id 去重并排除冲突", () => {
+  const base = { request_id: "req-1", client_session_id: "client", turn_id: "turn", task_id: "semantic", execution_session_id: "exec-s", execution_task_id: "exec-t", provider_attempts: [
+    { attempt_id: "a1", provider: "mock", outcome: "success", usage_status: "known", usage: { input_tokens: 10, cached_input_tokens: 3, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 14 } },
+    { attempt_id: "a2", provider: "mock", outcome: "failed", usage_status: "known", usage: { input_tokens: 8 } },
+  ] };
+  const duplicate = { ...base };
+  const conflict = { ...base, provider_attempts: [{ ...base.provider_attempts[0], usage: { input_tokens: 99 } }] };
+  const report = collectProviderAttemptUsage([base, duplicate, conflict, { request_id: "local", provider_attempts: [] }, { request_id: "legacy" }]);
+  assert.equal(report.attemptCount, 5);
+  assert.equal(report.uniqueAttemptCount, 2);
+  assert.equal(report.confirmedAttemptCount, 1);
+  assert.equal(report.conflictCount, 1);
+  assert.equal(report.failedCount, 1);
+  assert.equal(report.knownUsage.input_tokens, 8);
+  assert.equal(report.fieldCoverage.input_tokens, 1);
+  assert.equal(report.legacyRecordCount, 1);
+  assert.equal(report.explicitAttemptRecordCount, 4);
+  assert.equal(report.attribution, "separate_from_codex_totals");
+});
+
+test("缺 usage 只统计 unknown attempt，不补零且不同 attempt 独立", () => {
+  const report = collectProviderAttemptUsage([{ provider_attempts: [
+    { attempt_id: "a1", provider: "mock", outcome: "failed", usage_status: "unknown", usage: null },
+    { attempt_id: "a2", provider: "mock", outcome: "failed", usage_status: "known", usage: { input_tokens: 2, output_tokens: 1 } },
+  ] }]);
+  assert.equal(report.confirmedAttemptCount, 2);
+  assert.equal(report.failedCount, 2);
+  assert.equal(report.unknownUsageAttemptCount, 1);
+  assert.deepEqual(report.knownUsage, { input_tokens: 2, cached_input_tokens: null, output_tokens: 1, reasoning_output_tokens: null, total_tokens: null });
+});
+
+test("真实 fixture 路径输入、规范化白名单与默认输出隔离", () => {
+  const fixture = "tests/fixtures/provider-attempt-usage.json";
+  const fromPath = collectProviderAttemptUsage(fixture);
+  assert.deepEqual(fromPath.knownUsage, { input_tokens: 32, cached_input_tokens: 7, output_tokens: 6, reasoning_output_tokens: 2, total_tokens: 30 });
+  assert.deepEqual(fromPath.fieldCoverage, { input_tokens: 3, cached_input_tokens: 2, output_tokens: 2, reasoning_output_tokens: 1, total_tokens: 2 });
+  assert.equal(fromPath.attemptCount, 4);
+  assert.equal(fromPath.successCount, 1);
+  assert.equal(fromPath.failedCount, 3);
+  assert.equal(fromPath.unknownUsageAttemptCount, 1);
+
+  const canonical = fromPath.attempts[0];
+  const reordered = { ...canonical, usage: { total_tokens: 15, reasoning_output_tokens: 2, output_tokens: 4, cached_input_tokens: 3, input_tokens: 11 } };
+  const replay = collectProviderAttemptUsage([{ provider_attempts: [canonical, reordered] }]);
+  const replayReverse = collectProviderAttemptUsage([{ provider_attempts: [reordered, canonical] }]);
+  assert.equal(replay.conflictCount, 0);
+  assert.deepEqual(replay.knownUsage, replayReverse.knownUsage);
+  assert.deepEqual(replay.fieldCoverage, replayReverse.fieldCoverage);
+  assert.equal(replay.uniqueAttemptCount, 1);
+  const conflict = { ...canonical, usage: { ...canonical.usage, input_tokens: 99 } };
+  const malformed = { attempt_id: "", provider: null, usage_status: "known", usage: { input_tokens: null, output_tokens: -1, total_tokens: "2" }, prompt: "must-not-be-exported" };
+  const noEffectiveUsage = { attempt_id: "no-usage", provider: "mock", usage_status: "known", usage: { input_tokens: null } };
+  const noisy = collectProviderAttemptUsage([{ provider_attempts: [canonical, reordered, conflict, malformed, noEffectiveUsage] }]);
+  assert.equal(noisy.conflictCount, 1);
+  assert.equal(noisy.confirmedAttemptCount, 1);
+  assert.equal(noisy.invalidAttemptCount, 1);
+  assert.equal(noisy.unknownUsageAttemptCount, 1);
+  assert.equal(noisy.knownUsage.input_tokens, null);
+  assert.equal(noisy.fieldCoverage.input_tokens, 0);
+  assert.equal(noisy.attempts.some((attempt) => attempt.attempt_id === "no-usage" && attempt.usage !== null), false);
+  assert.equal(JSON.stringify(noisy).includes("must-not-be-exported"), false);
+  assert.equal(JSON.stringify(noisy).includes("prompt"), false);
+
+  const now = "2026-09-05T00:00:00.000Z";
+  const base = collectUsage({ sessions: [], ledger: [], rates: {}, now });
+  const withProvider = collectUsage({ sessions: [], ledger: [], rates: {}, providerAttemptsPath: fixture, now });
+  assert.deepEqual({ ...withProvider, providerAttempts: undefined }, { ...base, providerAttempts: undefined });
+});
 
 test("只累计 last_token_usage，区分缓存输入并按模型计费", () => {
   const report = collectUsage({ sessions: [{ sessionId: "s1", records: session }], ledger: [{ id: "t1", session_id: "s1" }], rates: { "gpt-test": { input: 1, cachedInput: .5, output: 2 } }, now: "2026-08-20T02:00:00Z" });

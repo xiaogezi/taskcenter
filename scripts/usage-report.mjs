@@ -128,10 +128,81 @@ export function parseSession(input, options = {}) {
   return { sessionId, cwd, events, lifetimeTotal, compressionAfterPhase, missingTimestampUsage };
 }
 
-export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date() } = {}) {
+export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date(), providerAttempts, providerAttemptsPath } = {}) {
   const inputs = sessions || filesUnder(sessionsRoot).map((file) => ({ file, sessionId: sessionIdFromFile(file) }));
   const parsed = inputs.map((item) => parseSession(item.records || item.lines || item.file || item, { sessionId: item.sessionId })).filter((s) => s.events.length);
-  return buildUsageReportFromParsed(parsed, { ledger, rates, now });
+  const report = buildUsageReportFromParsed(parsed, { ledger, rates, now });
+  if (providerAttempts !== undefined || providerAttemptsPath) report.providerAttempts = collectProviderAttemptUsage(providerAttempts ?? providerAttemptsPath);
+  return report;
+}
+
+export function collectProviderAttemptUsage(input) {
+  const rows = lines(input);
+  const attempts = rows.flatMap((row) => Array.isArray(row?.provider_attempts) ? row.provider_attempts.map((attempt) => normalizeAttempt(attempt, row)) : []);
+  const identities = new Map();
+  for (const [index, attempt] of attempts.entries()) {
+    const identity = attempt.provider && attempt.attempt_id ? JSON.stringify([attempt.provider, attempt.attempt_id]) : `invalid:${index}`;
+    const fingerprint = attemptFingerprint(attempt);
+    const prior = identities.get(identity);
+    if (!prior) identities.set(identity, { identity, attempt, fingerprint, conflict: false, associations: [attempt.association] });
+    else {
+      if (!prior.associations.some((association) => JSON.stringify(association) === JSON.stringify(attempt.association))) prior.associations.push(attempt.association);
+      if (prior.fingerprint !== fingerprint) prior.conflict = true;
+    }
+  }
+  const unique = [...identities.values()];
+  const confirmed = unique.filter((item) => !item.identity.startsWith("invalid:") && !item.conflict).map((item) => item.attempt);
+  const invalid = unique.filter((item) => item.identity.startsWith("invalid:")).map((item) => item.attempt);
+  const usage = { input_tokens: null, cached_input_tokens: null, output_tokens: null, reasoning_output_tokens: null, total_tokens: null };
+  const coverage = Object.fromEntries(Object.keys(usage).map((key) => [key, 0]));
+  for (const attempt of confirmed) if (attempt.effectiveUsageStatus === "known") for (const key of Object.keys(usage)) {
+    const tokenValue = attempt.usage[key];
+    if (tokenValue !== null) { usage[key] = (usage[key] ?? 0) + tokenValue; coverage[key]++; }
+  }
+  const conflicts = unique.filter((item) => item.conflict).map((item) => ({ identity: item.identity, associations: item.associations }));
+  return {
+    source: "project_context_provider_attempts",
+    recordCount: rows.length,
+    legacyRecordCount: rows.filter((row) => !Object.hasOwn(row || {}, "provider_attempts")).length,
+    explicitAttemptRecordCount: rows.filter((row) => Array.isArray(row?.provider_attempts)).length,
+    attemptCount: attempts.length,
+    uniqueAttemptCount: unique.length,
+    confirmedAttemptCount: confirmed.length,
+    invalidAttemptCount: invalid.length,
+    successCount: confirmed.filter((attempt) => attempt.outcome === "success").length,
+    failedCount: confirmed.filter((attempt) => attempt.outcome === "failed").length,
+    unknownUsageAttemptCount: confirmed.filter((attempt) => attempt.effectiveUsageStatus !== "known").length,
+    conflictCount: conflicts.length,
+    conflicts,
+    knownUsage: usage,
+    fieldCoverage: coverage,
+    attempts: confirmed,
+    attribution: "separate_from_codex_totals",
+  };
+}
+
+function attemptFingerprint(attempt) {
+  return JSON.stringify(attempt);
+}
+
+function normalizeAttempt(attempt, row) {
+  const scalar = (key) => typeof attempt?.[key] === "string" && attempt[key].trim() ? attempt[key] : null;
+  const usageKeys = ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"];
+  const usage = Object.fromEntries(usageKeys.map((key) => {
+    const value = attempt?.usage?.[key];
+    return [key, Number.isInteger(value) && value >= 0 ? value : null];
+  }));
+  const effectiveUsageStatus = scalar("usage_status") === "known" && Object.values(usage).some((value) => value !== null) ? "known" : "unknown";
+  return {
+    attempt_id: scalar("attempt_id"), provider: scalar("provider"), role: scalar("role"), model: scalar("model"),
+    provider_session_id: scalar("provider_session_id"), provider_request_id: scalar("provider_request_id"), outcome: scalar("outcome"),
+    failure_stage: scalar("failure_stage"), usage_status: scalar("usage_status"), effectiveUsageStatus, usage: effectiveUsageStatus === "known" ? usage : null,
+    association: pickProviderAssociation(row),
+  };
+}
+
+function pickProviderAssociation(row) {
+  return Object.fromEntries(["request_id", "client_session_id", "turn_id", "task_id", "execution_session_id", "execution_task_id"].map((key) => [key, typeof row?.[key] === "string" && row[key].trim() ? row[key] : null]));
 }
 
 export function buildUsageReportFromParsed(parsed, { ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date() } = {}) {
