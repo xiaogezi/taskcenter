@@ -11,11 +11,11 @@
       "task_class_models": {
         "implementation": "gpt-5.6-terra",
         "test": "gpt-5.6-terra",
-        "architecture": "gpt-6-astra",
+        "architecture": "gpt-5.6-terra",
         "security": "gpt-6-astra",
-        "migration": "gpt-6-astra",
+        "migration": "gpt-5.6-terra",
         "data_migration": "gpt-6-astra",
-        "complex_diagnosis": "gpt-6-astra",
+        "complex_diagnosis": "gpt-5.6-terra",
         "high_risk": "gpt-6-astra"
       },
       "concurrency_limit": 2

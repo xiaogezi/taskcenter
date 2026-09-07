@@ -86,7 +86,9 @@ export function routingSelect(input, now = new Date().toISOString()) {
     fallbackFrom = preferredModel;
     fallbackReason = fallbackReasonFor(preferred);
     retryAfterAt = preferred.retryAfterAt;
-    const protectedTaskClass = roleName === "executor" && !requestedPreferredModel && mappedModel !== role.model;
+    const protectedTaskClass = roleName === "executor" && (
+      mappedModel !== role.model || Boolean(requestedPreferredModel)
+    );
     const fallback = protectedTaskClass ? null : chooseFallback(state, role, preferredModel, now, config);
     if (!fallback) {
       const route = buildUnavailableRoute({
@@ -220,8 +222,11 @@ export function routingRoles() {
 }
 
 function chooseFallback(state, role, preferredModel, now, config) {
+  // The first configured fallback is the sole automatic recovery path.
+  // Later entries require an explicit caller preference and recorded reason.
   return role.fallbackModels
     .filter((model) => model !== preferredModel)
+    .slice(0, 1)
     .map((model) => ensureHealth(state, model, now, config))
     .find((health) => {
       advanceCircuit(health, now);

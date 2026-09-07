@@ -80,6 +80,15 @@ function timestampFrom(record) {
   const parsed = Date.parse(raw || "");
   return Number.isFinite(parsed) ? parsed : null;
 }
+function primaryRateLimitFrom(record) {
+  const primary = record?.payload?.rate_limits?.primary;
+  if (!primary || typeof primary !== "object" || !Number.isFinite(Number(primary.used_percent))) return null;
+  return {
+    used_percent: Number(primary.used_percent),
+    window_minutes: Number.isFinite(Number(primary.window_minutes)) ? Number(primary.window_minutes) : null,
+    resets_at: primary.resets_at ?? null,
+  };
+}
 function mergeUsage(target, usage) { for (const key of ["input", "cachedInput", "output"]) target[key] += usage[key]; }
 
 export function sessionIdentityFromRecord(record, fallback = "unknown") {
@@ -104,6 +113,7 @@ export function parseSession(input, options = {}) {
   let missingTimestampUsage = 0;
   let phaseEnded = false;
   let compressionAfterPhase = 0;
+  let latestPrimaryRateLimit = null;
   for (const record of records) {
     if (record.type === "session_meta") cwd = record.payload?.cwd || cwd;
     if (record.type === "event_msg" && ["task_complete", "task_done", "phase_complete"].includes(record.payload?.type)) phaseEnded = true;
@@ -117,6 +127,11 @@ export function parseSession(input, options = {}) {
       model = record.payload?.model || model;
       contextWindow = value(record.payload?.model_context_window, contextWindow);
     }
+    const rateLimit = primaryRateLimitFrom(record);
+    const rateLimitAt = timestampFrom(record);
+    if (rateLimit && rateLimitAt !== null && (!latestPrimaryRateLimit || rateLimitAt > latestPrimaryRateLimit.at)) {
+      latestPrimaryRateLimit = { ...rateLimit, at: rateLimitAt };
+    }
     const usage = usageFrom(record);
     if (usage) {
       mergeLifetimeUsage(lifetimeTotal, { ...usage, count: 1 });
@@ -125,12 +140,12 @@ export function parseSession(input, options = {}) {
       else events.push({ at, model, usage, contextWindow: value(record.payload?.model_context_window || record.payload?.info?.model_context_window, contextWindow), credits: record.rate_limits?.credits || null });
     }
   }
-  return { sessionId, cwd, events, lifetimeTotal, compressionAfterPhase, missingTimestampUsage };
+  return { sessionId, cwd, events, lifetimeTotal, compressionAfterPhase, missingTimestampUsage, latestPrimaryRateLimit };
 }
 
 export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date(), providerAttempts, providerAttemptsPath } = {}) {
   const inputs = sessions || filesUnder(sessionsRoot).map((file) => ({ file, sessionId: sessionIdFromFile(file) }));
-  const parsed = inputs.map((item) => parseSession(item.records || item.lines || item.file || item, { sessionId: item.sessionId })).filter((s) => s.events.length);
+  const parsed = inputs.map((item) => parseSession(item.records || item.lines || item.file || item, { sessionId: item.sessionId })).filter((s) => s.events.length || s.latestPrimaryRateLimit);
   const report = buildUsageReportFromParsed(parsed, { ledger, rates, now });
   if (providerAttempts !== undefined || providerAttemptsPath) report.providerAttempts = collectProviderAttemptUsage(providerAttempts ?? providerAttemptsPath);
   return report;
@@ -220,6 +235,7 @@ export function buildUsageReportFromParsed(parsed, { ledger = DEFAULT_LEDGER, ra
   }));
   return {
     generatedAt: new Date(at).toISOString(), windows, lifetime: buildLifetime(parsed, index), warnings, alerts: warnings,
+    rate_limits: { primary: latestPrimaryRateLimit(parsed) },
     overall: {
       estimatedCredits: day.totals.cost,
       creditsEstimation: day.totals.costEstimation,
@@ -227,6 +243,17 @@ export function buildUsageReportFromParsed(parsed, { ledger = DEFAULT_LEDGER, ra
       input: day.totals.statistics,
       usage: day.totals.usage,
     },
+  };
+}
+
+function latestPrimaryRateLimit(parsed) {
+  const latest = parsed.map((session) => session.latestPrimaryRateLimit).filter(Boolean)
+    .sort((left, right) => right.at - left.at)[0];
+  return latest && {
+    used_percent: latest.used_percent,
+    window_minutes: latest.window_minutes,
+    resets_at: latest.resets_at,
+    observed_at: new Date(latest.at).toISOString(),
   };
 }
 

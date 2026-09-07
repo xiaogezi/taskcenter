@@ -105,6 +105,15 @@ test("只累计 last_token_usage，区分缓存输入并按模型计费", () => 
   });
 });
 
+test("按时间戳暴露最新 primary rate limit 快照", () => {
+  const records = [
+    { type: "event_msg", timestamp: "2026-08-20T00:00:00Z", payload: { rate_limits: { primary: { used_percent: 12, window_minutes: 10080, resets_at: 1780000000 } }, info: { last_token_usage: { input_tokens: 1 } } } },
+    { type: "event_msg", timestamp: "2026-08-20T01:00:00Z", payload: { rate_limits: { primary: { used_percent: 34, window_minutes: 10080, resets_at: 1780003600 } }, info: { last_token_usage: { input_tokens: 1 } } } },
+  ];
+  const report = collectUsage({ sessions: [{ sessionId: "limits", records }], ledger: [], rates: {}, now: "2026-08-20T02:00:00Z" });
+  assert.deepEqual(report.rate_limits.primary, { used_percent: 34, window_minutes: 10080, resets_at: 1780003600, observed_at: "2026-08-20T01:00:00.000Z" });
+});
+
 test("多任务 Session 不重复分摊 Token，续调按次数预警", () => {
   const records = [{ type: "turn_context", payload: { model: "gpt-test" } }];
   for (let index = 0; index < 81; index++) records.push({

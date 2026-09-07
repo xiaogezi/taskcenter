@@ -140,6 +140,17 @@ test("任务表展示生命周期 Token 估算与明细维度", async () => {
   assert.match(source, /推理 \{formatTokens\(tokenUsage\.usage\.reasoning\)\}/);
 });
 
+test("页面展示可审计的模型编排策略与用量不可用态", async () => {
+  const source = await readFile(new URL("app/page.tsx", root), "utf8");
+  assert.match(source, /额度与证据驱动的模型编排/);
+  assert.match(source, /额度快照不可用，不以猜测升级高级模型/);
+  assert.match(source, /Pro 周窗口已用/);
+  assert.match(source, /不等于额度百分比/);
+  assert.match(source, /preferred_model=\{escalationModel/);
+  assert.match(source, /Reviewer：/);
+  assert.match(source, /最近真实路由/);
+});
+
 test("已完成反思提案使用单一全局复查入口并降级历史派发错误", async () => {
   const source = await readFile(new URL("app/page.tsx", root), "utf8");
   assert.match(source, /复查已完成提案/);

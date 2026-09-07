@@ -120,6 +120,7 @@ type TaskRecord = {
     dispatchChannel?: string;
     outcome?: string;
     recordedAt?: string;
+    taskClass?: string;
   }[];
   routingRecordedAt?: string;
   contractVersion?: "legacy" | "v2";
@@ -154,7 +155,7 @@ type SessionStatus = {
   lastTaskAt: string;
 };
 type RoutingHealth = { model: string; state: "closed" | "open" | "half_open"; consecutive_failures: number; active_executors: number; concurrency_limit: number; retry_after_at?: string | null };
-type ModelRole = { model: string; reasoning_effort: string; fallback_models: string[]; concurrency_limit: number; fail_closed: boolean };
+type ModelRole = { model: string; reasoning_effort: string; fallback_models: string[]; concurrency_limit: number; fail_closed: boolean; task_class_models?: Record<string, string> };
 type HealthState = { ok: boolean; dashboard?: { generatedAt?: string; readable?: boolean }; watcher?: { healthy?: boolean; updatedAt?: string }; routing?: { models?: RoutingHealth[]; roles?: { schema_version: string; executor: ModelRole; reviewer: ModelRole } } };
 
 type Dashboard = {
@@ -209,6 +210,10 @@ type SessionTokenUsage = {
   count: number;
 };
 type UsageReport = {
+  snapshotStatus?: { readable?: boolean; stale?: boolean; lastRefreshError?: string };
+  rate_limits?: { primary?: { used_percent: number; window_minutes?: number | null; resets_at?: string | number | null; observed_at?: string } | null };
+  alerts?: Array<{ code?: string; message?: string }>;
+  windows?: Record<string, { totals?: { usage?: { input?: number; cachedInput?: number; output?: number } } }>;
   lifetime?: {
     attribution: "estimated";
     method: string;
@@ -254,6 +259,12 @@ function normalizeDate(value?: string) {
     minute: "2-digit",
     timeZone: "Asia/Shanghai",
   }).format(date);
+}
+
+function normalizeRateLimitReset(value?: string | number | null) {
+  const raw = typeof value === "number" ? (value > 1_000_000_000_000 ? value : value * 1_000) : Date.parse(value ?? "");
+  if (!Number.isFinite(raw)) return "重置时间未提供";
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Shanghai" }).format(raw);
 }
 
 const compactTokenFormatter = new Intl.NumberFormat("en-US", {
@@ -308,6 +319,7 @@ export default function Home() {
   const [governanceMetrics, setGovernanceMetrics] = useState<GovernanceMetrics | null>(null);
   const [taskTokenUsage, setTaskTokenUsage] = useState<Record<string, TaskTokenUsage>>({});
   const [sessionTokenUsage, setSessionTokenUsage] = useState<Record<string, SessionTokenUsage>>({});
+  const [usageReport, setUsageReport] = useState<UsageReport>();
 
   const refreshLiveData = async (manual = false) => {
     if (refreshInFlight.current) return;
@@ -349,6 +361,7 @@ export default function Home() {
       setReflections(reflectionsPayload);
       setGateAllowlistIds(gateAllowlistPayload.selection?.threadIds ?? []);
       setGovernanceMetrics(governancePayload);
+      setUsageReport(usagePayload);
       setTaskTokenUsage(Object.fromEntries((usagePayload.lifetime?.byTask ?? []).filter((item) => item.id !== "unattributed").map((item) => [item.id, item])));
       setSessionTokenUsage(Object.fromEntries((usagePayload.lifetime?.bySession ?? []).map((item) => [item.sessionId, item])));
       if (manual) setRefreshMessage(`已刷新 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
@@ -666,7 +679,8 @@ export default function Home() {
             sessionStatuses={sessionStatuses}
             serviceHealthy={health.ok && health.watcher?.healthy !== false}
             routingModels={health.routing?.models ?? []}
-            executorModel={health.routing?.roles?.executor.model ?? ""}
+            modelRoles={health.routing?.roles}
+            usageReport={usageReport}
             onTaskUpdated={(updatedTask) => {
               setTasks((current) => current.map((task) => task.id === updatedTask.id ? updatedTask : task));
             }}
@@ -849,7 +863,31 @@ function ReflectionPanel({ reflections, availableThreads, onChange, onExecuted, 
   );
 }
 
-function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, routingModels, executorModel, onTaskUpdated }: { tasks: TaskRecord[]; taskTokenUsage: Record<string, TaskTokenUsage>; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; routingModels: RoutingHealth[]; executorModel: string; onTaskUpdated: (task: TaskRecord) => void }) {
+function RoutingPolicyPanel({ tasks, routingModels, modelRoles, usageReport }: { tasks: TaskRecord[]; routingModels: RoutingHealth[]; modelRoles?: { executor: ModelRole; reviewer: ModelRole }; usageReport?: UsageReport }) {
+  const escalationModel = modelRoles?.reviewer.model;
+  const astra = escalationModel ? routingModels.find((item) => item.model === escalationModel) : undefined;
+  const latestRoute = tasks.flatMap((task) => (task.routingHistory ?? []).map((route) => ({ ...route, taskTitle: task.title })))
+    .sort((left, right) => Date.parse(right.recordedAt ?? "") - Date.parse(left.recordedAt ?? ""))[0];
+  const primaryRateLimit = usageReport?.rate_limits?.primary;
+  const usageUnavailable = !primaryRateLimit || usageReport?.snapshotStatus?.readable === false || usageReport?.snapshotStatus?.stale === true;
+  const usage = usageReport?.windows?.["5h"]?.totals?.usage;
+  const recentTokens = (usage?.input ?? 0) + (usage?.cachedInput ?? 0) + (usage?.output ?? 0);
+
+  return (
+    <section className="routing-policy" aria-label="模型编排策略">
+      <div className="routing-policy-heading"><p className="eyebrow orange">ROUTING POLICY</p><h3>额度与证据驱动的模型编排</h3></div>
+      <div className="routing-policy-grid">
+        <p><strong>当前用量压力</strong>{usageUnavailable ? "额度快照不可用，不以猜测升级高级模型。" : `Pro 周窗口已用 ${primaryRateLimit.used_percent}% · 重置 ${normalizeRateLimitReset(primaryRateLimit.resets_at)}`}<small>5h Token 观测 {formatTokens(recentTokens)}，不等于额度百分比；高级模型执行槽：{astra ? `${astra.state} · ${astra.active_executors}/${astra.concurrency_limit}` : "暂未观测"}</small></p>
+        <p><strong>普通与实现</strong>Luna：general / search / mechanical / documentation。<small>Terra：implementation / test / architecture / migration / complex diagnosis。</small></p>
+        <p><strong>{shortModelName(escalationModel ?? "高级模型")}升级</strong>默认仅 security、data migration、high risk；真实失败或风险证据可显式 <code>preferred_model={escalationModel ?? "高级模型"}</code>，并记录理由。<small>不作为普通容量兜底。</small></p>
+        <p><strong>回退与审查边界</strong>普通任务只回退 Terra；Terra/高级模型映射任务不降级。<small>Reviewer：{shortModelName(escalationModel ?? "高级模型")}，fail closed，无 fallback。</small></p>
+      </div>
+      <p className="routing-latest"><strong>最近真实路由</strong>{latestRoute ? `${latestRoute.taskTitle} · ${shortModelName(latestRoute.orchestratorModel ?? "")} → ${shortModelName(latestRoute.selectedExecutorModel ?? "")} · ${latestRoute.reason ?? "未记录理由"}` : "暂无已记录的路由选择。"}</p>
+    </section>
+  );
+}
+
+function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, sessionGroups, selectedSessionId, sessionStatuses, serviceHealthy, routingModels, modelRoles, usageReport, onTaskUpdated }: { tasks: TaskRecord[]; taskTokenUsage: Record<string, TaskTokenUsage>; availableThreads: Thread[]; sessionGroups: SessionGroup[]; selectedSessionId: string; sessionStatuses: Record<string, SessionStatus>; serviceHealthy: boolean; routingModels: RoutingHealth[]; modelRoles?: { executor: ModelRole; reviewer: ModelRole }; usageReport?: UsageReport; onTaskUpdated: (task: TaskRecord) => void }) {
   // 筛选逻辑：全部任务显示全局，具体 Session 优先精确 session_id，不可用时按显式项目标识回退
   const selectedSessionIds = sessionIdsForGroup(selectedSessionId, sessionGroups);
   const filteredTasks = selectedSessionId === "全部任务"
@@ -877,6 +915,7 @@ function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, s
     <section className="task-ledger" aria-label="会话主动任务">
       <div className={`session-health-bar ${serviceHealthy ? "healthy" : "unhealthy"}`} role="status">{serviceHealthy ? "● 控制服务正常 · 同步 watcher 正常" : "! 控制服务或同步 watcher 异常，正在重试"} · 最近数据生成时间以 dashboard 为准</div>
       {routingModels.length > 0 && <div className="session-health-bar healthy" aria-label="模型路由健康">模型路由：{routingModels.map((item) => `${shortModelName(item.model)} ${item.state} ${item.active_executors}/${item.concurrency_limit}`).join(" · ")}</div>}
+      <RoutingPolicyPanel tasks={tasks} routingModels={routingModels} modelRoles={modelRoles} usageReport={usageReport} />
       <div className="ledger-heading">
         <p className="eyebrow orange">SESSION TASK GATE</p>
         <h2>会话主动任务<span>{filteredTasks.length}</span></h2>
@@ -914,7 +953,7 @@ function TaskLedger({ tasks, taskTokenUsage, availableThreads: threadsForTask, s
               </tr>
             </thead>
             <tbody>
-              {visibleTasks.map((task) => <TaskRow key={task.id} task={task} tokenUsage={taskTokenUsage[task.id]} availableThreads={threadsForTask} sessionStatuses={sessionStatuses} executorModel={executorModel} onTaskUpdated={onTaskUpdated} />)}
+              {visibleTasks.map((task) => <TaskRow key={task.id} task={task} tokenUsage={taskTokenUsage[task.id]} availableThreads={threadsForTask} sessionStatuses={sessionStatuses} executorModel={modelRoles?.executor.model ?? ""} onTaskUpdated={onTaskUpdated} />)}
             </tbody>
           </table>
           </div>

@@ -260,7 +260,7 @@ test("历史 Spark 健康状态不再作为活跃候选返回", async () => {
   assert.equal(routingHealth("2026-08-18T08:00:01.000Z").some((item) => item.model === spark), false);
 });
 
-test("实际集中策略按任务分层，Astra 执行与审查共享容量且不降级", async () => {
+test("实际集中策略节制 Astra，受保护任务与 Reviewer 均不降级", async () => {
   const actual = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
   await writeFile(roleConfigPath, actual, "utf8");
   try {
@@ -268,8 +268,8 @@ test("实际集中策略按任务分层，Astra 执行与审查共享容量且�
     const expected = {
       general: luna, search: luna, mechanical: luna, documentation: luna,
       implementation: terra, test: terra,
-      architecture: astra, security: astra, migration: astra,
-      data_migration: astra, complex_diagnosis: astra, high_risk: astra,
+      architecture: terra, security: astra, migration: terra,
+      data_migration: astra, complex_diagnosis: terra, high_risk: astra,
       ocr_review: astra,
     };
     for (const [task_class, model] of Object.entries(expected)) {
@@ -291,7 +291,21 @@ test("实际集中策略按任务分层，Astra 执行与审查共享容量且�
         leased.push(routingSelect({ ...baseInput, task_class: "high_risk", event_id: `actual-capacity-${i}` }).route);
         assert.equal(leased.at(-1).selected_model, astra);
       }
-      assert.equal(routingSelect({ ...baseInput, task_class: "complex_diagnosis", event_id: "actual-complex-full" }).route.available, false);
+      const complex = routingSelect({ ...baseInput, task_class: "complex_diagnosis", event_id: "actual-complex-full" });
+      assert.equal(complex.route.selected_model, terra);
+      assert.equal(complex.route.available, true);
+      routingResult({ route_id: complex.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
+      const protectedAstra = routingSelect({ ...baseInput, task_class: "high_risk", event_id: "actual-high-risk-full" });
+      assert.equal(protectedAstra.route.available, false);
+      const explicitAstra = routingSelect({ ...baseInput, task_class: "general", preferred_model: astra, event_id: "actual-explicit-astra-full" });
+      assert.equal(explicitAstra.route.available, false);
+      assert.equal(explicitAstra.route.selected_model, null);
+      const lunaLease = routingSelect({ ...baseInput, task_class: "general", event_id: "actual-luna-full" });
+      const terraLeases = [0, 1].map((index) => routingSelect({ ...baseInput, task_class: "implementation", event_id: `actual-terra-full-${index}` }));
+      const automaticFallback = routingSelect({ ...baseInput, task_class: "general", event_id: "actual-no-astra-fallback" });
+      assert.equal(automaticFallback.route.available, false);
+      routingResult({ route_id: lunaLease.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
+      for (const route of terraLeases) routingResult({ route_id: route.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
       const reviewer = routingSelect({ ...baseInput, task_class: "ocr_review", event_id: "actual-review-full", review_artifacts: reviewArtifacts });
       assert.equal(reviewer.route.available, false);
       assert.equal(reviewer.route.reason, "reviewer_model_unavailable");

@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
 import { buildUsageReportFromParsed, createTaskUsageAttributor, sessionIdentityFromRecord } from "./usage-report.mjs";
 
-const INDEX_VERSION = 5;
+const INDEX_VERSION = 6;
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
 
 export async function updateUsageIndex(options) {
@@ -56,7 +56,8 @@ export async function updateUsageIndex(options) {
     missingTimestampUsage: Number(state.missingTimestampUsage || 0),
     lifetimeTotal: state.lifetimeTotal || emptyLifetime(),
     lifetimeByTask: state.lifetimeByTask || {},
-  })).filter((session) => session.events.length || session.lifetimeTotal.count || Object.keys(session.lifetimeByTask).length);
+    latestPrimaryRateLimit: state.latestPrimaryRateLimit || null,
+  })).filter((session) => session.events.length || session.lifetimeTotal.count || Object.keys(session.lifetimeByTask).length || session.latestPrimaryRateLimit);
   return {
     report: buildUsageReportFromParsed(parsed, {
       ledger: options.ledger,
@@ -86,6 +87,7 @@ function emptyFileState(path, identity, sessionId = sessionIdFromFile(path)) {
     events: [],
     lifetimeTotal: emptyLifetime(),
     lifetimeByTask: {},
+    latestPrimaryRateLimit: null,
   };
 }
 
@@ -107,11 +109,22 @@ function consumeRecord(state, line, attributeTask) {
     state.model = record.payload?.model || state.model;
     state.contextWindow = number(record.payload?.model_context_window, state.contextWindow);
   }
+  const primary = record?.payload?.rate_limits?.primary;
+  const rawTime = record.timestamp ?? record.created_at ?? record.payload?.timestamp;
+  const rateLimitAt = Date.parse(rawTime || "");
+  if (primary && typeof primary === "object" && Number.isFinite(Number(primary.used_percent)) && Number.isFinite(rateLimitAt)
+    && (!state.latestPrimaryRateLimit || rateLimitAt > state.latestPrimaryRateLimit.at)) {
+    state.latestPrimaryRateLimit = {
+      used_percent: Number(primary.used_percent),
+      window_minutes: Number.isFinite(Number(primary.window_minutes)) ? Number(primary.window_minutes) : null,
+      resets_at: primary.resets_at ?? null,
+      at: rateLimitAt,
+    };
+  }
   const usage = record?.payload?.info?.last_token_usage;
   if (!usage || typeof usage !== "object") return;
   mergeLifetimeTotal(state.lifetimeTotal, usage);
-  const rawTime = record.timestamp ?? record.created_at ?? record.payload?.timestamp;
-  const at = Date.parse(rawTime || "");
+  const at = rateLimitAt;
   if (!Number.isFinite(at)) {
     state.missingTimestampUsage += 1;
     return;
