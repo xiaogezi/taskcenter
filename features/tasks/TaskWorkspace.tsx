@@ -4,8 +4,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { parseTaskWorkspaceSearch, taskAxes, taskListRequestKey } from "@/lib/task-workspace.mjs";
 
 type Reason = { code: string; label: string; detail?: string };
+type ExecutionModelPolicy = {
+  mode?: string;
+  preferred_model?: string;
+  quota_limit_id?: string;
+  fallback_on_exhaustion?: boolean;
+  authorization_reason?: string;
+};
 type RoutingInfo = { action?: string; orchestratorModel?: string; preferredExecutorModel?: string; selectedExecutorModel?: string; reasoningEffort?: string; dispatchChannel?: string; reason?: string; outcome?: string; preferenceMode?: string; fallbackReason?: string; quotaLimitId?: string; quotaSnapshotObservedAt?: string; quotaUsedPercent?: number; quotaResetAt?: string; };
-type Task = Record<string, unknown> & { id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[] };
+type Task = Record<string, unknown> & { id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy };
 type State = ReturnType<typeof parseTaskWorkspaceSearch>;
 const labels: Record<string, string> = { planned: "计划中", in_progress: "执行中", blocked: "已阻塞", done_claimed: "已声明完成", verified: "已验证", cancelled: "已取消", passed: "通过", pending: "待处理", failed: "失败", stale: "已过期", changes_requested: "需修改", ready: "就绪", accepted: "已验收", rejected: "已拒绝", not_required: "不要求", unknown: "未知" };
 const text = (value: unknown) => typeof value === "string" && value.trim() ? value : "未知";
@@ -79,7 +86,7 @@ export function TaskWorkspace() {
   const counts = payload.actionCounts || {};
 
   return <main className="task-workspace">
-    <aside className="task-nav"><a className="task-logo" href="/tasks">TASK<span>CENTER</span></a><nav><a className="active" href="/tasks">任务工作区</a><span>会话（后续）</span><span>模型调度（后续）</span><span>改进建议（后续）</span><a href="/legacy">旧版首页</a></nav></aside>
+    <aside className="task-nav"><a className="task-logo" href="/tasks">TASK<span>CENTER</span></a><nav><a className="active" href="/tasks">任务工作区</a><span>会话（后续）</span><a href="/legacy#routing-policy-control">模型调度（后续）</a><span>改进建议（后续）</span><a href="/legacy">旧版首页</a></nav></aside>
     <section className="task-main"><header className="task-header"><div><p>LOCAL CONTROL API</p><h1>任务工作区</h1><small>任务事实、证据与活动均来自本地 Control API。</small></div><a href="/legacy">查看旧版看板</a></header>
       <section className="task-stats" aria-label="任务统计">{([['attention','需处理'],['in_progress','执行中'],['awaiting_verification','待验证'],['awaiting_acceptance','待验收'],['blocked','阻塞'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
       <section className="task-filters"><select value={state.project} onChange={(event) => update({ project: event.target.value, page: 1 })}><option value="all">全部项目</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.label}</option>)}</select><input value={state.query} onChange={(event) => update({ query: event.target.value, page: 1 })} placeholder="搜索标题、ID 或目标" /><span>共 {payload.total ?? "未知"} 条</span></section>
@@ -102,15 +109,19 @@ export function TaskWorkspace() {
 function DetailOverview({ task }: { task: Task | null }) { const route = task?.routing || task?.routingHistory?.at(-1); return <div className="detail-content"><h3>目标</h3><p>{text(task?.goal)}</p><dl>{[["当前步骤", task?.currentStep], ["下一步", task?.nextAction], ["阻塞", task?.blocker], ["执行模型", route?.selectedExecutorModel], ["选择理由", route?.reason]].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{text(value)}</dd></div>)}{taskAxes(task || {}).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{labels[text(value)] || text(value)}</dd></div>)}</dl><h3>需处理原因</h3><ul>{task?.actionReasons?.length ? task.actionReasons.map((reason) => <li key={reason.code}>{reason.label}{reason.detail ? `：${reason.detail}` : ""}</li>) : <li>{task ? "当前无需要处理原因" : "未知"}</li>}</ul></div>; }
 function RoutingDetails({ task }: { task: Task | null }) {
   const route = task?.routing || task?.routingHistory?.at(-1);
+  const executionPolicy = task?.executionModelPolicy || {};
   return <div className="detail-content"><h3>调度信息</h3>
     <dl>{[
       ["首选模型", route?.preferredExecutorModel || route?.selectedExecutorModel || "未知"],
       ["实际模型", route?.selectedExecutorModel || "未触发路由"],
-      ["推理 effort", route?.reasoningEffort || "low"],
-      ["调度偏好", route?.preferenceMode || "auto"],
+      ["推理 effort", route?.reasoningEffort || "未记录"],
+      ["调度偏好", route?.preferenceMode || executionPolicy.mode || "auto"],
       ["触发通道", route?.dispatchChannel || "未记录"],
       ["回退原因", route?.fallbackReason || "无"],
-      ["额度池", route?.quotaLimitId || "未启用配额优先"],
+      ["额度偏好模式", executionPolicy.mode || "未记录"],
+      ["优先模型", executionPolicy.preferred_model || "未记录"],
+      ["额度池", executionPolicy.quota_limit_id || route?.quotaLimitId || "未启用配额优先"],
+      ["额度耗尽回退", typeof executionPolicy.fallback_on_exhaustion === "boolean" ? (executionPolicy.fallback_on_exhaustion ? "是" : "否") : "未记录"],
       ["快照新鲜度", freshnessText(route?.quotaSnapshotObservedAt)],
       ["额度观测时间", route?.quotaSnapshotObservedAt || "未记录"],
       ["额度重置时间", route?.quotaResetAt || "未记录"],

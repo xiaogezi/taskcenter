@@ -438,6 +438,7 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
   assert.equal(first.task.routing.fallbackReason, "preferred_model_circuit_open");
   assert.equal(first.task.routing.retryAfterAt, "2026-08-25T04:00:00.000Z");
   assert.equal(first.task.routing.reviewArtifacts.bundle.fingerprint, "sha256:bundle");
+  assert.equal(first.task.routing.reasoningEffort, undefined);
   assert.equal(first.task.routingHistory.length, 1);
   assert.ok(first.task.routingRecordedAt);
   const session = getSessionStatuses().find((item) => item.sessionId === "sess-routing");
@@ -448,6 +449,14 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
   const replay = recordTaskEvent(firstInput);
   assert.equal(replay.idempotent, true);
   assert.equal(replay.task.routingHistory.length, 1);
+  const withReason = recordTaskEvent({
+    ...firstInput,
+    event_id: "routing-native-reason",
+    reasoning_effort: "medium",
+    routing_reason: "任务边界清晰并记录推理强度。",
+  });
+  assert.equal(withReason.task.routing.reasoningEffort, "medium");
+  assert.equal(withReason.task.routingHistory.length, 2);
   assert.throws(
     () => recordTaskEvent({ ...firstInput, routing_reason: "尝试篡改既有路由原因。" }),
     (error) => error instanceof TaskLedgerError && error.statusCode === 409,
@@ -465,7 +474,7 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
   assert.equal(fallback.task.blocker, "等待外部依赖。");
   assert.equal(fallback.task.updatedAt, executionState.updatedAt);
   assert.equal(fallback.task.routing.action, "fallback_cli");
-  assert.equal(fallback.task.routingHistory.length, 2);
+  assert.equal(fallback.task.routingHistory.length, 3);
   assert.throws(
     () => recordTaskEvent({ ...firstInput, event_id: "routing-invalid", dispatch_channel: "cli" }),
     (error) => error instanceof TaskLedgerError && error.statusCode === 400,
