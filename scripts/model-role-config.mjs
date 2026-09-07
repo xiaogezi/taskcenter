@@ -16,7 +16,7 @@ const reviewerTaskClasses = new Set(["ocr", "ocr_review", "independent_review"])
 export class ModelRoleConfigError extends Error {
   constructor(message) {
     super(message);
-    this.statusCode = 500;
+    this.statusCode = 400;
   }
 }
 
