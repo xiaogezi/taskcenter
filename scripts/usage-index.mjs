@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
-import { buildUsageReportFromParsed, createTaskUsageAttributor } from "./usage-report.mjs";
+import { buildUsageReportFromParsed, createTaskUsageAttributor, sessionIdentityFromRecord } from "./usage-report.mjs";
 
 const INDEX_VERSION = 5;
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
@@ -19,13 +19,14 @@ export async function updateUsageIndex(options) {
   for (const path of files) {
     const info = await stat(path);
     const previous = index.files[path];
+    const sessionId = await sessionIdentityFromFile(path);
     const identity = `${info.dev || 0}:${info.ino || 0}`;
     const previousOffset = Number(previous?.offset || 0);
     const checkpointMatches = previous?.checkpointHash && previous?.headHash
       && previous.checkpointHash === await jsonlCheckpointFingerprint(path, previousOffset)
       && previous.headHash === await jsonlCheckpointFingerprint(path, Math.min(previousOffset, 4096));
     const reusable = previous && previous.identity === identity && info.size >= previousOffset && checkpointMatches;
-    const state = reusable ? previous : emptyFileState(path, identity);
+    const state = reusable && previous.sessionId === sessionId ? previous : emptyFileState(path, identity, sessionId);
     if (info.size > Number(state.offset || 0)) {
       const result = await consumeJsonl(path, {
         start: Number(state.offset || 0),
@@ -66,13 +67,13 @@ export async function updateUsageIndex(options) {
   };
 }
 
-function emptyFileState(path, identity) {
+function emptyFileState(path, identity, sessionId = sessionIdFromFile(path)) {
   return {
     identity,
     offset: 0,
     size: 0,
     mtimeMs: 0,
-    sessionId: sessionIdFromFile(path),
+    sessionId,
     cwd: "",
     model: "unknown",
     contextWindow: 0,
@@ -91,7 +92,10 @@ function emptyFileState(path, identity) {
 function consumeRecord(state, line, attributeTask) {
   let record;
   try { record = JSON.parse(line.toString("utf8")); } catch { return; }
-  if (record.type === "session_meta") state.cwd = record.payload?.cwd || state.cwd;
+  if (record.type === "session_meta") {
+    state.sessionId = sessionIdentityFromRecord(record, state.sessionId);
+    state.cwd = record.payload?.cwd || state.cwd;
+  }
   if (record.type === "event_msg" && ["task_complete", "task_done", "phase_complete"].includes(record.payload?.type)) state.phaseEnded = true;
   if (state.phaseEnded && (record.type === "compacted" || record.payload?.type === "context_compacted" || record.payload?.compacted === true || record.payload?.compaction)) {
     state.compressionAfterPhase += 1;
@@ -169,6 +173,33 @@ async function filesUnder(root) {
 function sessionIdFromFile(path) {
   return basename(path).match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i)?.[1]
     || basename(path).replace(/\.jsonl$/i, "");
+}
+
+async function sessionIdentityFromFile(path) {
+  const fallback = sessionIdFromFile(path);
+  let handle;
+  try {
+    handle = await open(path, "r");
+    const chunks = [];
+    let size = 0;
+    for (;;) {
+      const buffer = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) return fallback;
+      const newline = buffer.indexOf(10, 0, bytesRead);
+      const end = newline === -1 ? bytesRead : newline;
+      size += end;
+      if (size > 2 * 1024 * 1024) return fallback;
+      chunks.push(buffer.subarray(0, end));
+      if (newline !== -1) break;
+    }
+    const line = Buffer.concat(chunks, size).toString("utf8").trim();
+    return sessionIdentityFromRecord(JSON.parse(line), fallback);
+  } catch {
+    return fallback;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
 }
 
 function number(value, fallback = 0) { return Number.isFinite(Number(value)) ? Number(value) : fallback; }

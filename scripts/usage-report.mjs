@@ -82,8 +82,20 @@ function timestampFrom(record) {
 }
 function mergeUsage(target, usage) { for (const key of ["input", "cachedInput", "output"]) target[key] += usage[key]; }
 
+export function sessionIdentityFromRecord(record, fallback = "unknown") {
+  if (record?.type !== "session_meta") return fallback;
+  const payload = record.payload || {};
+  return [payload.id, payload.session_id].find((value) => typeof value === "string" && value.trim())?.trim() || fallback;
+}
+
+export function sessionIdentityFromRecords(records, fallback = "unknown") {
+  return (records || []).reduce((identity, record) => sessionIdentityFromRecord(record, identity), fallback);
+}
+
 export function parseSession(input, options = {}) {
-  const sessionId = options.sessionId || (typeof input === "string" ? sessionIdFromFile(input) : "unknown");
+  const records = lines(input);
+  const fallback = options.sessionId || (typeof input === "string" ? sessionIdFromFile(input) : "unknown");
+  const sessionId = sessionIdentityFromRecords(records, fallback);
   let model = "unknown";
   let contextWindow = 0;
   let cwd = "";
@@ -92,7 +104,7 @@ export function parseSession(input, options = {}) {
   let missingTimestampUsage = 0;
   let phaseEnded = false;
   let compressionAfterPhase = 0;
-  for (const record of lines(input)) {
+  for (const record of records) {
     if (record.type === "session_meta") cwd = record.payload?.cwd || cwd;
     if (record.type === "event_msg" && ["task_complete", "task_done", "phase_complete"].includes(record.payload?.type)) phaseEnded = true;
     if (phaseEnded && (record.type === "compacted" || record.payload?.type === "context_compacted" || record.payload?.compacted === true || record.payload?.compaction)) {
