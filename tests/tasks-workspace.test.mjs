@@ -20,6 +20,9 @@ test("桌面详情展开时主工作区应开启三列网格", () => {
   assert.match(componentSource, /className=\{state\.task \? "task-workspace with-open-detail" : "task-workspace"\}/);
   assert.match(styleSource, /\.task-workspace\.with-open-detail \{\s*grid-template-columns:\s*220px minmax\(0, 1fr\) minmax\(320px, min\(390px, 34vw\)\);\s*\}/);
   assert.match(styleSource, /\.task-detail \{[\s\S]*width: 100%;[\s\S]*min-width: 0;/);
+  assert.match(componentSource, /<th>Token<\/th>/);
+  assert.match(componentSource, /task\.tokenUsage \? formatTokens\(task\.tokenUsage\.totalTokens\) : "暂无归属"/);
+  assert.match(componentSource, /输入 \$\{formatTokens\(task\.tokenUsage\.usage\.input\)\}/);
 });
 
 test("四轴状态与需处理判定忽略通用 completion pending", () => {

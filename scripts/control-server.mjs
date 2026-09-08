@@ -379,7 +379,8 @@ const server = createServer(async (request, response) => {
         // 交给下方 task 子资源路由。
       } else {
       if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
-        const tasks = loadVisibleTasks().slice().reverse();
+        const usageByTask = new Map((currentUsageReport().lifetime?.byTask || []).map((item) => [item.id, item]));
+        const tasks = loadVisibleTasks().slice().reverse().map((task) => ({ ...task, tokenUsage: usageByTask.get(task.id) || null }));
         if (!url.searchParams.size) {
           sendJson(response, 200, { tasks: withDelegations(tasks) });
           return;
@@ -728,7 +729,8 @@ const server = createServer(async (request, response) => {
       const task = loadTasks().find((item) => item.id === taskDetailMatch[1]);
       if (!task) throw new TaskLedgerError(404, "任务不存在。");
       const workspace = task.workspace || loadSessionRegistry()[task.sessionId]?.workspace || "";
-      sendJson(response, 200, { task: taskPresentation({ ...withDelegations([task])[0], workspace }) });
+      const tokenUsage = (currentUsageReport().lifetime?.byTask || []).find((item) => item.id === task.id) || null;
+      sendJson(response, 200, { task: taskPresentation({ ...withDelegations([task])[0], workspace, tokenUsage }) });
       return;
     }
     const taskEventsMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/events(?:\?limit=(\d+))?$/) : null;

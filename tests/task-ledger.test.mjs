@@ -73,6 +73,9 @@ test("MCP Session 上下文：请求 threadId 优先、兼容环境变量且冲�
 
 test("Control API 返回单任务完整详情，摘要列表仍不携带证据", async (context) => {
   await resetLedger();
+  await writeFile(envPaths.TASKCENTER_USAGE_REPORT_PATH, JSON.stringify({ lifetime: { byTask: [
+    { id: "task-detail-1", usage: { input: 200, cachedInput: 100, output: 20, reasoning: 4 }, totalTokens: 224, count: 3, attribution: "estimated" },
+  ] } }));
   const { base, child } = await startControlServer();
   context.after(() => child.kill("SIGTERM"));
   await registerHttpSession(base, "task-detail-session");
@@ -87,8 +90,10 @@ test("Control API 返回单任务完整详情，摘要列表仍不携带证据",
   assert.equal(created.status, 201);
   const detail = await (await fetch(`${base}/tasks/task-detail-1`)).json();
   assert.deepEqual(detail.task.evidence, ["probe:detail"]);
+  assert.equal(detail.task.tokenUsage.totalTokens, 224);
   const summary = await (await fetch(`${base}/tasks?view=summary&page=1&page_size=10`)).json();
   assert.equal("evidence" in summary.tasks[0], false);
+  assert.equal(summary.tasks[0].tokenUsage.totalTokens, 224);
 });
 
 test("Control API 在全量任务上筛选后分页，并返回项目范围 action counts", async (context) => {
