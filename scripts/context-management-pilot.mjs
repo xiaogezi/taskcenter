@@ -89,14 +89,14 @@ export function recordPilotTrial(path, input) {
   });
 }
 
-export function pilotSnapshot({ registry = {}, tasks = [], usageReport = {}, events = [], now = new Date().toISOString() }) {
+export function pilotSnapshot({ registry = {}, sessionTitles = [], tasks = [], usageReport = {}, events = [], now = new Date().toISOString() }) {
   const intents = latestIntents(events);
   const reports = latestTrials(events);
   const usageByTask = new Map((usageReport?.lifetime?.byTask || []).map((row) => [row.id, row.usage]));
   return {
     schema_version: "taskcenter-context-management-pilot/v1",
     generated_at: now,
-    projects: registeredProjectWorkspaces(registry).map((project) => {
+    projects: registeredProjectWorkspaces(registry, sessionTitles).map((project) => {
       const projectIntents = [...intents.values()]
         .filter((intent) => intent.project_id === project.project_id && resolve(intent.workspace) === project.workspace)
         .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)));
@@ -125,16 +125,23 @@ export function pilotSnapshot({ registry = {}, tasks = [], usageReport = {}, eve
   };
 }
 
-export function registeredProjectWorkspaces(registry) {
+export function registeredProjectWorkspaces(registry, sessionTitles = []) {
+  const titles = new Map(sessionTitles.map((item) => [item.id, item.title]));
   const projects = new Map();
-  for (const session of Object.values(registry)) {
+  for (const [registryId, session] of Object.entries(registry)) {
     const projectId = text(session?.projectId || session?.project_id, 200);
     const workspace = text(session?.workspace, 500);
     if (!projectId || !workspace || workspace === "/") continue;
     const resolved = resolve(workspace);
-    projects.set(`${projectId}\u0000${resolved}`, { project_id: projectId, workspace: resolved });
+    const key = `${projectId}\u0000${resolved}`;
+    const project = projects.get(key) || { project_id: projectId, workspace: resolved, sessions: [] };
+    const sessionId = text(session?.sessionId || registryId, 200);
+    project.sessions.push({ session_id: sessionId, title: titles.get(sessionId) || "", last_seen_at: text(session?.lastSeenAt, 100) });
+    projects.set(key, project);
   }
-  return [...projects.values()].sort((a, b) => `${a.project_id}:${a.workspace}`.localeCompare(`${b.project_id}:${b.workspace}`, "zh-CN"));
+  return [...projects.values()]
+    .map((project) => ({ ...project, sessions: project.sessions.sort((a, b) => String(b.last_seen_at).localeCompare(String(a.last_seen_at)) || a.session_id.localeCompare(b.session_id)) }))
+    .sort((a, b) => `${a.project_id}:${a.workspace}`.localeCompare(`${b.project_id}:${b.workspace}`, "zh-CN"));
 }
 
 export function inspectProjectConfig(workspace, observedAt = new Date().toISOString()) {

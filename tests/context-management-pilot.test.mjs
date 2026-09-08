@@ -25,10 +25,11 @@ test("按实际登记 workspace 读取项目级 experimental_mode，无法证明
     a: { sessionId: "a", projectId: "instory", workspace: enabled },
     b: { sessionId: "b", projectId: "instory", workspace: missing },
   };
-  const snapshot = pilotSnapshot({ registry, now: "2026-09-08T00:00:00.000Z" });
+  const snapshot = pilotSnapshot({ registry, sessionTitles: [{ id: "a", title: "Astra 试点实现" }], now: "2026-09-08T00:00:00.000Z" });
   assert.equal(snapshot.projects.length, 2);
   assert.equal(snapshot.projects.find((item) => item.workspace === enabled).context_management.state, "enabled");
   assert.equal(snapshot.projects.find((item) => item.workspace === missing).context_management.state, "unknown");
+  assert.deepEqual(snapshot.projects.find((item) => item.workspace === enabled).sessions[0], { session_id: "a", title: "Astra 试点实现", last_seen_at: "" });
   assert.equal(inspectProjectConfig(enabled).applies_to, "new_tasks_only");
   assert.equal(parseExperimentalMode("[features.context_management]\nexperimental_mode = false"), false);
   assert.equal(parseExperimentalMode('description = """\n[features.context_management]\nexperimental_mode = true\n"""'), "unknown");

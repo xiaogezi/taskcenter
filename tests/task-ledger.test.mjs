@@ -183,6 +183,24 @@ async function registerHttpSession(base, session_id, identity = {}) {
   assert.equal(response.status, 200);
 }
 
+test("会话状态和 Pilot 使用 session_index 标题且不伪造缺失标题", async (context) => {
+  await resetLedger();
+  const dashboardPath = join(tempDir, "session-title-dashboard.json");
+  await writeFile(dashboardPath, JSON.stringify({ source: { sessionTitles: [{ id: "session-titled", title: "排查新任务未记录问题" }] } }));
+  const { base, child } = await startControlServer({ TASKCENTER_DASHBOARD_PATH: dashboardPath });
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "session-titled", { project_id: "example" });
+  await registerHttpSession(base, "session-untitled", { project_id: "other" });
+
+  const sessions = (await (await fetch(`${base}/session-status`)).json()).sessions;
+  assert.equal(sessions.find((item) => item.sessionId === "session-titled").title, "排查新任务未记录问题");
+  assert.equal(sessions.find((item) => item.sessionId === "session-untitled").title, "");
+
+  const projects = (await (await fetch(`${base}/context-management-pilots`)).json()).projects;
+  assert.equal(projects.find((item) => item.project_id === "example").sessions[0].title, "排查新任务未记录问题");
+  assert.equal(projects.find((item) => item.project_id === "other").sessions[0].title, "");
+});
+
 async function writeTransientContextServer(path) {
   const mcpUrl = new URL("node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js", root).href;
   const stdioUrl = new URL("node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js", root).href;

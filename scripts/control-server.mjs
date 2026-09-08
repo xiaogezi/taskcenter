@@ -184,7 +184,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "GET" && request.url === "/context-management-pilots") {
-      sendJson(response, 200, pilotSnapshot({ registry: loadSessionRegistry(), tasks: loadTasks(), usageReport: currentUsageReport(), events: readPilotEvents(contextManagementPilotPath) }));
+      sendJson(response, 200, pilotSnapshot({ registry: loadSessionRegistry(), sessionTitles: loadSessionTitles(), tasks: loadTasks(), usageReport: currentUsageReport(), events: readPilotEvents(contextManagementPilotPath) }));
       return;
     }
     if (request.method === "POST" && request.url === "/context-management-pilots/intents") {
@@ -249,7 +249,8 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/session-status") {
       if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
-      sendJson(response, 200, { sessions: getSessionStatuses(availableSessionIds(), loadVisibleTasks()) });
+      const titles = new Map(loadSessionTitles().map((item) => [item.id, item.title]));
+      sendJson(response, 200, { sessions: getSessionStatuses(availableSessionIds(), loadVisibleTasks()).map((session) => ({ ...session, title: titles.get(session.sessionId) || "" })) });
       return;
     }
     if (request.method === "POST" && request.url === "/sessions/l0-audit") {
@@ -1843,6 +1844,15 @@ function availableSessionIds() {
   const dashboard = loadDashboard();
   const threads = dashboard.source?.availableThreads ?? dashboard.threads ?? [];
   return threads.flatMap((thread) => [thread.id, ...(thread.sessionIds ?? [])]).filter(Boolean);
+}
+
+function loadSessionTitles() {
+  const dashboard = loadDashboard();
+  const fallback = (dashboard.source?.availableThreads ?? dashboard.threads ?? [])
+    .filter((thread) => thread.titleSource === "codex")
+    .map(({ id, title }) => ({ id, title }));
+  return [...fallback, ...(dashboard.source?.sessionTitles ?? [])]
+    .filter((item) => item.id && item.title);
 }
 
 function persistDispatches() {

@@ -60,4 +60,6 @@ test("试点 intent 未结束时持续刷新并在卸载时清理轮询", () => 
   assert.match(source, /\["pending", "processing"\]\.includes\(item\.latest_intent\?\.status \|\| ""\)/);
   assert.match(source, /window\.setInterval\(load, 5000\)/);
   assert.match(source, /window\.clearInterval\(timer\)/);
+  assert.match(source, /item\.title \|\| "未命名会话"/);
+  assert.match(source, /session\?\.title \|\| "未命名会话"/);
 });

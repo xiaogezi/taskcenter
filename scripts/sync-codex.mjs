@@ -374,6 +374,7 @@ async function main() {
       messageCount: threads.reduce((sum, thread) => sum + thread.userRequirements.length, 0),
       mode: "read-only local JSONL",
       sessionSelection: effectiveSessionSelection,
+      sessionTitles: [...names].map(([id, title]) => ({ id, title })),
       availableThreads: candidateSessions.map((session) => ({
         id: session.threadId,
         title: sessionDisplayTitle(
