@@ -164,7 +164,7 @@ TaskCenter Core 不依赖 Codex、Context Agent、OCR、GitHub/GitLab、Worktree
 
 TaskCenter 是执行合同、运行状态、验证、Review、验收与路由审计的权威来源。ProjectContext 管理项目事实、决策、待审核知识与跨 Session 上下文，其语义任务用于组织上下文，不应替代 TaskCenter 的执行状态。现有 `scripts/context-bridge.mjs` 与 completion adapter 已承载映射和 Completion Packet 投递；这是已有能力，而非新增桥接。
 
-设置页的 Astra `context_management` 试点区逐一读取 TaskCenter 已登记 workspace 的项目级 `.codex/config.toml`，展示配置证据、采集时间、仅新任务生效边界和最近三个自然长任务的收益/风险指标。缺失、不可读或多个 workspace 配置冲突均保持 `unknown`，不会推断成停用。启用、停用和刷新只写入 append-only intent 并唤醒现有 DevWorkbench 主脑；TaskCenter 不直接修改外部项目或 `~/.codex`。停用对当前任务属于软回退，关闭项目配置并新建 Astra 任务后才完成硬回退。目标项目以 TaskCenter MCP/Hook 协议向本机 `POST /context-management-pilots/:projectId/intents/:intentId/result` 回写结果，并可用 `POST /context-management-pilots/:projectId/reports` 提交试点证据。
+设置页的 Astra `context_management` 试点区按 TaskCenter 实际登记的 project/workspace 逐项读取项目级 `.codex/config.toml`，展示采集时间、仅新任务生效边界，以及启用后连续三个、带资格证据的自然长 Astra 任务指标。缺失、不可读或存在歧义时保持 `unknown`，不会推断成停用。启用、停用和刷新只写入 append-only intent 并唤醒现有 DevWorkbench 主脑；TaskCenter 不直接修改外部项目或 `~/.codex`。停用对当前任务属于软回退，关闭项目配置并新建 Astra 任务后才完成硬回退。目标项目以 TaskCenter MCP/Hook 协议向本机 `POST /context-management-pilots/intents/:intentId/result` 回写结果，并可用 `POST /context-management-pilots/trials` 提交试点证据。
 
 后续整合优先复用稳定 task/context 关联和摘要投递，避免 Agent 手动维护两套执行状态。Context 投递失败保留 TaskCenter 已落账事实并走补偿，不能回滚或伪造验收。现有 Context 语义任务和生命周期适配仍保留；删除重复接口或迁移状态机需要独立设计与兼容性验证。
 

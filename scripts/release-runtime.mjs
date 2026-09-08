@@ -35,6 +35,7 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_ROUTING_CONTROL_PATH: join(dataRoot, "routing-control.json"),
     TASKCENTER_CONTEXT_TASK_MAP_PATH: join(dataRoot, "context-task-map.json"),
     TASKCENTER_CONTEXT_AUDIT_PATH: join(dataRoot, "context-sync-events.jsonl"),
+    TASKCENTER_CONTEXT_MANAGEMENT_PILOT_EVENTS_PATH: join(dataRoot, "context-management-pilot-events.jsonl"),
     TASKCENTER_SEED_PATH: join(sourceRoot, "data", "requirements.seed.json"),
     TASKCENTER_MODEL_RATES_PATH: join(sourceRoot, "config", "model-rates.json"),
     TASKCENTER_MCP_TOKEN_PATH: join(runtimeRoot, "mcp-token"),

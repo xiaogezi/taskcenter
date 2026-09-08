@@ -91,15 +91,16 @@ import { recommendSessionLifecycle } from "./session-lifecycle.mjs";
 import { buildGovernanceMetrics } from "./governance-metrics.mjs";
 import { taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
 import {
-  buildContextManagementIntentPrompt,
-  contextManagementPilotEventsPath,
+  buildPilotPrompt,
   ContextManagementPilotError,
-  contextManagementPilotSnapshot,
-  createContextManagementIntent,
-  readContextManagementPilotEvents,
-  recordContextManagementTrial,
-  resolveMainBrainTarget,
-  updateContextManagementIntent,
+  createPilotIntent,
+  pilotEventsPath,
+  pilotSnapshot,
+  readPilotEvents,
+  recordPilotTrial,
+  registeredProjectWorkspaces,
+  resolvePilotMainBrain,
+  updatePilotIntent,
 } from "./context-management-pilot.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
@@ -119,7 +120,7 @@ const governanceMetricsPath = resolve(process.env.TASKCENTER_GOVERNANCE_METRICS_
 const taskEventIndexPath = resolve(process.env.TASKCENTER_TASK_EVENT_INDEX_PATH || join(projectRoot, ".local", "runtime", "task-event-index.json"));
 const usageHealthPath = resolve(process.env.TASKCENTER_USAGE_HEALTH_PATH || join(projectRoot, ".local", "runtime", "usage-worker-health.json"));
 const governanceHealthPath = resolve(process.env.TASKCENTER_GOVERNANCE_HEALTH_PATH || join(projectRoot, ".local", "runtime", "governance-worker-health.json"));
-const contextManagementEventsPath = contextManagementPilotEventsPath(projectRoot);
+const contextManagementPilotPath = pilotEventsPath(projectRoot);
 const host = "127.0.0.1";
 const port = Number(process.env.TASKCENTER_CONTROL_PORT || 3001);
 const dryRun = process.env.TASKCENTER_DISPATCH_DRY_RUN === "1";
@@ -180,6 +181,36 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/governance-metrics") {
       sendJson(response, 200, { ...readSnapshot(governanceMetricsPath, buildGovernanceMetrics({ usageReport: currentUsageReport() })), snapshotStatus: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) });
+      return;
+    }
+    if (request.method === "GET" && request.url === "/context-management-pilots") {
+      sendJson(response, 200, pilotSnapshot({ registry: loadSessionRegistry(), tasks: loadTasks(), usageReport: currentUsageReport(), events: readPilotEvents(contextManagementPilotPath) }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/context-management-pilots/intents") {
+      verifyActionRequest(request);
+      const body = await readJsonBody(request);
+      const project = registeredProjectWorkspaces(loadSessionRegistry()).find((item) => item.project_id === body.project_id && item.workspace === resolve(String(body.workspace || "")));
+      if (!project) throw new ContextManagementPilotError(404, "目标不是已登记的项目 workspace。");
+      const result = createPilotIntent(contextManagementPilotPath, { ...body, project_id: project.project_id, workspace: project.workspace });
+      if (!result.idempotent) void dispatchPilotIntent(result.intent);
+      sendJson(response, result.idempotent ? 200 : 202, { accepted: true, ...result });
+      return;
+    }
+    const pilotResultMatch = request.method === "POST" ? request.url?.match(/^\/context-management-pilots\/intents\/([0-9a-f-]{36})\/result$/i) : null;
+    if (pilotResultMatch) {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      if (!['succeeded', 'failed'].includes(body.status)) throw new ContextManagementPilotError(400, "项目回执必须是 succeeded 或 failed。");
+      const intent = updatePilotIntent(contextManagementPilotPath, pilotResultMatch[1], body.status, body);
+      sendJson(response, 200, { accepted: true, intent });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/context-management-pilots/trials") {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      const report = recordPilotTrial(contextManagementPilotPath, body);
+      sendJson(response, 201, { accepted: true, report });
       return;
     }
     const lifecycleMatch = request.method === "GET" ? request.url?.match(/^\/session-lifecycle(?:\?session_id=([^&]+))?$/) : null;
@@ -421,55 +452,6 @@ const server = createServer(async (request, response) => {
       const usage = currentUsageReport().rate_limits?.primary?.used_percent;
       const policy = routingRoles().optional_astra_policy;
       sendJson(response, 200, { policy, used_percent: Number.isFinite(Number(usage)) ? Number(usage) : null, optional_enhancement_allowed: Number.isFinite(Number(usage)) && Number(usage) <= policy.threshold_percent });
-      return;
-    }
-    if (request.method === "GET" && request.url === "/context-management-pilots") {
-      sendJson(response, 200, currentContextManagementPilots());
-      return;
-    }
-    const contextAction = request.method === "POST" ? request.url?.match(/^\/context-management-pilots\/([^/]+)\/actions$/) : null;
-    if (contextAction) {
-      verifyActionRequest(request);
-      const projectId = decodeURIComponent(contextAction[1]);
-      const body = await readJsonBody(request);
-      const snapshot = currentContextManagementPilots();
-      const project = snapshot.projects.find((item) => item.project_id === projectId);
-      if (!project) throw new ContextManagementPilotError(404, "项目没有已登记的 TaskCenter workspace。");
-      const created = createContextManagementIntent(contextManagementEventsPath, { request_id: body.requestId, project_id: projectId, workspace: project.workspace, workspaces: project.workspaces, action: body.action });
-      if (!created.idempotent) {
-        try {
-          const target = resolveMainBrainTarget(loadVisibleTasks(), loadSessionRegistry(), projectId);
-          const now = new Date().toISOString();
-          const record = { id: randomUUID(), requirementId: `context-management:${projectId}`, requirementTitle: `处理 ${projectId} context_management 试点`, contextManagementIntentId: created.intent.intent_id, threadId: target.session_id, threadTitle: "DevWorkbench 主脑接续", mode: "session_message", status: dryRun ? "dry_run" : "preparing", pendingPrompt: buildContextManagementIntentPrompt(created.intent), workingDirectory: target.workspace, createdAt: now, updatedAt: now, error: "" };
-          dispatches.push(record); persistDispatches();
-          if (!dryRun) {
-            const state = inspectSessionState(target.session_id, sessionsRoot);
-            if (state.busy || activeThreadDispatches.has(target.session_id)) finishDispatch(record, "queued", "目标主脑 Session 正忙，空闲后自动投递。", false); else void startExistingDispatch(record);
-          }
-        } catch (error) {
-          updateContextManagementIntent(contextManagementEventsPath, created.intent.intent_id, "failed", { project_id: projectId, message: safeError(error) });
-          throw error;
-        }
-      }
-      sendJson(response, created.idempotent ? 200 : 202, { accepted: true, idempotent: created.idempotent, intent: created.intent, snapshot: currentContextManagementPilots() });
-      return;
-    }
-    const contextResult = request.method === "POST" ? request.url?.match(/^\/context-management-pilots\/([^/]+)\/intents\/([0-9a-f-]{36})\/result$/i) : null;
-    if (contextResult) {
-      verifyTaskRequest(request);
-      const projectId = decodeURIComponent(contextResult[1]);
-      const body = await readJsonBody(request);
-      updateContextManagementIntent(contextManagementEventsPath, contextResult[2], body.status, { ...body, project_id: projectId });
-      sendJson(response, 200, { accepted: true, snapshot: currentContextManagementPilots() });
-      return;
-    }
-    const contextReport = request.method === "POST" ? request.url?.match(/^\/context-management-pilots\/([^/]+)\/reports$/) : null;
-    if (contextReport) {
-      verifyTaskRequest(request);
-      const projectId = decodeURIComponent(contextReport[1]);
-      const body = await readJsonBody(request);
-      recordContextManagementTrial(contextManagementEventsPath, { ...body, project_id: projectId });
-      sendJson(response, 201, { accepted: true, snapshot: currentContextManagementPilots() });
       return;
     }
     if (request.method === "POST" && request.url === "/routing/optional-astra-policy") {
@@ -1122,10 +1104,6 @@ function currentUsageReport() {
   return readSnapshot(usageReportPath, emptyUsageReport());
 }
 
-function currentContextManagementPilots() {
-  return contextManagementPilotSnapshot({ registry: loadSessionRegistry(), tasks: loadVisibleTasks(), usageReport: currentUsageReport(), events: readContextManagementPilotEvents(contextManagementEventsPath) });
-}
-
 function readSnapshot(path, fallback) {
   try {
     const info = statSync(path);
@@ -1192,6 +1170,45 @@ server.listen(port, host, () => {
   console.log(`TaskCenter control server is listening on http://${host}:${port}.`);
 });
 
+function dispatchPilotIntent(intent) {
+  try {
+    if (dryRun) {
+      updatePilotIntentIfOpen(intent.intent_id, "failed", { message: "dry-run 环境只记录 intent，不派发主脑。" });
+      return;
+    }
+    const brain = resolvePilotMainBrain(loadTasks(), loadSessionRegistry());
+    const record = {
+      id: randomUUID(),
+      pilotIntentId: intent.intent_id,
+      requirementId: `context-management:${intent.project_id}`,
+      requirementTitle: `context_management ${intent.action}`,
+      contextThreadId: brain.session_id,
+      threadId: brain.session_id,
+      threadTitle: "DevWorkbench 主脑",
+      mode: "existing_session",
+      status: "queued",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      error: "等待主脑处理。",
+      pendingPrompt: buildPilotPrompt(intent, `http://${host}:${port}`),
+      workingDirectory: validCwd(brain.workspace),
+    };
+    dispatches.push(record);
+    persistDispatches();
+    const state = inspectSessionState(record.threadId, sessionsRoot);
+    if (state.busy || activeThreadDispatches.has(record.threadId)) return;
+    void startExistingDispatch(record);
+  } catch (error) {
+    try { updatePilotIntentIfOpen(intent.intent_id, "failed", { message: safeError(error) }); } catch { /* intent 已持久化，避免二次错误覆盖原始失败 */ }
+  }
+}
+
+function updatePilotIntentIfOpen(intentId, status, patch) {
+  const latest = readPilotEvents(contextManagementPilotPath).filter((event) => event.intent_id === intentId).at(-1);
+  if (["succeeded", "failed"].includes(latest?.status)) return latest;
+  return updatePilotIntent(contextManagementPilotPath, intentId, status, patch);
+}
+
 async function sendToCodex(mode, threadId, prompt, workingDirectory, hooks = {}) {
   const moduleName = process.env.TASKCENTER_CODEX_SDK_MODULE || "@openai/codex-sdk";
   const moduleSpecifier = isAbsolute(moduleName) ? pathToFileURL(moduleName).href : moduleName;
@@ -1245,13 +1262,6 @@ function finishDispatch(record, status, error, clearPending = true) {
   record.error = String(error || "").slice(0, 500);
   record.updatedAt = new Date().toISOString();
   persistDispatches();
-  if (record.contextManagementIntentId && ["delivering", "running", "completed", "failed"].includes(status)) {
-    try {
-      updateContextManagementIntent(contextManagementEventsPath, record.contextManagementIntentId, status === "failed" ? "failed" : "processing", { message: status === "completed" ? "主脑已完成接续处理，等待目标项目回写。" : record.error });
-    } catch (contextError) {
-      console.error("TaskCenter context_management intent 状态记录失败:", safeError(contextError));
-    }
-  }
   if (record.proposalId && record.reflectionExecutionId) {
     updateReflectionExecutionState(record, {
       sessionId: record.threadId || "",
@@ -1277,12 +1287,22 @@ async function startExistingDispatch(record) {
       prompt: record.pendingPrompt,
       workingDirectory: validCwd(record.workingDirectory),
       sessionsRoot,
-      onStarted: () => finishDispatch(record, "running", "消息已写入原 Session，Codex 正在处理。", false),
+      onStarted: () => {
+        finishDispatch(record, "running", "消息已写入原 Session，Codex 正在处理。", false);
+        if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "processing", { message: `主脑 Session ${record.threadId} 正在处理。` });
+      },
     });
     finishDispatch(record, "completed", "原 Session 已完成本次 turn。");
+    if (record.pilotIntentId) {
+      const latest = readPilotEvents(contextManagementPilotPath).filter((event) => event.intent_id === record.pilotIntentId).at(-1);
+      if (!latest || !["succeeded", "failed"].includes(latest.status)) {
+        updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: "主脑 turn 已结束，但目标项目未回写终态。可重新发起操作。" });
+      }
+    }
   } catch (error) {
     const reason = safeError(error);
     finishDispatch(record, "failed", `投递失败：${reason}`);
+    if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: reason });
     blockReflectionTask(record, reason);
   } finally {
     activeThreadDispatches.delete(record.threadId);
@@ -1416,7 +1436,9 @@ async function processQueue() {
         if (state.busy) continue;
         void startExistingDispatch(record);
       } catch (error) {
-        finishDispatch(record, "failed", `队列检查失败：${safeError(error)}`);
+        const reason = `队列检查失败：${safeError(error)}`;
+        finishDispatch(record, "failed", reason);
+        if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: reason });
       }
     }
   } finally {
@@ -1433,6 +1455,7 @@ function migrateLegacyDispatches() {
       record.updatedAt = new Date().toISOString();
       delete record.pendingPrompt;
       delete record.workingDirectory;
+      if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: record.error });
       changed = true;
       continue;
     }
@@ -1440,6 +1463,7 @@ function migrateLegacyDispatches() {
       record.status = "failed";
       record.error = "历史记录：缺少可恢复的队列上下文，请重新发送。";
       record.updatedAt = new Date().toISOString();
+      if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: record.error });
       delete record.pid;
       changed = true;
       continue;

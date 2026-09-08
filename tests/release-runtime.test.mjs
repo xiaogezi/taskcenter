@@ -22,6 +22,7 @@ test("正式 release 从不可变源码运行但继续绑定正式数据目录",
   assert.equal(environment.TASKCENTER_WEB_MODE, "start");
   assert.equal(environment.TASKCENTER_TASK_LEDGER_PATH, "/taskcenter/data/task-ledger.json");
   assert.equal(environment.TASKCENTER_TASK_REUSE_DECISIONS_PATH, "/taskcenter/data/task-reuse-decisions.jsonl");
+  assert.equal(environment.TASKCENTER_CONTEXT_MANAGEMENT_PILOT_EVENTS_PATH, "/taskcenter/data/context-management-pilot-events.jsonl");
   assert.equal(environment.TASKCENTER_DASHBOARD_PATH, "/taskcenter/data/dashboard.json");
   assert.equal(environment.TASKCENTER_USAGE_INDEX_PATH, "/taskcenter/runtime/usage-index.json");
   assert.equal(environment.TASKCENTER_USAGE_REPORT_PATH, "/taskcenter/runtime/usage-report.json");

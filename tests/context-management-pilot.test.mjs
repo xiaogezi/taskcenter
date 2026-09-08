@@ -1,56 +1,90 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-
 import {
-  contextManagementPilotSnapshot,
-  createContextManagementIntent,
+  buildPilotPrompt,
+  createPilotIntent,
   inspectProjectConfig,
-  inspectProjectConfigs,
   parseExperimentalMode,
-  updateContextManagementIntent,
+  pilotSnapshot,
+  readPilotEvents,
+  recordPilotTrial,
+  updatePilotIntent,
 } from "../scripts/context-management-pilot.mjs";
 
-test("parses only the context_management experimental flag", () => {
-  assert.equal(parseExperimentalMode("[features.context_management]\nexperimental_mode = true\n"), true);
-  assert.equal(parseExperimentalMode("[features.context_management]\nexperimental_mode = false # rollback\n"), false);
-  assert.equal(parseExperimentalMode("[features]\nexperimental_mode = true\n"), "unknown");
+test("按实际登记 workspace 读取项目级 experimental_mode，无法证明时为 unknown", async () => {
+  const root = await mkdtemp(join(tmpdir(), "taskcenter-pilot-"));
+  const enabled = join(root, "inStory-worktrees", "pilot");
+  const missing = join(root, "inStory");
+  await mkdir(join(enabled, ".codex"), { recursive: true });
+  await mkdir(missing, { recursive: true });
+  await writeFile(join(enabled, ".codex", "config.toml"), "[features.context_management]\nexperimental_mode = true\n");
+  const registry = {
+    a: { sessionId: "a", projectId: "instory", workspace: enabled },
+    b: { sessionId: "b", projectId: "instory", workspace: missing },
+  };
+  const snapshot = pilotSnapshot({ registry, now: "2026-09-08T00:00:00.000Z" });
+  assert.equal(snapshot.projects.length, 2);
+  assert.equal(snapshot.projects.find((item) => item.workspace === enabled).context_management.state, "enabled");
+  assert.equal(snapshot.projects.find((item) => item.workspace === missing).context_management.state, "unknown");
+  assert.equal(inspectProjectConfig(enabled).applies_to, "new_tasks_only");
+  assert.equal(parseExperimentalMode("[features.context_management]\nexperimental_mode = false"), false);
+  assert.equal(parseExperimentalMode('description = """\n[features.context_management]\nexperimental_mode = true\n"""'), "unknown");
+  assert.equal(parseExperimentalMode("[features.context_management]\nexperimental_mode = true\nexperimental_mode = false"), "unknown");
+  assert.equal(parseExperimentalMode('[features.context_management]\nexperimental_mode = true\n"experimental_mode" = false'), "unknown");
+  assert.equal(parseExperimentalMode("[features.context_management]\n\"experimental_mode' = true"), "unknown");
+  assert.equal(parseExperimentalMode("[features.context_management]\n[other] # comment\nexperimental_mode = true"), "unknown");
+  assert.equal(parseExperimentalMode("[features.context_management]\nexperimental_mode = TRUE"), "unknown");
 });
 
-test("reads every registered workspace and keeps missing or conflicting evidence unknown", () => {
-  const root = mkdtempSync(join(tmpdir(), "taskcenter-context-"));
-  const enabled = join(root, "main"); const missing = join(root, "worktree"); const disabled = join(root, "other");
-  mkdirSync(join(enabled, ".codex"), { recursive: true }); mkdirSync(missing, { recursive: true }); mkdirSync(join(disabled, ".codex"), { recursive: true });
-  writeFileSync(join(enabled, ".codex", "config.toml"), "[features.context_management]\nexperimental_mode = true\n");
-  writeFileSync(join(disabled, ".codex", "config.toml"), "[features.context_management]\nexperimental_mode = false\n");
-  assert.equal(inspectProjectConfig(missing).state, "unknown");
-  const partial = inspectProjectConfigs([enabled, missing]);
-  assert.equal(partial.state, "unknown"); assert.equal(partial.evidence.length, 2); assert.match(partial.error, /部分 workspace/);
-  const conflict = inspectProjectConfigs([enabled, disabled]);
-  assert.equal(conflict.state, "unknown"); assert.match(conflict.error, /冲突/);
+test("intent 与项目回执使用 append-only 状态，三任务指标缺失保持 unknown", async () => {
+  const root = await mkdtemp(join(tmpdir(), "taskcenter-pilot-events-"));
+  const path = join(root, "events.jsonl");
+  const requestId = "019f0000-0000-7000-8000-000000000001";
+  const created = createPilotIntent(path, { request_id: requestId, project_id: "instory", workspace: root, action: "disable" });
+  assert.equal(created.intent.status, "pending");
+  assert.equal(createPilotIntent(path, { request_id: requestId, project_id: "instory", workspace: root, action: "disable" }).idempotent, true);
+  updatePilotIntent(path, created.intent.intent_id, "processing", { message: "已唤醒主脑" });
+  updatePilotIntent(path, created.intent.intent_id, "succeeded", { observed_state: "disabled", occurred_at: "2026-09-08T00:00:00.000Z" });
+  const enabledIntent = createPilotIntent(path, { request_id: "019f0000-0000-7000-8000-000000000002", project_id: "instory", workspace: root, action: "enable" });
+  updatePilotIntent(path, enabledIntent.intent.intent_id, "succeeded", { observed_state: "enabled", occurred_at: "2026-09-08T01:00:00.000Z" });
+  recordPilotTrial(path, { project_id: "instory", workspace: root, task_id: "task-1", natural_long_task: true, qualification_evidence: ["跨越两个实现阶段并完成独立 Review"], prepare_turn: "passed", repeated_reads: null, rework_count: false });
+  const snapshot = pilotSnapshot({
+    registry: { a: { sessionId: "a", projectId: "instory", workspace: root } },
+    tasks: [{ id: "task-1", sessionId: "a", workspace: root, model: "gpt-6-astra", createdAt: "2026-09-08T02:00:00.000Z" }],
+    events: readPilotEvents(path),
+  });
+  assert.equal(snapshot.projects[0].latest_intent.status, "succeeded");
+  assert.equal(snapshot.projects[0].trial.completed, 1);
+  assert.equal(snapshot.projects[0].trial.tasks[0].repeated_reads, "unknown");
+  assert.equal(snapshot.projects[0].trial.tasks[0].rework_count, "unknown");
+  assert.equal(snapshot.projects[0].trial.tasks[0].review, "unknown");
+  assert.deepEqual(snapshot.projects[0].trial.tasks[0].qualification_evidence, ["跨越两个实现阶段并完成独立 Review"]);
+  updatePilotIntent(path, enabledIntent.intent.intent_id, "succeeded", { observed_state: "enabled", occurred_at: "2026-09-08T03:00:00.000Z" });
+  assert.equal(pilotSnapshot({ registry: { a: { sessionId: "a", projectId: "instory", workspace: root } }, tasks: [{ id: "task-1", sessionId: "a", workspace: root, model: "gpt-6-astra", createdAt: "2026-09-08T02:00:00.000Z" }], events: readPilotEvents(path) }).projects[0].trial.completed, 1);
+  assert.match(buildPilotPrompt(created.intent), /软停止/);
+  assert.match(buildPilotPrompt(created.intent), /新建 Astra 任务/);
 });
 
-test("snapshot preserves actual registered workspaces and unknown trial fields", () => {
-  const root = mkdtempSync(join(tmpdir(), "taskcenter-context-snapshot-"));
-  const main = join(root, "inStory"); const worktree = join(root, "inStory-worktrees", "pilot");
-  mkdirSync(main, { recursive: true }); mkdirSync(join(worktree, ".codex"), { recursive: true });
-  writeFileSync(join(worktree, ".codex", "config.toml"), "[features.context_management]\nexperimental_mode = true\n");
-  const events = [{ type: "context_management.trial.reported", event_id: "e1", project_id: "instory", task_id: "long-1", prepare_turn: "unknown", repeated_reads: "unknown", recovery_cost_tokens: "unknown", rework_count: "unknown", authority_violations: "unknown", occurred_at: "2026-09-08T00:00:00.000Z" }];
-  const snapshot = contextManagementPilotSnapshot({ registry: { a: { projectId: "instory", workspace: main }, b: { projectId: "instory", workspace: worktree } }, tasks: [], events });
-  assert.deepEqual(snapshot.projects[0].workspaces, [main, worktree].sort());
-  assert.equal(snapshot.projects[0].context_management.state, "unknown");
-  assert.equal(snapshot.projects[0].context_management.evidence.find(item => item.workspace === worktree).state, "enabled");
-  assert.equal(snapshot.projects[0].trial.tasks[0].input_tokens, "unknown");
-});
-
-test("intent creation is idempotent and project mismatch cannot append a result", () => {
-  const root = mkdtempSync(join(tmpdir(), "taskcenter-context-intent-")); const path = join(root, "events.jsonl");
-  const request = { request_id: "123e4567-e89b-42d3-a456-426614174000", project_id: "instory", workspace: root, action: "disable" };
-  const first = createContextManagementIntent(path, request); const replay = createContextManagementIntent(path, request);
-  assert.equal(replay.idempotent, true); assert.equal(replay.intent.intent_id, first.intent.intent_id);
-  assert.throws(() => updateContextManagementIntent(path, first.intent.intent_id, "succeeded", { project_id: "other" }), /不匹配/);
-  const result = updateContextManagementIntent(path, first.intent.intent_id, "succeeded", { project_id: "instory", observed_state: "disabled" });
-  assert.equal(result.status, "succeeded");
+test("不存在、非 Astra 或启用前任务不能凑满三任务试点", async () => {
+  const root = await mkdtemp(join(tmpdir(), "taskcenter-pilot-trials-"));
+  const path = join(root, "events.jsonl");
+  const intent = createPilotIntent(path, { request_id: "019f0000-0000-7000-8000-000000000003", project_id: "instory", workspace: root, action: "enable" });
+  updatePilotIntent(path, intent.intent.intent_id, "succeeded", { observed_state: "enabled", occurred_at: "2026-09-08T02:00:00.000Z" });
+  for (const task_id of ["missing-1", "missing-2", "missing-3"]) recordPilotTrial(path, { project_id: "instory", workspace: root, task_id });
+  const snapshot = pilotSnapshot({
+    registry: { a: { sessionId: "a", projectId: "instory", workspace: root } },
+    tasks: [
+      { id: "old", sessionId: "a", model: "gpt-6-astra", createdAt: "2026-09-08T01:00:00.000Z" },
+      { id: "other-model", sessionId: "a", model: "gpt-5.6-terra", createdAt: "2026-09-08T03:00:00.000Z" },
+      { id: "missing-1", sessionId: "a", model: "gpt-6-astra", createdAt: "2026-09-08T04:00:00.000Z" },
+      { id: "missing-2", sessionId: "a", model: "gpt-6-astra", createdAt: "2026-09-08T05:00:00.000Z" },
+      { id: "missing-3", sessionId: "a", model: "gpt-6-astra", createdAt: "2026-09-08T06:00:00.000Z" },
+    ],
+    events: readPilotEvents(path),
+  });
+  assert.equal(snapshot.projects[0].trial.completed, 0);
+  assert.deepEqual(snapshot.projects[0].trial.tasks, []);
 });

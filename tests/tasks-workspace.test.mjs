@@ -46,12 +46,18 @@ test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(isAllowedControlPath("/health", "POST"), false);
   assert.equal(isAllowedControlPath("/health", "GET"), true);
   assert.equal(isAllowedControlPath("/routing/optional-astra-policy", "POST"), true);
+  assert.equal(isAllowedControlPath("/context-management-pilots", "GET"), true);
+  assert.equal(isAllowedControlPath("/context-management-pilots/intents", "POST"), true);
   assert.equal(isAllowedControlPath("/routing/select", "POST"), false);
   assert.equal(isAllowedControlPath("/reflections/item/actions", "POST"), true);
   assert.equal(isAllowedControlPath("/reflections/item/actions", "GET"), false);
-  assert.equal(isAllowedControlPath("/context-management-pilots", "GET"), true);
-  assert.equal(isAllowedControlPath("/context-management-pilots/instory/actions", "POST"), true);
-  assert.equal(isAllowedControlPath("/context-management-pilots/instory/reports", "POST"), false);
   assert.equal(controlProxyTarget("/tasks", "?view=summary&project=/work&bucket=attention&query=api&page=2&page_size=50&ignored=yes")?.toString(), "http://127.0.0.1:3001/tasks?view=summary&project=%2Fwork&bucket=attention&query=api&page=2&page_size=50");
   assert.equal(controlProxyTarget("/tasks/task-1/events", "?limit=30")?.toString(), "http://127.0.0.1:3001/tasks/task-1/events?limit=30");
+});
+
+test("试点 intent 未结束时持续刷新并在卸载时清理轮询", () => {
+  const source = readFileSync("features/console/ConsolePage.tsx", "utf8");
+  assert.match(source, /\["pending", "processing"\]\.includes\(item\.latest_intent\?\.status \|\| ""\)/);
+  assert.match(source, /window\.setInterval\(load, 5000\)/);
+  assert.match(source, /window\.clearInterval\(timer\)/);
 });
