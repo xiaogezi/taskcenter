@@ -11,12 +11,13 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { verifyBugMerge } from "./bug-workflow.mjs";
+import { BugDispatchError, BugDispatchQueue } from "./bug-dispatch-queue.mjs";
 import { sameSubject } from "./completion-state.mjs";
 import {
   DispatchError,
@@ -135,6 +136,10 @@ const allowedOrigins = new Set([
   "http://[::1]:3000",
 ]);
 const dispatches = loadDispatches();
+const bugQueue = new BugDispatchQueue(resolve(process.env.TASKCENTER_BUG_DISPATCHES_PATH || join(projectRoot, "data", "bug-dispatches.json")), {
+  task: id => loadVisibleTasks().find(task => task.id === id),
+  session: id => loadSessionRegistry()[id],
+});
 const requirementOverrides = loadJsonObject(overridesPath);
 const inboxDecisions = loadJsonObject(inboxDecisionsPath);
 const activeThreadDispatches = new Set();
@@ -374,6 +379,38 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/dispatches") {
       sendJson(response, 200, { dispatches: dispatches.slice(-30).reverse() });
+      return;
+    }
+    if (request.method === "GET" && request.url === "/bug-dispatches") {
+      sendJson(response, 200, bugQueue.snapshot()); return;
+    }
+    const bugDispatchMatch = request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/bug-dispatch(?:\/(control))?$/);
+    if (bugDispatchMatch && request.method === "GET" && !bugDispatchMatch[2]) {
+      sendJson(response, 200, bugQueue.snapshot(bugDispatchMatch[1])); return;
+    }
+    if (bugDispatchMatch && request.method === "POST") {
+      verifyActionRequest(request);
+      const body = await readJsonBody(request);
+      const result = bugDispatchMatch[2] ? bugQueue.command(bugDispatchMatch[1], body) : bugQueue.enqueue(bugDispatchMatch[1], body);
+      sendJson(response, 202, { ...bugQueue.snapshot(bugDispatchMatch[1]), idempotent: result.idempotent });
+      if (!result.idempotent && result.record.status !== "cancelled") wakeBugDispatcher(result.record);
+      return;
+    }
+    if (request.method === "POST" && request.url === "/bug-dispatches/host") {
+      verifyBoundMcpRequest(request);
+      const { operation, session_id: sessionId, ...body } = await readJsonBody(request);
+      if (!loadSessionRegistry()[sessionId]) throw new BugDispatchError("宿主 Session 未登记。");
+      let result;
+      if (operation === "snapshot") result = bugQueue.snapshot();
+      else if (operation === "claim") result = bugQueue.claim(sessionId, body.id);
+      else if (operation === "receipt") result = bugQueue.receipt(sessionId, body);
+      else if (operation === "control_receipt") result = bugQueue.commandReceipt(sessionId, body);
+      else if (operation === "merge_lease") result = bugQueue.mergeLease(sessionId, body);
+      else throw new BugDispatchError("未知宿主操作。", 400);
+      sendJson(response, 200, result);
+      if (operation === "receipt" && !result.idempotent && ["awaiting_acceptance", "done_claimed"].includes(body.status)) {
+        for (const record of bugQueue.snapshot().records.filter(r => r.status === "queued")) wakeBugDispatcher(record);
+      }
       return;
     }
     if (request.method === "GET" && request.url?.startsWith("/tasks")) {
@@ -1122,7 +1159,7 @@ const server = createServer(async (request, response) => {
     }
     sendJson(response, 404, { error: "接口不存在。" });
   } catch (error) {
-    const known = error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
+    const known = error instanceof BugDispatchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
     const statusCode = known ? error.statusCode : 500;
     if (!known) {
       console.error("TaskCenter control error:", safeError(error));
@@ -1144,6 +1181,15 @@ function recordRoutingAudit(events, task) {
       workspace: task.workspace,
     });
   }
+}
+
+function wakeBugDispatcher(record) {
+  if (dryRun) { bugQueue.wakeResult(record.id, "隔离 dry-run 未唤醒真实宿主。"); return; }
+  const message = `TaskCenter Bug 事件 ${record.id}，业务任务 ${record.taskId}。先用 taskcenter_bug_dispatch_host(operation=snapshot) 读取最新状态。若已有 threadId，先处理 requested commands：补充/取消用实际 send_message_to_thread，打开用 navigate_to_codex_page；以 control_receipt 回写 sent 或 unavailable 和真实 evidence。已有会话的控制操作不需要 claim 或执行名额，处理后即返回；取消请求不是实际停止。尚无 threadId 时，queued 记录可以首次领取 claim，无名额即返回；claimed/creating/unknown 记录仅原领取者可再次 claim(id) 恢复原 claimToken，resumed=true 只用于核实已有创建结果，绝不重复 create_thread。只有首次领取成功且 resumed=false 才能用 list_projects/create_thread 创建所属项目独立 worktree 可见会话，从核实的当前业务基线启动；补充要求并入创建提示，若有取消请求先核实并报告 unknown，不得继续创建。用 read_thread 核实真实身份、项目、独立worktree并等待自身登记后，以 receipt 回写 running、threadId、projectId、visible=true 和真实 evidence。派发回执后立即返回，不等待整个修复。执行会话只在阻塞/待验收/完成时向派发主脑报告并回写状态，退回修复时先重新取得状态迁移名额再恢复执行。任何宿主工具缺失应报告 unknown/unavailable。队列接口见 README 可见 Bug 派发章节。`;
+  const creationContract = "创建必须使用记录中用户已授权的 baselineCommit 作为 startingState 的既有 ref，不从targetBranch或默认分支猜测。初始提示中携带派发id，要求执行会话先通过send_message_to_thread向派发者回报真实ID/workspace，登记后等待核实再改代码。若create_thread只返回clientThreadId，立即用receipt回写status=creating、clientThreadId、claimToken与稳定eventId/evidence，然后返回；clientThreadId不是可传给read_thread的真实ID。恢复时保留该回执，绝不重复create_thread；根据执行方带派发id的身份回报，用read_thread核实并回写running。身份尚无可靠映射时保持creating/unknown，不猜测。";
+  execFile(process.env.TASKCENTER_CODEX_COMMAND || "codex", ["queue", "--thread", record.claimant || record.dispatcherSessionId, "--message", `${message}\n${creationContract}`], { timeout: 15_000, maxBuffer: 100_000 }, error => {
+    try { bugQueue.wakeResult(record.id, error?.message); } catch (failure) { console.error("Bug wake receipt failed:", safeError(failure)); }
+  });
 }
 
 function currentUsageReport() {

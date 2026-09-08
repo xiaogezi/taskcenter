@@ -460,6 +460,21 @@ server.registerTool("taskcenter_session_status", {
   }
 });
 
+server.registerTool("taskcenter_bug_dispatch_host", {
+  title: "领取可见 Bug 派发并上报真实宿主回执",
+  description: "事件驱动宿主协议。snapshot 读取队列；claim 原子占用两路之一，resumed=true 时不得重复创建；receipt 必须基于真实桌面工具与已登记独立 worktree。控制回执 sent 仅表示发送，不能证明停止。merge_lease 仅串行化外部合入，不授权或执行合并。身份取当前运行时 Session。",
+  inputSchema: z.object({
+    operation: z.enum(["snapshot", "claim", "receipt", "control_receipt", "merge_lease"]),
+    id: z.string().uuid().optional(), eventId: z.string().min(1).max(160).optional(),
+    claimToken: z.string().uuid().optional(), clientThreadId: z.string().min(1).max(200).optional(), threadId: z.string().uuid().optional(), projectId: z.string().min(1).max(300).optional(), visible: z.boolean().optional(),
+    status: z.enum(["creating", "running", "blocked", "unknown", "awaiting_acceptance", "done_claimed"]).optional(),
+    evidence: z.string().min(1).max(2000).optional(), outcome: z.enum(["sent", "unavailable"]).optional(), release: z.boolean().optional(),
+  }).strict(),
+}, async (input, extra) => {
+  const context = resolveTrustedMcpSession(extra);
+  return context.sessionId ? postLocal("/bug-dispatches/host", { ...input, session_id: context.sessionId, response_mode: "full" }) : result(context);
+});
+
 server.registerTool("taskcenter_session_gate_exemption_status", {
   title: "查询当前 Session 门禁豁免",
   description: "查询运行时绑定的当前 Codex Session 是否免除 active task 前置条件；不接受目标 Session 参数，也不修改白名单。",

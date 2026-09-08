@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { BugDispatch } from "./BugDispatch";
 
 const fields = { source: "反馈来源 / 原文", version: "受影响版本", preconditions: "前置条件", steps: "复现步骤", actual: "实际行为", expected: "预期行为与依据", acceptanceSteps: "验收步骤", testArtifact: "测试包或运行入口", targetBranch: "目标本地分支" };
 const statuses: Record<string, string> = { repairing: "修复与验证中", returned: "验收退回", awaiting_acceptance: "待你验收", awaiting_merge: "待合入", completed: "已核验合入", cancelled: "已取消" };
@@ -33,6 +34,7 @@ export function BugDetails({ task, onChanged }: { task: BugTask; onChanged: () =
       <button disabled={busy} type="submit">保存 Bug 资料</button>
     </form> : <><dl>{Object.entries(fields).map(([key, label]) => <div key={key}><dt>{label}</dt><dd style={{ whiteSpace: "pre-wrap" }}>{task.bug?.[key]}</dd></div>)}</dl><button disabled={busy} onClick={() => { setDraft(task.bug || {}); setEditing(true); }}>编辑资料</button><p>修改资料会使已有验收与合入确认失效。</p></>}
     {task.bug && !editing && <>
+      <BugDispatch taskId={task.id} />
       <h3>人工验收</h3><p>请按上面的步骤检查测试版本。通过后进入待合入；退回后继续由原任务处理。</p>
       <label>验收结果说明<textarea value={reason} maxLength={1000} onChange={event => setReason(event.target.value)} /></label>
       <label><input type="checkbox" checked={confirmed} onChange={event => setConfirmedVersion(event.target.checked ? task.updatedAt : undefined)} />我已核对当前修订和验收步骤（任务变化后需重新确认）</label>

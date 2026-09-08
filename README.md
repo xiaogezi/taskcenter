@@ -1,5 +1,24 @@
 # TaskCenter（任务中心）
 
+### 可见 Bug 派发（本地事件协议）
+
+Bug 详情页可以加入独立修复队列。每个业务 task 只有一条持久派发，默认最多两路；独占资源键相同则排队。记录与传统 SDK/CLI dispatch 分开，SDK 创建结果不能冒充桌面可见会话。未配置或不支持 `codex queue` 的机器显示事件入口不可用，不自动改走隐藏执行器。
+
+控制面路径：`GET /bug-dispatches`、`GET/POST /tasks/:id/bug-dispatch`、`POST /tasks/:id/bug-dispatch/control`。加入队列必须明确提供用户授权的完整 `baselineCommit`，服务端核实 commit 存在；另可传 `dispatcherSessionId`（默认业务任务关联的已登记会话）与 `resources: string[]`。目标合入分支不等于用户授权创建基线，不能默认从它或仓库默认分支创建。控制输入为 `{action: "supplement" | "cancel" | "open", eventId, message}`。POST 只接受当前页面来源和既有操作确认标记，浏览器不能调用宿主回执路径。
+
+宿主使用运行时绑定身份的 `taskcenter_bug_dispatch_host`，对应受 MCP 凭据保护的 `POST /bug-dispatches/host`：
+
+1. `operation: "snapshot"` 获取记录。事件通过固定 argv 的 `codex queue --thread ID --message TEXT` 唤醒主脑；HTTP 请求持久化后即返回，不等修复结束。部署不会自动重放不确定的创建操作，也不轮询唤醒主脑。
+2. `operation: "claim", id` 原子占位。没有名额/资源则返回 `record:null`。任何已登记主脑均可领取；`resumed:true` 表示既有 claim，只能核实先前结果，**不得重新创建**。不确定 claim 保留名额，需人工核实，不能 TTL 到期后重复创建。
+3. 主脑按集中角色路由用实际 `list_projects/create_thread` 创建所属项目独立 worktree，`startingState` 使用已授权的 `baselineCommit` 既有 ref。创建提示携带派发 id，要求执行会话先发送真实 ID/workspace 给派发者、自行登记并等待核实再改代码。若宿主只返回 `clientThreadId`，立即回写 `{operation:"receipt", id, claimToken, eventId, status:"creating", clientThreadId, evidence}` 并返回；该记录持久占位，重启后只恢复核实，不重建。`clientThreadId` 不得当作真实 threadId 调用 `read_thread`。收到执行方带派发 id 的身份回报后，用 `read_thread` 核实真实会话、项目和 workspace，再回写 `{operation:"receipt", id, claimToken, eventId, status:"running", threadId, projectId, visible:true, evidence}`。服务端另查 Session 登记、Git 根目录/common-dir 和初始 HEAD 必须等于授权基线，拒绝父会话、其他仓库、相同工作树及子目录、重复会话和错误基线。身份映射不明时保持 creating/unknown，不猜测。`evidence` 是宿主操作回执引用；服务端不能独立调用桌面 API 验证该声明。
+4. 派发回执后主脑返回。执行会话只在阻塞、待验收或完成时向主脑报告，并以同一 `id` 回写 `blocked/awaiting_acceptance/done_claimed` 与稳定 `eventId/evidence`；`done_claimed` 不是验收。待验收或完成释放执行名额，并事件唤醒排队项。恢复执行仍需名额与资源通过。
+5. 主脑处理 `commands`：补充/运行中取消用实际 `send_message_to_thread`，打开用 `navigate_to_codex_page`；用 `{operation:"control_receipt", id, eventId, outcome:"sent"|"unavailable", evidence}` 回写。排队取消原子撤回，后续 claim 不会领取；已领取或运行的取消只是请求，不释放名额，不声称停止。暂停、继续没有已核实通道，UI 禁用。任何缺失宿主能力必须明确报告不可用。
+6. 外部合入前，已绑定执行会话在业务任务 `bugClosure.status=awaiting_merge` 时用 `{operation:"merge_lease", id}` 领取仓库级串行租约，完成或失败后以 `release:true` 释放。租约不执行、不授权 Git 合并，也不能约束绕过协议的外部合并；仍需原有人工授权和合入核验。
+
+当前是部分交付：事件队列、回执、并发/资源锁与 UI 能力边界。新增 MCP 工具需要宿主加载新版本；真实“事件→桌面创建→身份核实→回执”尚需在获准业务场景中验收，不能用隔离测试回执冒充真实业务验收。旧 `/dispatch` 路径保持原语义。取消后的同一 task 不自动重派，避免重复执行。
+
+隔离验证可以设置 `TASKCENTER_BUG_DISPATCHES_PATH` 和独立 `TASKCENTER_CONTROL_PORT`；同源代理仅连接该端口的 loopback。其他运行态仍按现有隔离变量设置，不能连接正式数据做测试。
+
 TaskCenter 是一个本地优先、核心协议与平台解耦的任务治理看板。人、Agent、CI、PR 审查平台和其他任务平台都可以创建任务、提交证据与独立验收；Codex、Claude Code、Context Agent、MCP 和 Hook 都只是可选适配器。
 
 > 当前版本：`v0.1.5`。核心 Web、MCP、Hook 与服务控制支持 macOS、Linux/WSL2 和原生 Windows；桌面快捷入口仅支持 macOS。
