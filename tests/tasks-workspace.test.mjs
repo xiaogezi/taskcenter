@@ -21,8 +21,10 @@ test("桌面详情展开时主工作区应开启三列网格", () => {
   assert.match(styleSource, /\.task-workspace\.with-open-detail \{\s*grid-template-columns:\s*220px minmax\(0, 1fr\) minmax\(320px, min\(390px, 34vw\)\);\s*\}/);
   assert.match(styleSource, /\.task-detail \{[\s\S]*width: 100%;[\s\S]*min-width: 0;/);
   assert.match(componentSource, /<th>Token<\/th>/);
-  assert.match(componentSource, /task\.tokenUsage \? formatTokens\(task\.tokenUsage\.totalTokens\) : "暂无归属"/);
-  assert.match(componentSource, /输入 \$\{formatTokens\(task\.tokenUsage\.usage\.input\)\}/);
+  assert.match(componentSource, /<strong>总计 \{formatTokens\(task\.tokenUsage\.totalTokens\)\}<\/strong>/);
+  assert.match(componentSource, /输入 \{formatTokens\(task\.tokenUsage\.usage\.input\)\}（缓存/);
+  assert.match(componentSource, /\["输入 Token", inputTokens\]/);
+  assert.match(componentSource, /\["输出 Token", outputTokens\]/);
 });
 
 test("四轴状态与需处理判定忽略通用 completion pending", () => {
@@ -66,6 +68,7 @@ test("会话与试点页面持续刷新标题并在卸载时清理轮询", () =>
   assert.equal(source.match(/window\.clearInterval\(timer\)/g)?.length, 2);
   assert.match(source, /item\.title \|\| "未命名会话"/);
   assert.match(source, /session\?\.title \|\| "未命名会话"/);
-  assert.match(source, /item\.tokenUsage \? formatTokens\(item\.tokenUsage\.totalTokens\) : "暂无统计"/);
-  assert.match(source, /输入 \{formatTokens\(item\.tokenUsage\.usage\.input\)\}/);
+  assert.match(source, /Token 总计：\{item\.tokenUsage \? formatTokens\(item\.tokenUsage\.totalTokens\) : "暂无统计"\}/);
+  assert.match(source, /输入：\{formatTokens\(item\.tokenUsage\.usage\.input\)\} · 其中缓存/);
+  assert.match(source, /输出：\{formatTokens\(item\.tokenUsage\.usage\.output\)\} · 其中推理/);
 });
