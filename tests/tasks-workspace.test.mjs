@@ -70,6 +70,8 @@ test("模型调度页展示额度、真实调度和刷新反馈", () => {
   assert.match(source, /刷新成功：/);
   assert.match(source, /刷新失败：/);
   assert.match(source, /暂无真实调度记录/);
+  assert.match(source, /历史快照（重置时间已过，当前额度未知）/);
+  assert.match(source, /按最近更新的 100 个任务聚合，最多展示 20 条/);
 });
 
 test("会话与试点页面持续刷新标题并在卸载时清理轮询", () => {
