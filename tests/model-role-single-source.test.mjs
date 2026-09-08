@@ -18,7 +18,6 @@ test("活跃路由代码和项目规则只引用角色配置，不复制具体�
     "scripts/model-role-config.mjs",
     "scripts/routing-control.mjs",
     "scripts/taskcenter-mcp.mjs",
-    "app/task-event-display.mjs",
     "app/page.tsx",
   ];
   for (const path of activeFiles) {

@@ -95,69 +95,24 @@ test("只把持续能力和缺陷反馈识别为需求", () => {
   }
 });
 
-test("服务端提供新版任务入口并保留旧版路由", async () => {
-  for (const pathname of ["/", "/tasks", "/legacy"]) {
-    const response = await render(pathname);
-    assert.equal(response.status, 200, pathname);
-    assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-    assert.match(await response.text(), /<title>TaskCenter/);
-  }
+test("服务端只保留新版任务入口", async () => {
+  const taskResponse = await render("/tasks");
+  assert.equal(taskResponse.status, 200);
+  assert.match(taskResponse.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.match(await taskResponse.text(), /<title>TaskCenter/);
+
+  const rootResponse = await render("/");
+  assert.equal(rootResponse.status, 307);
+  assert.equal(rootResponse.headers.get("location"), "http://localhost/tasks");
+
+  const legacyResponse = await render("/legacy");
+  assert.equal(legacyResponse.status, 404);
+
   const rootSource = await readFile(new URL("app/page.tsx", root), "utf8");
   const workspaceSource = await readFile(new URL("features/tasks/TaskWorkspace.tsx", root), "utf8");
-  const legacySource = await readFile(new URL("app/legacy/page.tsx", root), "utf8");
-  assert.match(rootSource, /window\.location\.replace\("\/tasks"\)/);
+  const consoleSource = await readFile(new URL("features/console/ConsolePage.tsx", root), "utf8");
+  assert.match(rootSource, /redirect\("\/tasks"\)/);
   assert.match(workspaceSource, /任务工作区/);
-  assert.match(legacySource, /\.\.\/page/);
-});
-
-test("治理 Review 诊断默认折叠并保留完整内容", async () => {
-  const source = await readFile(new URL("app/page.tsx", root), "utf8");
-  assert.match(source, /<details className="governance-block governance-review-details">/);
-  assert.match(source, /Review 流程诊断/);
-  assert.match(source, /governance-review-content/);
-  assert.doesNotMatch(source, /<details className="governance-block governance-review-details" open/);
-});
-
-test("会话主动任务只保留一套生命周期筛选", async () => {
-  const source = await readFile(new URL("app/page.tsx", root), "utf8");
-  assert.match(source, /aria-label="未完成任务阶段筛选"/);
-  assert.match(source, /aria-label="任务终态"/);
-  assert.doesNotMatch(source, /需要关注：/);
-  assert.doesNotMatch(source, /aria-label="时间筛选"/);
-  assert.doesNotMatch(source, /attentionCounts/);
-});
-
-test("任务表展示生命周期 Token 估算与明细维度", async () => {
-  const source = await readFile(new URL("app/page.tsx", root), "utf8");
-  assert.match(source, /Token（估算）/);
-  assert.match(source, /last_token_usage/);
-  assert.match(source, /usagePayload\.lifetime\?\.byTask/);
-  assert.match(source, /usagePayload\.lifetime\?\.bySession/);
-  assert.match(source, /session-token-total/);
-  assert.match(source, /会话精确值：\$\{formatExactTokens\(sessionTotalTokens\)\} Token/);
-  assert.match(source, /notation: "compact"/);
-  assert.match(source, /maximumSignificantDigits: 3/);
-  assert.match(source, /精确值：\$\{formatExactTokens\(tokenUsage\.totalTokens\)\} Token/);
-  assert.match(source, /推理 \{formatTokens\(tokenUsage\.usage\.reasoning\)\}/);
-});
-
-test("页面展示可审计的模型编排策略与用量不可用态", async () => {
-  const source = await readFile(new URL("app/page.tsx", root), "utf8");
-  assert.match(source, /额度与证据驱动的模型编排/);
-  assert.match(source, /额度快照不可用，不以猜测升级高级模型/);
-  assert.match(source, /Pro 周窗口已用/);
-  assert.match(source, /不等于额度百分比/);
-  assert.match(source, /preferred_model=\{escalationModel/);
-  assert.match(source, /Reviewer：/);
-  assert.match(source, /最近真实路由/);
-  assert.match(source, /可选增强控制/);
-  assert.match(source, /自定义 Astra 阈值/);
-});
-
-test("已完成反思提案使用单一全局复查入口并降级历史派发错误", async () => {
-  const source = await readFile(new URL("app/page.tsx", root), "utf8");
-  assert.match(source, /复查已完成提案/);
-  assert.match(source, /proposal\.status === "accepted"/);
-  assert.match(source, /历史派发记录（不影响当前完成声明）/);
-  assert.doesNotMatch(source, />再次反思验证效果</);
+  assert.doesNotMatch(workspaceSource, /\/legacy|旧版/);
+  assert.doesNotMatch(consoleSource, /\/legacy|旧版/);
 });

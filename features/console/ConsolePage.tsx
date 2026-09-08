@@ -35,7 +35,7 @@ function useUrlState(name: string, fallback: string) {
 }
 
 function Layout({ section, children }: { section: Section; children: ReactNode }) {
-  return <main className="task-workspace"><aside className="task-nav"><a className="task-logo" href="/tasks">TASK<span>CENTER</span></a><nav><a href="/tasks">任务工作区</a>{entries.map(([key, href, label]) => <a key={key} className={key === section ? "active" : ""} href={href}>{label}</a>)}<a href="/legacy">旧版首页</a></nav></aside><section className="task-main">{children}</section></main>;
+  return <main className="task-workspace"><aside className="task-nav"><a className="task-logo" href="/tasks">TASK<span>CENTER</span></a><nav><a href="/tasks">任务工作区</a>{entries.map(([key, href, label]) => <a key={key} className={key === section ? "active" : ""} href={href}>{label}</a>)}</nav></aside><section className="task-main">{children}</section></main>;
 }
 
 function Header({ code, title, description, refresh }: { code: string; title: string; description: string; refresh: () => void }) {
