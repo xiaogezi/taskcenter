@@ -250,8 +250,9 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/session-status") {
       if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
       const titles = new Map(loadSessionTitles().map((item) => [item.id, item]));
+      const usageBySession = new Map((currentUsageReport().lifetime?.bySession || []).map((item) => [item.sessionId, item]));
       const sessions = getSessionStatuses(availableSessionIds(), loadVisibleTasks())
-        .map((session) => ({ ...session, title: titles.get(session.sessionId)?.title || "", updatedAt: latestTimestamp(titles.get(session.sessionId)?.updatedAt, session.lastSeenAt, session.lastTaskAt) }))
+        .map((session) => ({ ...session, title: titles.get(session.sessionId)?.title || "", updatedAt: latestTimestamp(titles.get(session.sessionId)?.updatedAt, session.lastSeenAt, session.lastTaskAt), tokenUsage: usageBySession.get(session.sessionId) || null }))
         .sort((left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt));
       sendJson(response, 200, { sessions });
       return;

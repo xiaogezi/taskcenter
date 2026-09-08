@@ -186,6 +186,9 @@ async function registerHttpSession(base, session_id, identity = {}) {
 test("会话状态和 Pilot 使用 session_index 标题且不伪造缺失标题", async (context) => {
   await resetLedger();
   const dashboardPath = join(tempDir, "session-title-dashboard.json");
+  await writeFile(envPaths.TASKCENTER_USAGE_REPORT_PATH, JSON.stringify({ lifetime: { bySession: [
+    { sessionId: "session-titled", usage: { input: 100, cachedInput: 25, output: 15, reasoning: 2 }, totalTokens: 117, count: 2 },
+  ] } }));
   await writeFile(dashboardPath, JSON.stringify({ source: { sessionTitles: [
     { id: "session-titled", title: "排查新任务未记录问题", updatedAt: "2099-09-08T02:00:00.000Z" },
     { id: "session-untitled", title: "临时标题", updatedAt: "2099-09-08T01:00:00.000Z" },
@@ -199,6 +202,8 @@ test("会话状态和 Pilot 使用 session_index 标题且不伪造缺失标题"
   assert.deepEqual(sessions.slice(0, 2).map((item) => item.sessionId), ["session-titled", "session-untitled"]);
   assert.equal(sessions.find((item) => item.sessionId === "session-titled").title, "排查新任务未记录问题");
   assert.equal(sessions.find((item) => item.sessionId === "session-untitled").title, "临时标题");
+  assert.deepEqual(sessions.find((item) => item.sessionId === "session-titled").tokenUsage, { sessionId: "session-titled", usage: { input: 100, cachedInput: 25, output: 15, reasoning: 2 }, totalTokens: 117, count: 2 });
+  assert.equal(sessions.find((item) => item.sessionId === "session-untitled").tokenUsage, null);
 
   const projects = (await (await fetch(`${base}/context-management-pilots`)).json()).projects;
   assert.equal(projects.find((item) => item.project_id === "example").sessions[0].title, "排查新任务未记录问题");

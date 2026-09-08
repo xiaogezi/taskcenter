@@ -63,4 +63,6 @@ test("会话与试点页面持续刷新标题并在卸载时清理轮询", () =>
   assert.equal(source.match(/window\.clearInterval\(timer\)/g)?.length, 2);
   assert.match(source, /item\.title \|\| "未命名会话"/);
   assert.match(source, /session\?\.title \|\| "未命名会话"/);
+  assert.match(source, /item\.tokenUsage \? formatTokens\(item\.tokenUsage\.totalTokens\) : "暂无统计"/);
+  assert.match(source, /输入 \{formatTokens\(item\.tokenUsage\.usage\.input\)\}/);
 });
