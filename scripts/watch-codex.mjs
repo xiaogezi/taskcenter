@@ -12,9 +12,11 @@ const configuredThreadIds = process.env.TASKCENTER_THREADS
 let lastFingerprint = "";
 let pendingFingerprint = "";
 let pendingSince = 0;
+let changedSince = 0;
 let syncing = false;
 const pollIntervalMs = Number(process.env.TASKCENTER_POLL_INTERVAL_MS || 5_000);
 const quietPeriodMs = Number(process.env.TASKCENTER_QUIET_PERIOD_MS || 20_000);
+const maxSyncDelayMs = Number(process.env.TASKCENTER_MAX_SYNC_DELAY_MS || 30_000);
 const heartbeatPath = process.env.TASKCENTER_WATCHER_HEARTBEAT_PATH || join(import.meta.dirname, "..", ".local", "runtime", "watcher-heartbeat.json");
 const configuredPathCache = new Map();
 function heartbeat(status = "watching") {
@@ -109,16 +111,20 @@ heartbeat();
 setInterval(() => {
   heartbeat(syncing ? "syncing" : "watching");
   const currentFingerprint = fingerprint();
+  const now = Date.now();
+  if (currentFingerprint === lastFingerprint) changedSince = 0;
   if (currentFingerprint !== pendingFingerprint) {
     pendingFingerprint = currentFingerprint;
-    pendingSince = Date.now();
-    return;
+    pendingSince = now;
+    if (currentFingerprint !== lastFingerprint && !changedSince) changedSince = now;
+    if (!changedSince || now - changedSince < maxSyncDelayMs) return;
   }
   if (
     currentFingerprint !== lastFingerprint &&
-    Date.now() - pendingSince >= quietPeriodMs
+    (now - pendingSince >= quietPeriodMs || now - changedSince >= maxSyncDelayMs)
   ) {
     lastFingerprint = currentFingerprint;
+    changedSince = 0;
     sync();
   }
 }, pollIntervalMs);

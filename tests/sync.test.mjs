@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -236,11 +236,12 @@ test("Watcher 监听 session_index，Codex 补齐标题后自动纠正显示", a
   const dashboardPath = join(tempDir, "dashboard.json");
   const selectionPath = join(codexHome, "selection.json");
   const indexPath = join(codexHome, "session_index.jsonl");
+  const sessionPath = join(sessionsDir, "rollout-root-01a01ee5-b7e8-7543-97cf-07f32c0724b6.jsonl");
   const parentSessionId = "019ffae8-80bf-7aa2-88ab-8746b37d7b6f";
   mkdirSync(sessionsDir, { recursive: true });
   writeFileSync(indexPath, "");
   writeFileSync(selectionPath, `${JSON.stringify({ version: 1, mode: "allowlist", threadIds: [parentSessionId] })}\n`);
-  writeFileSync(join(sessionsDir, "rollout-root-01a01ee5-b7e8-7543-97cf-07f32c0724b6.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { session_id: parentSessionId, id: "01a01ee5-b7e8-7543-97cf-07f32c0724b6", thread_source: "root" } })}\n`);
+  writeFileSync(sessionPath, `${JSON.stringify({ type: "session_meta", payload: { session_id: parentSessionId, id: "01a01ee5-b7e8-7543-97cf-07f32c0724b6", thread_source: "root" } })}\n`);
   const child = spawn(process.execPath, [join(projectRoot, "scripts", "watch-codex.mjs")], {
     cwd: projectRoot,
     stdio: "ignore",
@@ -252,14 +253,22 @@ test("Watcher 监听 session_index，Codex 补齐标题后自动纠正显示", a
       TASKCENTER_DASHBOARD_PATH: dashboardPath,
       TASKCENTER_WATCHER_HEARTBEAT_PATH: join(tempDir, "watcher-heartbeat.json"),
       TASKCENTER_THREADS: parentSessionId,
-      TASKCENTER_POLL_INTERVAL_MS: "20",
-      TASKCENTER_QUIET_PERIOD_MS: "20",
+      TASKCENTER_POLL_INTERVAL_MS: "10",
+      TASKCENTER_QUIET_PERIOD_MS: "40",
+      TASKCENTER_MAX_SYNC_DELAY_MS: "80",
     },
   });
   try {
     await waitFor(() => dashboardTitle(dashboardPath) === "Codex 会话 · 019ffae8…");
     writeFileSync(indexPath, `${JSON.stringify({ id: parentSessionId, thread_name: "实现首页三分区" })}\n`);
     await waitFor(() => dashboardTitle(dashboardPath) === "实现首页三分区");
+    writeFileSync(indexPath, `${JSON.stringify({ id: parentSessionId, thread_name: "持续写入时也更新标题" })}\n`);
+    const churn = setInterval(() => appendFileSync(sessionPath, " "), 10);
+    try {
+      await waitFor(() => dashboardTitle(dashboardPath) === "持续写入时也更新标题");
+    } finally {
+      clearInterval(churn);
+    }
   } finally {
     child.kill("SIGTERM");
     rmSync(tempDir, { recursive: true, force: true });
