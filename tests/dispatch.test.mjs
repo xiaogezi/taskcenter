@@ -179,6 +179,9 @@ test("原 Session 忙碌时进入安全队列", async (context) => {
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_SESSIONS_ROOT: sessionsRoot,
+      TASKCENTER_TASK_LEDGER_PATH: join(fixture.directory, "task-ledger.json"),
+      TASKCENTER_TASK_EVENTS_PATH: join(fixture.directory, "task-events.jsonl"),
+      TASKCENTER_SESSION_REGISTRY_PATH: join(fixture.directory, "session-registry.json"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -244,6 +247,9 @@ test("等待中的自动投递可以人工取消", async (context) => {
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_SESSIONS_ROOT: sessionsRoot,
+      TASKCENTER_TASK_LEDGER_PATH: join(fixture.directory, "task-ledger.json"),
+      TASKCENTER_TASK_EVENTS_PATH: join(fixture.directory, "task-events.jsonl"),
+      TASKCENTER_SESSION_REGISTRY_PATH: join(fixture.directory, "session-registry.json"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
