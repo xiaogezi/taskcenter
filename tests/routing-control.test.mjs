@@ -325,7 +325,7 @@ test("实际集中策略节制 Astra，受保护任务与 Reviewer 均不降级"
     const astra = "gpt-6-astra";
     const expected = {
       general: luna, search: luna, mechanical: luna, documentation: luna,
-      implementation: terra, test: terra,
+      implementation: luna, test: luna,
       architecture: terra, security: astra, migration: terra,
       data_migration: astra, complex_diagnosis: terra, high_risk: astra,
       ocr_review: astra,
@@ -360,11 +360,11 @@ test("实际集中策略节制 Astra，受保护任务与 Reviewer 均不降级"
       assert.equal(explicitAstra.route.available, false);
       assert.equal(explicitAstra.route.selected_model, null);
       const lunaLease = routingSelect({ ...baseInput, task_class: "general", event_id: "actual-luna-full" });
-      const terraLeases = [0, 1].map((index) => routingSelect({ ...baseInput, task_class: "implementation", event_id: `actual-terra-full-${index}` }));
+      const lunaLeases = [0, 1].map((index) => routingSelect({ ...baseInput, task_class: "implementation", event_id: `actual-luna-full-${index}` }));
       const automaticFallback = routingSelect({ ...baseInput, task_class: "general", event_id: "actual-no-astra-fallback" });
       assert.equal(automaticFallback.route.available, false);
       routingResult({ route_id: lunaLease.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
-      for (const route of terraLeases) routingResult({ route_id: route.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
+      for (const route of lunaLeases) routingResult({ route_id: route.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
       const reviewer = routingSelect({ ...baseInput, task_class: "ocr_review", event_id: "actual-review-full", review_artifacts: reviewArtifacts });
       assert.equal(reviewer.route.available, false);
       assert.equal(reviewer.route.reason, "reviewer_model_unavailable");
