@@ -580,8 +580,8 @@ async function openDashboard() {
   let command;
   let args;
   if (process.platform === "darwin") {
-    command = "open";
-    args = [dashboardUrl];
+    command = "osascript";
+    args = [resolve(projectRoot, "scripts/macos/open-taskcenter.applescript"), dashboardUrl];
   } else if (process.platform === "win32") {
     command = process.env.ComSpec || "cmd.exe";
     args = ["/d", "/s", "/c", "start", "", dashboardUrl];
