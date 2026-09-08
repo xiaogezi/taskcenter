@@ -54,10 +54,22 @@ test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(isAllowedControlPath("/context-management-pilots", "GET"), true);
   assert.equal(isAllowedControlPath("/context-management-pilots/intents", "POST"), true);
   assert.equal(isAllowedControlPath("/routing/select", "POST"), false);
+  assert.equal(controlProxyTarget("/usage-report")?.toString(), "http://127.0.0.1:3001/usage-report");
+  assert.equal(controlProxyTarget("/tasks", "?view=summary&page_size=100")?.toString(), "http://127.0.0.1:3001/tasks?view=summary&page_size=100");
   assert.equal(isAllowedControlPath("/reflections/item/actions", "POST"), true);
   assert.equal(isAllowedControlPath("/reflections/item/actions", "GET"), false);
   assert.equal(controlProxyTarget("/tasks", "?view=summary&project=/work&bucket=attention&query=api&page=2&page_size=50&ignored=yes")?.toString(), "http://127.0.0.1:3001/tasks?view=summary&project=%2Fwork&bucket=attention&query=api&page=2&page_size=50");
   assert.equal(controlProxyTarget("/tasks/task-1/events", "?limit=30")?.toString(), "http://127.0.0.1:3001/tasks/task-1/events?limit=30");
+});
+
+test("模型调度页展示额度、真实调度和刷新反馈", () => {
+  const source = readFileSync("features/console/ConsolePage.tsx", "utf8");
+  assert.match(source, /api<UsageData>\("\/usage-report"\)/);
+  assert.match(source, /api<\{ tasks\?: RoutingTask\[\] \}>\("\/tasks\?view=summary&page_size=100"\)/);
+  assert.match(source, /未绑定额度池（不代表额度充足）/);
+  assert.match(source, /刷新成功：/);
+  assert.match(source, /刷新失败：/);
+  assert.match(source, /暂无真实调度记录/);
 });
 
 test("会话与试点页面持续刷新标题并在卸载时清理轮询", () => {
