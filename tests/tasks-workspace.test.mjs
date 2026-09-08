@@ -55,11 +55,12 @@ test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(controlProxyTarget("/tasks/task-1/events", "?limit=30")?.toString(), "http://127.0.0.1:3001/tasks/task-1/events?limit=30");
 });
 
-test("试点 intent 未结束时持续刷新并在卸载时清理轮询", () => {
+test("会话与试点页面持续刷新标题并在卸载时清理轮询", () => {
   const source = readFileSync("features/console/ConsolePage.tsx", "utf8");
-  assert.match(source, /\["pending", "processing"\]\.includes\(item\.latest_intent\?\.status \|\| ""\)/);
-  assert.match(source, /window\.setInterval\(load, 5000\)/);
-  assert.match(source, /window\.clearInterval\(timer\)/);
+  assert.equal(source.match(/window\.setInterval\(load, 5000\)/g)?.length, 1);
+  assert.match(source, /window\.setInterval\(refreshStatus, 5000\)/);
+  assert.match(source, /setState\(current => current \? \{ \.\.\.current, status \} : current\)/);
+  assert.equal(source.match(/window\.clearInterval\(timer\)/g)?.length, 2);
   assert.match(source, /item\.title \|\| "未命名会话"/);
   assert.match(source, /session\?\.title \|\| "未命名会话"/);
 });

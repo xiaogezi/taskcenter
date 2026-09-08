@@ -186,19 +186,30 @@ async function registerHttpSession(base, session_id, identity = {}) {
 test("会话状态和 Pilot 使用 session_index 标题且不伪造缺失标题", async (context) => {
   await resetLedger();
   const dashboardPath = join(tempDir, "session-title-dashboard.json");
-  await writeFile(dashboardPath, JSON.stringify({ source: { sessionTitles: [{ id: "session-titled", title: "排查新任务未记录问题" }] } }));
+  await writeFile(dashboardPath, JSON.stringify({ source: { sessionTitles: [
+    { id: "session-titled", title: "排查新任务未记录问题", updatedAt: "2099-09-08T02:00:00.000Z" },
+    { id: "session-untitled", title: "临时标题", updatedAt: "2099-09-08T01:00:00.000Z" },
+  ] } }));
   const { base, child } = await startControlServer({ TASKCENTER_DASHBOARD_PATH: dashboardPath });
   context.after(() => child.kill("SIGTERM"));
   await registerHttpSession(base, "session-titled", { project_id: "example" });
   await registerHttpSession(base, "session-untitled", { project_id: "other" });
 
   const sessions = (await (await fetch(`${base}/session-status`)).json()).sessions;
+  assert.deepEqual(sessions.slice(0, 2).map((item) => item.sessionId), ["session-titled", "session-untitled"]);
   assert.equal(sessions.find((item) => item.sessionId === "session-titled").title, "排查新任务未记录问题");
-  assert.equal(sessions.find((item) => item.sessionId === "session-untitled").title, "");
+  assert.equal(sessions.find((item) => item.sessionId === "session-untitled").title, "临时标题");
 
   const projects = (await (await fetch(`${base}/context-management-pilots`)).json()).projects;
   assert.equal(projects.find((item) => item.project_id === "example").sessions[0].title, "排查新任务未记录问题");
-  assert.equal(projects.find((item) => item.project_id === "other").sessions[0].title, "");
+  assert.equal(projects.find((item) => item.project_id === "other").sessions[0].title, "临时标题");
+
+  await writeFile(dashboardPath, JSON.stringify({ source: { sessionTitles: [
+    { id: "session-titled", title: "已更新标题", updatedAt: "2099-09-08T03:00:00.000Z" },
+  ] } }));
+  const refreshed = (await (await fetch(`${base}/session-status`)).json()).sessions;
+  assert.equal(refreshed[0].title, "已更新标题", "无需重启服务即可覆盖旧标题");
+  assert.equal(refreshed.find((item) => item.sessionId === "session-untitled").title, "");
 });
 
 async function writeTransientContextServer(path) {

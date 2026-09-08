@@ -104,7 +104,7 @@ function readThreadNames() {
     if (!line.trim()) continue;
     try {
       const item = JSON.parse(line);
-      if (item.id && item.thread_name) names.set(item.id, item.thread_name);
+      if (item.id && item.thread_name) names.set(item.id, { title: item.thread_name, updatedAt: item.updated_at || "" });
     } catch {
       // Ignore a partially written final line while Codex is updating the file.
     }
@@ -299,7 +299,7 @@ async function main() {
   const allowedSessions = candidateSessions.filter((session) => normalizedSelectedIds.has(session.threadId));
   const allThreads = [];
   for (const session of allowedSessions) {
-    const sourceTitle = names.get(session.threadId) || defaultThreadNames.get(session.threadId);
+    const sourceTitle = names.get(session.threadId)?.title || defaultThreadNames.get(session.threadId);
     const title = sessionDisplayTitle(
       sourceTitle,
       session.threadId,
@@ -374,15 +374,15 @@ async function main() {
       messageCount: threads.reduce((sum, thread) => sum + thread.userRequirements.length, 0),
       mode: "read-only local JSONL",
       sessionSelection: effectiveSessionSelection,
-      sessionTitles: [...names].map(([id, title]) => ({ id, title })),
+      sessionTitles: [...names].map(([id, value]) => ({ id, ...value })),
       availableThreads: candidateSessions.map((session) => ({
         id: session.threadId,
         title: sessionDisplayTitle(
-          names.get(session.threadId) || defaultThreadNames.get(session.threadId),
+          names.get(session.threadId)?.title || defaultThreadNames.get(session.threadId),
           session.threadId,
           session.cwd,
         ),
-        titleSource: names.get(session.threadId) || defaultThreadNames.get(session.threadId) ? "codex" : "metadata",
+        titleSource: names.get(session.threadId)?.title || defaultThreadNames.get(session.threadId) ? "codex" : "metadata",
         updatedAt: new Date(session.mtimeMs).toISOString(),
         allowed: normalizedSelectedIds.has(session.threadId),
         requirementCount: allThreads.find((thread) => thread.id === session.threadId)?.userRequirements.length || 0,

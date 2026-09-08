@@ -249,8 +249,11 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/session-status") {
       if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
-      const titles = new Map(loadSessionTitles().map((item) => [item.id, item.title]));
-      sendJson(response, 200, { sessions: getSessionStatuses(availableSessionIds(), loadVisibleTasks()).map((session) => ({ ...session, title: titles.get(session.sessionId) || "" })) });
+      const titles = new Map(loadSessionTitles().map((item) => [item.id, item]));
+      const sessions = getSessionStatuses(availableSessionIds(), loadVisibleTasks())
+        .map((session) => ({ ...session, title: titles.get(session.sessionId)?.title || "", updatedAt: latestTimestamp(titles.get(session.sessionId)?.updatedAt, session.lastSeenAt, session.lastTaskAt) }))
+        .sort((left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt));
+      sendJson(response, 200, { sessions });
       return;
     }
     if (request.method === "POST" && request.url === "/sessions/l0-audit") {
@@ -1850,9 +1853,17 @@ function loadSessionTitles() {
   const dashboard = loadDashboard();
   const fallback = (dashboard.source?.availableThreads ?? dashboard.threads ?? [])
     .filter((thread) => thread.titleSource === "codex")
-    .map(({ id, title }) => ({ id, title }));
+    .map(({ id, title, updatedAt }) => ({ id, title, updatedAt }));
   return [...fallback, ...(dashboard.source?.sessionTitles ?? [])]
     .filter((item) => item.id && item.title);
+}
+
+function latestTimestamp(...values) {
+  return values.filter(Boolean).sort((left, right) => timestamp(left) - timestamp(right)).at(-1) || "";
+}
+
+function timestamp(value) {
+  return Date.parse(value || "") || 0;
 }
 
 function persistDispatches() {

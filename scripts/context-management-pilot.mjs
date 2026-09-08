@@ -126,7 +126,7 @@ export function pilotSnapshot({ registry = {}, sessionTitles = [], tasks = [], u
 }
 
 export function registeredProjectWorkspaces(registry, sessionTitles = []) {
-  const titles = new Map(sessionTitles.map((item) => [item.id, item.title]));
+  const titles = new Map(sessionTitles.map((item) => [item.id, item]));
   const projects = new Map();
   for (const [registryId, session] of Object.entries(registry)) {
     const projectId = text(session?.projectId || session?.project_id, 200);
@@ -136,11 +136,14 @@ export function registeredProjectWorkspaces(registry, sessionTitles = []) {
     const key = `${projectId}\u0000${resolved}`;
     const project = projects.get(key) || { project_id: projectId, workspace: resolved, sessions: [] };
     const sessionId = text(session?.sessionId || registryId, 200);
-    project.sessions.push({ session_id: sessionId, title: titles.get(sessionId) || "", last_seen_at: text(session?.lastSeenAt, 100) });
+    const indexed = titles.get(sessionId);
+    const lastSeenAt = text(session?.lastSeenAt, 100);
+    const updatedAt = [lastSeenAt, text(indexed?.updatedAt, 100)].filter(Boolean).sort((a, b) => (Date.parse(a) || 0) - (Date.parse(b) || 0)).at(-1) || "";
+    project.sessions.push({ session_id: sessionId, title: indexed?.title || "", last_seen_at: lastSeenAt, updated_at: updatedAt });
     projects.set(key, project);
   }
   return [...projects.values()]
-    .map((project) => ({ ...project, sessions: project.sessions.sort((a, b) => String(b.last_seen_at).localeCompare(String(a.last_seen_at)) || a.session_id.localeCompare(b.session_id)) }))
+    .map((project) => ({ ...project, sessions: project.sessions.sort((a, b) => (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0) || a.session_id.localeCompare(b.session_id)) }))
     .sort((a, b) => `${a.project_id}:${a.workspace}`.localeCompare(`${b.project_id}:${b.workspace}`, "zh-CN"));
 }
 

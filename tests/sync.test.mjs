@@ -165,8 +165,8 @@ test("sync 按 canonical Session 聚合子 Agent，标题只来自 session_index
   const indexOnlySessionId = "019ffae8-80bf-7aa2-88ab-8746b37d7b70";
   mkdirSync(sessionsDir, { recursive: true });
   writeFileSync(join(codexHome, "session_index.jsonl"), [
-    JSON.stringify({ id: parentSessionId, thread_name: "实现首页三分区" }),
-    JSON.stringify({ id: indexOnlySessionId, thread_name: "排查新任务未记录问题" }),
+    JSON.stringify({ id: parentSessionId, thread_name: "实现首页三分区", updated_at: "2026-08-20T10:05:00Z" }),
+    JSON.stringify({ id: indexOnlySessionId, thread_name: "排查新任务未记录问题", updated_at: "2026-08-20T10:06:00Z" }),
   ].join("\n"));
   writeFileSync(join(codexHome, "selection.json"), `${JSON.stringify({ version: 1, mode: "allowlist", threadIds: [parentSessionId] })}\n`);
   writeFileSync(join(sessionsDir, "rollout-root-01a01ee5-b7e8-7543-97cf-07f32c0724b6.jsonl"), [
@@ -191,7 +191,7 @@ test("sync 按 canonical Session 聚合子 Agent，标题只来自 session_index
     assert.equal(dashboard.source.availableThreadCount, 1);
     assert.deepEqual(dashboard.source.availableThreads.map((thread) => thread.id), [parentSessionId]);
     assert.equal(dashboard.source.availableThreads[0].title, "实现首页三分区");
-    assert.deepEqual(dashboard.source.sessionTitles.find((thread) => thread.id === indexOnlySessionId), { id: indexOnlySessionId, title: "排查新任务未记录问题" });
+    assert.deepEqual(dashboard.source.sessionTitles.find((thread) => thread.id === indexOnlySessionId), { id: indexOnlySessionId, title: "排查新任务未记录问题", updatedAt: "2026-08-20T10:06:00Z" });
     assert.equal(dashboard.source.availableThreads.some((thread) => thread.id === indexOnlySessionId), false, "仅有索引标题的会话不能扩大正文读取范围");
     assert.equal(dashboard.threads[0].title, "实现首页三分区");
     assert.equal(dashboard.source.messageCount, 2, "同一 canonical Session 的多个 root rollout 都应纳入且不重复");
