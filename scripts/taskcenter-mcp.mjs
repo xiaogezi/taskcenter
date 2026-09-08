@@ -58,6 +58,7 @@ const reviewCycleFields = {
   occurred_at: z.string().datetime({ offset: true }).optional(),
 };
 const taskFields = {
+  bug: z.object(Object.fromEntries(["source", "version", "preconditions", "steps", "actual", "expected", "acceptanceSteps", "testArtifact", "targetBranch"].map(key => [key, z.string().min(1).max(3000)]))).strict().optional(),
   response_mode: responseMode,
   session_id: z.string().min(1).max(200).optional(),
   agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(),

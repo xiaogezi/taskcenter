@@ -17,6 +17,7 @@ import {
   withTaskPhaseTiming,
 } from "./task-phase-timing.mjs";
 import { listDelegations } from "./delegation-store.mjs";
+import { normalizeBug } from "./bug-workflow.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const taskEventsPath = resolve(process.env.TASKCENTER_TASK_EVENTS_PATH || join(projectRoot, "data", "task-events.jsonl"));
@@ -379,9 +380,14 @@ function readLedger() {
 }
 
 export function recordTaskEvent(input, options = {}) {
+  if (input?.bug_acceptance !== undefined) throw new TaskLedgerError(403, "Bug 人工验收标记只能由本地验收入口生成。");
+  if (input?.bug_merge !== undefined && !options.verifiedBugMerge) throw new TaskLedgerError(403, "合入证据只能由服务端 Git 核验入口生成。");
   const tasks = loadTasks();
   const current = input?.task_id ? tasks.find((task) => task.id === String(input.task_id)) : null;
-  const event = normalizeEvent(input, current);
+  let event;
+  try { event = normalizeEvent(input, current); }
+  catch (error) { if (Number.isInteger(error.statusCode)) throw new TaskLedgerError(error.statusCode, error.message); throw error; }
+  if (options.verifiedBugAcceptance && event.type === "acceptance.accepted") event.bug_acceptance = true;
   const sessionRegistry = loadSessionRegistry();
   const eventSessionId = canonicalSessionId(event.session_id);
   const isRegistered = Boolean(eventSessionId && sessionRegistry[eventSessionId]);
@@ -931,6 +937,8 @@ function normalizeEvent(input, current = null) {
     quota_reset_at: cleanText(input.quota_reset_at, 80),
     review_artifacts: normalizeReviewArtifacts(input.review_artifacts),
     execution_model_policy: normalizeExecutionModelPolicy(input.execution_model_policy),
+    bug: normalizeBug(input.bug),
+    bug_merge: input.bug_merge,
     ...normalizeCompletionEvent(input, current?.currentSubject || null),
     phase: cleanText(input.phase, 40),
     transition: cleanText(input.transition, 40),
@@ -1185,7 +1193,14 @@ function applyEvent(current, event) {
     toolCalls: { ...(base.toolCalls || {}) },
     diagnosticObservations: [...(base.diagnosticObservations || [])],
     executionModelPolicy: event.execution_model_policy || base.executionModelPolicy || { mode: "auto" },
+    bug: event.bug || base.bug,
+    bugMerge: event.bug_merge || base.bugMerge,
   };
+  if (event.bug && JSON.stringify(event.bug) !== JSON.stringify(base.bug)) {
+    next.bugAcceptanceId = null;
+    next.bugMerge = null;
+  }
+  if (event.type === "acceptance.accepted" && next.bug && event.bug_acceptance === true) next.bugAcceptanceId = event.acceptance_record.id;
   next = applyTimingTransition(current, base, next, event, now);
   if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;
   if (event.type === "task.review") next.status = event.status || base.status;

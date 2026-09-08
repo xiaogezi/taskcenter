@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseTaskWorkspaceSearch, taskAxes, taskListRequestKey } from "@/lib/task-workspace.mjs";
 
+import { BugDetails } from "./BugDetails";
+
 type Reason = { code: string; label: string; detail?: string };
 type ExecutionModelPolicy = {
   mode?: string;
@@ -13,7 +15,7 @@ type ExecutionModelPolicy = {
 };
 type TaskTokenUsage = { usage: { input: number; cachedInput: number; output: number; reasoning: number }; totalTokens: number; count: number; attribution: "estimated" | "unattributed" };
 type RoutingInfo = { action?: string; orchestratorModel?: string; preferredExecutorModel?: string; selectedExecutorModel?: string; reasoningEffort?: string; dispatchChannel?: string; reason?: string; outcome?: string; preferenceMode?: string; fallbackReason?: string; quotaLimitId?: string; quotaSnapshotObservedAt?: string; quotaUsedPercent?: number; quotaResetAt?: string; };
-type Task = Record<string, unknown> & { id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy; tokenUsage?: TaskTokenUsage | null };
+type Task = Record<string, unknown> & { bugClosure?: { status: string };  id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy; tokenUsage?: TaskTokenUsage | null };
 type State = ReturnType<typeof parseTaskWorkspaceSearch>;
 const labels: Record<string, string> = { planned: "计划中", in_progress: "执行中", blocked: "已阻塞", done_claimed: "已声明完成", verified: "已验证", cancelled: "已取消", passed: "通过", pending: "待处理", failed: "失败", stale: "已过期", changes_requested: "需修改", ready: "就绪", accepted: "已验收", rejected: "已拒绝", not_required: "不要求", unknown: "未知" };
 const text = (value: unknown) => typeof value === "string" && value.trim() ? value : "未知";
@@ -81,7 +83,7 @@ export function TaskWorkspace() {
     fetch(`/api/control/tasks/${encodeURIComponent(state.task)}/events?limit=50`, { signal: controller.signal })
       .then((response) => response.ok ? response.json() : { events: [] }).then((body) => { if (!controller.signal.aborted) setEvents({ taskId: state.task, values: body.events || [] }); }).catch(() => { if (!controller.signal.aborted) setEvents({ taskId: state.task, values: [] }); });
     return () => controller.abort();
-  }, [state.task]);
+  }, [state.task, pollTick]);
 
   const tasks = payload.tasks ?? emptyTasks;
   const loading = loadedListKey !== listKey;
@@ -91,14 +93,14 @@ export function TaskWorkspace() {
   return <main className={state.task ? "task-workspace with-open-detail" : "task-workspace"}>
     <aside className="task-nav"><a className="task-logo" href="/tasks">TASK<span>CENTER</span></a><nav><a className="active" href="/tasks">任务工作区</a><a href="/sessions">会话</a><a href="/routing">模型调度</a><a href="/improvements">改进建议</a><a href="/settings">设置</a></nav></aside>
     <section className="task-main"><header className="task-header"><div><p>LOCAL CONTROL API</p><h1>任务工作区</h1><small>任务事实、证据与活动均来自本地 Control API。</small></div></header>
-      <section className="task-stats" aria-label="任务统计">{([['attention','需处理'],['in_progress','执行中'],['awaiting_verification','待验证'],['awaiting_acceptance','待验收'],['blocked','阻塞'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
+      <section className="task-stats" aria-label="任务统计">{([['attention','需处理'],['in_progress','执行中'],['awaiting_verification','待验证'],['awaiting_acceptance','待验收'],['awaiting_merge','待合入'],['bugs','Bug'],['completed_bugs','已合入 Bug'],['blocked','阻塞'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
       <section className="task-filters"><select value={state.project} onChange={(event) => update({ project: event.target.value, page: 1 })}><option value="all">全部项目</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.label}</option>)}</select><input value={state.query} onChange={(event) => update({ query: event.target.value, page: 1 })} placeholder="搜索标题、ID 或目标" /><span>共 {payload.total ?? "未知"} 条</span></section>
       {error && <p className="task-error" role="status">{error}</p>}<div className="task-table-wrap"><table className="task-table"><thead><tr><th>状态</th><th>任务名称</th><th>项目</th><th>当前阶段</th><th>执行模型</th><th>Token</th><th>更新时间</th></tr></thead><tbody>{loading && !tasks.length ? <tr><td colSpan={7}>正在加载真实任务摘要…</td></tr> : tasks.length ? tasks.map((task) => {
         const route = task.routing || task.routingHistory?.at(-1);
         const modelCell = [route?.preferredExecutorModel, route?.selectedExecutorModel].filter(Boolean).join(" → ");
         return <tr key={task.id} className={state.task === task.id ? "selected" : ""} onClick={() => update({ task: task.id, tab: "overview" })}>
           <td><span className={`status-chip status-${text(task.status)}`}>{labels[text(task.status)] || text(task.status)}</span>{(task.actionReasons || []).length > 0 && <small className="attention">需处理</small>}</td>
-          <td><strong>{text(task.title)}</strong><small>{task.id}</small></td><td>{text(task.project?.label)}</td><td>{text(task.currentStep)}</td>
+          <td><strong>{text(task.title)}</strong>{task.bugClosure && <small>Bug · {({ repairing: "修复验证中", returned: "验收退回", awaiting_acceptance: "待验收", awaiting_merge: "待合入", completed: "已核验合入", cancelled: "已取消" } as Record<string, string>)[task.bugClosure.status]}</small>}<small>{task.id}</small></td><td>{text(task.project?.label)}</td><td>{text(task.currentStep)}</td>
           <td>{modelCell || "未记录"}</td>
           <td title={task.tokenUsage ? `精确值：${task.tokenUsage.totalTokens.toLocaleString("zh-CN")} Token` : undefined}>{task.tokenUsage ? <><strong>总计 {formatTokens(task.tokenUsage.totalTokens)}</strong><small>输入 {formatTokens(task.tokenUsage.usage.input)}（缓存 {formatTokens(task.tokenUsage.usage.cachedInput)}）</small><small>输出 {formatTokens(task.tokenUsage.usage.output)}（推理 {formatTokens(task.tokenUsage.usage.reasoning)}）</small></> : "暂无归属"}</td>
           <td>{formatDate(task.updatedAt)}</td>
@@ -106,7 +108,7 @@ export function TaskWorkspace() {
       }) : <tr><td colSpan={7}>没有匹配的真实任务。</td></tr>}</tbody></table></div>
       <footer className="task-pagination"><button disabled={state.page <= 1} onClick={() => update({ page: state.page - 1 })}>上一页</button><span>第 {state.page} / {payload.totalPages ?? "未知"} 页</span><button disabled={Boolean(payload.totalPages) && state.page >= Number(payload.totalPages)} onClick={() => update({ page: state.page + 1 })}>下一页</button></footer>
     </section>
-    {state.task && <aside className="task-detail" aria-label="任务详情"><button className="detail-close" onClick={() => update({ task: "", tab: "overview" })}>关闭</button><h2>{text((detail.taskId === state.task ? detail.value?.title : undefined) || tasks.find((task) => task.id === state.task)?.title)}</h2><small>{state.task}</small><div className="detail-tabs">{([['overview','概览'],['routing','调度'],['evidence','证据'],['activity','活动']] as const).map(([tab, label]) => <button className={state.tab === tab ? "selected" : ""} key={tab} onClick={() => update({ tab })}>{label}</button>)}</div>{state.tab === "overview" && <DetailOverview task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "routing" && <RoutingDetails task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "evidence" && <Evidence task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "activity" && <Activity events={events.taskId === state.task ? events.values : []} />}</aside>}
+    {state.task && <aside className="task-detail" aria-label="任务详情"><button className="detail-close" onClick={() => update({ task: "", tab: "overview" })}>关闭</button><h2>{text((detail.taskId === state.task ? detail.value?.title : undefined) || tasks.find((task) => task.id === state.task)?.title)}</h2><small>{state.task}</small><div className="detail-tabs">{([['overview','概览'],['bug','Bug 闭环'],['routing','调度'],['evidence','证据'],['activity','活动']] as const).map(([tab, label]) => <button className={state.tab === tab ? "selected" : ""} key={tab} onClick={() => update({ tab })}>{label}</button>)}</div>{state.tab === "bug" && detail.taskId === state.task && detail.value && <BugDetails key={state.task} task={detail.value} onChanged={() => setPollTick(current => current + 1)} />}{state.tab === "overview" && <DetailOverview task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "routing" && <RoutingDetails task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "evidence" && <Evidence task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "activity" && <Activity events={events.taskId === state.task ? events.values : []} />}</aside>}
   </main>;
 }
 

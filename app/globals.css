@@ -47,3 +47,7 @@ button { cursor: pointer; }
 .detail-content li { margin: 7px 0; overflow-wrap: anywhere; }
 @media (max-width: 900px) { .task-workspace { display: block; }.task-nav { border-bottom: 1px solid #e5e8ee; border-right: 0; display: flex; padding: 16px; }.task-nav nav { display: flex; gap: 2px; margin: 0 0 0 20px; overflow-x: auto; }.task-nav nav a, .task-nav nav span { white-space: nowrap; }.task-detail { bottom: 0; position: fixed; right: 0; top: 0; width: min(420px, 92vw); z-index: 4; }.task-stats { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 560px) { .task-main { padding: 24px 14px; }.task-header { gap: 10px; }.task-filters { align-items: stretch; flex-direction: column; }.task-table th:nth-child(3), .task-table td:nth-child(3), .task-table th:nth-child(4), .task-table td:nth-child(4) { display: none; } }
+.bug-details label { display: block; margin: 12px 0; }
+.bug-details textarea { display: block; width: 100%; min-height: 64px; margin-top: 6px; padding: 8px; border: 1px solid #dce3ed; border-radius: 6px; color: inherit; background: transparent; resize: vertical; }
+.bug-details button { padding: 8px 12px; margin: 4px 0; border: 1px solid #dce3ed; border-radius: 6px; }
+.bug-details button:disabled { opacity: .5; cursor: not-allowed; }

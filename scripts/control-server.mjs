@@ -16,6 +16,8 @@ import { createServer } from "node:http";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
+import { verifyBugMerge } from "./bug-workflow.mjs";
+import { sameSubject } from "./completion-state.mjs";
 import {
   DispatchError,
   loadDispatchTarget,
@@ -396,7 +398,7 @@ const server = createServer(async (request, response) => {
         const pageSize = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("page_size") || "40", 10) || 40));
         const start = (page - 1) * pageSize;
         const pageTasks = withDelegations(filteredTasks.slice(start, start + pageSize));
-        const actionCounts = Object.fromEntries(["attention", "in_progress", "awaiting_verification", "awaiting_acceptance", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
+        const actionCounts = Object.fromEntries(["attention", "in_progress", "awaiting_verification", "awaiting_acceptance", "awaiting_merge", "bugs", "completed_bugs", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
         actionCounts.all = projectTasks.length;
         const projects = new Map();
         for (const task of presentedTasks) if (!projects.has(task.project.id)) projects.set(task.project.id, task.project);
@@ -722,6 +724,36 @@ const server = createServer(async (request, response) => {
         automaticallySuperseded: automatic.reconciled,
         completed: completed.completed,
       });
+      return;
+    }
+    const bugActionMatch = request.method === "POST" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/(bug|bug-acceptance|bug-merge)$/) : null;
+    if (bugActionMatch) {
+      verifyManualTaskAction(request);
+      const body = await readJsonBody(request);
+      const task = loadTasks().find(item => item.id === bugActionMatch[1]);
+      if (!task) throw new TaskLedgerError(404, "任务不存在。");
+      if (task.contractVersion !== "v2") throw new TaskLedgerError(409, "Bug 闭环需要 v2 任务合同。");
+      if (body.expectedUpdatedAt !== task.updatedAt) throw new TaskLedgerError(409, "任务已变化，请刷新详情后重试。");
+      const event = { task_id: task.id, session_id: task.sessionId, event_id: randomUUID(), type: "task.update" };
+      if (bugActionMatch[2] === "bug") {
+        event.bug = body.bug;
+        if (!event.bug) throw new TaskLedgerError(400, "缺少 Bug 资料。");
+      } else {
+        if (!task.bug) throw new TaskLedgerError(409, "请先填写 Bug 资料。");
+        if (bugActionMatch[2] === "bug-merge") {
+          try { event.bug_merge = verifyBugMerge(task); }
+          catch (error) { throw new TaskLedgerError(error.statusCode || 409, error.message); }
+        }
+        else {
+          if (body.confirm !== true || !["accepted", "rejected"].includes(body.outcome) || !String(body.reason || "").trim()) throw new TaskLedgerError(400, "请选择验收结果，填写原因并确认。");
+          if (!sameSubject(body.subject, task.currentSubject)) throw new TaskLedgerError(409, "修订已变化，请重新验收。");
+          event.type = `acceptance.${body.outcome}`;
+          if (body.outcome === "rejected") { event.status = "in_progress"; event.next_action = `验收退回：${String(body.reason).slice(0, 400)}`; }
+          event.acceptance_record = { id: event.event_id, source: "human", actor: { type: "human", id: "local-user" }, subject_ref: task.currentSubject, observed_at: new Date().toISOString(), reason: String(body.reason).slice(0, 1000), evidence_refs: [task.bug.testArtifact] };
+        }
+      }
+      const result = recordTaskEvent(event, { verifiedBugMerge: bugActionMatch[2] === "bug-merge", verifiedBugAcceptance: bugActionMatch[2] === "bug-acceptance" });
+      sendJson(response, 200, { accepted: true, task: taskPresentation(result.task) });
       return;
     }
     const taskDetailMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)$/) : null;
