@@ -92,6 +92,7 @@ import {
 import { recommendSessionLifecycle } from "./session-lifecycle.mjs";
 import { buildGovernanceMetrics } from "./governance-metrics.mjs";
 import { taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
+import { enrichTaskWorkspaceEvent } from "../lib/git-workspace.mjs";
 import {
   buildPilotPrompt,
   ContextManagementPilotError,
@@ -388,7 +389,11 @@ const server = createServer(async (request, response) => {
           return;
         }
         const sessionRegistry = loadSessionRegistry();
-        const presentedTasks = tasks.map((task) => taskPresentation({ ...task, workspace: task.workspace || sessionRegistry[task.sessionId]?.workspace || "" }));
+        const presentedTasks = tasks.map((task) => taskPresentation({
+          ...sessionRegistry[task.sessionId],
+          ...task,
+          workspace: task.workspace || sessionRegistry[task.sessionId]?.workspace || "",
+        }));
         const project = url.searchParams.get("project") || "all";
         const bucket = url.searchParams.get("bucket") || "all";
         const query = url.searchParams.get("query") || "";
@@ -760,9 +765,10 @@ const server = createServer(async (request, response) => {
     if (taskDetailMatch) {
       const task = loadTasks().find((item) => item.id === taskDetailMatch[1]);
       if (!task) throw new TaskLedgerError(404, "任务不存在。");
-      const workspace = task.workspace || loadSessionRegistry()[task.sessionId]?.workspace || "";
+      const session = loadSessionRegistry()[task.sessionId] || {};
+      const workspace = task.workspace || session.workspace || "";
       const tokenUsage = (currentUsageReport().lifetime?.byTask || []).find((item) => item.id === task.id) || null;
-      sendJson(response, 200, { task: taskPresentation({ ...withDelegations([task])[0], workspace, tokenUsage }) });
+      sendJson(response, 200, { task: taskPresentation({ ...session, ...withDelegations([task])[0], workspace, tokenUsage }) });
       return;
     }
     const taskEventsMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/events(?:\?limit=(\d+))?$/) : null;
@@ -880,7 +886,8 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "POST" && request.url === "/task-events") {
       verifyTaskRequest(request);
-      const body = await readJsonBody(request);
+      const input = await readJsonBody(request);
+      const body = enrichTaskWorkspaceEvent(input, loadSessionRegistry()[input.session_id]);
       if (body.type === "task.review" || body.status === "verified" || String(body.type || "").startsWith("acceptance.")) {
         throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
       }

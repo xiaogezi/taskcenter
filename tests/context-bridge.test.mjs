@@ -101,6 +101,34 @@ test("无显式关联且 bridge 未开启时不会创建 Context 任务", async 
   assert.deepEqual(calls, []);
 });
 
+test("创建 Context 任务时显式传递稳定项目身份和 worktree workspace", async () => {
+  const calls = [];
+  const savedMaps = [];
+  const result = await syncContextEvent(
+    { type: "task.update", event_id: "event-worktree-create" },
+    { id: "worktree-task", projectId: "reqradar", workspace: "/worktrees/feature-a", workspaceBranch: "feature/a", title: "并行开发" },
+    bridgeOptions(calls, savedMaps),
+  );
+  assert.equal(result.status, "synced");
+  assert.deepEqual(calls[0], {
+    name: "context.start_task",
+    arguments: {
+      project_id: "reqradar",
+      workspace: "/worktrees/feature-a",
+      goal: "并行开发",
+      keywords: ["并行开发"],
+      event_id: "reqradar-context-start-worktree-task",
+    },
+  });
+  assert.deepEqual(JSON.parse(calls[1].arguments.content), {
+    reqradar_task_id: "worktree-task",
+    event_type: "task.update",
+    project_id: "reqradar",
+    workspace: "/worktrees/feature-a",
+    git_branch: "feature/a",
+  });
+});
+
 test("本地逾期提醒不会同步为 ProjectContext 代码证据", async () => {
   const calls = [];
   const result = await syncContextEvent(

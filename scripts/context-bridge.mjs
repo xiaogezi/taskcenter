@@ -231,6 +231,7 @@ async function sync(event, task, dependencies) {
     || (mapped?.workspace === task.workspace ? mapped.contextTaskId : undefined);
   if (!contextTaskId) {
     const started = await dependencies.callTool("context.start_task", {
+      ...(task.projectId ? { project_id: task.projectId } : {}),
       workspace: task.workspace,
       goal: task.goal || task.title,
       keywords: [task.title].filter(Boolean),
@@ -340,6 +341,11 @@ function formatObservation(event, task, taskIdField = "reqradar_task_id") {
     tests: task.tests,
     evidence: task.evidence,
     risks: task.risks,
+    ...(task.workspaceBranch ? {
+      project_id: task.projectId,
+      workspace: task.workspace,
+      git_branch: task.workspaceBranch,
+    } : {}),
   });
 }
 

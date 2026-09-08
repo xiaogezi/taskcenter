@@ -25,6 +25,7 @@ test("桌面详情展开时主工作区应开启三列网格", () => {
   assert.match(componentSource, /输入 \{formatTokens\(task\.tokenUsage\.usage\.input\)\}（缓存/);
   assert.match(componentSource, /\["输入 Token", inputTokens\]/);
   assert.match(componentSource, /\["输出 Token", outputTokens\]/);
+  assert.match(componentSource, /\["Git 分支", task\?\.workspaceBranch\]/);
 });
 
 test("四轴状态与需处理判定忽略通用 completion pending", () => {
@@ -44,6 +45,7 @@ test("失败或过期的验证、审查和验收进入需处理", () => {
 test("项目筛选把项目 worktree 归并到主项目", () => {
   assert.deepEqual(projectInfo("/work/inStory-worktrees/feat-a"), { id: "project:instory", label: "inStory" });
   assert.deepEqual(projectInfo("/Users/name/.codex/worktrees/hash/ReqRadar"), { id: "project:reqradar", label: "ReqRadar" });
+  assert.deepEqual(projectInfo("/tmp/arbitrary", "reqradar", "/work/ReqRadar"), { id: "project:reqradar", label: "ReqRadar" });
 });
 
 test("同源代理只允许明确的控制台路径和方法", () => {

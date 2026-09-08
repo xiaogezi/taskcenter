@@ -53,6 +53,7 @@ const {
   taskTimeState,
 } = await import("../scripts/task-ledger.mjs");
 const { resolveTrustedMcpSession } = await import("../scripts/mcp-session-context.mjs");
+const { enrichTaskWorkspaceEvent } = await import("../lib/git-workspace.mjs");
 
 test("MCP Session 上下文：请求 threadId 优先、兼容环境变量且冲突时拒绝", () => {
   const requestSessionId = "019f0000-0000-7000-8000-000000000112";
@@ -265,6 +266,40 @@ test("session.register 不误创建任务", async () => {
   assert.equal(result.idempotent, undefined);
   assert.equal(loadTasks().length, 0);
   assert.equal(loadSessionRegistry()["sess-1"].projectId, "project-alpha");
+});
+
+test("worktree 身份进入 Session 和任务投影", async () => {
+  await resetLedger();
+  const main = join(tempDir, "worktree-main");
+  const workspace = join(tempDir, "worktree-feature");
+  await rm(main, { recursive: true, force: true });
+  await rm(workspace, { recursive: true, force: true });
+  execFileSync("git", ["init", "-q", main]);
+  execFileSync("git", ["-C", main, "config", "user.email", "test@example.com"]);
+  execFileSync("git", ["-C", main, "config", "user.name", "TaskCenter Test"]);
+  await writeFile(join(main, "README.md"), "fixture\n");
+  execFileSync("git", ["-C", main, "add", "README.md"]);
+  execFileSync("git", ["-C", main, "commit", "-qm", "fixture"]);
+  execFileSync("git", ["-C", main, "worktree", "add", "-qb", "feature/parallel", workspace]);
+
+  recordTaskEvent(enrichTaskWorkspaceEvent({ type: "session.register", session_id: "sess-worktree", workspace }));
+  const result = recordTaskEvent(enrichTaskWorkspaceEvent({
+    type: "task.create",
+    task_id: "task-worktree",
+    session_id: "sess-worktree",
+    workspace,
+    contract_version: "v2",
+    title: "并行任务",
+    goal: "验证 worktree 投影",
+    scope: ["."],
+    non_goals: ["不管理 worktree 生命周期"],
+    workflow_profile: "fast",
+    acceptance_criteria: [{ id: "worktree", description: "识别 worktree", required: true }],
+  }));
+  assert.equal(result.task.projectId, "worktree-main");
+  assert.equal(result.task.workspaceBranch, "feature/parallel");
+  assert.equal(result.task.executionEnvironment, "worktree");
+  assert.equal(loadSessionRegistry()["sess-worktree"].repositoryRoot.endsWith("/worktree-main"), true);
 });
 
 test("阶段事件写入任务账本并保持幂等、状态机校验与旧账本兼容", async () => {

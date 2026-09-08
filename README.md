@@ -187,8 +187,9 @@ TaskCenter 是执行合同、运行状态、验证、Review、验收与路由审
 默认情况下，每个 Session 按以下顺序执行：
 
 1. `taskcenter_session_register`：提交真实 `session_id`、`workspace`、`agent`、`provider` 和 `model`。
-2. `taskcenter_task_create`：新任务使用 `contract_version=v2`，提交目标、范围、非目标、计划、结构化验收标准、工作流等级、审查策略、可选执行环境，以及 `standard/strict` 所需的验证计划。Session 登记可同时提供稳定的 `project_id`，供后续复用 Advisor 跨 Session 匹配；旧 Session 缺失时保持 unknown，不从仓库名伪造。
+2. `taskcenter_task_create`：新任务使用 `contract_version=v2`，提交目标、范围、非目标、计划、结构化验收标准、工作流等级、审查策略、可选执行环境，以及 `standard/strict` 所需的验证计划。Session 登记可同时提供稳定的 `project_id`，供后续复用 Advisor 跨 Session 匹配；Codex 适配器可从已验证的 Git 主仓库补齐，非 Git workspace 缺失时保持 unknown。
 3. 收到 `accepted=true` 与独立 `task_id` 后才能执行写操作。
+   Codex 或 Git 创建关联 worktree 后，适配器会从 `.git` 指针自动识别主仓库、当前分支和 `execution_environment=worktree`。每个 worktree 保留独立 `workspace` 与 Subject，稳定 `project_id` 归并到同一项目；TaskCenter 不负责创建、合并或删除 worktree。Context bridge 同时把稳定 `project_id` 和具体 worktree workspace 传给 ProjectContext，使项目知识共享、执行证据隔离。
 4. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
 5. TaskCenter 可用时，Sol 在派发执行器前调用 `taskcenter_routing_select`。它会原子检查模型并发、`Closed/Open/Half-Open` 熔断状态并发放有 TTL 的执行租约；执行结束后调用 `taskcenter_routing_result` 释放租约并回报原始错误。TaskCenter 只给出强建议，不启动 CLI，也不取代 Sol 的风险判断、整合和验收。
    `/routing` 页面复用 `/usage-report` 与任务账本展示真实额度窗口、重置时间和最近调度记录；模型卡片的并发数字仅表示当前活跃租约，不是历史调用次数。模型未绑定额度池也不等于额度充足，缺失或过期快照会按未知状态展示。
