@@ -49,6 +49,9 @@ test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(isAllowedControlPath("/routing/select", "POST"), false);
   assert.equal(isAllowedControlPath("/reflections/item/actions", "POST"), true);
   assert.equal(isAllowedControlPath("/reflections/item/actions", "GET"), false);
+  assert.equal(isAllowedControlPath("/context-management-pilots", "GET"), true);
+  assert.equal(isAllowedControlPath("/context-management-pilots/instory/actions", "POST"), true);
+  assert.equal(isAllowedControlPath("/context-management-pilots/instory/reports", "POST"), false);
   assert.equal(controlProxyTarget("/tasks", "?view=summary&project=/work&bucket=attention&query=api&page=2&page_size=50&ignored=yes")?.toString(), "http://127.0.0.1:3001/tasks?view=summary&project=%2Fwork&bucket=attention&query=api&page=2&page_size=50");
   assert.equal(controlProxyTarget("/tasks/task-1/events", "?limit=30")?.toString(), "http://127.0.0.1:3001/tasks/task-1/events?limit=30");
 });
