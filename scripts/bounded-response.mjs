@@ -21,7 +21,7 @@ export function boundedResponse(payload, { cursor, summary, maxBytes = DEFAULT_R
   const id = randomUUID();
   while (snapshots.size >= 32) snapshots.delete(snapshots.keys().next().value);
   snapshots.set(id, { text: JSON.stringify(payload), expires: now + 300_000 });
-  const fallback = Object.fromEntries(["accepted", "task_id", "status", "error", "handoff_required", "new_session_required", "allowed_operations", "active_task", "delegation", "gate_allowlisted", "session_id", "source", "request_limit", "continuation_count", "compaction_count"].filter((key) => Object.hasOwn(payload, key)).map((key) => [key, payload[key]]));
+  const fallback = Object.fromEntries(["accepted", "task_id", "status", "error", "handoff_required", "new_session_required", "handoff_recommended", "new_session_recommended", "recommendation_reasons", "allowed_operations", "active_task", "delegation", "gate_allowlisted", "session_id", "source", "request_limit", "continuation_count", "compaction_count"].filter((key) => Object.hasOwn(payload, key)).map((key) => [key, payload[key]]));
   if (payload.task?.id) fallback.task_id = payload.task.id;
   if (payload.route) fallback.route = Object.fromEntries(["route_id", "selected_model", "reasoning_effort", "available", "role", "reason"].filter((key) => Object.hasOwn(payload.route, key)).map((key) => [key, payload.route[key]]));
   const result = { ...fallback, summary: summary || { fields: Object.keys(payload).slice(0, 30), bytes: bytes(payload) }, truncated: true, continuation_cursor: `${id}:0` };

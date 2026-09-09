@@ -90,3 +90,10 @@ export function machineHandoff(task = {}) {
   }
   return packet;
 }
+
+
+export function recommendTaskClose({ new_independent_goal = false, context_large = false, expected_more_rounds = false } = {}) {
+  if (new_independent_goal) return { action: "recommend_new_session", reason: "new_independent_goal" };
+  if (context_large && expected_more_rounds) return { action: "recommend_compact", reason: "large_context_with_more_rounds" };
+  return { action: "continue", reason: "small_context_or_finishing" };
+}

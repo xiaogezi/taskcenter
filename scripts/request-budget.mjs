@@ -85,7 +85,9 @@ export function budgetSnapshot(state, task = null) {
     continuation_count: { session: state ? requests.length : null, task: state ? taskRequests.length : null, phase: state ? phaseRequests.length : null },
     phase: phase?.phase || "implementation", request_limit: limit, limit_scope: "current_session_phase",
     token_budget: { input_used: state ? taskRequests.reduce((sum, item) => sum + item.input, 0) : null, limit: null },
-    compaction_count: compactions, handoff_required: handoff, new_session_required: Boolean(compactions >= 2),
-    allowed_operations: handoff ? recoveryOperations : [...recoveryOperations, "implement", "query", "verify"],
+    compaction_count: compactions, handoff_required: false, new_session_required: false,
+    handoff_recommended: handoff, new_session_recommended: Boolean(compactions >= 2),
+    recommendation_reasons: [...(state && phaseRequests.length >= limit ? ["request_budget_exhausted"] : []), ...(compactions >= 2 ? ["second_compaction"] : [])],
+    allowed_operations: [...recoveryOperations, "implement", "query", "verify"],
   };
 }

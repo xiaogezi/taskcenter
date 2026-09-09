@@ -89,7 +89,7 @@ after(async () => {
   await rm(tempDir, { recursive: true, force: true });
 });
 
-test("预算到限不锁死诊断和收尾，prepare 返回绑定，关闭后 L0 仍可读取", async () => {
+test("预算到限仍允许实现验证提交及任务更新，prepare 返回绑定，关闭后 L0 仍可读取", async () => {
   const sessionId = "019f0000-0000-7000-8000-0000000000aa";
   await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
   const post = (body) => fetch(`${base}/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
@@ -100,22 +100,38 @@ test("预算到限不锁死诊断和收尾，prepare 返回绑定，关闭后 L0
   await writeFile(join(paths.TASKCENTER_SESSIONS_ROOT, `${sessionId}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
   const prepared = await (await fetch(`${base}/task-prepare?session_id=${sessionId}`)).json();
   assert.equal(prepared.task_id, created.task.id);
-  assert.equal(prepared.handoff_required, true);
-  assert.equal((await (await fetch(`${base}/session-lifecycle?session_id=${sessionId}`)).json()).action, "require_handoff_before_continue");
+  assert.equal(prepared.handoff_required, false);
+  assert.equal(prepared.handoff_recommended, true);
+  assert.equal((await (await fetch(`${base}/session-lifecycle?session_id=${sessionId}`)).json()).action, "continue_current_session");
   assert.ok(Buffer.byteLength(JSON.stringify(prepared)) <= 4096);
   const run = (tool_name, tool_input) => runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name, tool_input });
-  assert.match((await run("exec_command", { cmd: "touch x" })).stderr, /handoff_required/);
+  for (const cmd of ["touch x", "npm test", "git commit -m fix"]) {
+    assert.equal((await run("exec_command", { cmd })).code, 0, cmd);
+  }
   assert.equal((await run("exec_command", { cmd: "rg failure log | head -10" })).code, 0);
   assert.equal((await run("mcp__taskcenter__taskcenter_task_close", {})).code, 0);
-  const forbidden = await post({ type: "task.update", session_id: sessionId, task_id: created.task.id, goal: "new goal" });
-  assert.equal(forbidden.status, 409);
+  const updated = await post({ type: "task.update", session_id: sessionId, task_id: created.task.id, goal: "new goal" });
+  assert.equal(updated.status, 200);
   const checkpoint = await post({ type: "task.update", session_id: sessionId, task_id: created.task.id, next_action: "handoff", evidence: ["checkpoint saved"] });
   assert.equal(checkpoint.status, 200);
-  // Core closure simulates an independently authorized close without weakening the budget gate.
-  const closed = await fetch(`${base}/core/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify({ type: "task.update", session_id: sessionId, task_id: created.task.id, status: "cancelled" }) });
+  const target = "019f0000-0000-7000-8000-0000000000ab";
+  await runHook("session-start", "codex", { session_id: target, cwd: "/work" });
+  await writeFile(join(paths.TASKCENTER_SESSIONS_ROOT, `${target}.jsonl`), [
+    { type: "session_meta", payload: { id: target } },
+    ...lines.slice(1), { type: "compacted" }, { type: "compacted" },
+  ].map((line) => JSON.stringify(line)).join("\n") + "\n");
+  const resume = (expected_session_id) => fetch(`${base}/task-resume`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify({ session_id: target, task_id: created.task.id, expected_session_id }) });
+  assert.equal((await resume("wrong-owner")).status, 409);
+  const resumed = await resume(sessionId);
+  assert.equal(resumed.status, 200);
+  const targetPrepared = await resumed.json();
+  assert.equal(targetPrepared.new_session_recommended, true);
+  assert.equal(targetPrepared.handoff_required, false);
+  assert.equal((await run("exec_command", { cmd: "touch x" })).code, 2, "原 Session 不再具有写入归属");
+  // Core closure simulates an independently authorized close without weakening ownership gates.
+  const closed = await fetch(`${base}/core/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify({ type: "task.update", session_id: target, task_id: created.task.id, status: "cancelled" }) });
   assert.equal(closed.status, 200);
   assert.equal((await run("exec_command", { cmd: "git status && cat README.md" })).code, 0);
-  assert.equal((await run("mcp__taskcenter__taskcenter_task_close", {})).code, 0);
 });
 
 test("SessionStart Hook 登记真实会话且可幂等重放", async () => {

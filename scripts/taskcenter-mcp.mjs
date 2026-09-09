@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import { resolveTrustedMcpSession } from "./mcp-session-context.mjs";
 import { TASKCENTER_VERSION } from "./version.mjs";
+import { recommendTaskClose } from "./session-lifecycle.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
 
 const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001";
@@ -144,6 +145,7 @@ server.registerTool("taskcenter_task_close", {
     task_id: z.string().min(1).max(200),
     tests: z.array(z.string().min(1).max(500)).min(1).max(30),
     evidence: z.array(z.string().min(1).max(1_000)).min(1).max(30),
+    continuation: z.object({ new_independent_goal: z.boolean().optional(), context_large: z.boolean().optional(), expected_more_rounds: z.boolean().optional() }).strict().optional(),
     close_requirements: z.array(z.object({
       requirement_id: z.string().min(1).max(120), status: z.enum(["pending", "passed", "failed", "not_applicable"]),
       evidence_refs: z.array(z.string().min(1).max(500)).max(30).default([]), checked_at: z.string().datetime({ offset: true }).optional(),
@@ -157,7 +159,7 @@ server.registerTool("taskcenter_task_close", {
       evidence_ref: z.string().max(500).optional(), artifact_refs: z.array(z.string().max(500)).max(30).optional(), summary: z.string().max(1_000).optional(),
     }).strict()).max(30).default([]),
   }).strict(),
-}, async (input) => report("task.close", { ...input, status: "done_claimed" }));
+}, async ({ continuation, ...input }) => report("task.close", { ...input, status: "done_claimed" }, recommendTaskClose(continuation)));
 
 server.registerTool("taskcenter_task_requirement_report", {
   title: "上报 TaskCenter 验收条件结果",
@@ -535,7 +537,7 @@ server.registerTool("taskcenter_scheduled_readonly_scan_exemption_set", {
   inputSchema: z.object({ session_id: z.string().uuid(), enabled: z.boolean() }).strict(),
 }, async ({ session_id: sessionId, enabled }) => postLocal("/scheduled-readonly-scan-exemption/set", { session_id: sessionId, enabled, response_mode: "full" }));
 
-async function report(type, input) {
+async function report(type, input, lifecycle) {
   const { response_mode: responseModeValue = "summary", ...event } = input;
   let response;
   try {
@@ -548,7 +550,9 @@ async function report(type, input) {
     return result({ error: "TASKCENTER_UNAVAILABLE", message: `TaskCenter 控制服务不可用（${controlServerUrl}）。请先运行 npm run dev:live 启动 TaskCenter。`, detail: e.message });
   }
   try {
-    return writeResult(await readJson(response), responseModeValue);
+    const payload = await readJson(response);
+    if (payload.accepted && lifecycle) payload.session_lifecycle = lifecycle;
+    return writeResult(payload, responseModeValue);
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
   }
@@ -632,6 +636,7 @@ function writeResult(payload, responseModeValue) {
     missing_count: missing.length || [...new Set(readiness.reasons || [])].length,
     completion_claim_allowed: readiness.completionClaim?.allowed === true,
   };
+  if (payload?.session_lifecycle) compact.session_lifecycle = payload.session_lifecycle;
   // 通知属于账本写入后的可补偿副作用；摘要回包也必须让调用方看见失败警告。
   if (Array.isArray(payload?.warnings) && payload.warnings.length) compact.warnings = payload.warnings;
   return result(compact);

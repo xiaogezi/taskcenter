@@ -2375,6 +2375,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const closed = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_close", arguments: closeArguments })));
   assert.equal(closed.accepted, true);
   assert.equal(closed.event.type, "task.close");
+  assert.equal(closed.session_lifecycle.action, "continue");
   assert.equal(closed.task.status, "done_claimed");
   assert.equal(closed.task.requirementResults.length, 1);
   assert.equal(closed.task.verificationClaims.length, 1);
@@ -2384,6 +2385,9 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(closeReplay.idempotent, true);
   assert.equal(closeReplay.task.requirementResults.length, 1);
   assert.equal(closeReplay.task.verificationClaims.length, 1);
+  const compactClose = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_close", arguments: { ...closeArguments, response_mode: "summary", continuation: { context_large: true, expected_more_rounds: true } } })));
+  assert.equal(compactClose.accepted, true);
+  assert.equal(compactClose.session_lifecycle.action, "recommend_compact");
   assert.ok(1 <= 4 * 0.6, "原子 close 将四次闭环上报缩减为一次，下降至少 40%");
 
   const usageReport = JSON.parse(textOf(await client.callTool({ name: "taskcenter_usage_report", arguments: {} })));

@@ -203,8 +203,6 @@ const server = createServer(async (request, response) => {
       if (task.sessionId !== body.session_id) {
         if (task.sessionId !== body.expected_session_id) throw new TaskLedgerError(409, "SESSION_BINDING_CHANGED：请重新读取交接状态。");
         if (loadVisibleTasks().some((item) => item.id !== task.id && (item.sessionId === body.session_id || item.sessionHistory?.includes(body.session_id)))) throw new TaskLedgerError(409, "new_session_required：目标 Session 已绑定另一交付。");
-        const budget = await readRequestBudget(body.session_id, sessionsRoot, task);
-        if (budget.handoff_required) throw new TaskLedgerError(409, "new_session_required：目标 Session 的预算已到限。");
         recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id }, { requireRegistered: true, authorizedResume: true });
       }
       request.method = "GET";
@@ -231,8 +229,8 @@ const server = createServer(async (request, response) => {
         delegation: delegatedTask && !tasks.includes(activeTask) ? { id: delegation.id } : null,
         gate_allowlisted: readSessionAllowlist(gateSessionAllowlistPath).threadIds?.includes(sessionId) || false,
         scheduled_readonly: registry.scheduledReadonly || null,
-        contract: task ? boundedResponse({ goal: task.goal, scope: task.scope, non_goals: task.nonGoals, acceptance_criteria: task.acceptanceCriteria, verification_plan: task.verificationPlan, subject: task.currentSubject, next_action: task.nextAction }, { maxBytes: budget.handoff_required || !activeTask ? 800 : 2600 }) : null,
-        handoff: task && (budget.handoff_required || !activeTask) ? machineHandoff(task) : null,
+        contract: task ? boundedResponse({ goal: task.goal, scope: task.scope, non_goals: task.nonGoals, acceptance_criteria: task.acceptanceCriteria, verification_plan: task.verificationPlan, subject: task.currentSubject, next_action: task.nextAction }, { maxBytes: budget.handoff_recommended || !activeTask ? 800 : 2600 }) : null,
+        handoff: task && (budget.handoff_recommended || !activeTask) ? machineHandoff(task) : null,
         ...budget,
       }));
       return;
@@ -288,7 +286,7 @@ const server = createServer(async (request, response) => {
         currentTask,
       });
       const budget = sessionId ? await readRequestBudget(sessionId, sessionsRoot, currentTask) : null;
-      sendJson(response, 200, { ...lifecycle, ...(budget || {}), ...(budget?.handoff_required ? { action: "require_handoff_before_continue", handoff: machineHandoff(currentTask || {}), reasons: [...lifecycle.reasons, budget.new_session_required ? "second_compaction" : "request_budget_exhausted"] } : {}) });
+      sendJson(response, 200, { ...lifecycle, ...(budget || {}), ...(budget?.handoff_recommended ? { handoff: machineHandoff(currentTask || {}), reasons: [...lifecycle.reasons, ...budget.recommendation_reasons] } : {}) });
       return;
     }
     if (request.method === "GET" && request.url === "/session-selection") {
@@ -980,13 +978,6 @@ const server = createServer(async (request, response) => {
       verifyTaskRequest(request);
       const input = await readJsonBody(request);
       const body = enrichTaskWorkspaceEvent(input, loadSessionRegistry()[input.session_id]);
-      const budgetTask = loadVisibleTasks().find((task) => task.id === body.task_id) || null;
-      if (["task.create", "task.update"].includes(body.type)) {
-        const budget = await readRequestBudget(body.session_id, sessionsRoot, budgetTask);
-        const checkpointFields = new Set(["type", "event_id", "task_id", "session_id", "workspace", "agent", "provider", "model", "current_step", "next_action", "blocker", "evidence", "changed_files", "tests", "open_questions", "status", "project_id", "repository_root", "workspace_branch"]);
-        const checkpoint = body.type === "task.update" && Object.keys(input).every((key) => checkpointFields.has(key)) && (!body.status || ["blocked", "in_progress"].includes(body.status));
-        if (budget.handoff_required && !checkpoint) throw new TaskLedgerError(409, "handoff_required：仅允许诊断、checkpoint、task_close 与 handoff。");
-      }
       if (body.type === "task.review" || body.status === "verified" || String(body.type || "").startsWith("acceptance.")) {
         throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
       }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { recommendSessionLifecycle, machineHandoff } from "../scripts/session-lifecycle.mjs";
+import { recommendSessionLifecycle, machineHandoff, recommendTaskClose } from "../scripts/session-lifecycle.mjs";
 
 test("机器交接包保留 task 身份，转义密集长字段仍不超过 2KB", () => {
   const packet = machineHandoff({ id: "task-1", sessionId: "s1", goal: "\u0000".repeat(1000), nextAction: "\u0000".repeat(1000), currentSubject: { type: "artifact", value: "\u0000".repeat(500) } });
@@ -63,4 +63,15 @@ test("同一 Session 完成多个独立任务时建议换 Session 但不新建 T
   });
   assert.equal(result.action, "recommend_new_codex_session");
   assert.match(result.taskSemantics, /复用原任务/);
+});
+
+
+test("task_close 按新目标、上下文和预计续轮给出建议", () => {
+  for (const context_large of [false, true]) {
+    for (const expected_more_rounds of [false, true]) {
+      assert.equal(recommendTaskClose({ new_independent_goal: true, context_large, expected_more_rounds }).action, "recommend_new_session");
+      assert.equal(recommendTaskClose({ context_large, expected_more_rounds }).action, context_large && expected_more_rounds ? "recommend_compact" : "continue");
+    }
+  }
+  assert.equal(recommendTaskClose().action, "continue");
 });
