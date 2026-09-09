@@ -1,0 +1,151 @@
+{
+  "schema": "taskcenter-budget-evidence/v1",
+  "subject_revision": "fc9471353312704d51846025e660c71f5e39f40e",
+  "task_id": "task-89e9319c-7b56-4048-aab3-1e5b438e0d9b",
+  "recorded_at": "2026-09-09T13:30:31.406214+00:00",
+  "note": "归档先前真实验证与部署记录；本次未重跑测试。预算摘录排除其他任务业务合同。原始日志摘要与SHA256用于追溯，不代表重新独立验收。",
+  "sync": {
+    "source_sha256": "a6d5c17958066710b18096fca4f955e28411196731c4c2b1c83e225579e34920",
+    "source_modified_at": "2026-09-09T12:57:14.860162+00:00",
+    "excerpt": "\n> taskcenter@0.1.5 sync\n> node scripts/sync-codex.mjs\n\nTaskCenter synced 0 requirements from 0 Codex thread(s)."
+  },
+  "lint": {
+    "source_sha256": "8b91d2878e84b62b04f9ac7e066d345826d36958d3cc24bec8a38a0cf1d6d02b",
+    "source_modified_at": "2026-09-09T13:09:33.823181+00:00",
+    "excerpt": "\n> taskcenter@0.1.5 lint\n> eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .vinext --ignore-pattern .wrangler --ignore-pattern .local --ignore-pattern .delegate --ignore-pattern .planning --ignore-pattern .runs --ignore-pattern project-context/.obsidian --ignore-pattern project-context/.claudian\n"
+  },
+  "tests": {
+    "source_sha256": "a7003d97ac39575fda4cee70975ee5697fdd81bacd0782a0f65cf2a3aa8ed643",
+    "source_modified_at": "2026-09-09T13:10:05.638227+00:00",
+    "excerpt": "✔ 预算到限仍允许实现验证提交及任务更新，prepare 返回绑定，关闭后 L0 仍可读取 (1857.688875ms)\n✔ L1 和普通阶段在第 8/35 次预警，重复 started 不重置同阶段预算 (8.417916ms)\n✔ 实时读取只消费完整新增行，重复用量不重复计数，二次压缩建议新 Session (26.88575ms)\n✔ 历史 Session 文件在缓存后消失不阻断新 Session，缺失计数保持未知 (14.796583ms)\n✔ 超限和两次压缩的建议及原因保留在默认摘要，不收缩操作 (0.98925ms)\n✔ task_close 按新目标、上下文和预计续轮给出建议 (0.185667ms)\nℹ tests 355\nℹ suites 0\nℹ pass 355\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 25466.035666"
+  },
+  "deployment": {
+    "source_sha256": "718528e022c7c628c3cea6c7f62d26193864a527c377d653e88c28f73c6ad9ea",
+    "source_modified_at": "2026-09-09T13:11:37.231780+00:00",
+    "excerpt": "TaskCenter 受控部署：保持现有 PID 5751 运行并验证 fc9471353312。\n✔ Unix 完整孤儿 release 进程组可被受控部署接管 (0.252709ms)\nℹ tests 355\nℹ suites 0\nℹ pass 355\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 29080.431875\n候选实例验证通过，开始受控切换 TaskCenter 运行实例。\nTaskCenter 启动成功：http://localhost:3000\nTaskCenter 已部署不可变版本 fc9471353312。"
+  },
+  "release_events": [
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T13:10:44.514Z",
+      "deploymentId": "release-f08cc664-583e-4a4a-bbc5-20ffdcad58bf",
+      "revision": "fc9471353312704d51846025e660c71f5e39f40e",
+      "previousRevision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "stage": "deployment",
+      "outcome": "started",
+      "originalPid": 5751
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T13:10:48.138Z",
+      "deploymentId": "release-f08cc664-583e-4a4a-bbc5-20ffdcad58bf",
+      "revision": "fc9471353312704d51846025e660c71f5e39f40e",
+      "previousRevision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "stage": "lint",
+      "outcome": "passed",
+      "durationMs": 3606
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T13:11:19.759Z",
+      "deploymentId": "release-f08cc664-583e-4a4a-bbc5-20ffdcad58bf",
+      "revision": "fc9471353312704d51846025e660c71f5e39f40e",
+      "previousRevision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "stage": "test",
+      "outcome": "passed",
+      "durationMs": 31602
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T13:11:34.940Z",
+      "deploymentId": "release-f08cc664-583e-4a4a-bbc5-20ffdcad58bf",
+      "revision": "fc9471353312704d51846025e660c71f5e39f40e",
+      "previousRevision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "stage": "artifact",
+      "outcome": "passed",
+      "durationMs": 15139,
+      "sourceRoot": "/Users/gezi/Documents/project/ReqRadar/.local/releases/fc9471353312"
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T13:11:35.843Z",
+      "deploymentId": "release-f08cc664-583e-4a4a-bbc5-20ffdcad58bf",
+      "revision": "fc9471353312704d51846025e660c71f5e39f40e",
+      "previousRevision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "stage": "candidate",
+      "outcome": "passed",
+      "durationMs": 782,
+      "webPort": 50295,
+      "controlPort": 50296
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T13:11:37.231Z",
+      "deploymentId": "release-f08cc664-583e-4a4a-bbc5-20ffdcad58bf",
+      "revision": "fc9471353312704d51846025e660c71f5e39f40e",
+      "previousRevision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "stage": "deployment",
+      "outcome": "succeeded",
+      "durationMs": 52778
+    }
+  ],
+  "prepare_before": {
+    "session_id": "01a08621-2953-7423-984b-8d11482881af",
+    "task_id": "instory-upload-protocol-v1-rollout-20260909",
+    "source": "session_jsonl_incremental",
+    "continuation_count": {
+      "session": 38,
+      "task": null,
+      "phase": 38
+    },
+    "phase": "implementation",
+    "request_limit": 35,
+    "compaction_count": 0,
+    "handoff_required": true,
+    "new_session_required": false,
+    "allowed_operations": [
+      "diagnose",
+      "checkpoint",
+      "task_close",
+      "handoff"
+    ]
+  },
+  "prepare_after": {
+    "session_id": "01a08621-2953-7423-984b-8d11482881af",
+    "task_id": "instory-upload-protocol-v1-rollout-20260909",
+    "source": "session_jsonl_incremental",
+    "continuation_count": {
+      "session": 44,
+      "task": null,
+      "phase": 44
+    },
+    "phase": "implementation",
+    "request_limit": 35,
+    "compaction_count": 0,
+    "handoff_required": false,
+    "new_session_required": false,
+    "handoff_recommended": true,
+    "new_session_recommended": false,
+    "recommendation_reasons": [
+      "request_budget_exhausted"
+    ],
+    "allowed_operations": [
+      "diagnose",
+      "checkpoint",
+      "task_close",
+      "handoff",
+      "implement",
+      "query",
+      "verify"
+    ]
+  },
+  "independent_review": {
+    "reviewer_session_id": "01a08643-5873-7511-9d51-a7d9437f233a",
+    "sandbox": "read-only",
+    "report": {
+      "source_sha256": "eb6d14593b9cc46c78c89d68239485a9b9dbaad267e5f1d7e6fdf401baf6bca4",
+      "source_modified_at": "2026-09-09T13:10:06.325363+00:00",
+      "excerpt": "最终独立复审结论：通过。\n\n- Reviewer Session：`01a08643-5873-7511-9d51-a7d9437f233a`\n- 只读 sandbox：保持；未写文件、未提交 Git、未重跑测试\n- 核对对象：最终 diff `d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406` 基线上的原提交及未提交修正\n- 增量覆盖：`2/2`\n- 总覆盖：`10/10 reviewable`；其余 8 个文件沿用前次结论\n\n结论：\n\n- 规格：`compliant`\n- 质量：`approved`\n- P2：已解决。最终 fallback 现在保留预算建议字段、原因、允许操作及计数；新增 `contract` 与超长 `active_task` 回归覆盖，并验证响应仍不超过 4096 字节。\n- 未发现新增阻断问题。\n\n格子"
+    }
+  }
+}
