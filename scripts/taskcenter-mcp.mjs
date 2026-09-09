@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import { resolveTrustedMcpSession } from "./mcp-session-context.mjs";
 import { TASKCENTER_VERSION } from "./version.mjs";
+import { boundedResponse } from "./bounded-response.mjs";
 
 const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001";
 const acceptanceToken = process.env.TASKCENTER_ACCEPTANCE_TOKEN || "";
@@ -430,9 +431,34 @@ server.registerTool("taskcenter_task_reuse_decision_query", {
 
 server.registerTool("taskcenter_usage_report", {
   title: "查询 TaskCenter 用量报告",
-  description: "读取本地 Codex Session Token 事件并返回 5h、24h、7d 聚合、归属、分位数和预警；不读取消息正文或认证数据。",
-  inputSchema: z.object({}).strict(),
-}, async () => queryEndpoint("/usage-report"));
+  description: "读取有界用量摘要；支持 project(路径或项目 ID)、session、task、window 组合过滤。默认 summary_only=true、top_n=10、4KB 上限；fields 选择顶层字段，超限按 cursor 显式续读。",
+  inputSchema: z.object({
+    project: z.string().max(4096).optional(), session: z.string().max(200).optional(), task: z.string().max(200).optional(),
+    window: z.enum(["5h", "24h", "7d", "lifetime"]).optional(), fields: z.array(z.string().max(100)).max(20).optional(),
+    top_n: z.number().int().min(1).max(100).optional(), summary_only: z.boolean().optional(), cursor: z.string().max(200).optional(),
+  }).strict(),
+}, async (input) => queryEndpoint(`/usage-report?${new URLSearchParams(Object.entries(input).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : String(value)]))}`));
+
+server.registerTool("taskcenter_response_continue", {
+  title: "显式续读有界响应",
+  description: "读取 MCP 响应 continuation_cursor 的下一片 JSON 文本；usage_report 的 cursor 应通过 usage_report 续读。游标五分钟过期。",
+  inputSchema: z.object({ cursor: z.string().min(1).max(200) }).strict(),
+}, async ({ cursor }) => {
+  const page = boundedResponse(null, { cursor });
+  return page.error === "CURSOR_EXPIRED" ? queryEndpoint(`/response-continue?cursor=${encodeURIComponent(cursor)}`) : result(page);
+});
+
+server.registerTool("taskcenter_task_prepare", {
+  title: "准备或恢复当前目标",
+  description: "一次返回当前合同、Session/task 绑定、实时请求预算、压缩次数、handoff 和允许操作；不创建新目标。",
+  inputSchema: z.object({ session_id: z.string().min(1).max(200) }).strict(),
+}, async ({ session_id }) => queryEndpoint(`/task-prepare?session_id=${encodeURIComponent(session_id)}`));
+
+server.registerTool("taskcenter_task_resume", {
+  title: "在新 Session 恢复原目标",
+  description: "校验原绑定与 workspace 后将同一 task 转交已登记的新 Session；保留合同、身份与证据，返回 prepare 结果。",
+  inputSchema: z.object({ session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), expected_session_id: z.string().min(1).max(200), event_id: z.string().max(200).optional() }).strict(),
+}, async (input) => postCore("/task-resume", { ...input, response_mode: "full" }));
 
 server.registerTool("taskcenter_session_lifecycle", {
   title: "查询 Codex Session 生命周期建议",
@@ -639,7 +665,8 @@ async function queryText(path) {
   try {
     const response = await fetch(`${controlServerUrl}${path}`);
     if (!response.ok) throw new Error(`TaskCenter 请求失败（${response.status}）。`);
-    return { content: [{ type: "text", text: await response.text() }] };
+    const text = await response.text();
+    return Buffer.byteLength(text) <= 4096 ? { content: [{ type: "text", text }] } : result({ format: "text", text });
   } catch (e) {
     return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
   }
@@ -652,7 +679,7 @@ async function readJson(response) {
 }
 
 function result(payload) {
-  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+  return { content: [{ type: "text", text: JSON.stringify(boundedResponse(payload)) }] };
 }
 
 await server.connect(new StdioServerTransport());

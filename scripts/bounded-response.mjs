@@ -1,0 +1,31 @@
+import { randomUUID } from "node:crypto";
+
+const snapshots = new Map();
+export const DEFAULT_RESPONSE_BYTES = 4096;
+const bytes = (value) => Buffer.byteLength(JSON.stringify(value));
+
+// Bounded, expiring snapshots keep cursors stable when the underlying data changes.
+export function boundedResponse(payload, { cursor, summary, maxBytes = DEFAULT_RESPONSE_BYTES } = {}) {
+  const now = Date.now();
+  for (const [id, entry] of snapshots) if (entry.expires <= now) snapshots.delete(id);
+  if (cursor) {
+    const [id, rawOffset] = String(cursor).split(":");
+    const entry = snapshots.get(id);
+    const offset = Number(rawOffset);
+    if (!entry || !Number.isSafeInteger(offset) || offset < 0 || offset >= entry.text.length) return { error: "CURSOR_EXPIRED", next_action: "repeat_original_query" };
+    let end = Math.min(entry.text.length, offset + 512);
+    if (end < entry.text.length && /[\uD800-\uDBFF]/.test(entry.text[end - 1])) end--;
+    return { encoding: "json_text_fragment", offset, fragment: entry.text.slice(offset, end), continuation_cursor: end < entry.text.length ? `${id}:${end}` : null };
+  }
+  if (bytes(payload) <= maxBytes) return payload;
+  const id = randomUUID();
+  while (snapshots.size >= 32) snapshots.delete(snapshots.keys().next().value);
+  snapshots.set(id, { text: JSON.stringify(payload), expires: now + 300_000 });
+  const fallback = Object.fromEntries(["accepted", "task_id", "status", "error", "handoff_required", "new_session_required", "allowed_operations", "active_task", "delegation", "gate_allowlisted", "session_id", "source", "request_limit", "continuation_count", "compaction_count"].filter((key) => Object.hasOwn(payload, key)).map((key) => [key, payload[key]]));
+  if (payload.task?.id) fallback.task_id = payload.task.id;
+  if (payload.route) fallback.route = Object.fromEntries(["route_id", "selected_model", "reasoning_effort", "available", "role", "reason"].filter((key) => Object.hasOwn(payload.route, key)).map((key) => [key, payload.route[key]]));
+  const result = { ...fallback, summary: summary || { fields: Object.keys(payload).slice(0, 30), bytes: bytes(payload) }, truncated: true, continuation_cursor: `${id}:0` };
+  if (bytes(result) > DEFAULT_RESPONSE_BYTES) result.summary = { bytes: bytes(payload) };
+  if (bytes(result) > DEFAULT_RESPONSE_BYTES) return { truncated: true, handoff_required: payload.handoff_required === true, new_session_required: payload.new_session_required === true, summary: { bytes: bytes(payload) }, continuation_cursor: `${id}:0` };
+  return result;
+}

@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { taskTimeState } from "../app/task-time-state.mjs";
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
-import { inspectionWords } from "./inspection-command.mjs";
+import { inspectionBatch } from "./inspection-command.mjs";
 
 class ControlUnavailableError extends Error {}
 
@@ -19,6 +19,7 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
 let recoveryAttempted = false;
 let scheduledPatchRewrite = "";
+let preparedTask;
 const input = await readStdin();
 const event = parseInput(input);
 const action = process.argv[2] || "";
@@ -96,6 +97,17 @@ try {
       process.exit(0);
     }
     if (action === "scheduled-pre-tool-use") process.exit(0);
+    // A 404 means a pre-budget release, not permission to bypass its old gate.
+    const prepared = await prepareCurrentTask();
+    if (prepared) {
+      if (prepared.handoff_required && !isReadOnlyInspection(event) && !isRecoveryOperation(event)) {
+        throw new Error("handoff_required：请保存 checkpoint 并交接至新 Session；只读诊断和收尾操作仍可继续。");
+      }
+      if (prepared.task_id && isRecoveryOperation(event)) {
+        console.log("TaskCenter 收尾通道放行；写入仍由服务端校验 task 身份与预算。");
+        process.exit(0);
+      }
+    }
     if (await isL0ReadOnlyInspection(event)) {
       await recordL0Audit();
       console.log("TaskCenter L0 确定性只读检查放行");
@@ -645,6 +657,7 @@ function isTrustedRecoveryCommand(payload) {
 
 async function isL0ReadOnlyInspection(payload) {
   if (!isReadOnlyInspection(payload)) return false;
+  if (preparedTask) return !preparedTask.active_task;
   const result = await request("GET", "/session-status");
   const current = Array.isArray(result.sessions)
     ? result.sessions.find((session) => session.sessionId === sessionId)
@@ -664,22 +677,38 @@ function isReadOnlyInspection(payload) {
     : {};
   const command = String(input.cmd || input.command || payload.command || "").trim();
   if (!command) return false;
-  const tokens = inspectionWords(command);
-  if (!tokens?.length) return false;
+  const batch = inspectionBatch(command);
+  return Boolean(batch?.every(({ words, heredoc }) => isReadOnlyCommand(words, heredoc)));
+}
+
+function isReadOnlyCommand(words, heredoc) {
+  const tokens = [...words];
   if (basename(tokens[0]) === "rtk") {
     tokens.shift();
     if (tokens[0] === "proxy") tokens.shift();
   }
   const executable = basename(tokens[0]);
   const args = tokens.slice(1);
+  if (heredoc && executable !== "cat") return false;
+  if (executable === "tail" && args.some((arg) => /^--(?:follow|retry)(?:=|$)|^-[^-]*[fF]/.test(arg))) return false;
   if (args.some((token) => /(?:^|[/\\])(?:auth\.json|\.env(?:\.[^/\\]+)?|id_rsa|id_ed25519)(?:$|[/\\])/.test(token))) return false;
   if (executable === "adb") return args.length === 1 && args[0] === "version" || args[0] === "devices" && (args.length === 1 || args.length === 2 && args[1] === "-l");
   if (["pwd", "ls", "cat", "head", "tail", "wc", "du", "stat", "file"].includes(executable)) return true;
   if (executable === "rg") return !args.some((token) => /^--(?:pre|hostname-bin)(?:=|$)/.test(token));
+  if (executable === "jq") return !args.some((token) => /^(?:--(?:run-tests|from-file|library-path)(?:=|$)|-[fL])/.test(token));
+  if (executable === "awk") {
+    // Deliberately support print-only programs; arbitrary awk can execute/write.
+    return args.length > 0 && /^(?:(?:NR\s*(?:==|<=|>=|<|>)\s*\d+|\/[^/\n]+\/)\s*)?\{\s*print(?:\s+\$(?:0|[1-9]\d*))?\s*;?\s*\}$/.test(args[0]) && args.slice(1).every((arg) => !arg.startsWith("-") && !arg.includes("="));
+  }
   if (executable === "sed") return isReadOnlySed(args);
   if (executable === "find") return isReadOnlyFind(args);
   if (executable !== "git") return false;
   return isReadOnlyGit(args);
+}
+
+function isRecoveryOperation(payload) {
+  const name = String(payload.tool_name || payload.tool || payload.name || "");
+  return /(?:^|__)taskcenter_(?:task_close|task_update|task_verification_report|task_diagnostic_report|task_prepare|task_resume|handoff)$/.test(name);
 }
 
 function isReadOnlySed(args) {
@@ -740,6 +769,11 @@ function isInteractiveExec(payload) {
   const command = String(input.command || input.cmd || payload.command || "").trim();
   // tty 不是 Codex Bash Hook 的 canonical 字段，只把它作为其他客户端的附加信号。
   if (input.tty === true) return true;
+  const batch = inspectionBatch(command);
+  if (batch?.length === 1 && batch[0].heredoc) {
+    const invocation = interpreterInvocation(batch[0].words.join(" "));
+    if (invocation && ["bash", "dash", "fish", "sh", "zsh", "node", "python", "python3"].includes(invocation.executable) && !hasShortFlag(invocation.args, "i") && !invocation.args.includes("--interactive")) return false;
+  }
   const invocation = interpreterInvocation(command);
   if (!invocation) return false;
   const { executable, args } = invocation;
@@ -980,6 +1014,7 @@ async function registerSession() {
 }
 
 async function isGateAllowlistedSession() {
+  if (preparedTask) return preparedTask.gate_allowlisted === true;
   try {
     const result = await request("GET", "/gate-session-allowlist");
     return Array.isArray(result.selection?.threadIds) && result.selection.threadIds.includes(sessionId);
@@ -991,6 +1026,7 @@ async function isGateAllowlistedSession() {
 }
 
 async function requireTask() {
+    if (preparedTask?.active_task) return { ...preparedTask.active_task, ...(preparedTask.delegation ? { delegation: preparedTask.delegation } : {}) };
   const result = await request("GET", "/session-status");
   const current = Array.isArray(result.sessions)
     ? result.sessions.find((session) => session.sessionId === sessionId)
@@ -1008,7 +1044,23 @@ async function requireTask() {
   throw new Error("该命令不满足 L0 确定性只读规则，请拆成单条只读命令，或创建 fast/standard/strict 任务。当前 Session 无活跃任务或有效 delegation；CLI 执行器应先领取 taskcenter_delegation_grant，不要为普通 CLI Run 重复创建正式任务。");
 }
 
+async function prepareCurrentTask() {
+  if (preparedTask !== undefined) return preparedTask;
+  try {
+    preparedTask = await request("GET", `/task-prepare?session_id=${encodeURIComponent(sessionId)}&workspace=${encodeURIComponent(workspace)}`);
+    return preparedTask;
+  } catch (error) {
+    if (/接口不存在|\b404\b|尚未登记/.test(String(error.message || ""))) { preparedTask = null; return null; }
+    throw error;
+  }
+}
+
 async function provideTaskPreparationContext() {
+  const prepared = await prepareCurrentTask();
+  if (prepared) {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: JSON.stringify(prepared) } }));
+    return;
+  }
   if (await isGateAllowlistedSession()) return;
   const status = await request("GET", "/session-status");
   const current = Array.isArray(status.sessions)

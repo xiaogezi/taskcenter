@@ -90,7 +90,10 @@ import {
   routingRoles,
   routingSelect,
 } from "./routing-control.mjs";
-import { recommendSessionLifecycle } from "./session-lifecycle.mjs";
+import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.mjs";
+import { readRequestBudget } from "./request-budget.mjs";
+import { boundedResponse } from "./bounded-response.mjs";
+import { queryUsageReport } from "./usage-query.mjs";
 import { buildGovernanceMetrics } from "./governance-metrics.mjs";
 import { taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
 import { enrichTaskWorkspaceEvent } from "../lib/git-workspace.mjs";
@@ -183,8 +186,55 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, loadDashboard());
       return;
     }
-    if (request.method === "GET" && request.url === "/usage-report") {
-      sendJson(response, 200, { ...currentUsageReport(), snapshotStatus: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000) });
+    if (request.method === "GET" && /^\/usage-report(?:\?|$)/.test(request.url)) {
+      const params = new URL(request.url, "http://localhost").searchParams;
+      const indexPath = resolve(process.env.TASKCENTER_USAGE_INDEX_PATH || join(dirname(usageReportPath), "usage-index.json"));
+      const filtered = ["project", "session", "task"].some((key) => params.has(key));
+      sendJson(response, 200, queryUsageReport({ report: currentUsageReport(), index: filtered ? readSnapshot(indexPath, null) : null, tasks: filtered ? withDelegations(loadVisibleTasks()) : [], params }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/task-resume") {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      const task = loadVisibleTasks().find((item) => item.id === body.task_id);
+      const registry = loadSessionRegistry()[body.session_id];
+      if (!task || !registry) throw new TaskLedgerError(409, "恢复需要已有 task_id 和已登记的真实 Session。");
+      if (registry.workspace !== task.workspace) throw new TaskLedgerError(409, "恢复 Session 的 workspace 与合同不一致。");
+      if (task.sessionId !== body.session_id) {
+        if (task.sessionId !== body.expected_session_id) throw new TaskLedgerError(409, "SESSION_BINDING_CHANGED：请重新读取交接状态。");
+        if (loadVisibleTasks().some((item) => item.id !== task.id && (item.sessionId === body.session_id || item.sessionHistory?.includes(body.session_id)))) throw new TaskLedgerError(409, "new_session_required：目标 Session 已绑定另一交付。");
+        const budget = await readRequestBudget(body.session_id, sessionsRoot, task);
+        if (budget.handoff_required) throw new TaskLedgerError(409, "new_session_required：目标 Session 的预算已到限。");
+        recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id }, { requireRegistered: true, authorizedResume: true });
+      }
+      request.method = "GET";
+      request.url = `/task-prepare?session_id=${encodeURIComponent(body.session_id)}`;
+    }
+    if (request.method === "GET" && request.url?.startsWith("/response-continue?")) {
+      sendJson(response, 200, boundedResponse(null, { cursor: new URL(request.url, "http://localhost").searchParams.get("cursor") }));
+      return;
+    }
+    if (request.method === "GET" && request.url?.startsWith("/task-prepare?")) {
+      const params = new URL(request.url, "http://localhost").searchParams;
+      const sessionId = params.get("session_id") || "";
+      const registry = loadSessionRegistry()[sessionId];
+      if (!registry) throw new TaskLedgerError(409, "当前 Session 尚未登记。");
+      const tasks = loadVisibleTasks().filter((task) => task.sessionId === sessionId).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+      const delegation = resolveDelegation(sessionId, params.get("workspace") || registry.workspace);
+      const delegatedTask = delegation ? loadTasks().find((item) => item.id === delegation.taskId && ["planned", "in_progress", "blocked"].includes(item.status)) : null;
+      const activeTask = tasks.find((item) => ["planned", "in_progress", "blocked"].includes(item.status)) || delegatedTask;
+      const task = activeTask || tasks[0] || null;
+      const budget = await readRequestBudget(sessionId, sessionsRoot, task);
+      sendJson(response, 200, boundedResponse({
+        session_id: sessionId, task_id: task?.id || null, status: task?.status || null,
+        active_task: activeTask ? Object.fromEntries(["id", "sessionId", "status", "dueAt", "estimatedEffortMs", "activeDurationMs", "activeStartedAt"].map((key) => [key, activeTask[key]])) : null,
+        delegation: delegatedTask && !tasks.includes(activeTask) ? { id: delegation.id } : null,
+        gate_allowlisted: readSessionAllowlist(gateSessionAllowlistPath).threadIds?.includes(sessionId) || false,
+        scheduled_readonly: registry.scheduledReadonly || null,
+        contract: task ? boundedResponse({ goal: task.goal, scope: task.scope, non_goals: task.nonGoals, acceptance_criteria: task.acceptanceCriteria, verification_plan: task.verificationPlan, subject: task.currentSubject, next_action: task.nextAction }, { maxBytes: budget.handoff_required || !activeTask ? 800 : 2600 }) : null,
+        handoff: task && (budget.handoff_required || !activeTask) ? machineHandoff(task) : null,
+        ...budget,
+      }));
       return;
     }
     if (request.method === "GET" && request.url === "/governance-metrics") {
@@ -228,7 +278,7 @@ const server = createServer(async (request, response) => {
       const currentTask = tasks.filter((task) => ["planned", "in_progress", "blocked"].includes(task.status)).at(-1) || tasks.at(-1) || null;
       const workspaces = new Set(tasks.map((task) => task.workspace).filter(Boolean));
       const usage = currentUsageReport();
-      sendJson(response, 200, recommendSessionLifecycle({
+      const lifecycle = recommendSessionLifecycle({
         usage: {
           ...usage,
           alerts: (usage.alerts || []).filter((alert) => !sessionId || alert.sessionId === sessionId),
@@ -236,7 +286,9 @@ const server = createServer(async (request, response) => {
         },
         tasks,
         currentTask,
-      }));
+      });
+      const budget = sessionId ? await readRequestBudget(sessionId, sessionsRoot, currentTask) : null;
+      sendJson(response, 200, { ...lifecycle, ...(budget || {}), ...(budget?.handoff_required ? { action: "require_handoff_before_continue", handoff: machineHandoff(currentTask || {}), reasons: [...lifecycle.reasons, budget.new_session_required ? "second_compaction" : "request_budget_exhausted"] } : {}) });
       return;
     }
     if (request.method === "GET" && request.url === "/session-selection") {
@@ -654,6 +706,9 @@ const server = createServer(async (request, response) => {
         sendJson(response, 200, hydrateReflectionState(currentState, loadVisibleTasks(), dispatches));
         return;
       }
+      if (mode === "existing_session" && loadVisibleTasks().some((task) => task.sessionId === targetSessionId || task.sessionHistory?.includes(targetSessionId))) {
+        throw new DispatchError(409, "new_session_required：改进提案是独立交付目标，请使用新的 Session。");
+      }
       if (Date.now() - lastDispatchAt < 5_000) throw new DispatchError(429, "发送过于频繁，请稍后再试。");
       const executionId = randomUUID();
       const execution = {
@@ -925,6 +980,13 @@ const server = createServer(async (request, response) => {
       verifyTaskRequest(request);
       const input = await readJsonBody(request);
       const body = enrichTaskWorkspaceEvent(input, loadSessionRegistry()[input.session_id]);
+      const budgetTask = loadVisibleTasks().find((task) => task.id === body.task_id) || null;
+      if (["task.create", "task.update"].includes(body.type)) {
+        const budget = await readRequestBudget(body.session_id, sessionsRoot, budgetTask);
+        const checkpointFields = new Set(["type", "event_id", "task_id", "session_id", "workspace", "agent", "provider", "model", "current_step", "next_action", "blocker", "evidence", "changed_files", "tests", "open_questions", "status", "project_id", "repository_root", "workspace_branch"]);
+        const checkpoint = body.type === "task.update" && Object.keys(input).every((key) => checkpointFields.has(key)) && (!body.status || ["blocked", "in_progress"].includes(body.status));
+        if (budget.handoff_required && !checkpoint) throw new TaskLedgerError(409, "handoff_required：仅允许诊断、checkpoint、task_close 与 handoff。");
+      }
       if (body.type === "task.review" || body.status === "verified" || String(body.type || "").startsWith("acceptance.")) {
         throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
       }

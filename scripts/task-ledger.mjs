@@ -388,6 +388,7 @@ export function recordTaskEvent(input, options = {}) {
   try { event = normalizeEvent(input, current); }
   catch (error) { if (Number.isInteger(error.statusCode)) throw new TaskLedgerError(error.statusCode, error.message); throw error; }
   if (options.verifiedBugAcceptance && event.type === "acceptance.accepted") event.bug_acceptance = true;
+  if (event.type === "task.resume" && !options.authorizedResume) throw new TaskLedgerError(403, "task.resume 只能通过已校验的 Session 恢复入口。");
   const sessionRegistry = loadSessionRegistry();
   const eventSessionId = canonicalSessionId(event.session_id);
   const isRegistered = Boolean(eventSessionId && sessionRegistry[eventSessionId]);
@@ -433,6 +434,13 @@ export function recordTaskEvent(input, options = {}) {
     // 返回首次持久化的事件，确保外部补偿同步不能被重投 payload 篡改。
     return { event: original, task: originalTask, idempotent: true };
   }
+  if (options.requireRegistered && event.type === "task.create" && !current && !isContextShadowTask(event.task_id)) {
+    const previous = tasks.find((task) => !isContextShadowTask(task) && (task.sessionId === eventSessionId || task.sessionHistory?.includes(eventSessionId)));
+    if (previous) throw new TaskLedgerError(409, `new_session_required：当前 Session 已绑定 ${previous.id}；同一目标请保留原 task_id，独立目标需新 Session。`);
+  }
+  if (options.requireRegistered && current && (current.closedGoal || ["done_claimed", "verified", "cancelled"].includes(current.status)) && event.goal && event.goal !== (current.closedGoal || current.goal)) {
+    throw new TaskLedgerError(409, "new_session_required：不能将已关闭任务改造成新的交付目标。");
+  }
   // 对已存在的任务，先校验 session 归属，再决定幂等或拒绝。
   if (current) {
     // 人工操作事件（event_id 以 "manual-" 开头）绕过归属校验，但必须本机 UI 来源
@@ -441,7 +449,7 @@ export function recordTaskEvent(input, options = {}) {
     const ownerSession = canonicalSessionId(current.sessionId);
     const sameOwnerSession = Boolean(ownerSession && eventSessionId && ownerSession === eventSessionId);
     const authorizedPhaseSession = phaseEvidence && authorizePhaseSession(current, event, sameOwnerSession);
-    if (!event.event_id.startsWith("manual-") && !reviewEvidence && !authorizedPhaseSession && current.sessionId && event.session_id && !sameOwnerSession) {
+    if (!options.authorizedResume && !event.event_id.startsWith("manual-") && !reviewEvidence && !authorizedPhaseSession && current.sessionId && event.session_id && !sameOwnerSession) {
       throw new TaskLedgerError(403, "当前 Session 不是该任务的登记 Session。");
     }
     if (options.requireRegistered && (reviewEvidence || (phaseEvidence && !sameOwnerSession)) && !isRegistered) {
@@ -861,7 +869,7 @@ function normalizeEvent(input, current = null) {
   const type = String(input.type || "");
   const sessionId = String(input.session_id || "");
   const allowedTypes = new Set([
-    "session.register", "task.create", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.close", "task.review",
+    "session.register", "task.create", "task.resume", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.close", "task.review",
     "task.reminder", "tool.call", "routing.decision", "routing.result", "routing.health", "requirement.reported", "verification.reported", "review.reported", "review_cycle.reported",
     "acceptance.accepted", "acceptance.rejected", "subject.updated", "diagnostic.reported", "phase.reported",
   ]);
@@ -1155,6 +1163,7 @@ function applyEvent(current, event) {
   let next = {
     ...base,
     sessionId: preservesTaskOwner ? base.sessionId : (event.session_id || base.sessionId),
+    sessionHistory: event.type === "task.resume" ? [...new Set([...(base.sessionHistory || []), base.sessionId])] : (base.sessionHistory || []),
     ownerActor: event.type === "task.create" ? (event.actor || base.ownerActor) : base.ownerActor,
     agent: preservesTaskOwner ? base.agent : event.agent !== "unknown" ? event.agent : (base.agent || "unknown"),
     provider: preservesTaskOwner ? base.provider : event.provider !== "unknown" ? event.provider : (base.provider || "unknown"),
@@ -1165,6 +1174,7 @@ function applyEvent(current, event) {
     workspaceBranch: event.workspace_branch || base.workspaceBranch,
     title: event.title || base.title,
     goal: event.goal || base.goal,
+    closedGoal: base.closedGoal || (["done_claimed", "verified", "cancelled"].includes(base.status) ? base.goal : ""),
     requirementId: event.requirement_id || base.requirementId,
     contextTaskId: event.context_task_id || base.contextTaskId,
     priority: event.priority || base.priority,

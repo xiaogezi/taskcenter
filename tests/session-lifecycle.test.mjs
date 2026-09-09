@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { recommendSessionLifecycle } from "../scripts/session-lifecycle.mjs";
+import { recommendSessionLifecycle, machineHandoff } from "../scripts/session-lifecycle.mjs";
+
+test("机器交接包保留 task 身份，转义密集长字段仍不超过 2KB", () => {
+  const packet = machineHandoff({ id: "task-1", sessionId: "s1", goal: "\u0000".repeat(1000), nextAction: "\u0000".repeat(1000), currentSubject: { type: "artifact", value: "\u0000".repeat(500) } });
+  assert.equal(packet.task_id, "task-1");
+  assert.ok(Buffer.byteLength(JSON.stringify(packet)) <= 2048);
+});
 
 const task = {
   title: "实现用量治理",

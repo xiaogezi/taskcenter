@@ -11,6 +11,7 @@ const root = new URL("../", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
 const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-hook-"));
 const paths = {
+  TASKCENTER_SESSIONS_ROOT: join(tempDir, "sessions"),
   TASKCENTER_TASK_EVENTS_PATH: join(tempDir, "task-events.jsonl"),
   TASKCENTER_TASK_LEDGER_PATH: join(tempDir, "task-ledger.json"),
   TASKCENTER_TASK_EVENT_IDS_PATH: join(tempDir, "task-event-ids.json"),
@@ -88,6 +89,35 @@ after(async () => {
   await rm(tempDir, { recursive: true, force: true });
 });
 
+test("预算到限不锁死诊断和收尾，prepare 返回绑定，关闭后 L0 仍可读取", async () => {
+  const sessionId = "019f0000-0000-7000-8000-0000000000aa";
+  await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
+  const post = (body) => fetch(`${base}/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
+  const created = await (await post({ type: "task.create", session_id: sessionId, workspace: "/work", title: "budget", goal: "budget", plan: ["implement"], acceptance_criteria: ["pass"], contract_version: "v2", scope: ["budget"], non_goals: [], review_policy: "not_required", workflow_profile: "fast" })).json();
+  assert.equal(created.accepted, true, JSON.stringify(created));
+  await mkdir(paths.TASKCENTER_SESSIONS_ROOT, { recursive: true });
+  const lines = [{ type: "session_meta", payload: { id: sessionId } }, ...Array.from({ length: 8 }, (_, i) => ({ type: "event_msg", timestamp: new Date(Date.now() + i).toISOString(), payload: { type: "token_count", info: { last_token_usage: { input_tokens: 1 }, total_token_usage: { input_tokens: i + 1 } } } }))];
+  await writeFile(join(paths.TASKCENTER_SESSIONS_ROOT, `${sessionId}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+  const prepared = await (await fetch(`${base}/task-prepare?session_id=${sessionId}`)).json();
+  assert.equal(prepared.task_id, created.task.id);
+  assert.equal(prepared.handoff_required, true);
+  assert.equal((await (await fetch(`${base}/session-lifecycle?session_id=${sessionId}`)).json()).action, "require_handoff_before_continue");
+  assert.ok(Buffer.byteLength(JSON.stringify(prepared)) <= 4096);
+  const run = (tool_name, tool_input) => runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name, tool_input });
+  assert.match((await run("exec_command", { cmd: "touch x" })).stderr, /handoff_required/);
+  assert.equal((await run("exec_command", { cmd: "rg failure log | head -10" })).code, 0);
+  assert.equal((await run("mcp__taskcenter__taskcenter_task_close", {})).code, 0);
+  const forbidden = await post({ type: "task.update", session_id: sessionId, task_id: created.task.id, goal: "new goal" });
+  assert.equal(forbidden.status, 409);
+  const checkpoint = await post({ type: "task.update", session_id: sessionId, task_id: created.task.id, next_action: "handoff", evidence: ["checkpoint saved"] });
+  assert.equal(checkpoint.status, 200);
+  // Core closure simulates an independently authorized close without weakening the budget gate.
+  const closed = await fetch(`${base}/core/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify({ type: "task.update", session_id: sessionId, task_id: created.task.id, status: "cancelled" }) });
+  assert.equal(closed.status, 200);
+  assert.equal((await run("exec_command", { cmd: "git status && cat README.md" })).code, 0);
+  assert.equal((await run("mcp__taskcenter__taskcenter_task_close", {})).code, 0);
+});
+
 test("SessionStart Hook 登记真实会话且可幂等重放", async () => {
   const first = await runHook("session-start", "claude", { session_id: "hook-session", cwd: "/work" });
   const second = await runHook("session-start", "claude", { session_id: "hook-session", cwd: "/work" });
@@ -101,12 +131,12 @@ test("SessionStart Hook 登记真实会话且可幂等重放", async () => {
 test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async () => {
   const sessionId = "019f0000-0000-7000-8000-000000000089";
   assert.equal((await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" })).code, 0);
-  for (const command of ["pwd", "cat README.md", "sed -n '1,2p' README.md", "sed -n '/hello/p' README.md", "git status", "git diff", "git ls-files", "find . -maxdepth 1", "rtk rg TaskCenter README.md", "rtk rg 'foo|bar' README.md", "rtk proxy rg 'foo|bar' README.md", "adb devices -l", "/opt/android/adb version"]) {
+  for (const command of ["pwd", "cat README.md", "sed -n '1,2p' README.md", "sed -n '/hello/p' README.md", "git status", "git diff", "git ls-files", "find . -maxdepth 1", "rtk rg TaskCenter README.md", "rtk rg 'foo|bar' README.md", "rtk proxy rg 'foo|bar' README.md", "adb devices -l", "/opt/android/adb version", "pwd; ls", "cat x | head", "rg foo README.md && git status", "jq '.[0]' data.json", "awk 'NR<=10 {print $0}' README.md", "cat <<'EOF'\nhello\nEOF"]) {
     const allowed = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: command } });
     assert.equal(allowed.code, 0, command);
     assert.match(allowed.stdout, /L0/);
   }
-  for (const command of ["touch x", "rm x", "mv x y", "sed -i s/a/b/ x", "sed -ni s/a/b/ x", "sed -n '1w leak.txt' x", "git commit -m x", "git diff --output=leak", "npm test", "pwd; ls", "cat x | head", "cat x > y", "echo $(pwd)", "find . -delete", "find . -exec touch x ;", "find . -fprint leak", "bash -c 'pwd'", "python -c 'print(1)'"]) {
+  for (const command of ["touch x", "rm x", "mv x y", "sed -i s/a/b/ x", "sed -ni s/a/b/ x", "sed -n '1w leak.txt' x", "git commit -m x", "git diff --output=leak", "npm test", "cat x > y", "echo $(pwd)", "find . -delete", "find . -exec touch x ;", "find . -fprint leak", "bash -c 'pwd'", "python -c 'print(1)'"]) {
     const blocked = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: command } });
     assert.equal(blocked.code, 2, command);
     assert.match(blocked.stderr, /不满足 L0 确定性只读规则/);
@@ -125,7 +155,7 @@ test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async
   assert.equal(unregistered.code, 2);
   assert.match(unregistered.stderr, /尚未登记/);
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
-  assert.equal(tasks.length, 0);
+  assert.equal(tasks.filter((task) => task.sessionId === sessionId).length, 0);
 });
 
 test("scheduled_readonly 仅绕过 active task 并限制为 inStory 精确只读能力", async () => {
@@ -401,7 +431,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 inStory 精确只读
   assert.match(postInvalid.stderr, /写后 sha256-v1 校验失败/);
 
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
-  assert.equal(tasks.length, 0);
+  assert.equal(tasks.filter((task) => task.sessionId === sessionId).length, 0);
 });
 
 test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Agent 建任务", async () => {
@@ -418,9 +448,9 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
   assert.equal(missingTask.code, 0);
   const context = JSON.parse(missingTask.stdout);
   assert.equal(context.hookSpecificOutput.hookEventName, "UserPromptSubmit");
-  assert.match(context.hookSpecificOutput.additionalContext, /主 Agent.*taskcenter_task_create/);
-  assert.match(context.hookSpecificOutput.additionalContext, /CLI 派发执行器.*delegation/);
-  assert.match(context.hookSpecificOutput.additionalContext, /不要要求用户手动创建任务/);
+  const preparation = JSON.parse(context.hookSpecificOutput.additionalContext);
+  assert.equal(preparation.task_id, null);
+  assert.equal(preparation.session_id, sessionId);
 
   const allowlistedSessionId = "019f0000-0000-7000-8000-000000000091";
   const allowlistedResponse = await fetch(`${base}/gate-session-allowlist`, {
@@ -467,7 +497,7 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
     prompt: "继续修改",
   });
   assert.equal(active.code, 0);
-  assert.equal(active.stdout, "");
+  assert.equal(JSON.parse(JSON.parse(active.stdout).hookSpecificOutput.additionalContext).task_id, "prompt-preparation-task");
 });
 
 test("Stop 不因完成就绪度或 Review 缺口打断 Codex 回复", async () => {

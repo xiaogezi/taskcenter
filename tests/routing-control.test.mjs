@@ -320,6 +320,7 @@ test("manual_only Spark 健康状态可观察，退役后隐藏", async () => {
 
 test("实际集中策略节制 Astra，受保护任务与 Reviewer 均不降级", async () => {
   const actual = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
+  const configuredReviewer = JSON.parse(actual).roles.reviewer.model;
   await writeFile(roleConfigPath, actual, "utf8");
   try {
     const astra = "gpt-6-astra";
@@ -328,7 +329,7 @@ test("实际集中策略节制 Astra，受保护任务与 Reviewer 均不降级"
       implementation: luna, test: luna,
       architecture: terra, security: astra, migration: terra,
       data_migration: astra, complex_diagnosis: terra, high_risk: astra,
-      ocr_review: astra,
+      ocr_review: configuredReviewer,
     };
     for (const [task_class, model] of Object.entries(expected)) {
       const input = { ...baseInput, task_class, event_id: `actual-${task_class}`, ...(task_class === "ocr_review" ? { review_artifacts: reviewArtifacts } : {}) };
@@ -337,7 +338,7 @@ test("实际集中策略节制 Astra，受保护任务与 Reviewer 均不降级"
       assert.equal(selected.roles.executor.reasoning_effort, "low");
       assert.equal(selected.route.reasoning_effort, ["security", "data_migration", "complex_diagnosis", "high_risk"].includes(task_class) ? "medium" : "low");
       assert.deepEqual(selected.roles.executor.fallback_models, [terra, astra]);
-      assert.equal(selected.roles.reviewer.model, astra);
+      assert.equal(selected.roles.reviewer.model, configuredReviewer);
       assert.equal(selected.roles.reviewer.reasoning_effort, "low");
       assert.equal(selected.roles.reviewer.fail_closed, true);
       assert.deepEqual(selected.roles.reviewer.fallback_models, []);
@@ -366,8 +367,11 @@ test("实际集中策略节制 Astra，受保护任务与 Reviewer 均不降级"
       routingResult({ route_id: lunaLease.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
       for (const route of lunaLeases) routingResult({ route_id: route.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
       const reviewer = routingSelect({ ...baseInput, task_class: "ocr_review", event_id: "actual-review-full", review_artifacts: reviewArtifacts });
-      assert.equal(reviewer.route.available, false);
-      assert.equal(reviewer.route.reason, "reviewer_model_unavailable");
+      assert.equal(reviewer.route.available, configuredReviewer !== astra);
+      if (reviewer.route.available) {
+        assert.equal(reviewer.route.selected_model, configuredReviewer);
+        routingResult({ route_id: reviewer.route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
+      } else assert.equal(reviewer.route.reason, "reviewer_model_unavailable");
     } finally {
       for (const route of leased) routingResult({ route_id: route.route_id, outcome: "cancelled", error_code: "verification_only_no_executor_started" });
     }

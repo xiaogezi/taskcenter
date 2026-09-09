@@ -294,7 +294,7 @@ export class Codex {
   assert.equal(JSON.parse(await readFile(ledgerPath, "utf8")).filter((task) => task.id === taskId).length, 1);
 });
 
-test("已采纳提案可先在已有 Session 建任务再派发", async (t) => {
+test("独立提案不能复用已完成其他目标的 Session，拒绝前不派发", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "taskcenter-reflection-existing-"));
   const port = 4_000 + Math.floor(Math.random() * 100);
   const sessionId = "019f9100-0000-7000-8000-000000000001";
@@ -355,18 +355,8 @@ console.log(JSON.stringify({ type: "turn.started" }));
     headers,
     body: JSON.stringify({ requestId: "019f9100-0000-7000-8000-000000000099", mode: "existing_session", threadId: sessionId }),
   });
-  assert.equal(response.status, 202);
-  let state;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    state = await (await fetch(`${base}/reflections`)).json();
-    if (state.proposals[0].executions[0].dispatchStatus === "completed") break;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  const execution = state.proposals[0].executions[0];
-  assert.equal(execution.sessionId, sessionId);
-  assert.equal(execution.taskStatus, "in_progress");
-  assert.equal(execution.dispatchStatus, "completed");
-  const capture = JSON.parse(await readFile(capturePath, "utf8"));
-  assert.equal(capture.threadId, sessionId);
-  assert.match(capture.prompt, new RegExp(execution.taskId));
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /new_session_required/);
+  assert.equal(JSON.parse(await readFile(ledgerPath, "utf8")).length, 1);
+  await assert.rejects(readFile(capturePath), { code: "ENOENT" });
 });

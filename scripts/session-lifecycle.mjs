@@ -69,3 +69,24 @@ function truncateUtf8(value, maxBytes) {
 }
 
 export { actions as sessionLifecycleActions };
+
+export function machineHandoff(task = {}) {
+  const packet = {
+    protocol: "taskcenter-handoff/v1", task_id: task.id || null, session_id: task.sessionId || null,
+    goal: task.goal || task.title || "", constraints: task.nonGoals || [], subject: task.currentSubject || null,
+    changed_files: task.changedFiles || [], verification: task.verificationStatus || "unknown", review: task.reviewStatus || "unknown",
+    unresolved: task.openQuestions || [], next_action: task.nextAction || "",
+  };
+  for (const key of ["constraints", "changed_files", "unresolved"]) packet[key] = packet[key].slice(0, 3).map((item) => truncateUtf8(String(item), 100));
+  packet.goal = truncateUtf8(packet.goal, 300);
+  packet.next_action = truncateUtf8(packet.next_action, 200);
+  if (Buffer.byteLength(JSON.stringify(packet)) > 2048) {
+    packet.subject = task.currentSubject ? { type: task.currentSubject.type, value: truncateUtf8(task.currentSubject.value || "", 150) } : null;
+    packet.constraints = []; packet.changed_files = []; packet.unresolved = [];
+    packet.details_in_task = true;
+  }
+  if (Buffer.byteLength(JSON.stringify(packet)) > 2048) {
+    return { protocol: packet.protocol, task_id: packet.task_id, session_id: packet.session_id, details_in_task: true, next_action: "taskcenter_task_prepare" };
+  }
+  return packet;
+}

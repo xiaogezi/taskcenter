@@ -144,7 +144,7 @@ function sessionContainsPrompt(sessionPath, prompt, startedAt) {
   return false;
 }
 
-function findSessionPath(threadId, root) {
+export function findSessionPath(threadId, root) {
   const matches = collectFiles(
     root,
     (path) => path.endsWith(".jsonl") && path.includes(threadId),

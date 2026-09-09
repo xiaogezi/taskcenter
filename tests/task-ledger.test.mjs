@@ -107,7 +107,8 @@ test("Control API 在全量任务上筛选后分页，并返回项目范围 acti
     ["filter-alpha-2", "Alpha 需阻塞", "/workspaces/Alpha", "blocked", "等待依赖"],
     ["filter-beta-1", "Beta 条目", "/workspaces/Beta", "planned", ""],
   ]) {
-    const response = await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.create", event_id: `create-${task_id}`, task_id, session_id: "task-filter-session", title, workspace, status, blocker }) });
+    await registerHttpSession(base, `session-${task_id}`);
+    const response = await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.create", event_id: `create-${task_id}`, task_id, session_id: `session-${task_id}`, title, workspace, status, blocker }) });
     assert.equal(response.status, 201);
   }
   const filtered = await (await fetch(`${base}/tasks?view=summary&project=project:alpha&query=${encodeURIComponent("需阻塞")}&page=1&page_size=1`)).json();
@@ -1677,7 +1678,7 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   assert.equal(selected.route.selected_model, "gpt-5.6-luna");
   assert.equal(selected.route.orchestrator_model, "gpt-user-selected-current");
   assert.equal(selected.route.reason, "executor_model_from_config");
-  assert.equal(selected.roles.reviewer.model, "gpt-6-astra");
+  assert.equal(selected.roles.reviewer.model, JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles.reviewer.model);
   assert.equal(selected.route.available, true);
 
   const resultResponse = await fetch(`${base}/routing/result`, {
@@ -2060,6 +2061,23 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   });
   const client = new Client({ name: "taskcenter-test", version: "0.0.0" });
   await client.connect(transport);
+  const callTool = client.callTool.bind(client);
+  client.callTool = async (...args) => {
+    const response = await callTool(...args);
+    assert.ok(Buffer.byteLength(textOf(response)) <= 4096, args[0].name);
+    let payload;
+    try { payload = JSON.parse(textOf(response)); } catch { return response; }
+    if (!payload.truncated) return response;
+    let text = "";
+    while (payload.continuation_cursor) {
+      const page = await callTool({ name: "taskcenter_response_continue", arguments: { cursor: payload.continuation_cursor } });
+      assert.ok(Buffer.byteLength(textOf(page)) <= 4096);
+      payload = JSON.parse(textOf(page));
+      assert.equal(payload.encoding, "json_text_fragment");
+      text += payload.fragment;
+    }
+    return { content: [{ type: "text", text }] };
+  };
   context.after(async () => { await client.close().catch(() => {}); });
 
   const tools = await client.listTools();
@@ -2320,25 +2338,26 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
 
   const compact = await client.callTool({
     name: "taskcenter_task_create",
-    arguments: { session_id: "sess-mcp", task_id: "task-mcp-summary", title: "紧凑回包", goal: "验证默认摘要", acceptance_criteria: ["a"], plan: ["p"] },
+    arguments: { session_id: "sess-mcp", task_id: "task-mcp", title: "MCP 闸门", goal: "验证 MCP 通道", acceptance_criteria: ["a"], plan: ["p"] },
   });
   const compactText = textOf(compact);
   const compactPayload = JSON.parse(compactText);
   assert.deepEqual(Object.keys(compactPayload).sort(), ["accepted", "completion_claim_allowed", "missing_count", "review_status", "status", "task_id", "verification_status"]);
   assert.equal(compactPayload.completion_claim_allowed, false);
-  assert.equal(compactPayload.task_id, "task-mcp-summary");
+  assert.equal(compactPayload.task_id, "task-mcp");
   assert.ok(compactText.length < textOf(create).length / 2, "默认摘要应显著小于 full 回包");
 
+  await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-mcp-close-owner", workspace: "/work", agent: "codex" } });
   await client.callTool({
     name: "taskcenter_task_create",
     arguments: {
-      session_id: "sess-mcp", task_id: "task-mcp-close", contract_version: "v2", title: "原子关闭",
+      session_id: "sess-mcp-close-owner", task_id: "task-mcp-close", contract_version: "v2", title: "原子关闭",
       goal: "一次上报闭环证据", scope: ["close"], non_goals: [], workflow_profile: "fast", review_policy: "not_required",
       acceptance_criteria: [{ id: "close-criterion", description: "证据完整", required: true }], plan: ["close"], response_mode: "full",
     },
   });
   const closeArguments = {
-    session_id: "sess-mcp", task_id: "task-mcp-close", event_id: "mcp-close-once",
+    session_id: "sess-mcp-close-owner", task_id: "task-mcp-close", event_id: "mcp-close-once",
     tests: ["node --test"], evidence: ["summary:passed"], changed_files: ["scripts/example.mjs"],
     close_requirements: [{ requirement_id: "close-criterion", status: "passed", evidence_refs: ["summary:passed"] }],
     close_verifications: [{ id: "close-test", kind: "test", status: "passed", observed_at: "2026-08-20T08:30:00.000Z", producer: "codex", evidence_ref: "summary:passed" }],
@@ -2347,7 +2366,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const bypassClose = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_task_report",
     arguments: {
-      session_id: "sess-mcp", task_id: "task-mcp-close", event_id: "mcp-close-bypass",
+      session_id: "sess-mcp-close-owner", task_id: "task-mcp-close", event_id: "mcp-close-bypass",
       status: "done_claimed", tests: ["passed"], evidence: ["summary:passed"],
     },
   })));
@@ -2416,10 +2435,11 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(JSON.parse(textOf(finalQuery)).tasks[0].status, "done_claimed");
 
   await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-reviewer", agent: "codex", provider: "openai", model: "gpt-review", workspace: "/review" } });
+  await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-mcp-v2-owner", workspace: "/work", agent: "codex" } });
   const v2Create = await client.callTool({
     name: "taskcenter_task_create",
     arguments: {
-      session_id: "sess-mcp", task_id: "task-mcp-v2", title: "MCP v2 闭环", goal: "验证新 MCP 能力",
+      session_id: "sess-mcp-v2-owner", task_id: "task-mcp-v2", title: "MCP v2 闭环", goal: "验证新 MCP 能力",
       acceptance_criteria: ["功能通过"], plan: ["实现"], contract_version: "v2", scope: ["scripts/"], non_goals: [],
       workflow_profile: "standard", review_policy: "required", execution_environment: "local", response_mode: "full",
       verification_plan: [{ id: "tests", title: "测试", kind: "test", required: true }],
@@ -2429,20 +2449,20 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   await client.callTool({
     name: "taskcenter_task_close",
     arguments: {
-      session_id: "sess-mcp", task_id: "task-mcp-v2", event_id: "mcp-v2-close",
+      session_id: "sess-mcp-v2-owner", task_id: "task-mcp-v2", event_id: "mcp-v2-close",
       tests: ["passed"], evidence: ["summary:passed"], revision: "revision-mcp",
     },
   });
   await client.callTool({
     name: "taskcenter_task_requirement_report",
-    arguments: { session_id: "sess-mcp", task_id: "task-mcp-v2", event_id: "mcp-requirement", requirement_id: "acceptance-1", status: "passed", evidence_refs: ["claim-mcp"], checked_by: "codex", revision: "revision-mcp" },
+    arguments: { session_id: "sess-mcp-v2-owner", task_id: "task-mcp-v2", event_id: "mcp-requirement", requirement_id: "acceptance-1", status: "passed", evidence_refs: ["claim-mcp"], checked_by: "codex", revision: "revision-mcp" },
   });
   await client.callTool({
     name: "taskcenter_task_verification_report",
     arguments: {
-      session_id: "sess-mcp", task_id: "task-mcp-v2", event_id: "mcp-verification", id: "claim-mcp", requirement_id: "tests",
+      session_id: "sess-mcp-v2-owner", task_id: "task-mcp-v2", event_id: "mcp-verification", id: "claim-mcp", requirement_id: "tests",
       kind: "test", command_or_probe: "node --test", status: "passed", exit_code: 0, revision: "revision-mcp",
-      observed_at: "2026-08-17T00:00:00.000Z", producer: "codex", producer_session_id: "sess-mcp", evidence_ref: "summary:passed",
+      observed_at: "2026-08-17T00:00:00.000Z", producer: "codex", producer_session_id: "sess-mcp-v2-owner", evidence_ref: "summary:passed",
     },
   });
   const beforeReview = await client.callTool({ name: "taskcenter_task_completion_readiness", arguments: { task_id: "task-mcp-v2" } });
@@ -2510,7 +2530,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   await client.callTool({
     name: "taskcenter_task_diagnostic_report",
     arguments: {
-      session_id: "sess-mcp", task_id: "task-mcp-v2", event_id: "mcp-diagnostic", case_id: "debug-mcp-1",
+      session_id: "sess-mcp-v2-owner", task_id: "task-mcp-v2", event_id: "mcp-diagnostic", case_id: "debug-mcp-1",
       observed_at: "2026-08-17T00:08:00.000Z", started_at: "2026-08-17T00:01:00.000Z", root_cause_at: "2026-08-17T00:06:00.000Z",
       outcome: "resolved", hypothesis_count: 2, failed_fix_count: 1, rollback_count: 1, fresh_verification: "passed", evidence_refs: ["log://debug-mcp-1"],
     },
@@ -2518,11 +2538,12 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const afterDiagnostic = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "task-mcp-v2" } })));
   assert.equal(afterDiagnostic.tasks[0].diagnosticObservations[0].case_id, "debug-mcp-1");
 
+  await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-structured-owner", workspace: "/work", agent: "codex" } });
   const structuredSubject = { type: "git_commit", value: "commit-mcp-structured", repository: "/work", branch: "feature/readiness", observed_at: "2026-08-17T01:00:00.000Z" };
   await client.callTool({
     name: "taskcenter_task_create",
     arguments: {
-      session_id: "sess-mcp", task_id: "task-mcp-structured", title: "结构化 Subject 就绪度", goal: "验证专用 readiness 与 task_query 一致",
+      session_id: "sess-structured-owner", task_id: "task-mcp-structured", title: "结构化 Subject 就绪度", goal: "验证专用 readiness 与 task_query 一致",
       acceptance_criteria: ["功能通过"], plan: ["实现"], contract_version: "v2", scope: ["scripts/"], non_goals: [],
       workflow_profile: "standard", review_policy: "not_required", execution_environment: "local",
       verification_plan: [{ id: "tests", title: "测试", kind: "test", required: true }],
@@ -2531,13 +2552,13 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   await client.callTool({
     name: "taskcenter_task_close",
     arguments: {
-      session_id: "sess-mcp", task_id: "task-mcp-structured", event_id: "mcp-structured-close",
+      session_id: "sess-structured-owner", task_id: "task-mcp-structured", event_id: "mcp-structured-close",
       tests: ["passed"], evidence: ["summary:passed"], subject_ref: structuredSubject,
       close_requirements: [{ requirement_id: "acceptance-1", status: "passed", evidence_refs: ["structured-claim"] }],
       close_verifications: [{
         id: "structured-claim", requirement_id: "tests", kind: "test", command_or_probe: "node --test",
         status: "passed", exit_code: 0, observed_at: "2026-08-17T01:05:00.000Z",
-        producer: "codex", producer_session_id: "sess-mcp", evidence_ref: "summary:passed",
+        producer: "codex", producer_session_id: "sess-structured-owner", evidence_ref: "summary:passed",
       }],
     },
   });
@@ -3046,30 +3067,28 @@ test("控制服务 schedule/archive/unarchive HTTP 闭环", async (context) => {
   assert.equal((await unarchive.json()).task.archivedAt, "");
 });
 
-test("Session 生命周期端点会从相邻任务目标变化自动要求交接", async (context) => {
+test("Codex 单目标 Session 拒绝第二任务，关闭后仅能修复原任务，并可跨 Session 恢复", async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer();
   context.after(() => child.kill("SIGTERM"));
-  await registerHttpSession(base, "sess-lifecycle-goal");
-  for (const [taskId, goal] of [["task-lifecycle-one", "完成用量报告"], ["task-lifecycle-two", "实现登录页面"]]) {
-    const response = await fetch(`${base}/task-events`, {
-      method: "POST",
-      headers: taskHeaders(),
-      body: JSON.stringify({
-        type: "task.create",
-        session_id: "sess-lifecycle-goal",
-        task_id: taskId,
-        title: goal,
-        goal,
-      }),
-    });
-    assert.equal(response.status, 201);
-  }
-  const lifecycle = await fetch(`${base}/session-lifecycle?session_id=sess-lifecycle-goal`);
-  assert.equal(lifecycle.status, 200);
-  const result = await lifecycle.json();
-  assert.equal(result.action, "require_handoff_before_continue");
-  assert.ok(result.reasons.includes("project_or_primary_goal_changed"));
+  await registerHttpSession(base, "sess-one-goal");
+  const post = (body) => fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(body) });
+  assert.equal((await post({ type: "task.create", session_id: "sess-one-goal", task_id: "one-goal", title: "原目标", goal: "原目标" })).status, 201);
+  const second = await post({ type: "task.create", session_id: "sess-one-goal", task_id: "other-goal", title: "其他目标", goal: "其他目标" });
+  assert.equal(second.status, 409);
+  assert.match((await second.json()).error, /new_session_required/);
+  assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", status: "cancelled" })).status, 200);
+  assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", goal: "其他目标" })).status, 409);
+  assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", status: "in_progress", next_action: "验证原目标" })).status, 200);
+  await registerHttpSession(base, "sess-resume-goal");
+  const resumed = await fetch(`${base}/task-resume`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ session_id: "sess-resume-goal", task_id: "one-goal", expected_session_id: "sess-one-goal" }) });
+  assert.equal(resumed.status, 200);
+  const packet = await resumed.json();
+  assert.equal(packet.task_id, "one-goal");
+  assert.equal(packet.session_id, "sess-resume-goal");
+  assert.ok(Buffer.byteLength(JSON.stringify(packet.handoff)) <= 2048);
+  assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", next_action: "旧 Session 不得继续写入" })).status, 403);
+  assert.equal((await post({ type: "task.create", session_id: "sess-one-goal", task_id: "third-goal", title: "其他", goal: "其他" })).status, 409);
 });
 
 test("Bug：资料、验收、Git 合入核验闭环及伪造/过期防护", async context => {

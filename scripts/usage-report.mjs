@@ -47,7 +47,7 @@ function taskIndex(ledger) {
     if (!task.id && !task.taskId) continue;
     const id = task.id || task.taskId;
     if (task.session_id || task.sessionId || task.workspace || task.cwd) tasks.set(id, { ...tasks.get(id), ...task, id });
-    const sessionIds = [task.session_id || task.sessionId, ...(task.cliRuns || []).map((run) => run.delegateSessionId || run.delegate_session_id)].filter(Boolean);
+    const sessionIds = [task.session_id || task.sessionId, ...(task.sessionHistory || []), ...(task.cliRuns || []).map((run) => run.delegateSessionId || run.delegate_session_id)].filter(Boolean);
     for (const sid of sessionIds) if (id) sessions.set(sid, [...(sessions.get(sid) || []), id]);
   }
   return { tasks, sessions };
