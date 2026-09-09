@@ -64,11 +64,13 @@ export function budgetSnapshot(state, task = null) {
   const phases = (task?.phaseEvents || []).filter((item) => item.transition === "started").toSorted((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)));
   const phase = phases.at(-1);
   const taskStart = Date.parse(task?.createdAt || "");
-  const firstPhase = phases.find((item) => item.phase === phase?.phase);
-  const phaseStart = Date.parse(firstPhase?.occurred_at || firstPhase?.occurredAt || task?.createdAt || "");
   const requests = state?.requests || [];
   const taskRequests = requests.filter((item) => !Number.isFinite(item.at) || !Number.isFinite(taskStart) || item.at >= taskStart);
-  const phaseRequests = requests.filter((item) => !Number.isFinite(item.at) || !Number.isFinite(phaseStart) || item.at >= phaseStart);
+  const phaseRequests = taskRequests.filter((item) => {
+    if (!phase || !Number.isFinite(item.at)) return true;
+    const active = phases.findLast((entry) => Date.parse(entry.occurred_at || entry.occurredAt || "") <= item.at);
+    return active?.phase === phase.phase;
+  });
   const limit = task?.workflowProfile === "fast" ? 8 : 35;
   const compactions = state?.compactions ?? null;
   const handoff = Boolean(state && (phaseRequests.length >= limit || compactions >= 2));

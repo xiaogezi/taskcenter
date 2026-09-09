@@ -37,3 +37,13 @@ test("实时读取只消费完整新增行，重复用量不重复计数，二�
     assert.equal(result.continuation_count.session, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("返回同一阶段时累计该阶段请求，不混入中间其他阶段", () => {
+  const at = (hour) => Date.parse(`2026-09-09T0${hour}:00:00Z`);
+  const task = { createdAt: new Date(at(0)).toISOString(), workflowProfile: "standard", phaseEvents: ["implementation", "review", "implementation"].map((phase, hour) => ({ phase, transition: "started", occurred_at: new Date(at(hour)).toISOString() })) };
+  const requests = [5, 30, 1].flatMap((count, hour) => Array.from({ length: count }, () => ({ at: at(hour), input: 1 })));
+  const budget = budgetSnapshot({ requests, compactions: 0 }, task);
+  assert.equal(budget.continuation_count.task, 36);
+  assert.equal(budget.continuation_count.phase, 6);
+  assert.equal(budget.handoff_required, false);
+});
