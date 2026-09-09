@@ -26,6 +26,6 @@ export function boundedResponse(payload, { cursor, summary, maxBytes = DEFAULT_R
   if (payload.route) fallback.route = Object.fromEntries(["route_id", "selected_model", "reasoning_effort", "available", "role", "reason"].filter((key) => Object.hasOwn(payload.route, key)).map((key) => [key, payload.route[key]]));
   const result = { ...fallback, summary: summary || { fields: Object.keys(payload).slice(0, 30), bytes: bytes(payload) }, truncated: true, continuation_cursor: `${id}:0` };
   if (bytes(result) > DEFAULT_RESPONSE_BYTES) result.summary = { bytes: bytes(payload) };
-  if (bytes(result) > DEFAULT_RESPONSE_BYTES) return { truncated: true, handoff_required: payload.handoff_required === true, new_session_required: payload.new_session_required === true, summary: { bytes: bytes(payload) }, continuation_cursor: `${id}:0` };
+  if (bytes(result) > DEFAULT_RESPONSE_BYTES) return { ...Object.fromEntries(["handoff_recommended", "new_session_recommended", "recommendation_reasons", "allowed_operations", "source", "request_limit", "continuation_count", "compaction_count"].filter((key) => Object.hasOwn(payload, key)).map((key) => [key, payload[key]])), truncated: true, handoff_required: payload.handoff_required === true, new_session_required: payload.new_session_required === true, summary: { bytes: bytes(payload) }, continuation_cursor: `${id}:0` };
   return result;
 }

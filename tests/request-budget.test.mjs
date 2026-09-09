@@ -79,7 +79,8 @@ test("历史 Session 文件在缓存后消失不阻断新 Session，缺失计数
 
 test("超限和两次压缩的建议及原因保留在默认摘要，不收缩操作", () => {
   const budget = budgetSnapshot({ requests: Array.from({ length: 38 }, () => ({ input: 1 })), compactions: 2 });
-  const result = boundedResponse({ ...budget, contract: "x".repeat(5000) });
+  for (const extra of [{ contract: "x".repeat(5000) }, { active_task: { id: "x".repeat(5000) } }]) {
+  const result = boundedResponse({ ...budget, ...extra });
   assert.equal(result.handoff_required, false);
   assert.equal(result.new_session_required, false);
   assert.equal(result.handoff_recommended, true);
@@ -87,4 +88,6 @@ test("超限和两次压缩的建议及原因保留在默认摘要，不收缩�
   assert.deepEqual(result.recommendation_reasons, ["request_budget_exhausted", "second_compaction"]);
   assert.ok(result.allowed_operations.includes("implement"));
   assert.equal(result.continuation_count.phase, 38);
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 4096);
+  }
 });
