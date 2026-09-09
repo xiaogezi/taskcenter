@@ -25,7 +25,13 @@ export async function readRequestBudget(sessionId, root, task = null) {
     const previous = inFlight.get(key) || Promise.resolve();
     const pending = previous.catch(() => {}).then(() => readSessionBudget(id, root, task));
     inFlight.set(key, pending);
-    try { return await pending; } finally { if (inFlight.get(key) === pending) inFlight.delete(key); }
+    try {
+      return await pending;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      cache.delete(key);
+      return budgetSnapshot(null, task);
+    } finally { if (inFlight.get(key) === pending) inFlight.delete(key); }
   };
   const result = await read(sessionId);
   for (const previous of task?.sessionHistory || []) {

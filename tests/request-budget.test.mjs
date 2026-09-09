@@ -47,3 +47,24 @@ test("返回同一阶段时累计该阶段请求，不混入中间其他阶段",
   assert.equal(budget.continuation_count.phase, 6);
   assert.equal(budget.handoff_required, false);
 });
+
+test("历史 Session 文件在缓存后消失不阻断新 Session，缺失计数保持未知", async () => {
+  const root = await mkdtemp(join(tmpdir(), "request-budget-missing-"));
+  const previous = "019f0000-0000-7000-8000-000000000002";
+  const current = "019f0000-0000-7000-8000-000000000003";
+  const record = (id) => JSON.stringify({ type: "session_meta", payload: { id } }) + "\n";
+  try {
+    await writeFile(join(root, `${previous}.jsonl`), record(previous));
+    await writeFile(join(root, `${current}.jsonl`), record(current));
+    await readRequestBudget(previous, root);
+    await rm(join(root, `${previous}.jsonl`));
+    const result = await readRequestBudget(current, root, { sessionHistory: [previous] });
+    assert.equal(result.continuation_count.session, 0);
+    assert.equal(result.continuation_count.task, null);
+    assert.equal(result.token_budget.input_used, null);
+    assert.equal(result.handoff_required, false);
+    assert.equal((await readRequestBudget(previous, root)).source, "unavailable");
+    await writeFile(join(root, `restored-${previous}.jsonl`), record(previous));
+    assert.equal((await readRequestBudget(previous, root)).source, "session_jsonl_incremental");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
