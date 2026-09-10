@@ -100,12 +100,12 @@ try {
     const reviewProfile = await readReviewProfile();
     if (reviewProfile?.reviews?.length) {
       const reviewTool = String(event.tool_name || "");
-      const reporting = ["taskcenter_task_review_report", "taskcenter_routing_result", "taskcenter_review_claim"].some((name) => reviewTool.endsWith(name));
+      const reporting = ["taskcenter_task_review_report", "taskcenter_routing_result", "taskcenter_review_claim", "taskcenter_review_start", "taskcenter_review_finish"].some((name) => reviewTool.endsWith(name));
       if (!reporting && !isReadOnlyInspection(event)) throw new Error("Reviewer Session 只允许确定性只读检查和 Review 报告；不得写代码、创建任务或调用执行器。");
       console.log("TaskCenter 独立 Reviewer 只读通道通过；报告权限由服务端校验。");
       process.exit(0);
     }
-    if (/(?:^|__)taskcenter_(?:routing_select|routing_result|review_claim|task_review_report)$/.test(String(event.tool_name || ""))) {
+    if (/(?:^|__)taskcenter_(?:routing_select|routing_result|review_claim|review_start|review_finish|task_review_report)$/.test(String(event.tool_name || ""))) {
       console.log("TaskCenter Review 路由通道放行；登记、任务和 lease 权限由服务端校验。");
       process.exit(0);
     }

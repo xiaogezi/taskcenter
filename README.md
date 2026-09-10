@@ -236,6 +236,9 @@ OCR Review 与业务任务生命周期分离：已登记的任务所属 Session 
 
 非交互 CLI Reviewer 使用 `node /path/to/ReqRadar/scripts/reviewer-cli.mjs PROMPT_FILE OUTPUT_FILE [REVIEWER_SESSION_UUID]`。宿主先取得 OCR route，再将 route、claim token、精确 Subject/Bundle/Rules 与验收条件写入 prompt；从受审工作区启动。入口固定集中 reviewer 模型和只读沙箱，仅为本进程的 Session 登记、review claim、review report 逐项授权，不改用户配置或全局审批。恢复已有 Reviewer 时填写其真实 UUID；路由结果及租约释放仍由宿主负责。
 
+推荐使用统一入口 `node /path/to/ReqRadar/scripts/reviewer-cli.mjs --managed REQUEST_JSON OUTPUT_FILE`。请求文件包含 `route_id`、`claim_token`、精确 `workspace`、`prompt_path` 和已验证的 `native_unavailable_reason`；主代理先按原权限取得路由。已知原生通道缺少独立 Session 时不重复试错，保留同配置 Reviewer 并记录 CLI 原因。Reviewer 首次调用无参数 `taskcenter_review_start`，程序绑定真实 Session、登记、领取和建立周期；只需阅读返回的固定证据并用 `taskcenter_review_finish` 提交逐文件覆盖、findings 与规格/质量结论。漏文件不可批准，报告身份与 cycle 由程序填写，成功后自动释放租约。启动器只有实际 finish 回执与租约释放均成功才返回成功；失败时用父 Session 尝试释放，失败会明确提示父任务处理。旧裸 CLI 入口仍兼容，但不会自动获得统一流程。
+
+
 
 `GET /tasks/:id/reviews` 返回 `pending/running/approved/changes_requested/failed` Review Record；记录保存在本地 routing-control 状态中，与 Task 状态分开。Task 的新 `review_status` 聚合为 `not_started/pending/approved/changes_requested`，旧 `reviewStatus` 和 Attestation 字段继续保留。失败、过期或只有路由成功而没有报告不会变为 approved；要求 Review 的任务在新审查未完成时不能最终通过。
 

@@ -642,6 +642,30 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, { accepted: true, ...result, auditEvents: undefined });
       return;
     }
+    if (request.method === "POST" && request.url === "/reviews/start") {
+      verifyBoundMcpRequest(request);
+      const body = await readJsonBody(request);
+      const route = routeForId(body.route_id);
+      const task = loadTasks().find((item) => item.id === route?.taskId);
+      if (!task || body.claim_token !== route?.reviewRecord?.claim_token) throw new RoutingControlError(403, "Review capability 不匹配。", "REVIEW_PERMISSION_DENIED");
+      if (resolve(body.workspace || "") !== resolve(task.workspace || "") || body.model !== route.selectedModel || body.sandbox !== "read-only") throw new RoutingControlError(403, "Reviewer 启动配置与 Task 不匹配。", "REVIEW_PERMISSION_DENIED");
+      // Bootstrap uses the MCP host identity. Claim retains all lease checks.
+      const sessionId = canonicalSessionId(body.session_id || "");
+      if (!sessionId || sessionId === canonicalSessionId(task.sessionId) || (task.sessionHistory || []).some((id) => canonicalSessionId(id) === sessionId)) throw new RoutingControlError(403, "Reviewer 必须使用独立 Session。", "REVIEWER_NOT_INDEPENDENT");
+      const preview = JSON.parse(readFileSync(route.reviewArtifacts.bundle.ref, "utf8"));
+      if (!Array.isArray(preview.reviewable_files) || preview.reviewable_files.some((file) => typeof file.path !== "string")) throw new RoutingControlError(400, "Managed Review 需要 OCR JSON preview。", "REVIEW_ARTIFACTS_INCOMPLETE");
+      recordTaskEvent({ type: "session.register", session_id: sessionId, workspace: body.workspace, model: body.model, agent: "codex", provider: "openai" }, { requireRegistered: true });
+      const record = claimReview(body, task, loadSessionRegistry(), canonicalSessionId);
+      const reviewer = { type: "agent", id: sessionId, session_id: sessionId, provider: "openai" };
+      const cycleId = `managed-${route.id}`;
+      let cycle = task.reviewCycles?.find((item) => item.cycle_id === cycleId);
+      if (!cycle) {
+        const result = recordTaskEvent({ type: "review_cycle.reported", task_id: task.id, session_id: task.sessionId, review_cycle: { cycle_id: cycleId, subject_ref: record.subject_ref, reviewer, model: route.selectedModel, review_scope: "full", phase: "reviewing", wait_reason: `CLI fallback: ${String(body.native_unavailable_reason || "").slice(0, 400)}` } }, { requireRegistered: true });
+        cycle = result.task.reviewCycles.find((item) => item.cycle_id === cycleId);
+      }
+      sendJson(response, 200, { accepted: true, context: { route_id: route.id, task_id: task.id, reviewer, subject_ref: record.subject_ref, review_artifacts: route.reviewArtifacts, cycle_id: cycle.cycle_id, cycle_number: cycle.cycle_number, files: preview.reviewable_files.map((file) => file.path) } });
+      return;
+    }
     if (request.method === "POST" && request.url === "/reviews/claim") {
       verifyBoundMcpRequest(request);
       const body = await readJsonBody(request);

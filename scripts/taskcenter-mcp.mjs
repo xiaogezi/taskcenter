@@ -8,11 +8,13 @@ import { resolveTrustedMcpSession } from "./mcp-session-context.mjs";
 import { TASKCENTER_VERSION } from "./version.mjs";
 import { recommendTaskClose } from "./session-lifecycle.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
+import { buildManagedReviewReport } from "./review-workflow.mjs";
 
 const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001";
 const acceptanceToken = process.env.TASKCENTER_ACCEPTANCE_TOKEN || "";
 const localMcpTokenPath = resolve(process.env.TASKCENTER_MCP_TOKEN_PATH || join(import.meta.dirname, "..", ".local", "runtime", "mcp-token"));
 const server = new McpServer({ name: "taskcenter-task-server", version: TASKCENTER_VERSION });
+let managedReviewContext;
 const verificationKind = z.enum(["test", "build", "lint", "static_check", "device", "manual", "security", "performance", "other"]);
 const taskReuseDecision = z.enum(["reuse", "create_new", "uncertain"]);
 const responseMode = z.enum(["summary", "full"]).default("summary");
@@ -342,6 +344,41 @@ server.registerTool("taskcenter_routing_result", {
 }, async (input, extra) => {
   const context = resolveTrustedMcpSession(extra);
   return postLocal("/routing/result", { ...input, ...(context.sessionId ? { session_id: context.sessionId } : {}) });
+});
+
+server.registerTool("taskcenter_review_start", {
+  description: "统一只读 Reviewer 入口：由宿主绑定真实身份与路由，登记、领取并准备报告周期；无需填写 Session UUID。",
+  inputSchema: z.object({}).strict(),
+}, async (_input, extra) => {
+  const identity = resolveTrustedMcpSession(extra);
+  if (!identity.sessionId) return result(identity);
+  try {
+    if (!process.env.TASKCENTER_MANAGED_REVIEW) throw new Error("REVIEW_LAUNCHER_REQUIRED");
+    const launch = JSON.parse(process.env.TASKCENTER_MANAGED_REVIEW);
+    const response = await fetch(`${controlServerUrl}/reviews/start`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": readLocalMcpToken() }, body: JSON.stringify({ ...launch, session_id: identity.sessionId }) });
+    const payload = await readJson(response);
+    managedReviewContext = payload.context;
+    return result(payload);
+  } catch (error) { return result({ error: "REVIEW_START_FAILED", message: error.message }); }
+});
+
+server.registerTool("taskcenter_review_finish", {
+  description: "提交实际逐文件覆盖与规格/质量结论；程序绑定身份、Subject、OCR证据及cycle，成功落账后释放租约。未覆盖全部文件不能批准。",
+  inputSchema: z.object({
+    reviewed_files: z.array(z.string().min(1)).max(500), findings: z.array(reviewFinding).max(500),
+    spec_verdict: z.enum(["compliant", "issues_found", "not_evaluated"]), quality_verdict: z.enum(["approved", "needs_fixes", "not_evaluated"]), verdict: z.enum(["approved", "changes_requested", "rejected"]),
+    unverified_requirements: z.array(unverifiedRequirement).max(50).default([]), summary: z.string().min(1).max(1000),
+  }).strict(),
+}, async (input, extra) => {
+  const identity = resolveTrustedMcpSession(extra);
+  try {
+    if (!managedReviewContext || identity.sessionId !== managedReviewContext.reviewer.session_id) throw new Error("REVIEW_START_REQUIRED");
+    const review = buildManagedReviewReport(managedReviewContext, input);
+    const headers = { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": readLocalMcpToken() };
+    const report = await readJson(await fetch(`${controlServerUrl}/task-events`, { method: "POST", headers, body: JSON.stringify({ type: "review.reported", task_id: managedReviewContext.task_id, session_id: identity.sessionId, event_id: review.id, review_attestation: review }) }));
+    const release = await readJson(await fetch(`${controlServerUrl}/routing/result`, { method: "POST", headers, body: JSON.stringify({ route_id: managedReviewContext.route_id, session_id: identity.sessionId, outcome: "succeeded" }) }));
+    return result({ accepted: report.accepted, attestation_id: review.id, verdict: review.verdict, covered_files: input.reviewed_files.length, lease_released: release.accepted });
+  } catch (error) { return result({ error: "REVIEW_FINISH_FAILED", message: error.message }); }
 });
 
 server.registerTool("taskcenter_review_claim", {

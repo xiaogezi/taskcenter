@@ -16,3 +16,14 @@ test("Reviewer CLI pins read-only and grants lifecycle tools without parent iden
   ]);
   assert.throws(() => reviewerCommand({ ...options, resume: "--yolo" }), /Invalid/);
 });
+
+test("managed launch binds workspace and lifecycle permissions without accepting inherited context", () => {
+  const invocation = reviewerCommand({ promptPath: "README.md", outputPath: "/tmp/result", managed: { route_id: "route", claim_token: "capability", workspace: "/tmp", native_unavailable_reason: "native lacks independent Session" } }, { TASKCENTER_MANAGED_REVIEW: "stale" });
+  assert.equal(invocation.cwd, "/tmp");
+  const context = JSON.parse(invocation.env.TASKCENTER_MANAGED_REVIEW);
+  assert.equal(context.route_id, "route");
+  assert.equal(context.sandbox, "read-only");
+  assert.match(invocation.input, /taskcenter_review_start/);
+  assert.ok(invocation.args.includes('mcp_servers.taskcenter.tools.taskcenter_review_finish.approval_mode="approve"'));
+  assert.throws(() => reviewerCommand({ promptPath: "README.md", outputPath: "/tmp/result", managed: { route_id: "route" } }), /Managed review requires/);
+});
