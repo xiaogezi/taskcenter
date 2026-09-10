@@ -376,6 +376,7 @@ server.registerTool("taskcenter_review_finish", {
     const review = buildManagedReviewReport(managedReviewContext, input);
     const headers = { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": readLocalMcpToken() };
     const report = await readJson(await fetch(`${controlServerUrl}/task-events`, { method: "POST", headers, body: JSON.stringify({ type: "review.reported", task_id: managedReviewContext.task_id, session_id: identity.sessionId, event_id: review.id, review_attestation: review }) }));
+    if (report.accepted !== true) throw new Error("REVIEW_REPORT_NOT_ACCEPTED");
     const release = await readJson(await fetch(`${controlServerUrl}/routing/result`, { method: "POST", headers, body: JSON.stringify({ route_id: managedReviewContext.route_id, session_id: identity.sessionId, outcome: "succeeded" }) }));
     return result({ accepted: report.accepted, attestation_id: review.id, verdict: review.verdict, covered_files: input.reviewed_files.length, lease_released: release.accepted });
   } catch (error) { return result({ error: "REVIEW_FINISH_FAILED", message: error.message }); }
