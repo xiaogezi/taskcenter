@@ -19,6 +19,8 @@ import {
 import { listDelegations } from "./delegation-store.mjs";
 import { normalizeBug } from "./bug-workflow.mjs";
 
+import { switchCheckpoint, validateSessionSwitch } from "./session-switch.mjs";
+
 const projectRoot = resolve(import.meta.dirname, "..");
 export const taskEventsPath = resolve(process.env.TASKCENTER_TASK_EVENTS_PATH || join(projectRoot, "data", "task-events.jsonl"));
 export const taskLedgerPath = resolve(process.env.TASKCENTER_TASK_LEDGER_PATH || join(projectRoot, "data", "task-ledger.json"));
@@ -413,7 +415,7 @@ export function recordTaskEvent(input, options = {}) {
   const projectedPhaseEvent = event.type === "phase.reported"
     ? (current?.phaseEvents || []).find((item) => item.event_id === event.event_id)
     : null;
-  const storedEvent = processed.has(event.event_id) || event.type === "task.close" || projectedPhaseEvent
+  const storedEvent = processed.has(event.event_id) || event.type === "task.close" || event.session_switch_id || projectedPhaseEvent
     ? findStoredTaskEvent(event.event_id)
     : null;
   if (processed.has(event.event_id) || storedEvent || projectedPhaseEvent) {
@@ -431,12 +433,25 @@ export function recordTaskEvent(input, options = {}) {
     const originalTask = original.task_id
       ? tasks.find((task) => task.id === original.task_id) ?? null
       : null;
+    if (original.session_switch_id && !originalTask) throw new TaskLedgerError(409, "SWITCH_LEDGER_RECOVERY_REQUIRED");
     // 返回首次持久化的事件，确保外部补偿同步不能被重投 payload 篡改。
     return { event: original, task: originalTask, idempotent: true };
   }
+  const switchEvents = event.session_switch_id || (current && ["done_claimed", "verified", "cancelled"].includes(current.status)) ? storedSwitchEvents() : [];
+  if (current && (tasks.some((task) => task.previousTaskId === current.id) || switchEvents.some((item) => item.previous_task_id === current.id))) {
+    throw new TaskLedgerError(409, "SWITCH_PREDECESSOR_SEALED：顺序切换后的旧任务不可变。");
+  }
+  let previousTaskId = "";
+  if (event.type === "task.create" && !current && event.session_switch_id) {
+    if (switchEvents.some((item) => item.session_switch_id === event.session_switch_id)) throw new TaskLedgerError(409, "SWITCH_ALREADY_CONSUMED");
+    previousTaskId = validateSessionSwitch(event, tasks, (id) => {
+      const predecessor = tasks.find((task) => task.id === id && task.sessionId === eventSessionId);
+      return switchCheckpoint(predecessor, tasks, sessionRegistry[eventSessionId], listDelegations(id));
+    });
+  }
   if (options.requireRegistered && event.type === "task.create" && !current && !isContextShadowTask(event.task_id)) {
     const previous = tasks.find((task) => !isContextShadowTask(task) && (task.sessionId === eventSessionId || task.sessionHistory?.includes(eventSessionId)));
-    if (previous) throw new TaskLedgerError(409, `new_session_required：当前 Session 已绑定 ${previous.id}；同一目标请保留原 task_id，独立目标需新 Session。`);
+    if (previous && !previousTaskId) throw new TaskLedgerError(409, `new_session_required：当前 Session 已绑定 ${previous.id}；同一目标请保留原 task_id，独立目标需新 Session。`);
   }
   if (options.requireRegistered && current && (current.closedGoal || ["done_claimed", "verified", "cancelled"].includes(current.status)) && event.goal && event.goal !== (current.closedGoal || current.goal)) {
     throw new TaskLedgerError(409, "new_session_required：不能将已关闭任务改造成新的交付目标。");
@@ -473,6 +488,10 @@ export function recordTaskEvent(input, options = {}) {
     : event.type === "task.reminder"
       ? current
       : applyEvent(current, event);
+  if (previousTaskId) {
+    next = { ...next, previousTaskId, sessionSwitchId: event.session_switch_id };
+    event.previous_task_id = previousTaskId;
+  }
   if (next) {
     event.previous_state = current ? auditState(current) : null;
     event.new_state = auditState(next);
@@ -554,6 +573,7 @@ function derivedCompletionEvents(previous, next, source) {
 const activeTaskStatuses = new Set(["planned", "in_progress", "blocked"]);
 
 const idempotentEventFields = [
+  "session_switch_id",
   "event_id", "type", "task_id", "context_task_id", "requirement_id", "session_id",
   "agent", "provider", "model", "workspace", "project_id", "title", "goal", "status", "priority",
   "plan", "current_step", "next_action", "blocker", "acceptance_criteria", "changed_files",
@@ -586,6 +606,13 @@ function findStoredTaskEvent(eventId) {
     }
   }
   return null;
+}
+
+function storedSwitchEvents() {
+  if (!existsSync(taskEventsPath)) return [];
+  return readFileSync(taskEventsPath, "utf8").split("\n")
+    .filter((line) => line.includes('"previous_task_id"') && line.includes('"session_switch_id"'))
+    .map((line) => JSON.parse(line));
 }
 
 function sameIdempotentEvent(left, right) {
@@ -884,6 +911,7 @@ function normalizeEvent(input, current = null) {
     event_id: String(input.event_id || randomUUID()),
     type,
     task_id: String(input.task_id || (type === "task.create" ? `task-${randomUUID()}` : "")),
+    session_switch_id: cleanText(input.session_switch_id, 200),
     context_task_id: cleanText(input.context_task_id, 200),
     requirement_id: cleanText(input.requirement_id, 200),
     session_id: sessionId,

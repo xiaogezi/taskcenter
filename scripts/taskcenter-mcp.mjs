@@ -68,6 +68,7 @@ const taskFields = {
   model: z.string().max(120).optional(),
   workspace: z.string().max(4_096).optional(),
   task_id: z.string().max(200).optional(),
+  session_switch_id: z.string().uuid().optional(),
   context_task_id: z.string().max(200).optional(),
   requirement_id: z.string().max(200).optional(),
   event_id: z.string().max(200).optional(),
@@ -455,6 +456,21 @@ server.registerTool("taskcenter_task_prepare", {
   description: "一次返回当前合同、Session/task 绑定、实时请求预算、压缩次数、handoff 和允许操作；不创建新目标。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200) }).strict(),
 }, async ({ session_id }) => queryEndpoint(`/task-prepare?session_id=${encodeURIComponent(session_id)}`));
+
+for (const operation of ["prepare", "confirm"]) {
+  server.registerTool(`taskcenter_session_switch_${operation}`, {
+    description: operation === "prepare"
+      ? "关闭且证据闭环、Git 干净后申请限时一次性顺序切换；只返回宿主压缩请求，不执行压缩。"
+      : "只读核验当前 Session 新产生的宿主压缩记录并生成 receipt；无完成证据则拒绝。",
+    inputSchema: operation === "prepare"
+      ? z.object({ task_id: z.string().min(1).max(200), next_task_id: z.string().min(1).max(200), next_goal: z.string().trim().min(1).max(1000), event_id: z.string().min(1).max(200) }).strict()
+      : z.object({ switch_id: z.string().uuid() }).strict(),
+  }, async (input, extra) => {
+    const context = resolveTrustedMcpSession(extra);
+    if (context.error) return result(context);
+    return postLocal(`/session-switch/${operation}`, { ...input, session_id: context.sessionId, response_mode: "full" });
+  });
+}
 
 server.registerTool("taskcenter_task_resume", {
   title: "在新 Session 恢复原目标",

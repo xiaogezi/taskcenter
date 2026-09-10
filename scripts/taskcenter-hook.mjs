@@ -705,7 +705,7 @@ function isReadOnlyCommand(words, heredoc) {
 
 function isRecoveryOperation(payload) {
   const name = String(payload.tool_name || payload.tool || payload.name || "");
-  return /(?:^|__)taskcenter_(?:task_close|task_update|task_verification_report|task_diagnostic_report|task_prepare|task_resume|handoff)$/.test(name);
+  return /(?:^|__)taskcenter_(?:task_close|task_update|task_verification_report|task_diagnostic_report|task_prepare|task_resume|session_switch_prepare|session_switch_confirm|task_create|handoff)$/.test(name);
 }
 
 function isReadOnlySed(args) {

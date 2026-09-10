@@ -12,6 +12,7 @@ const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-ledger-"));
 process.env.TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION = "1";
 
 const envPaths = {
+  TASKCENTER_SESSION_SWITCH_PATH: join(tempDir, "session-switch.jsonl"),
   TASKCENTER_TASK_EVENTS_PATH: join(tempDir, "task-events.jsonl"),
   TASKCENTER_TASK_LEDGER_PATH: join(tempDir, "task-ledger.json"),
   TASKCENTER_TASK_EVENT_IDS_PATH: join(tempDir, "task-event-ids.json"),
@@ -3153,4 +3154,28 @@ test("Bug：资料、验收、Git 合入核验闭环及伪造/过期防护", asy
   assert.equal((await current()).bugClosure.status, "returned");
   recordTaskEvent({ type: "subject.updated", task_id: task.id, subject_ref: { ...subject, value: "0".repeat(40) } });
   assert.equal((await current()).completionReadiness.completionClaim.allowed, false);
+});
+
+
+test("顺序切换 HTTP 验证身份，Hook 保持关闭任务通道", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  const session_id = "019f0000-0000-7000-8000-000000000889";
+  await registerHttpSession(base, session_id);
+  const post = (body) => fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(body) });
+  await post({ type: "task.create", task_id: "switch-http", session_id, title: "old", goal: "old" });
+  const input = { session_id, task_id: "switch-http", next_task_id: "switch-http-next", next_goal: "next", event_id: "prepare-http" };
+  const denied = await fetch(`${base}/session-switch/prepare`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(input) });
+  assert.equal(denied.status, 403);
+  const trusted = { ...taskHeaders(), "X-TaskCenter-MCP-Token": (await readFile(envPaths.TASKCENTER_MCP_TOKEN_PATH, "utf8")).trim() };
+  const active = await fetch(`${base}/session-switch/prepare`, { method: "POST", headers: trusted, body: JSON.stringify(input) });
+  assert.equal(active.status, 409);
+  assert.match((await active.json()).error, /SWITCH_ACTIVE_TASK/);
+  await post({ type: "task.update", task_id: "switch-http", session_id, status: "cancelled" });
+  for (const tool of ["session_switch_prepare", "session_switch_confirm", "task_create"]) {
+    const hook = await runTaskcenterHook(base, { session_id, cwd: "/work", tool_name: `mcp__taskcenter__taskcenter_${tool}`, tool_input: {} });
+    assert.equal(hook.code, 0, hook.stderr);
+    assert.match(hook.stdout, /收尾通道/);
+  }
 });

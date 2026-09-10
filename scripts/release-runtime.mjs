@@ -26,6 +26,7 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_REFLECTION_PROPOSALS_PATH: join(dataRoot, "reflection-proposals.json"),
     TASKCENTER_TASK_EVENTS_PATH: join(dataRoot, "task-events.jsonl"),
     TASKCENTER_TASK_LEDGER_PATH: join(dataRoot, "task-ledger.json"),
+    TASKCENTER_SESSION_SWITCH_PATH: join(dataRoot, "session-switch.jsonl"),
     TASKCENTER_TASK_EVENT_IDS_PATH: join(dataRoot, "task-event-ids.json"),
     TASKCENTER_TASK_RECONCILE_PATH: join(dataRoot, "task-reconcile.jsonl"),
     TASKCENTER_TASK_REUSE_DECISIONS_PATH: join(dataRoot, "task-reuse-decisions.jsonl"),

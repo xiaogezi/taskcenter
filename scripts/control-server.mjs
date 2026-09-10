@@ -1,3 +1,4 @@
+import { SessionSwitchError, prepareSessionSwitch, confirmSessionSwitch, switchCheckpoint } from "./session-switch.mjs";
 import {
   chmodSync,
   closeSync,
@@ -191,6 +192,19 @@ const server = createServer(async (request, response) => {
       const indexPath = resolve(process.env.TASKCENTER_USAGE_INDEX_PATH || join(dirname(usageReportPath), "usage-index.json"));
       const filtered = ["project", "session", "task"].some((key) => params.has(key));
       sendJson(response, 200, queryUsageReport({ report: currentUsageReport(), index: filtered ? readSnapshot(indexPath, null) : null, tasks: filtered ? withDelegations(loadVisibleTasks()) : [], params }));
+      return;
+    }
+    if (request.method === "POST" && ["/session-switch/prepare", "/session-switch/confirm"].includes(request.url)) {
+      verifyBoundMcpRequest(request);
+      const body = await readJsonBody(request);
+      const checkpoint = (id = body.task_id) => {
+        const tasks = loadTasks();
+        const task = tasks.find((item) => item.id === id && item.sessionId === body.session_id);
+        if (tasks.some((item) => item.id === body.next_task_id)) throw new TaskLedgerError(409, "SWITCH_TARGET_EXISTS");
+        return switchCheckpoint(task, tasks, loadSessionRegistry()[body.session_id], listDelegations(id));
+      };
+      const operation = request.url.endsWith("/prepare") ? prepareSessionSwitch : confirmSessionSwitch;
+      sendJson(response, 200, { accepted: true, ...await operation(body, sessionsRoot, checkpoint) });
       return;
     }
     if (request.method === "POST" && request.url === "/task-resume") {
@@ -1212,7 +1226,7 @@ const server = createServer(async (request, response) => {
     }
     sendJson(response, 404, { error: "接口不存在。" });
   } catch (error) {
-    const known = error instanceof BugDispatchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
+    const known = error instanceof SessionSwitchError || error instanceof BugDispatchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
     const statusCode = known ? error.statusCode : 500;
     if (!known) {
       console.error("TaskCenter control error:", safeError(error));
