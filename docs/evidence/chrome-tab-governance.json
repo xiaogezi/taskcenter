@@ -1,0 +1,105 @@
+{
+  "schema_version": "taskcenter-portable-evidence/v1",
+  "task_id": "reqradar-reuse-chrome-tab-20260908",
+  "evidence_subject": {
+    "type": "git_commit",
+    "value": "1755fb39f9644b3c535e104edb476cb8b48263d7",
+    "observed_at": "2026-09-08T03:05:43.852Z"
+  },
+  "implementation": {
+    "commit": "1755fb39f9644b3c535e104edb476cb8b48263d7",
+    "tree": "8d3ac51018831029ebac7e216a69f410b7da8309",
+    "control_script_blob": "8c83cc1e821d13ed5a77822551c1c10a1c15aed2",
+    "git_show_sha256": "08a420b76c2512d41c4644547e03a7f67b7101caeab27d8d3db775b3d6e3fc6e",
+    "change": "macOS openDashboard invokes the existing scripts/macos/open-taskcenter.applescript helper."
+  },
+  "verification": [
+    {
+      "id": "chrome-tab-manual-20260908",
+      "requirement_ids": [
+        "ac-reuse",
+        "ac-fallback"
+      ],
+      "kind": "manual",
+      "observed_at": "2026-09-08T03:05:43.852Z",
+      "probe": "Run npm run service:start twice and count Chrome tabs whose URL starts with http://localhost:3000.",
+      "result": {
+        "after_first": 1,
+        "after_second": 1
+      },
+      "source_event_id": "a836f161-607a-43b7-9085-7322e8e21ea3"
+    },
+    {
+      "id": "chrome-tab-static-safety-20260908",
+      "requirement_ids": [
+        "ac-safe"
+      ],
+      "kind": "static_check",
+      "observed_at": "2026-09-08T03:05:43.852Z",
+      "result": "The reused AppleScript only activates a matching TaskCenter tab and does not close or redirect unrelated tabs.",
+      "source_commit": "1755fb39f9644b3c535e104edb476cb8b48263d7"
+    },
+    {
+      "id": "chrome-tab-lint-20260908",
+      "kind": "lint",
+      "observed_at": "2026-09-08T03:05:43.852Z",
+      "command": "npm run lint",
+      "status": "passed",
+      "exit_code": 0,
+      "source_event_id": "a836f161-607a-43b7-9085-7322e8e21ea3"
+    },
+    {
+      "id": "chrome-tab-full-test-20260908",
+      "kind": "test",
+      "observed_at": "2026-09-08T03:05:43.852Z",
+      "command": "npm test",
+      "status": "passed",
+      "exit_code": 0,
+      "summary": "352 passed, 0 failed",
+      "source_event_id": "a836f161-607a-43b7-9085-7322e8e21ea3"
+    },
+    {
+      "id": "chrome-tab-diff-check-20260908",
+      "kind": "static_check",
+      "observed_at": "2026-09-08T03:05:43.852Z",
+      "command": "git diff --check",
+      "status": "passed",
+      "exit_code": 0,
+      "source_event_id": "a836f161-607a-43b7-9085-7322e8e21ea3"
+    }
+  ],
+  "deployment": {
+    "deployment_id": "release-3b174856-2515-4c4f-b9b8-82f09bf2f00c",
+    "revision": "1755fb39f9644b3c535e104edb476cb8b48263d7",
+    "previous_revision": "37f87729a14e99409e07dfe4198c6e75af35853b",
+    "started_at": "2026-09-08T03:03:27.528Z",
+    "completed_at": "2026-09-08T03:04:47.247Z",
+    "outcome": "succeeded",
+    "stages": [
+      "lint:passed",
+      "test:passed",
+      "artifact:passed",
+      "candidate:passed",
+      "deployment:succeeded"
+    ],
+    "source_events_sha256": "a8585666355594518494b3dcf414b5e7a6d5a2568d77deff53fdffb28016222e"
+  },
+  "sources": [
+    {
+      "path": "data/task-events.jsonl",
+      "event_id": "a836f161-607a-43b7-9085-7322e8e21ea3",
+      "line_sha256": "3fb69bec9b0961dcd976212f5fcd62ba99fad5e48d7d87909573dc0994aa92db"
+    },
+    {
+      "path": ".local/release-events.jsonl",
+      "deployment_id": "release-3b174856-2515-4c4f-b9b8-82f09bf2f00c",
+      "line_count": 6,
+      "selected_lines_sha256": "a8585666355594518494b3dcf414b5e7a6d5a2568d77deff53fdffb28016222e"
+    }
+  ],
+  "limitations": {
+    "targeted_automated_test_executed": false,
+    "manual_probe_raw_stdout_archived": false,
+    "note": "The manual result and full-test count are preserved in the original task.close event; no separate raw shell log was retained."
+  }
+}
