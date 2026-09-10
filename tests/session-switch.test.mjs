@@ -9,7 +9,7 @@ import { setTimeout } from "node:timers/promises";
 const root = mkdtempSync(join(tmpdir(), "session-switch-"));
 for (const [key, file] of Object.entries({ TASKCENTER_TASK_LEDGER_PATH: "ledger.json", TASKCENTER_TASK_EVENTS_PATH: "events.jsonl", TASKCENTER_TASK_EVENT_IDS_PATH: "ids.json", TASKCENTER_SESSION_REGISTRY_PATH: "sessions.json", TASKCENTER_SESSION_MERGES_PATH: "merges.json", TASKCENTER_DELEGATIONS_PATH: "delegations.json", TASKCENTER_SESSION_SWITCH_PATH: "switch.jsonl" })) process.env[key] = join(root, file);
 const { recordTaskEvent, loadTasks, loadSessionRegistry } = await import("../scripts/task-ledger.mjs");
-const { prepareSessionSwitch, confirmSessionSwitch, switchCheckpoint, switchTaskFingerprint } = await import("../scripts/session-switch.mjs");
+const { prepareSessionSwitch, confirmSessionSwitch, switchCheckpoint, switchTaskFingerprint, readRecoveryCheckpoint } = await import("../scripts/session-switch.mjs");
 const workspace = join(root, "repo"), sessions = join(root, "rollouts");
 mkdirSync(workspace); mkdirSync(sessions);
 const git = (...args) => execFileSync("git", ["-C", workspace, ...args], { encoding: "utf8" }).trim();
@@ -43,15 +43,74 @@ test("host-confirmed one-use switch preserves a sealed predecessor and fails clo
     await assert.rejects(prepareSessionSwitch({ ...request, event_id: "competing" }, sessions, checkpoint), /PENDING_REQUEST_EXISTS/);
     await assert.rejects(prepareSessionSwitch({ ...request, next_goal: "tampered" }, sessions, checkpoint), /EVENT_CONFLICT/);
     const confirm = { switch_id: prepared.switch_id, session_id };
-    await assert.rejects(confirmSessionSwitch(confirm, sessions, checkpoint), /HOST_COMPACTION_REQUIRED/);
+    await assert.rejects(confirmSessionSwitch(confirm, sessions, checkpoint), /HOST_COMPACTION_CAPABILITY_UNAVAILABLE/);
     const create = { type: "task.create", event_id: "create-next", task_id: "next", title: "next", goal: "next goal", session_switch_id: prepared.switch_id };
     assert.throws(() => event(create), /HOST_COMPACTION_REQUIRED/);
     await setTimeout(5);
     appendFileSync(log, JSON.stringify({ type: "response_item", timestamp: new Date().toISOString(), payload: { type: "context_compacted" } }) + "\n");
-    await assert.rejects(confirmSessionSwitch(confirm, sessions, checkpoint), /HOST_COMPACTION_REQUIRED/);
+    await assert.rejects(confirmSessionSwitch(confirm, sessions, checkpoint), /HOST_COMPACTION_CAPABILITY_UNAVAILABLE/);
     appendFileSync(log, JSON.stringify({ type: "compacted", timestamp: new Date().toISOString(), payload: { message: "fixture host compaction" } }) + "\n");
     await assert.rejects(confirmSessionSwitch({ ...confirm, session_id: "another" }, sessions, checkpoint), /REQUEST_MISMATCH/);
-    const receipt = await confirmSessionSwitch(confirm, sessions, checkpoint);
+    // A real-looking log alone is insufficient: the host recovery path is mandatory.
+    await assert.rejects(confirmSessionSwitch(confirm, sessions, checkpoint), /HOST_COMPACTION_CAPABILITY_UNAVAILABLE/);
+    const preparedJournal = readFileSync(process.env.TASKCENTER_SESSION_SWITCH_PATH, "utf8");
+    const savedLog = readFileSync(log, "utf8");
+    const restoreFixture = () => {
+      writeFileSync(process.env.TASKCENTER_SESSION_SWITCH_PATH, preparedJournal);
+      writeFileSync(log, savedLog);
+    };
+    const mutatePrepared = (mutate) => {
+      const record = JSON.parse(preparedJournal.trim()); mutate(record);
+      writeFileSync(process.env.TASKCENTER_SESSION_SWITCH_PATH, JSON.stringify(record) + "\n");
+    };
+    for (const [mutate, error] of [
+      [(record) => { record.recovery.task.goal = "corrupted"; }, /INTEGRITY_FAILED/],
+      [(record) => { record.generation++; }, /INTEGRITY_FAILED/],
+      [(record) => { record.recovery.client_session_id = "other"; }, /INTEGRITY_FAILED/],
+      [(record) => { record.revision = "other"; }, /INTEGRITY_FAILED/],
+      [(record) => { record.expires_at = "invalid"; }, /SWITCH_EXPIRED/],
+      [(record) => { record.expires_at = "2000-01-01T00:00:00.000Z"; }, /SWITCH_EXPIRED/],
+    ]) {
+      mutatePrepared(mutate);
+      assert.throws(() => readRecoveryCheckpoint(prepared.switch_id, session_id, checkpoint), error);
+      restoreFixture();
+    }
+    rmSync(process.env.TASKCENTER_SESSION_SWITCH_PATH);
+    assert.throws(() => readRecoveryCheckpoint(prepared.switch_id, session_id, checkpoint), /REQUEST_MISMATCH/);
+    restoreFixture();
+    const calls = [];
+    const host = {
+      async compact() {
+        calls.push("compact");
+        assert.equal(readRecoveryCheckpoint(prepared.switch_id, session_id, checkpoint).digest, prepared.checkpoint_digest);
+        await setTimeout(5);
+        appendFileSync(log, JSON.stringify({ type: "compacted", timestamp: new Date().toISOString(), payload: { message: "fixture controlled host compaction" } }) + "\n");
+        return { thread_id: session_id, turn_id: "turn", item_id: "item" };
+      },
+      async restore(recovery) {
+        calls.push("restore");
+        assert.deepEqual(recovery.task, prepared.recovery.task);
+        return { digest: recovery.digest, generation: recovery.generation };
+      },
+    };
+    await assert.rejects(confirmSessionSwitch(confirm, sessions, checkpoint, { ...host, async restore() { throw new Error("fixture restore failed"); } }), /restore failed/);
+    assert.throws(() => event(create), /RECOVERY_FAILED/);
+    restoreFixture();
+    await assert.rejects(confirmSessionSwitch(confirm, sessions, checkpoint, { ...host, async restore() { return { digest: "wrong", generation: 1 }; } }), /RECOVERY_FAILED/);
+    restoreFixture();
+    await assert.rejects(confirmSessionSwitch(confirm, sessions, checkpoint, { ...host, async compact() {
+      const result = await host.compact();
+      mutatePrepared((record) => { record.recovery.task.goal = "corrupted after compaction"; });
+      return result;
+    }, async restore(recovery) { return host.restore(recovery); } }), /INTEGRITY_FAILED/);
+    restoreFixture();
+    await assert.rejects(confirmSessionSwitch(confirm, sessions, checkpoint, { ...host, async compact() { throw new Error("host failed"); } }), /host failed/);
+    restoreFixture();
+    calls.length = 0;
+    const receipt = await confirmSessionSwitch(confirm, sessions, checkpoint, host);
+    assert.deepEqual(calls, ["restore", "compact", "restore"]);
+    assert.equal(receipt.checkpoint_digest, prepared.checkpoint_digest);
+    assert.equal(receipt.generation, prepared.generation);
     assert.equal(receipt.evidence.source, "codex_session_jsonl");
     assert.deepEqual(await confirmSessionSwitch(confirm, sessions, checkpoint), receipt);
     assert.throws(() => event({ ...create, goal: "tampered" }), /TARGET_MISMATCH/);

@@ -484,8 +484,8 @@ server.registerTool("taskcenter_task_prepare", {
 for (const operation of ["prepare", "confirm"]) {
   server.registerTool(`taskcenter_session_switch_${operation}`, {
     description: operation === "prepare"
-      ? "关闭且证据闭环、Git 干净后申请限时一次性顺序切换；只返回宿主压缩请求，不执行压缩。"
-      : "只读核验当前 Session 新产生的宿主压缩记录并生成 receipt；无完成证据则拒绝。",
+      ? "关闭且证据闭环、Git 干净后持久化完整恢复检查点并读回校验；准备不执行压缩或授权重绑。"
+      : "由已配置的本机 App Server 适配器异步执行恢复预检、真实压缩和压缩后恢复。pending 不授权重绑；结束当前 Turn 后宿主才执行，后续调用可查询结果。无宿主或恢复失败则拒绝。",
     inputSchema: operation === "prepare"
       ? z.object({ task_id: z.string().min(1).max(200), next_task_id: z.string().min(1).max(200), next_goal: z.string().trim().min(1).max(1000), event_id: z.string().min(1).max(200) }).strict()
       : z.object({ switch_id: z.string().uuid() }).strict(),

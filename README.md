@@ -318,14 +318,14 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 
 ### 同一 Codex Session 顺序切换任务
 
-`task_close` 的生命周期建议不会执行压缩，也不会授权第二个任务。显式切换使用 `taskcenter-session-switch/v1`：
+`task_close` 的生命周期建议不会执行压缩，也不会授权第二个任务。显式切换使用 `taskcenter-session-switch/v2`（旧版请求和 receipt 不再授权重绑）：
 
 1. 先关闭原任务。`done_claimed` 必须满足当前 `completionReadiness.completionClaim.allowed`；`cancelled` 必须有 `evidence` 和取消原因 `retrospective`。这不新增或替代独立验收。两条路径均要求当前 Subject 是 Git HEAD、工作区干净、没有活动 delegation。
-2. 调用 `taskcenter_session_switch_prepare`，提供 `task_id`、下一任务的 `next_task_id` / `next_goal` 和幂等 `event_id`。Session 身份从 MCP 宿主取得。返回请求绑定原任务快照、工作区和 revision，15 分钟有效。
-3. 由 Codex host 调用 `thread/compact/start`，等待同一 thread 的 `contextCompaction` 完成。官方接口的 `{}` 仅是启动确认。当前桌面 Agent 工具没有暴露该调用时，需用户在原 Session 执行宿主的压缩操作，或由支持此接口的宿主适配器执行；TaskCenter 不启动另一个 Codex 进程，不读取或调用 OpenAI 凭据。
-4. 调用 `taskcenter_session_switch_confirm`，仅提供 `switch_id`。TaskCenter 从自身配置的只读 Session JSONL 中核验请求之后的新 `compacted` / `event_msg.context_compacted` 记录、时间和 Session 身份，生成包含事件摘要哈希的 receipt。Agent 自述、启动回执、旧记录、无本地完成记录均返回 `HOST_COMPACTION_REQUIRED` 或证据不可用，禁止重绑。自动压缩若发生在请求之后也可作为宿主完成证据，不会被标成 TaskCenter 主动执行。
+2. 调用 `taskcenter_session_switch_prepare`，提供 `task_id`、下一任务的 `next_task_id` / `next_goal` 和幂等 `event_id`。Session 身份从 MCP 宿主取得。完整任务恢复内容、task/client_session 归属、generation、Subject/revision、状态、下一目标和 15 分钟有效期持久化在检查点中，以 SHA-256 绑定，写入 flush 后必须重新读回校验。准备成功不代表压缩或恢复成功。
+3. 控制服务通过 `TASKCENTER_CODEX_APP_SERVER_URL` 显式配置**已有本机 App Server** 的 WebSocket 地址，例如 `ws://127.0.0.1:4500`；默认未配置，返回 `HOST_COMPACTION_CAPABILITY_UNAVAILABLE`。仅接受 `127.0.0.1` / `[::1]`，不接受凭据、查询参数或远端地址。适配器不会启动另一个 Codex 进程、恢复卸载的 Session 或读取认证信息；目标 thread 必须已加载、Session 身份及工作区一致，且支持实验接口 `thread/inject_items`。当前 Codex 桌面是否暴露这样的地址需由宿主确认，不能把示例地址当作已运行服务。
+4. 调用 `taskcenter_session_switch_confirm`，仅提供 `switch_id`，返回 `pending` 后结束当前 Turn，让宿主等待 Session 空闲。后台操作先从持久化存储读回检查点、实际注入完整恢复内容证明恢复接口可用，然后调用 `thread/compact/start`。只有同一 thread/turn/item 的 `contextCompaction` started/completed 和成功的 turn completion 才算压缩完成，`{}` 只表示启动确认。完成后的第一步重新读回同一检查点并验证 digest/generation，再注入完整内容；并发普通 Turn、错配、过期、损坏、断连或恢复错误均失败关闭。最后核对实际启动之后的本地 Session 压缩日志，才持久化绑定预检、恢复结果和完整性摘要的 receipt。后续调用可查询 `ready` / `failed`；`pending` 绝不授权重绑。自动压缩记录、Agent 自述、伪造启动回执均不能跳过宿主恢复链。
 5. 用原 Session 调用 `taskcenter_task_create`，携带 `session_switch_id`，并使用请求绑定的 task ID、goal 和 workspace。服务端再次核验快照、HEAD、工作区和活动任务。成功创建事件及新任务保留 `previous_task_id` / `previousTaskId` 和切换 ID；旧任务封存，不得再次修改或恢复。新任务沿用原有合同和验证门禁。
 
-准备/receipt 审计位于运行态数据目录的 `session-switch.jsonl`；消费证据位于任务事件账本。记录损坏、receipt 过期、关闭证据变化或工作区变脏均拒绝。账本写入中断而消费事件已持久化时返回 `SWITCH_LEDGER_RECOVERY_REQUIRED`，需恢复一致账本后重试，不能重发一个新目标绕过。部署会保留运行态数据；测试使用独立目录。协议信任本机宿主 Session 文件和本地控制面，与现有任务账本同属本地信任边界，不声称防御可任意篡改这些文件的本机进程。
+准备、执行开始、失败和 receipt 审计位于运行态数据目录的 `session-switch.jsonl`；消费证据位于任务事件账本。记录损坏、receipt 过期、关闭证据变化或工作区变脏均拒绝。执行开始后中断或恢复失败不自动重试压缩；旧绑定保留，等待检查点过期后重新准备，先排除宿主故障。账本写入中断而消费事件已持久化时返回 `SWITCH_LEDGER_RECOVERY_REQUIRED`，需恢复一致账本后重试，不能重发一个新目标绕过。部署会保留运行态数据；测试使用独立目录。协议信任明确配置的本机 App Server、Session 文件和本地控制面，不声称防御可任意篡改这些文件的本机进程。
 
-宿主接口依据：[官方 Codex App Server — Trigger thread compaction](https://learn.chatgpt.com/docs/app-server#trigger-thread-compaction)。TaskCenter 本身只发出请求、核验证据并执行受控重绑；宿主能力缺失时保留原任务与原 Session，或显式选择新 Session。
+宿主接口依据：[官方 Codex App Server — Trigger thread compaction](https://learn.chatgpt.com/docs/app-server#trigger-thread-compaction)；调用字段同时使用本机 `codex app-server generate-json-schema --experimental` 核对。适配器的隔离协议测试不是桌面宿主实测；未配置真实端点时，能力仍不可用，原绑定保持不变。
