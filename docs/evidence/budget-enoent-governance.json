@@ -1,0 +1,218 @@
+{
+  "schema": "taskcenter-evidence-archive/v1",
+  "task_id": "task-0bd6b9cf-299d-4a1d-903c-04520e999f0e",
+  "subject": {
+    "type": "git_commit",
+    "observed_at": "2026-09-09T12:40:57.264Z",
+    "value": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+    "repository": "/Users/gezi/Documents/project/ReqRadar"
+  },
+  "purpose": "Historical ENOENT fix evidence archive; no tests rerun and no independent acceptance asserted.",
+  "verification_claims": [
+    {
+      "id": "tests",
+      "requirement_id": "",
+      "kind": "test",
+      "command_or_probe": "npm test",
+      "status": "passed",
+      "exit_code": 0,
+      "subject_ref": {
+        "type": "git_commit",
+        "observed_at": "2026-09-09T12:40:57.264Z",
+        "value": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+        "repository": "/Users/gezi/Documents/project/ReqRadar"
+      },
+      "revision": "",
+      "observed_at": "2026-09-09T12:40:57.264Z",
+      "producer": {
+        "type": "agent",
+        "id": "codex",
+        "session_id": "01a0861e-93ea-7493-be00-3f109bd5fe42"
+      },
+      "evidence_ref": "",
+      "artifact_refs": [],
+      "summary": "353/353通过"
+    },
+    {
+      "id": "lint",
+      "requirement_id": "",
+      "kind": "lint",
+      "command_or_probe": "npm run lint",
+      "status": "passed",
+      "exit_code": 0,
+      "subject_ref": {
+        "type": "git_commit",
+        "observed_at": "2026-09-09T12:40:57.264Z",
+        "value": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+        "repository": "/Users/gezi/Documents/project/ReqRadar"
+      },
+      "revision": "",
+      "observed_at": "2026-09-09T12:40:57.264Z",
+      "producer": {
+        "type": "agent",
+        "id": "codex",
+        "session_id": "01a0861e-93ea-7493-be00-3f109bd5fe42"
+      },
+      "evidence_ref": "",
+      "artifact_refs": [],
+      "summary": "通过"
+    },
+    {
+      "id": "sync",
+      "requirement_id": "",
+      "kind": "other",
+      "command_or_probe": "npm run sync",
+      "status": "passed",
+      "exit_code": 0,
+      "subject_ref": {
+        "type": "git_commit",
+        "observed_at": "2026-09-09T12:40:57.264Z",
+        "value": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+        "repository": "/Users/gezi/Documents/project/ReqRadar"
+      },
+      "revision": "",
+      "observed_at": "2026-09-09T12:40:57.264Z",
+      "producer": {
+        "type": "agent",
+        "id": "codex",
+        "session_id": "01a0861e-93ea-7493-be00-3f109bd5fe42"
+      },
+      "evidence_ref": "",
+      "artifact_refs": [],
+      "summary": "通过"
+    },
+    {
+      "id": "diff",
+      "requirement_id": "",
+      "kind": "static_check",
+      "command_or_probe": "git diff --check",
+      "status": "passed",
+      "exit_code": 0,
+      "subject_ref": {
+        "type": "git_commit",
+        "observed_at": "2026-09-09T12:40:57.264Z",
+        "value": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+        "repository": "/Users/gezi/Documents/project/ReqRadar"
+      },
+      "revision": "",
+      "observed_at": "2026-09-09T12:40:57.264Z",
+      "producer": {
+        "type": "agent",
+        "id": "codex",
+        "session_id": "01a0861e-93ea-7493-be00-3f109bd5fe42"
+      },
+      "evidence_ref": "",
+      "artifact_refs": [],
+      "summary": "通过"
+    },
+    {
+      "id": "live-prepare",
+      "requirement_id": "",
+      "kind": "manual",
+      "command_or_probe": "taskcenter_task_prepare session_id=01a08621-2953-7423-984b-8d11482881af",
+      "status": "passed",
+      "exit_code": 0,
+      "subject_ref": {
+        "type": "git_commit",
+        "observed_at": "2026-09-09T12:40:57.264Z",
+        "value": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+        "repository": "/Users/gezi/Documents/project/ReqRadar"
+      },
+      "revision": "",
+      "observed_at": "2026-09-09T12:40:57.264Z",
+      "producer": {
+        "type": "agent",
+        "id": "codex",
+        "session_id": "01a0861e-93ea-7493-be00-3f109bd5fe42"
+      },
+      "evidence_ref": "",
+      "artifact_refs": [],
+      "summary": "返回原task instory-upload-protocol-v1-rollout-20260909，handoff_required=false，无服务端异常"
+    }
+  ],
+  "release_events": [
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T12:38:35.879Z",
+      "deploymentId": "release-057b8e06-6872-4cd0-9209-042bdc7c8526",
+      "revision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "previousRevision": "710ded824ca80c7bcbed4d571bce240ad39c615b",
+      "stage": "deployment",
+      "outcome": "started",
+      "originalPid": 80040
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T12:38:39.831Z",
+      "deploymentId": "release-057b8e06-6872-4cd0-9209-042bdc7c8526",
+      "revision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "previousRevision": "710ded824ca80c7bcbed4d571bce240ad39c615b",
+      "stage": "lint",
+      "outcome": "passed",
+      "durationMs": 3938
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T12:39:07.874Z",
+      "deploymentId": "release-057b8e06-6872-4cd0-9209-042bdc7c8526",
+      "revision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "previousRevision": "710ded824ca80c7bcbed4d571bce240ad39c615b",
+      "stage": "test",
+      "outcome": "passed",
+      "durationMs": 28023
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T12:39:26.153Z",
+      "deploymentId": "release-057b8e06-6872-4cd0-9209-042bdc7c8526",
+      "revision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "previousRevision": "710ded824ca80c7bcbed4d571bce240ad39c615b",
+      "stage": "artifact",
+      "outcome": "passed",
+      "durationMs": 18226,
+      "sourceRoot": "/Users/gezi/Documents/project/ReqRadar/.local/releases/d91d748f5ab4"
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T12:39:26.982Z",
+      "deploymentId": "release-057b8e06-6872-4cd0-9209-042bdc7c8526",
+      "revision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "previousRevision": "710ded824ca80c7bcbed4d571bce240ad39c615b",
+      "stage": "candidate",
+      "outcome": "passed",
+      "durationMs": 795,
+      "webPort": 58607,
+      "controlPort": 58608
+    },
+    {
+      "schemaVersion": "release-event/v1",
+      "recordedAt": "2026-09-09T12:39:28.336Z",
+      "deploymentId": "release-057b8e06-6872-4cd0-9209-042bdc7c8526",
+      "revision": "d91d748f5ab4f0c13ee5b1d9a84c7d81f83c3406",
+      "previousRevision": "710ded824ca80c7bcbed4d571bce240ad39c615b",
+      "stage": "deployment",
+      "outcome": "succeeded",
+      "durationMs": 52508
+    }
+  ],
+  "source_refs": [
+    "data/task-ledger.json",
+    ".local/release-events.jsonl"
+  ],
+  "followup": {
+    "task_id": "task-89e9319c-7b56-4048-aab3-1e5b438e0d9b",
+    "revision": "fc9471353312704d51846025e660c71f5e39f40e",
+    "note": "Budget advisory policy is separate and is not evidence for this Subject."
+  },
+  "deployment_log": {
+    "source": "/tmp/taskcenter-d91d748-deploy.log",
+    "sha256": "7e74a5d1f257d10de14a1a35c6d33f1ffe42653269b8df9385fb14a8dce8541f",
+    "summary_lines": [
+      "ℹ tests 353",
+      "ℹ pass 353",
+      "ℹ fail 0",
+      "候选实例验证通过，开始受控切换 TaskCenter 运行实例。",
+      "TaskCenter 已部署不可变版本 d91d748f5ab4。"
+    ]
+  }
+}
