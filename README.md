@@ -234,6 +234,9 @@ OCR Review 与业务任务生命周期分离：已登记的任务所属 Session 
 
 路由返回独立 `review_record` 和领取 capability。宿主使用集中配置的 reviewer 模型及 `read-only` 沙箱启动独立 Reviewer；Reviewer 登记后调用 `taskcenter_review_claim(route_id, claim_token, sandbox="read-only")`，随后通过 `taskcenter_task_review_report` 携带同一 `route_id`、`review_artifacts`、完整 `subject_ref` 上报。最后 `taskcenter_routing_result` 释放租约。MCP 从可信宿主绑定实际 Session，领取同时校验工作区、模型及与实现 Session 的独立性。同一 Reviewer Session 可领取多个 Task 的 Review；Hook 和账本禁止它创建业务任务或写入实现。Hook 是生命周期守卫，宿主仍须提供真正的只读沙箱。
 
+非交互 CLI Reviewer 使用 `node /path/to/ReqRadar/scripts/reviewer-cli.mjs PROMPT_FILE OUTPUT_FILE [REVIEWER_SESSION_UUID]`。宿主先取得 OCR route，再将 route、claim token、精确 Subject/Bundle/Rules 与验收条件写入 prompt；从受审工作区启动。入口固定集中 reviewer 模型和只读沙箱，仅为本进程的 Session 登记、review claim、review report 逐项授权，不改用户配置或全局审批。恢复已有 Reviewer 时填写其真实 UUID；路由结果及租约释放仍由宿主负责。
+
+
 `GET /tasks/:id/reviews` 返回 `pending/running/approved/changes_requested/failed` Review Record；记录保存在本地 routing-control 状态中，与 Task 状态分开。Task 的新 `review_status` 聚合为 `not_started/pending/approved/changes_requested`，旧 `reviewStatus` 和 Attestation 字段继续保留。失败、过期或只有路由成功而没有报告不会变为 approved；要求 Review 的任务在新审查未完成时不能最终通过。
 
 拒绝响应保留旧客户端可读的 `error` 文本，新增 `code`（`SESSION_NOT_REGISTERED`、`TASK_NOT_FOUND`、`TASK_NOT_REVIEWABLE`、`SUBJECT_MISMATCH`、`REVIEW_ARTIFACTS_INCOMPLETE`、权限与证据不匹配码），并提供 `legacy_code=ACTIVE_FORMAL_TASK_REQUIRED` 兼容映射。模型/并发失败在路由的 `error_code` 中区分 `REVIEWER_UNAVAILABLE` 与 `REVIEWER_LEASE_UNAVAILABLE`，保留原始路由原因。正常 Review 不使用 `session_gate_exemption`。
