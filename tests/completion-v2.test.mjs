@@ -218,6 +218,26 @@ test("相同 Subject 的重复 approved Attestation 保留审计但不计为有�
   assert.equal(reviewed.reviewStatus, "passed");
 });
 
+test("更正后的批准生效，旧错误去重投影可恢复且再次读取幂等", () => {
+  for (const verdict of ["changes_requested", "rejected"]) {
+    const report = (id, verdict) => ({ id, reviewer: actor("reviewer"), subject_ref: subject(), scope: "all", verdict, unresolved_findings: verdict === "approved" ? 0 : 1, observed_at: at });
+    let task = base({ reviewPolicy: "required" });
+    for (const review of [report("a", "approved"), report("b", verdict), report("c", "approved")]) {
+      task = applyCompletionEvent(task, { type: "review.reported", review_attestation: review });
+    }
+    assert.equal(task.reviewStatus, "passed");
+    assert.equal(task.reviewAttestations[2].effective_review, true);
+    const historical = { ...task, reviewAttestations: task.reviewAttestations.map((r, i) => i === 2 ? { ...r, effective_review: false, duplicate_of_attestation_id: "a" } : r) };
+    const restored = withCompletionState(historical);
+    assert.equal(restored.reviewStatus, "passed");
+    assert.equal(restored.reviewAttestations[2].duplicate_of_attestation_id, undefined);
+    assert.equal(historical.reviewAttestations[2].effective_review, false);
+    assert.deepEqual(withCompletionState(restored).reviewAttestations, restored.reviewAttestations);
+    const duplicate = applyCompletionEvent(restored, { type: "review.reported", review_attestation: report("d", "approved") });
+    assert.equal(duplicate.reviewAttestations[3].duplicate_of_attestation_id, "c");
+  }
+});
+
 test("Completion Packet 增加 Review 过程但不改变 completionClaim", () => {
   const task = base({
     reviewCycles: [{ cycle_id: "packet-cycle", cycle_number: 1, subject_ref: subject(), reviewer: actor("reviewer"), model: "luna", review_scope: "full", phase: "completed", outcome: "approved", observed_at: at }],

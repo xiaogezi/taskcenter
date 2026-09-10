@@ -162,12 +162,7 @@ export function applyCompletionEvent(task, event) {
     validateReviewVerdicts(review);
     if ((next.reviewAttestations || []).some((item) => item.id === review.id)) throw failure("Review Attestation id 已存在；请使用新 id 追加复审。", 409);
     validateReviewCycleLink(next, review);
-    const duplicate = review.verdict === "approved"
-      ? (next.reviewAttestations || []).find((item) => item.effective_review !== false && item.verdict === "approved" && sameSubject(item.subject_ref, review.subject_ref))
-      : null;
-    next.reviewAttestations = [...(next.reviewAttestations || []), duplicate
-      ? { ...review, effective_review: false, duplicate_of_attestation_id: duplicate.id }
-      : { ...review, effective_review: true }];
+    next.reviewAttestations = projectReviewDuplicates([...(next.reviewAttestations || []), review]);
   }
   if (event.type === "review_cycle.reported") {
     const cycle = normalizeReviewCycle(event.review_cycle, event.occurred_at || event.created_at);
@@ -210,6 +205,20 @@ export function applyCompletionEvent(task, event) {
   return withCompletionState(next);
 }
 
+// Recompute derived duplicate flags on load as well, repairing old projections
+// without deleting or rewriting the original attestations/events.
+function projectReviewDuplicates(reviews) {
+  let latest;
+  return reviews.map((review) => {
+    if (review.effective_review === false && !review.duplicate_of_attestation_id) return review;
+    const duplicate = review.verdict === "approved" && latest?.verdict === "approved" && sameSubject(latest.subject_ref, review.subject_ref);
+    const projected = { ...review, effective_review: !duplicate };
+    delete projected.duplicate_of_attestation_id;
+    if (duplicate) projected.duplicate_of_attestation_id = latest.id;
+    else latest = projected;
+    return projected;
+  });
+}
 export function withCompletionState(task) {
   const currentSubject = task.currentSubject || legacySubject(task.currentRevision, task.updatedAt || task.createdAt);
   const migrated = {
@@ -217,7 +226,7 @@ export function withCompletionState(task) {
     acceptanceRequirements: criteria(task),
     requirementResults: Array.isArray(task.requirementResults) ? task.requirementResults : [],
     verificationClaims: (task.verificationClaims || []).map((item) => item?.subject_ref && typeof item.producer === "object" ? item : normalizeVerificationClaim(item, item?.observed_at)),
-    reviewAttestations: (task.reviewAttestations || []).map((item) => item?.subject_ref && typeof item.reviewer === "object" ? item : normalizeReview(item, item?.observed_at)),
+    reviewAttestations: projectReviewDuplicates((task.reviewAttestations || []).map((item) => item?.subject_ref && typeof item.reviewer === "object" ? item : normalizeReview(item, item?.observed_at))),
     reviewCycles: Array.isArray(task.reviewCycles) ? task.reviewCycles.map((item) => normalizeReviewCycle(item, item?.observed_at)) : [],
     diagnosticObservations: Array.isArray(task.diagnosticObservations) ? task.diagnosticObservations.map((item) => normalizeDiagnosticObservation(item, item?.observed_at)) : [],
     acceptanceRecords: Array.isArray(task.acceptanceRecords) ? task.acceptanceRecords : task.acceptanceRecord ? [migrateAcceptance(task.acceptanceRecord, task)] : [],
