@@ -200,8 +200,16 @@ server.registerTool("taskcenter_task_review_report", {
     cycle_id: z.string().max(120).optional(), cycle_number: z.number().int().positive().optional(), review_scope: z.enum(["full", "incremental"]).optional(),
     base_attestation_id: z.string().max(120).optional(), reviewed_files: z.array(z.string().max(500)).max(500).optional(),
     changed_files_since_previous_review: z.array(z.string().max(500)).max(500).optional(), findings: z.array(reviewFinding).max(500).optional(),
+    route_id: z.string().max(200).optional(), review_artifacts: routingReviewArtifacts.optional(),
   }).strict(),
-}, async ({ session_id, task_id, event_id, response_mode, ...review_attestation }) => report("review.reported", { session_id, task_id, event_id, response_mode, revision: review_attestation.revision, review_attestation }));
+}, async ({ session_id, task_id, event_id, response_mode, ...review_attestation }, extra) => {
+  if (review_attestation.route_id) {
+    const context = resolveTrustedMcpSession(extra);
+    if (!context.sessionId) return result({ ...context, code: "SESSION_NOT_REGISTERED" });
+    return postLocal("/task-events", { type: "review.reported", session_id: context.sessionId, task_id, event_id, response_mode, revision: review_attestation.revision, review_attestation });
+  }
+  return report("review.reported", { session_id, task_id, event_id, response_mode, revision: review_attestation.revision, review_attestation });
+});
 
 server.registerTool("taskcenter_review_cycle_report", {
   title: "上报 TaskCenter Review Cycle",
@@ -311,7 +319,11 @@ server.registerTool("taskcenter_routing_select", {
     review_artifacts: routingReviewArtifacts.optional().describe("OCR 路由必填；Subject、OCR Bundle 与规则各提供 ref 或 fingerprint"),
     lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(), response_mode: operationalResponseMode,
   }).strict(),
-}, async (input) => postLocal("/routing/select", input));
+}, async (input, extra) => {
+  if (!["ocr", "ocr_review", "independent_review"].includes(input.task_class)) return postLocal("/routing/select", input);
+  const context = resolveTrustedMcpSession(extra);
+  return context.sessionId ? postLocal("/routing/select", { ...input, session_id: context.sessionId }) : result({ ...context, code: "SESSION_NOT_REGISTERED" });
+});
 
 server.registerTool("taskcenter_routing_result", {
   title: "上报 TaskCenter 路由结果",
@@ -327,7 +339,19 @@ server.registerTool("taskcenter_routing_result", {
     quota_retry_after_at: z.string().datetime({ offset: true }).optional(),
     event_id: z.string().max(200).optional(), response_mode: operationalResponseMode,
   }).strict(),
-}, async (input) => postLocal("/routing/result", input));
+}, async (input, extra) => {
+  const context = resolveTrustedMcpSession(extra);
+  return postLocal("/routing/result", { ...input, ...(context.sessionId ? { session_id: context.sessionId } : {}) });
+});
+
+server.registerTool("taskcenter_review_claim", {
+  title: "领取独立只读 Review",
+  description: "已登记的独立 Reviewer 领取已有业务任务的 Review lease，不创建 Task。执行宿主必须使用 read-only 沙箱。",
+  inputSchema: z.object({ route_id: z.string().min(1), claim_token: z.string().min(1), sandbox: z.literal("read-only"), response_mode: operationalResponseMode }).strict(),
+}, async (input, extra) => {
+  const context = resolveTrustedMcpSession(extra);
+  return context.sessionId ? postLocal("/reviews/claim", { ...input, session_id: context.sessionId }) : result({ ...context, code: "SESSION_NOT_REGISTERED" });
+});
 
 server.registerTool("taskcenter_delegation_grant", {
   title: "创建 CLI Delegation",

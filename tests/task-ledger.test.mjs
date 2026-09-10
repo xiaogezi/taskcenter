@@ -1656,6 +1656,63 @@ test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审�
   assert.equal(allDecisions.summary.project_count, 1, "unknown project 不计入试点项目覆盖");
 });
 
+test("Review HTTP：done_claimed 无 active task 直接审查，lease 绑定且不新建 Task", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  const token = (await readFile(envPaths.TASKCENTER_MCP_TOKEN_PATH, "utf8")).trim();
+  const headers = { ...taskHeaders(), "X-TaskCenter-MCP-Token": token };
+  const post = async (path, body) => {
+    const response = await fetch(`${base}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+    return { status: response.status, ...await response.json() };
+  };
+  const owner = "review-http-owner", reviewer = "review-http-reviewer", taskId = "review-http-task";
+  const reviewerModel = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles.reviewer.model;
+  await registerHttpSession(base, owner);
+  await registerHttpSession(base, reviewer, { model: reviewerModel });
+  const subject = { type: "git_commit", value: "review-http-subject", observed_at: new Date().toISOString() };
+  const created = await post("/task-events", { type: "task.create", task_id: taskId, session_id: owner, title: "Review HTTP", goal: "Review HTTP", workspace: "/work", subject_ref: subject });
+  assert.equal(created.accepted, true, created.error);
+  const closed = await post("/task-events", { type: "task.update", task_id: taskId, session_id: owner, status: "done_claimed", tests: ["fixture verified"] });
+  assert.equal(closed.accepted, true, closed.error);
+  const artifacts = { subject: { ref: subject.value }, bundle: { fingerprint: "bundle-http" }, rules: { fingerprint: "rules-http" } };
+  const request = { task_id: taskId, session_id: owner, task_class: "ocr_review", channel: "native", review_artifacts: artifacts };
+  assert.equal((await post("/routing/select", { ...request, session_id: "missing" })).code, "SESSION_NOT_REGISTERED");
+  assert.equal((await post("/routing/select", { ...request, task_id: "missing" })).code, "TASK_NOT_FOUND");
+  const selected = await post("/routing/select", request);
+  assert.equal(selected.accepted, true, selected.error);
+  const route = selected.route;
+  assert.equal(route.available, true);
+  const claimBody = { route_id: route.route_id, session_id: reviewer, claim_token: route.review_record.claim_token, sandbox: "read-only" };
+  const claimed = await post("/reviews/claim", claimBody);
+  assert.equal(claimed.accepted, true, claimed.error);
+  assert.equal(claimed.review_record.status, "running");
+  const noTask = await post("/task-events", { type: "task.create", task_id: "review-forbidden-child", session_id: reviewer, title: "forbidden" });
+  assert.equal(noTask.status, 403);
+  const report = { type: "review.reported", task_id: taskId, session_id: reviewer, event_id: "review-http-report", review_attestation: {
+    id: "review-http-attestation", route_id: route.route_id, review_artifacts: artifacts, reviewer: { type: "agent", id: reviewer, session_id: reviewer },
+    subject_ref: subject, scope: "full", review_contract_version: "v2", spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unresolved_findings: 0, observed_at: new Date().toISOString(),
+  } };
+  const bypass = await post("/core/task-events", report);
+  assert.equal(bypass.status, 403, JSON.stringify(bypass));
+  const wrong = await post("/task-events", { ...report, session_id: owner });
+  assert.equal(wrong.code, "REVIEW_PERMISSION_DENIED");
+  const reported = await post("/task-events", report);
+  assert.equal(reported.accepted, true, JSON.stringify(reported));
+  assert.equal(reported.task.status, "done_claimed");
+  assert.equal(reported.task.reviewAttestations.length, 1);
+  assert.equal((await post("/task-events", report)).idempotent, true);
+  const released = await post("/routing/result", { route_id: route.route_id, session_id: owner, outcome: "succeeded" });
+  assert.equal(released.accepted, true, released.error);
+  assert.equal(released.health.find((item) => item.model === reviewerModel).active_executors, 0);
+  const detail = await (await fetch(`${base}/tasks/${taskId}`)).json();
+  assert.equal(detail.task.review_status, "approved");
+  const records = await (await fetch(`${base}/tasks/${taskId}/reviews`)).json();
+  assert.equal(records.reviews[0].status, "approved");
+  assert.equal(records.reviews[0].claim_token, undefined);
+  assert.equal((await (await fetch(`${base}/tasks`)).json()).tasks.length, 1);
+});
+
 test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计", async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_LUNA: "1" });

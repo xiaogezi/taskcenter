@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { loadModelRoleConfig, publicModelRoleConfig } from "./model-role-config.mjs";
+import { sameSubject } from "./completion-state.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const routingControlPath = resolve(process.env.TASKCENTER_ROUTING_CONTROL_PATH || resolve(projectRoot, "data", "routing-control.json"));
@@ -17,14 +18,117 @@ const ocrTaskClasses = new Set(["ocr", "ocr_review", "independent_review"]);
 const knownTaskClasses = new Set(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", ...ocrTaskClasses]);
 
 export class RoutingControlError extends Error {
-  constructor(statusCode, message) {
+  constructor(statusCode, message, code) {
     super(message);
     this.statusCode = statusCode;
+    this.code = code;
+    this.legacyCode = code ? "ACTIVE_FORMAL_TASK_REQUIRED" : undefined;
   }
 }
 
+export function isReviewTaskClass(value) { return ocrTaskClasses.has(value); }
+
+// This gate is about the requested Task, never the caller's active Task.
+export function validateReviewRequest(input, task, registry, canonical = (id) => id) {
+  const sessionId = canonical(input.session_id || "");
+  const session = registry[sessionId];
+  if (!session) throw new RoutingControlError(409, "当前 Session 尚未登记。", "SESSION_NOT_REGISTERED");
+  if (!task) throw new RoutingControlError(404, "审查任务不存在。", "TASK_NOT_FOUND");
+  if (canonical(task.sessionId) !== sessionId) throw new RoutingControlError(403, "当前 Session 无权为该任务发起审查。", "REVIEW_PERMISSION_DENIED");
+  if (!["in_progress", "done_claimed", "blocked"].includes(task.status)) throw new RoutingControlError(409, "任务状态不允许审查。", "TASK_NOT_REVIEWABLE");
+  const artifacts = normalizeReviewArtifacts(input.review_artifacts, true);
+  const subject = task.currentSubject;
+  if (!subject?.value || subject.type === "none") throw new RoutingControlError(400, "任务缺少当前 Subject。", "REVIEW_ARTIFACTS_INCOMPLETE");
+  if ((artifacts.subject.ref && artifacts.subject.ref !== subject.value) || (artifacts.subject.fingerprint && artifacts.subject.fingerprint !== subject.value)) throw new RoutingControlError(409, "审查 Subject 与当前 Subject 不一致。", "SUBJECT_MISMATCH");
+  return { sessionId, subject, issuesOnly: task.status === "blocked" };
+}
+
+export function reviewTaskRecords(taskId) {
+  return readState().routes.filter((route) => route.reviewRecord && (!taskId || route.reviewRecord.task_id === taskId))
+    .map((route) => publicReviewRecord(route));
+}
+
+export function withReviewStatus(tasks) {
+  const latest = new Map();
+  const subjects = new Map(tasks.map((task) => [task.id, task.currentSubject]));
+  for (const record of reviewTaskRecords()) if (sameSubject(record.subject_ref, subjects.get(record.task_id))) latest.set(record.task_id, record);
+  return tasks.map((task) => {
+    const record = latest.get(task.id);
+    const review_status = !record ? "not_started" : ["approved", "changes_requested"].includes(record.status) ? record.status : "pending";
+    return { ...task, review_status };
+  });
+}
+
+function publicReviewRecord(route, now = new Date().toISOString()) {
+  const record = { ...route.reviewRecord, claim_token: undefined };
+  if (["pending", "running"].includes(record.status) && Date.parse(route.expiresAt) <= Date.parse(now)) {
+    record.status = "failed";
+    record.finished_at = route.expiresAt;
+  }
+  return record;
+}
+
+export function reviewSessionRecords(sessionId) {
+  return readState().routes.filter((route) => route.reviewRecord?.reviewer_session_id === sessionId)
+    .map((route) => publicReviewRecord(route));
+}
+
+export function claimReview(input, task, registry, canonical = (id) => id, now = new Date().toISOString()) {
+  const state = readState();
+  const route = state.routes.find((item) => item.id === input.route_id);
+  const record = route?.reviewRecord;
+  const sessionId = canonical(input.session_id || "");
+  const session = registry[sessionId];
+  if (!session) throw new RoutingControlError(409, "Reviewer Session 尚未登记。", "SESSION_NOT_REGISTERED");
+  if (!record || route.status !== "leased" || Date.parse(route.expiresAt) <= Date.parse(now)) throw new RoutingControlError(409, "Reviewer lease 不可用。", "REVIEWER_LEASE_UNAVAILABLE");
+  if (!task || task.id !== record.task_id) throw new RoutingControlError(404, "审查任务不存在。", "TASK_NOT_FOUND");
+  if (!["in_progress", "done_claimed", "blocked"].includes(task.status)) throw new RoutingControlError(409, "任务不可审查。", "TASK_NOT_REVIEWABLE");
+  if (!sameSubject(task.currentSubject, record.subject_ref)) throw new RoutingControlError(409, "当前 Subject 已变化。", "SUBJECT_MISMATCH");
+  if (input.claim_token !== record.claim_token || (record.reviewer_session_id && record.reviewer_session_id !== sessionId)) throw new RoutingControlError(403, "Reviewer lease 领取身份不匹配。", "REVIEW_PERMISSION_DENIED");
+  if (sessionId === canonical(task.sessionId) || (task.sessionHistory || []).some((id) => canonical(id) === sessionId)) throw new RoutingControlError(403, "Reviewer 必须独立于实现 Session。", "REVIEWER_NOT_INDEPENDENT");
+  if (!session.workspace || resolve(session.workspace) !== resolve(task.workspace || "") || session.model !== route.selectedModel || input.sandbox !== "read-only") throw new RoutingControlError(403, "Reviewer 工作区、模型或只读沙箱不匹配。", "REVIEW_PERMISSION_DENIED");
+  if (!["pending", "running"].includes(record.status)) throw new RoutingControlError(409, "Review 已结束。", "REVIEWER_LEASE_UNAVAILABLE");
+  record.reviewer_session_id = sessionId;
+  record.status = "running";
+  record.started_at ||= now;
+  persistState(state, now);
+  return { ...record, claim_token: undefined };
+}
+
+export function reportReview(input, task, commit, canonical = (id) => id, now = new Date().toISOString()) {
+  const state = readState();
+  const route = state.routes.find((item) => item.id === input.review_attestation?.route_id);
+  const record = route?.reviewRecord;
+  const review = input.review_attestation;
+  if (!record || !record.reviewer_session_id || record.reviewer_session_id !== canonical(input.session_id || "")) throw new RoutingControlError(403, "未领取独立 Reviewer lease。", "REVIEW_PERMISSION_DENIED");
+  if (!task || task.id !== record.task_id || input.task_id !== record.task_id) throw new RoutingControlError(404, "审查任务不存在。", "TASK_NOT_FOUND");
+  if (!["in_progress", "done_claimed", "blocked"].includes(task.status) || ((task.status === "blocked" || record.issues_only) && review.verdict === "approved")) throw new RoutingControlError(409, "当前任务只允许报告问题，不能批准。", "TASK_NOT_REVIEWABLE");
+  if (!sameSubject(task.currentSubject, record.subject_ref) || !sameSubject(review.subject_ref, record.subject_ref)) throw new RoutingControlError(409, "Review Subject 不匹配。", "SUBJECT_MISMATCH");
+  const artifacts = normalizeReviewArtifacts(review.review_artifacts, true);
+  if (JSON.stringify(artifacts) !== JSON.stringify(route.reviewArtifacts)) throw new RoutingControlError(409, "OCR Bundle 或 Rules 与路由不匹配。", "REVIEW_ARTIFACTS_MISMATCH");
+  if (canonical(review.reviewer?.session_id || review.reviewer?.id || "") !== record.reviewer_session_id) throw new RoutingControlError(403, "Reviewer 身份不匹配。", "REVIEW_PERMISSION_DENIED");
+  if (record.attestation_id && record.attestation_id !== review.id) throw new RoutingControlError(409, "Review 已有结果。", "REVIEWER_LEASE_UNAVAILABLE");
+  if (!record.attestation_id && (route.status !== "leased" || Date.parse(route.expiresAt) <= Date.parse(now))) throw new RoutingControlError(409, "Reviewer lease 已失效。", "REVIEWER_LEASE_UNAVAILABLE");
+  // Persist the authoritative ledger first; a same-event retry repairs this projection.
+  const result = commit();
+  record.status = review.verdict === "rejected" ? "failed" : review.verdict;
+  record.verdict = review.verdict;
+  record.unresolved_findings = result.task.reviewAttestations.find((item) => item.id === review.id).unresolved_findings;
+  record.attestation_id = review.id;
+  record.finished_at ||= now;
+  persistState(state, now);
+  return result;
+}
+
+export function routeForId(id) { return readState().routes.find((route) => route.id === id); }
+
 export function routingSelect(input, now = new Date().toISOString()) {
-  const config = loadModelRoleConfig();
+  let config;
+  try { config = loadModelRoleConfig(); }
+  catch (error) {
+    if (isReviewTaskClass(input.task_class)) throw new RoutingControlError(503, error.message, "REVIEWER_UNAVAILABLE");
+    throw error;
+  }
   const requestedPreferredModel = clean(input.preferred_model, 120);
   const executionModelPolicy = normalizeExecutionModelPolicy(input.execution_model_policy);
   const taskId = clean(input.task_id, 200);
@@ -53,6 +157,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const state = readState();
   expireRoutes(state, now);
   const signatureInput = { taskId, orchestratorModel, requestedPreferredModel, executionModelPolicy, taskClass, channel };
+  if (input.review_context) signatureInput.reviewContext = input.review_context;
   if (reviewArtifacts) signatureInput.reviewArtifacts = reviewArtifacts;
   const signature = signatureOf(signatureInput);
   const replay = state.routes.find((route) => route.selectEventId === eventId);
@@ -176,7 +281,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
     configVersion: config.contentHash,
     policyVersion: config.schemaVersion,
     matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPreferred),
-    requiresNewSession: selectedModel !== preferredModel || channel === "cli",
+    requiresNewSession: roleName === "reviewer" ? false : selectedModel !== preferredModel || channel === "cli",
     available: true,
     probe,
     status: "leased",
@@ -186,6 +291,15 @@ export function routingSelect(input, now = new Date().toISOString()) {
     resultEventId: "",
     resultSignature: "",
     result: null,
+    ...(input.review_context ? { reviewRecord: {
+      id: `review_${randomUUID()}`, task_id: taskId,
+      requester_session_id: input.review_context.sessionId,
+      reviewer_session_id: "", subject_ref: input.review_context.subject,
+      bundle_ref: reviewArtifacts.bundle, rules_ref: reviewArtifacts.rules,
+      status: "pending", verdict: null, unresolved_findings: 0,
+      started_at: null, finished_at: null, issues_only: input.review_context.issuesOnly,
+      claim_token: randomUUID(),
+    } } : {}),
   };
   if (state.routes.some((item) => item.id === route.id)) throw new RoutingControlError(409, "route_id 已存在。");
   state.routes.push(route);
@@ -235,6 +349,10 @@ export function routingResult(input, now = new Date().toISOString()) {
   route.resultEventId = eventId;
   route.resultSignature = signature;
   route.result = result;
+  if (route.reviewRecord && ["pending", "running"].includes(route.reviewRecord.status)) {
+    route.reviewRecord.status = "failed";
+    route.reviewRecord.finished_at = now;
+  }
   if (health.halfOpenLease === route.id) health.halfOpenLease = "";
 
   if (outcome === "succeeded") {
@@ -453,6 +571,9 @@ function publicRoute(route) {
     fallback_reason: route.fallbackReason || null,
     retry_after_at: route.retryAfterAt || null,
     review_artifacts: route.reviewArtifacts || null,
+    review_record: route.reviewRecord || null,
+    error_code: !route.available && isReviewTaskClass(route.taskClass)
+      ? (route.fallbackReason?.includes("concurrency") || route.fallbackReason?.includes("leased") ? "REVIEWER_LEASE_UNAVAILABLE" : "REVIEWER_UNAVAILABLE") : null,
     config_version: route.configVersion || null,
     policy_version: route.policyVersion || null,
     matched_rule: route.matchedRule || null,
@@ -565,7 +686,9 @@ function readState() {
 function persistState(state, now) {
   state.version = 3;
   state.updatedAt = now;
-  state.routes = state.routes.slice(-5_000);
+  // Review identity remains read-only after its lease ends; do not evict it with routing telemetry.
+  const retained = new Set(state.routes.slice(-5_000));
+  state.routes = state.routes.filter((route) => route.reviewRecord || retained.has(route));
   mkdirSync(dirname(routingControlPath), { recursive: true });
   const temporary = `${routingControlPath}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
@@ -681,7 +804,7 @@ function matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPr
 function normalizeReviewArtifacts(value, required) {
   if (!value && !required) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new RoutingControlError(400, "OCR routing_select 必须提供 review_artifacts。");
+    throw new RoutingControlError(400, "OCR routing_select 必须提供 review_artifacts。", "REVIEW_ARTIFACTS_INCOMPLETE");
   }
   const normalized = {
     subject: normalizeReviewArtifact(value.subject, "subject"),
@@ -693,11 +816,11 @@ function normalizeReviewArtifacts(value, required) {
 
 function normalizeReviewArtifact(value, name) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new RoutingControlError(400, `review_artifacts.${name} 必须提供 ref 或 fingerprint。`);
+    throw new RoutingControlError(400, `review_artifacts.${name} 必须提供 ref 或 fingerprint。`, "REVIEW_ARTIFACTS_INCOMPLETE");
   }
   const ref = clean(value.ref, 1_000);
   const fingerprint = clean(value.fingerprint, 300);
-  if (!ref && !fingerprint) throw new RoutingControlError(400, `review_artifacts.${name} 必须提供 ref 或 fingerprint。`);
+  if (!ref && !fingerprint) throw new RoutingControlError(400, `review_artifacts.${name} 必须提供 ref 或 fingerprint。`, "REVIEW_ARTIFACTS_INCOMPLETE");
   return { ref: ref || null, fingerprint: fingerprint || null };
 }
 

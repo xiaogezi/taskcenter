@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { after } from "node:test";
@@ -19,6 +20,7 @@ const paths = {
   TASKCENTER_SESSION_REGISTRY_PATH: join(tempDir, "session-registry.json"),
   TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(tempDir, "gate-session-allowlist.json"),
   TASKCENTER_DELEGATIONS_PATH: join(tempDir, "delegations.json"),
+  TASKCENTER_ROUTING_CONTROL_PATH: join(tempDir, "routing-control.json"),
 };
 const port = 39_000 + (process.pid % 1_000);
 const base = `http://127.0.0.1:${port}`;
@@ -27,6 +29,36 @@ const server = spawn(process.execPath, ["scripts/control-server.mjs"], {
   cwd: root,
   env: { ...process.env, ...paths, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" },
   stdio: ["ignore", "pipe", "pipe"],
+});
+
+test("Review Hook 兼容旧服务 404，其他服务错误不能当成豁免", async (context) => {
+  let status = 404;
+  const legacy = createServer((request, response) => {
+    const reviews = request.url.startsWith("/reviews/session?");
+    response.writeHead(reviews ? status : 200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(reviews ? { error: "接口不存在。" } : {}));
+  });
+  await new Promise((resolve) => legacy.listen(0, "127.0.0.1", resolve));
+  context.after(() => legacy.close());
+  const payload = { session_id: "review-old-service", cwd: "/work", tool_name: "mcp__taskcenter__taskcenter_routing_select" };
+  const url = `http://127.0.0.1:${legacy.address().port}`;
+  assert.equal((await runHook("pre-tool-use", "codex", payload, [], url)).code, 0);
+  status = 500;
+  assert.equal((await runHook("pre-tool-use", "codex", payload, [], url)).code, 2);
+});
+
+test("Reviewer Hook 无需 active Task，只读且拒绝代码写入和新任务", async () => {
+  const sessionId = "reviewer-hook-session";
+  await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
+  await writeFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify({ version: 3, models: {}, routes: [{ reviewRecord: { reviewer_session_id: sessionId, status: "approved" } }] }));
+  try {
+    const payload = { session_id: sessionId, cwd: "/work" };
+    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "rtk git diff" } })).code, 0);
+    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "mcp__taskcenter__taskcenter_task_review_report" })).code, 0);
+    for (const event of [{ tool_name: "apply_patch" }, { tool_name: "mcp__taskcenter__taskcenter_task_create" }, { tool_name: "exec_command", tool_input: { cmd: "touch forbidden" } }, { tool_name: "mcp__taskcenter__taskcenter_delegation_grant" }]) {
+      assert.equal((await runHook("pre-tool-use", "codex", { ...payload, ...event })).code, 2);
+    }
+  } finally { await rm(paths.TASKCENTER_ROUTING_CONTROL_PATH, { force: true }); }
 });
 
 test("控制服务离线时只放行固定恢复命令", async () => {
@@ -908,11 +940,11 @@ test("控制服务离线时只放行固定恢复命令", async () => {
   assert.equal(missingWorkspace.code, 2);
 });
 
-async function runHook(action, agent, payload, extraArgs = []) {
+async function runHook(action, agent, payload, extraArgs = [], controlUrl = base) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [hook, action, "--agent", agent, ...extraArgs], {
       cwd: root,
-      env: { ...process.env, ...paths, TASKCENTER_CONTROL_URL: base },
+      env: { ...process.env, ...paths, TASKCENTER_CONTROL_URL: controlUrl },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

@@ -18,6 +18,7 @@ import {
 } from "./task-phase-timing.mjs";
 import { listDelegations } from "./delegation-store.mjs";
 import { normalizeBug } from "./bug-workflow.mjs";
+import { reviewSessionRecords, reviewTaskRecords, withReviewStatus } from "./routing-control.mjs";
 
 import { switchCheckpoint, validateSessionSwitch } from "./session-switch.mjs";
 
@@ -43,13 +44,13 @@ export { taskTimeState, STALE_TASK_MS };
 
 export function loadTasks() {
   const source = readLedger();
-  if (normalizedTasksCache?.source === source) return normalizedTasksCache.tasks.map((task) => withTaskPhaseTiming(task));
+  if (normalizedTasksCache?.source === source) return withReviewStatus(normalizedTasksCache.tasks).map((task) => withTaskPhaseTiming(withCompletionState(task)));
   const tasks = source
     .filter((task) => task.status !== "removed")
     .map((task) => normalizeDueAtSemantics(task))
     .map((task) => withCompletionState({ ...task, sessionId: canonicalSessionId(task.sessionId) }));
   normalizedTasksCache = { source, tasks };
-  return tasks.map((task) => withTaskPhaseTiming(task));
+  return withReviewStatus(tasks).map((task) => withTaskPhaseTiming(withCompletionState(task)));
 }
 
 function normalizeDueAtSemantics(task) {
@@ -394,6 +395,12 @@ export function recordTaskEvent(input, options = {}) {
   const sessionRegistry = loadSessionRegistry();
   const eventSessionId = canonicalSessionId(event.session_id);
   const isRegistered = Boolean(eventSessionId && sessionRegistry[eventSessionId]);
+  if (eventSessionId && reviewSessionRecords(eventSessionId).length && !["session.register", "review.reported"].includes(event.type)) {
+    throw new TaskLedgerError(403, "REVIEW_PERMISSION_DENIED：Reviewer Session 仅允许独立只读审查，不得修改业务 Task。");
+  }
+  if (event.type === "review.reported" && (event.review_attestation?.route_id || reviewTaskRecords(event.task_id).length) && !options.authorizedReviewLease) {
+    throw new TaskLedgerError(403, "REVIEW_PERMISSION_DENIED：OCR 报告必须通过匹配的独立 Reviewer lease 校验。");
+  }
 
   if (options.requireRegistered
     && ["session.register", "task.create"].includes(event.type)

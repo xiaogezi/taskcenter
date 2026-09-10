@@ -156,6 +156,7 @@ export function applyCompletionEvent(task, event) {
   }
   if (event.type === "review.reported") {
     const review = normalizeReview(event.review_attestation, event.occurred_at || event.created_at);
+    if (next.status === "blocked" && review.verdict === "approved") throw failure("TASK_NOT_REVIEWABLE：blocked Task 不能报告 approved。", 409);
     if (!review.id || !review.reviewer || !review.subject_ref || !review.scope || !review.verdict || !review.observed_at) throw failure("Review Attestation 字段不完整。");
     if (review.verdict === "approved" && review.unresolved_findings > 0) throw failure("存在未解决 findings 时不能提交 approved 审查。", 409);
     validateReviewVerdicts(review);
@@ -261,6 +262,8 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
     }
   }
   if (reviewRequired(task)) {
+    if (task.review_status === "pending") reasons.push("review_pending");
+    if (task.review_status === "changes_requested") reasons.push("review_changes_requested");
     const review = (task.reviewAttestations || []).filter((item) => item.effective_review !== false).at(-1);
     if (!review) reasons.push("required_review_missing");
     else {
@@ -480,6 +483,7 @@ function normalizeReview(value, fallbackAt) {
   const unresolved = contractVersion === "v3" ? findings.filter((item) => item.status === "unresolved").length : Number.isInteger(value.unresolved_findings) && value.unresolved_findings >= 0 ? value.unresolved_findings : 0;
   return {
     id: text(value.id, 120), reviewer: normalizeActorIdentity(value.reviewer, { type: "agent", id: value.reviewer_session_id || "" }),
+    ...(value.route_id ? { route_id: text(value.route_id, 200), review_artifacts: value.review_artifacts } : {}),
     subject_ref: normalizeSubjectReference(value.subject_ref, observedAt) || legacySubject(value.revision, observedAt), revision: text(value.revision, 500), scope: text(value.scope, 1_000),
     review_contract_version: contractVersion, spec_verdict: enumeration(value.spec_verdict, specVerdicts, hasV2Fields || hasV3Fields ? "not_evaluated" : ""), quality_verdict: enumeration(value.quality_verdict, qualityVerdicts, hasV2Fields || hasV3Fields ? "not_evaluated" : ""),
     verdict: enumeration(value.verdict, reviewVerdicts, ""), unverified_requirements: normalizeUnverifiedRequirements(value.unverified_requirements), unresolved_findings: unresolved,
@@ -673,7 +677,13 @@ function alignImplicitRevisionSubject(normalized, raw, currentSubject, observedA
   }
   return closeSubject ? { ...normalized, subject_ref: closeSubject } : normalized;
 }
-function independent(left, right) { return !left || !right || `${left.type}:${left.id}` !== `${right.type}:${right.id}`; }
+function independent(left, right) {
+  if (!left || !right) return true;
+  const leftSession = left.session_id || (left.type === "agent" ? left.id : "");
+  const rightSession = right.session_id || (right.type === "agent" ? right.id : "");
+  if (leftSession && rightSession && leftSession.toLowerCase() === rightSession.toLowerCase()) return false;
+  return `${left.type}:${left.id}` !== `${right.type}:${right.id}`;
+}
 function legacySubject(revision, observedAt) { return revision ? { type: "external", value: text(revision, 500), observed_at: observedAt || new Date().toISOString() } : null; }
 function hasPortableEvidence(claim) { return [claim.evidence_ref, ...(claim.artifact_refs || [])].filter(Boolean).some((ref) => !/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(ref)); }
 function latestBy(items, field) { const result = new Map(); for (const item of items) if (item?.[field]) result.set(item[field], item); return result; }

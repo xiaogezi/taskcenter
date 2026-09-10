@@ -100,6 +100,16 @@ test("V2-11 AcceptanceRecord 支持全部通用来源", () => {
   }
 });
 
+test("Reviewer 换 actor 名称但复用实现 Session 不能通过独立审查", () => {
+  const review = { id: "r", reviewer: { type: "agent", id: "ocr_reviewer", session_id: "shared-session" }, subject_ref: subject(), scope: "all", verdict: "approved", unresolved_findings: 0, observed_at: at };
+  for (const owner of [{ type: "agent", id: "implementer", session_id: "shared-session" }, { type: "agent", id: "shared-session" }]) {
+    const task = base({ ownerActor: owner, reviewPolicy: "required", reviewAttestations: [review], workspacePolicy: { version: "p", requireIndependentReview: true } });
+    assert.notEqual(task.reviewStatus, "passed");
+    assert.equal(task.completionReadiness.ready, false);
+    assert.ok(task.completionReadiness.reasons.includes("reviewer_not_independent"));
+  }
+});
+
 test("V2-12 最终验收不要求 Context complete_task", () => {
   const task = applyCompletionEvent(base(), { type: "acceptance.accepted", event_id: "human-a", created_at: at, acceptance_record: { id: "human-a", source: "human", actor: actor("owner", "human"), subject_ref: subject(), observed_at: at } });
   assert.equal(task.acceptanceStatus, "accepted");

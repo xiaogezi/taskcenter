@@ -228,6 +228,16 @@ scope 为文件工具提供可执行的路径边界；可识别路径超出 scop
 
 新版 Review Attestation 使用 `review_contract_version=v2`，由同一个独立 reviewer 按顺序提交 `spec_verdict`、`quality_verdict`、总体 `verdict` 和 `unverified_requirements`。总体 `approved` 仅在规格 `compliant`、质量 `approved`、没有未验证要求且没有未解决 finding 时成立。旧记录继续按 `legacy` 读取，不伪造缺失的双结论。
 
+OCR Review 与业务任务生命周期分离：已登记的任务所属 Session 可对 `in_progress`、`done_claimed`、`blocked` Task 调用 `taskcenter_routing_select(ocr_review|independent_review)`，无需 active Task，也不创建审查子任务。`blocked` 仅允许报告问题；该限制在领取和报告时重验，不能通过解除阻塞后复用诊断 lease 来批准。`planned`、`cancelled` 和不存在的 Task 不允许进入新 Review。
+
+路由请求必须提供 `review_artifacts.subject/bundle/rules`。Subject 的 ref 或 fingerprint 必须匹配当前 `SubjectReference.value`；路由冻结完整 SubjectReference，后续领取和报告对 type、value、repository、branch 精确比较。Bundle 和 Rules 使用不可变引用或 fingerprint，由独立 Reviewer 实际加载，报告中的三项证据必须与路由逐项一致；本地控制面不下载或执行引用内容。
+
+路由返回独立 `review_record` 和领取 capability。宿主使用集中配置的 reviewer 模型及 `read-only` 沙箱启动独立 Reviewer；Reviewer 登记后调用 `taskcenter_review_claim(route_id, claim_token, sandbox="read-only")`，随后通过 `taskcenter_task_review_report` 携带同一 `route_id`、`review_artifacts`、完整 `subject_ref` 上报。最后 `taskcenter_routing_result` 释放租约。MCP 从可信宿主绑定实际 Session，领取同时校验工作区、模型及与实现 Session 的独立性。同一 Reviewer Session 可领取多个 Task 的 Review；Hook 和账本禁止它创建业务任务或写入实现。Hook 是生命周期守卫，宿主仍须提供真正的只读沙箱。
+
+`GET /tasks/:id/reviews` 返回 `pending/running/approved/changes_requested/failed` Review Record；记录保存在本地 routing-control 状态中，与 Task 状态分开。Task 的新 `review_status` 聚合为 `not_started/pending/approved/changes_requested`，旧 `reviewStatus` 和 Attestation 字段继续保留。失败、过期或只有路由成功而没有报告不会变为 approved；要求 Review 的任务在新审查未完成时不能最终通过。
+
+拒绝响应保留旧客户端可读的 `error` 文本，新增 `code`（`SESSION_NOT_REGISTERED`、`TASK_NOT_FOUND`、`TASK_NOT_REVIEWABLE`、`SUBJECT_MISMATCH`、`REVIEW_ARTIFACTS_INCOMPLETE`、权限与证据不匹配码），并提供 `legacy_code=ACTIVE_FORMAL_TASK_REQUIRED` 兼容映射。模型/并发失败在路由的 `error_code` 中区分 `REVIEWER_UNAVAILABLE` 与 `REVIEWER_LEASE_UNAVAILABLE`，保留原始路由原因。正常 Review 不使用 `session_gate_exemption`。
+
 如果 Hook 明确输出“门禁豁免白名单放行”，当前 Session 可以不执行登记和建任务步骤。该例外只来自独立的门禁豁免白名单，不能由内容读取白名单推断；命令安全检查仍然有效。
 
 在已加载新版 MCP 的 Codex Session 中，可以直接对 Agent 说“查询当前 Session 的门禁豁免”“把当前 Session 加入门禁豁免”或“把当前 Session 退出门禁豁免”。Agent 分别调用 `taskcenter_session_gate_exemption_status` 或 `taskcenter_session_gate_exemption_set`；目标 Session ID 优先取自 Codex 为每次 MCP 请求注入的 `_meta.threadId`，仅为旧宿主兼容回退到进程环境变量。两路身份冲突、缺失或格式非法时均拒绝操作。工具不接受调用方指定其他 Session，内部控制端点还要求本机 MCP 进程凭据。加入前要求 Session 已登记，不创建正式任务，也不提供项目级、标题匹配或批量豁免。首次新增工具后需要新建或重启 Codex Session，让客户端重新加载 MCP 工具清单。

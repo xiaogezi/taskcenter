@@ -97,6 +97,18 @@ try {
       process.exit(0);
     }
     if (action === "scheduled-pre-tool-use") process.exit(0);
+    const reviewProfile = await readReviewProfile();
+    if (reviewProfile?.reviews?.length) {
+      const reviewTool = String(event.tool_name || "");
+      const reporting = ["taskcenter_task_review_report", "taskcenter_routing_result", "taskcenter_review_claim"].some((name) => reviewTool.endsWith(name));
+      if (!reporting && !isReadOnlyInspection(event)) throw new Error("Reviewer Session 只允许确定性只读检查和 Review 报告；不得写代码、创建任务或调用执行器。");
+      console.log("TaskCenter 独立 Reviewer 只读通道通过；报告权限由服务端校验。");
+      process.exit(0);
+    }
+    if (/(?:^|__)taskcenter_(?:routing_select|routing_result|review_claim|task_review_report)$/.test(String(event.tool_name || ""))) {
+      console.log("TaskCenter Review 路由通道放行；登记、任务和 lease 权限由服务端校验。");
+      process.exit(0);
+    }
     // A 404 means a pre-budget release, not permission to bypass its old gate.
     const prepared = await prepareCurrentTask();
     if (prepared) {
@@ -1053,6 +1065,11 @@ async function prepareCurrentTask() {
 }
 
 async function provideTaskPreparationContext() {
+  const reviewProfile = await readReviewProfile();
+  if (reviewProfile?.reviews?.length) {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "当前 Session 是独立只读 Reviewer；复用已领取的 Review，不创建业务 Task。" } }));
+    return;
+  }
   const prepared = await prepareCurrentTask();
   if (prepared) {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: JSON.stringify(prepared) } }));
@@ -1086,6 +1103,13 @@ async function provideTaskPreparationContext() {
       additionalContext,
     },
   }));
+}
+
+async function readReviewProfile() {
+  return request("GET", `/reviews/session?session_id=${encodeURIComponent(sessionId)}`).catch((error) => {
+    if (error.statusCode === 404) return null;
+    throw error;
+  });
 }
 
 async function resolveCurrentDelegation() {
@@ -1125,7 +1149,7 @@ async function requestOnce(method, path, body) {
     } catch {
       throw new Error(`TaskCenter 返回非 JSON (${response.status})`);
     }
-    if (!response.ok) throw new Error(value.error || `TaskCenter 请求失败 (${response.status})`);
+    if (!response.ok) throw Object.assign(new Error(value.error || `TaskCenter 请求失败 (${response.status})`), { statusCode: response.status });
     return value;
   } catch (error) {
     if (error.name === "AbortError") throw new Error("TaskCenter 请求超时，写操作已阻断。");

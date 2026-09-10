@@ -90,6 +90,7 @@ import {
   routingResult,
   routingRoles,
   routingSelect,
+  isReviewTaskClass, validateReviewRequest, claimReview, reportReview, reviewSessionRecords, reviewTaskRecords, routeForId,
 } from "./routing-control.mjs";
 import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.mjs";
 import { readRequestBudget } from "./request-budget.mjs";
@@ -579,7 +580,10 @@ const server = createServer(async (request, response) => {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
       const task = loadTasks().find((item) => item.id === body.task_id);
-      if (!task || !["planned", "in_progress", "blocked"].includes(task.status)) throw new RoutingControlError(409, "routing_select 要求存在活跃正式任务。");
+      const reviewContext = isReviewTaskClass(body.task_class)
+        ? validateReviewRequest(body, task, loadSessionRegistry(), canonicalSessionId) : null;
+      if (reviewContext) verifyBoundMcpRequest(request);
+      if (!reviewContext && (!task || !["planned", "in_progress", "blocked"].includes(task.status))) throw new RoutingControlError(409, "routing_select 要求存在活跃正式任务。");
       const sessionId = canonicalSessionId(task.sessionId);
       const sessionModel = loadSessionRegistry()[sessionId]?.model;
       const orchestratorModel = sessionModel && sessionModel !== "unknown"
@@ -593,7 +597,7 @@ const server = createServer(async (request, response) => {
       const quotaSnapshot = executionModelPolicy.quota_limit_id
         ? currentUsageReport().rate_limits?.by_limit_id?.[executionModelPolicy.quota_limit_id] || null
         : null;
-      const result = routingSelect({ ...body, orchestrator_model: orchestratorModel, execution_model_policy: executionModelPolicy, quota_snapshot: quotaSnapshot });
+      const result = routingSelect({ ...body, review_context: reviewContext, orchestrator_model: orchestratorModel, execution_model_policy: executionModelPolicy, quota_snapshot: quotaSnapshot });
       recordRoutingAudit(result.auditEvents, task);
       sendJson(response, result.idempotent ? 200 : 201, { accepted: true, ...result, auditEvents: undefined });
       return;
@@ -601,11 +605,31 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/routing/result") {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
+      const route = routeForId(body.route_id);
+      if (route?.reviewRecord) {
+        verifyBoundMcpRequest(request);
+        const caller = canonicalSessionId(body.session_id || "");
+        if (!loadSessionRegistry()[caller]) throw new RoutingControlError(409, "当前 Session 尚未登记。", "SESSION_NOT_REGISTERED");
+        if (![route.reviewRecord.requester_session_id, route.reviewRecord.reviewer_session_id].includes(caller)) throw new RoutingControlError(403, "无权释放该 Review lease。", "REVIEW_PERMISSION_DENIED");
+      }
       const result = routingResult(body);
       const task = loadTasks().find((item) => item.id === result.route.task_id);
       if (!task) throw new RoutingControlError(404, "路由关联任务不存在。");
       recordRoutingAudit(result.auditEvents, task);
       sendJson(response, 200, { accepted: true, ...result, auditEvents: undefined });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/reviews/claim") {
+      verifyBoundMcpRequest(request);
+      const body = await readJsonBody(request);
+      const route = routeForId(body.route_id);
+      const task = loadTasks().find((item) => item.id === route?.taskId);
+      sendJson(response, 200, { accepted: true, review_record: claimReview(body, task, loadSessionRegistry(), canonicalSessionId) });
+      return;
+    }
+    if (request.method === "GET" && request.url?.startsWith("/reviews/session?")) {
+      const url = new URL(request.url, `http://${host}:${port}`);
+      sendJson(response, 200, { reviews: reviewSessionRecords(canonicalSessionId(url.searchParams.get("session_id") || "")) });
       return;
     }
     const delegationResolve = request.method === "GET" ? request.url?.match(/^\/delegations\/resolve\?session_id=([^&]+)&workspace=(.+)$/) : null;
@@ -875,6 +899,12 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, { task: taskPresentation({ ...session, ...withDelegations([task])[0], workspace, tokenUsage }) });
       return;
     }
+    const taskReviewsMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/reviews$/) : null;
+    if (taskReviewsMatch) {
+      if (!loadTasks().some((task) => task.id === taskReviewsMatch[1])) throw new RoutingControlError(404, "审查任务不存在。", "TASK_NOT_FOUND");
+      sendJson(response, 200, { reviews: reviewTaskRecords(taskReviewsMatch[1]) });
+      return;
+    }
     const taskEventsMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/events(?:\?limit=(\d+))?$/) : null;
     if (taskEventsMatch) {
       const taskId = taskEventsMatch[1];
@@ -997,10 +1027,19 @@ const server = createServer(async (request, response) => {
       }
       const sessionIds = availableSessionIds();
       if (reconcileLiveSessions) reconcileTasks(sessionIds);
-      const result = recordTaskEvent(body, {
+      const commitEvent = (authorizedReviewLease = false) => recordTaskEvent(body, {
         ...(reconcileLiveSessions ? { availableSessionIds: sessionIds } : {}),
         requireRegistered: true,
+        authorizedReviewLease,
       });
+      let result;
+      if (body.type === "review.reported" && body.review_attestation?.route_id) {
+        verifyBoundMcpRequest(request);
+        result = reportReview(body, loadTasks().find((item) => item.id === body.task_id), () => commitEvent(true), canonicalSessionId);
+      } else {
+        if (body.type === "review.reported" && reviewSessionRecords(canonicalSessionId(body.session_id || "")).length) throw new RoutingControlError(403, "OCR Reviewer 必须绑定领取的 route_id。", "REVIEW_PERMISSION_DENIED");
+        result = commitEvent();
+      }
       // 本地账本事件幂等不等于外部同步已成功。重复投递仍使用同一派生 event_id
       // 重试 Context MCP，由 Context 侧幂等键消除已成功的副作用并补偿超时/失败。
       const contextSync = await syncContextEvent(result.event, result.task);
@@ -1233,6 +1272,7 @@ const server = createServer(async (request, response) => {
     }
     sendJson(response, statusCode, {
       error: known ? error.message : "本地 Session 投递服务失败，请查看控制服务日志。",
+      ...(error.code ? { code: error.code, legacy_code: error.legacyCode } : {}),
     });
   }
 });
