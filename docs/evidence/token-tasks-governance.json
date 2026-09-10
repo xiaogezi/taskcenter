@@ -1,0 +1,54 @@
+{
+  "schema": "token-tasks-governance/v1",
+  "generated_at": "2026-09-10T00:00:00.000Z",
+  "owner_session_id": "01a06bbd-dba5-7fd1-9499-261e0adc8d90",
+  "source_policy": "历史 TaskCenter task 记录、既有测试/发布摘要；不重新计算输入缓存输出 reasoning 口径，不读取正文或凭据",
+  "tasks": [
+    {
+      "task_id": "task-e782cc7f-b05e-4658-9d77-69938d6e4749",
+      "title": "实现任务级 Token 用量统计",
+      "original_revision": "0856c33037b653b390b44cbb1875e1462b4ca182",
+      "historical_evidence": ["npm run sync passed", "npm run lint passed", "npm test: 318 passed", "git diff --check passed", "真实任务 14 个 token_count 增量，totalTokens=1547609，missingTimestampEvents=0"],
+      "attribution": "last_token_usage 增量按任务生命周期近似归属；重叠生命周期进入 unattributed",
+      "coverage": {"known": ["input", "cached_input", "output", "reasoning", "total", "dedupe", "missingTimestampEvents"], "unknown": ["request_id", "retry_chain", "角色/模型若上游事件缺失"], "gaps": ["缺独立 review；历史记录明确未部署"]},
+      "ready_before": ["required_verification_missing"],
+      "ready_after": ["required_review_missing"],
+      "status": "blocked"
+    },
+    {
+      "task_id": "task-82f5ccce-4292-4fc5-b6e9-984fb7b53cc7",
+      "title": "受控部署任务 Token 统计版本",
+      "original_revision": "a21e6218de79e828d93c65dbc1c4f5b60f82963e",
+      "historical_evidence": ["0856c33 initial deployment had release snapshot path issue", "a21e621 second controlled deployment succeeded", "service running", "/health HTTP 200", "/usage-report HTTP 200 readable=true stale=false refreshOk=true", "browser showed Token estimate and task values", "git worktree clean"],
+      "attribution": "production usage-report lifetime.byTask and task token breakdown",
+      "coverage": {"known": ["release safety", "health", "usage snapshot", "task breakdown"], "unknown": ["request_id and retry chain"], "gaps": ["required independent review missing; no new review started by this governance pass"]},
+      "ready_before": ["required_verification_missing", "required_review_missing"],
+      "ready_after": ["required_review_missing"],
+      "status": "blocked"
+    },
+    {
+      "task_id": "task-9bccd79f-2aca-4f36-adc7-6fc8e12d7798",
+      "title": "格式化任务 Token 数量",
+      "original_revision": "482b1ac5ad9a8abd06e56c329ef4fdfd57e84397",
+      "historical_evidence": ["targeted test 8 passed", "npm run sync passed", "npm run lint passed", "npm test: 318 passed", "git diff --check passed", "service:deploy passed", "service running", "health HTTP 200", "browser showed compact and exact values", "current task showed 1.62M and exact 1,620,085 Token"],
+      "attribution": "display-only formatting; collection and attribution unchanged",
+      "coverage": {"known": ["compact notation", "exact title value", "no semantic collection change"], "unknown": ["request_id and retry chain"], "gaps": ["required independent review missing"]},
+      "ready_before": ["required_verification_missing"],
+      "ready_after": ["required_review_missing"],
+      "status": "blocked"
+    },
+    {
+      "task_id": "task-5dccf66c-5484-4aa2-b48c-c139ae84ebd2",
+      "title": "展示会话累计 Token",
+      "original_revision": "eb0588b67855a3e97cccae4ff822ff196d74518f",
+      "historical_evidence": ["targeted test 20 passed", "npm run sync passed", "npm run lint passed", "npm test: 318 passed", "git diff --check passed", "service:deploy passed", "service running", "/health HTTP 200", "usage-report bySession 274 rows", "current session 15,269,214 Token", "browser showed 15.3M and exact 15,269,214", "git worktree clean"],
+      "attribution": "session lifetime last_token_usage; merged groups sum unique sessionIds",
+      "coverage": {"known": ["session lifetime total", "dedupe by sessionId", "compact and exact display"], "unknown": ["request_id and retry chain"], "gaps": ["required independent review missing"]},
+      "ready_before": ["required_verification_missing"],
+      "ready_after": ["required_review_missing"],
+      "status": "blocked"
+    }
+  ],
+  "rollback": "删除本证据文件即可回退；不删除历史 task/event/usage 数据",
+  "not_claimed": ["账单级精确成本", "缺失 request_id/角色/重试链的推断", "新的独立 review 或 acceptance"]
+}
