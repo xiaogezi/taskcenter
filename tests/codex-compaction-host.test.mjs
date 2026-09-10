@@ -36,6 +36,7 @@ function fixture(behavior = "success") {
         }
         assert.equal(method, "thread/inject_items");
         assert.equal(params.items[0].type, "message");
+        assert.equal(params.items[0].role, "user");
         assert.equal(params.items[0].content[0].type, "input_text");
         assert.ok(params.items[0].content[0].text.includes(JSON.stringify(checkpoint)));
         if (behavior === "concurrent-turn") this.emit({ method: "turn/started", params: { threadId: "session", turn: { id: "unexpected" } } });
