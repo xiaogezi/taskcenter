@@ -1,4 +1,5 @@
-import { SessionSwitchError, prepareSessionSwitch, confirmSessionSwitch, switchCheckpoint } from "./session-switch.mjs";
+import { SessionSwitchError, prepareSessionSwitch, confirmSessionSwitch, switchCheckpoint, readRecoveryCheckpoint } from "./session-switch.mjs";
+import { withCodexCompactionHost } from "./codex-compaction-host.mjs";
 import {
   chmodSync,
   closeSync,
@@ -163,6 +164,7 @@ const queueTimer = setInterval(() => void processQueue(), 5_000);
 queueTimer.unref();
 void processQueue();
 
+const sessionSwitchOperations = new Map();
 const server = createServer(async (request, response) => {
   try {
     setCors(request, response);
@@ -203,8 +205,29 @@ const server = createServer(async (request, response) => {
         if (tasks.some((item) => item.id === body.next_task_id)) throw new TaskLedgerError(409, "SWITCH_TARGET_EXISTS");
         return switchCheckpoint(task, tasks, loadSessionRegistry()[body.session_id], listDelegations(id));
       };
-      const operation = request.url.endsWith("/prepare") ? prepareSessionSwitch : confirmSessionSwitch;
-      sendJson(response, 200, { accepted: true, ...await operation(body, sessionsRoot, checkpoint) });
+      if (request.url.endsWith("/prepare")) {
+        sendJson(response, 200, { accepted: true, ...await prepareSessionSwitch(body, sessionsRoot, checkpoint) });
+      } else {
+        // Return before waiting for the invoking MCP turn to finish. The host
+        // never interrupts that turn or starts a model turn to restore context.
+        const key = `${body.session_id}:${body.switch_id}`;
+        const recovery = readRecoveryCheckpoint(body.switch_id, body.session_id, checkpoint);
+        for (const [id, value] of sessionSwitchOperations) if (Date.parse(value.expires_at) <= Date.now()) sessionSwitchOperations.delete(id);
+        let operation = sessionSwitchOperations.get(key);
+        if (operation?.status === "ready") {
+          operation.receipt = await confirmSessionSwitch(body, sessionsRoot, checkpoint);
+        }
+        if (!operation) {
+          const url = process.env.TASKCENTER_CODEX_APP_SERVER_URL;
+          if (!url) throw new SessionSwitchError("HOST_COMPACTION_CAPABILITY_UNAVAILABLE");
+          operation = { accepted: true, status: "pending", switch_id: body.switch_id, authority: false, expires_at: recovery.expires_at };
+          sessionSwitchOperations.set(key, operation);
+          withCodexCompactionHost({ url, sessionId: body.session_id, workspace: recovery.workspace }, (host) => confirmSessionSwitch(body, sessionsRoot, checkpoint, host))
+            .then((receipt) => Object.assign(operation, { status: "ready", authority: true, receipt }))
+            .catch((error) => Object.assign(operation, { accepted: false, status: "failed", error: error.message }));
+        }
+        sendJson(response, 200, operation);
+      }
       return;
     }
     if (request.method === "POST" && request.url === "/task-resume") {
