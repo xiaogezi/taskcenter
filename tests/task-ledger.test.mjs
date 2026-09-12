@@ -488,7 +488,6 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
     task_id: "task-routing",
     event_id: "routing-native",
     routing_action: "delegate_native",
-    task_class: "general",
     orchestrator_model: "gpt-5.6-sol",
     preferred_executor_model: "gpt-5.6-luna",
     selected_executor_model: "gpt-5.6-luna",

@@ -1012,7 +1012,7 @@ function normalizeEvent(input, current = null) {
     if (!event.orchestrator_model || !event.preferred_executor_model || !event.selected_executor_model || !event.routing_reason) {
       throw new TaskLedgerError(400, "路由决定缺少模型或原因字段。");
     }
-    if (!event.task_class) throw new TaskLedgerError(400, "路由决定缺少 task_class。");
+    event.task_class ||= "general";
     const configuredPreferred = configuredPreferredModel(event.task_class);
     if (!event.route_id && event.preferred_executor_model !== configuredPreferred) {
       throw new TaskLedgerError(400, `preferred_executor_model 与集中配置不一致：${event.task_class} 应为 ${configuredPreferred}。`);
