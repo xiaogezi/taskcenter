@@ -303,6 +303,7 @@ test("独立提案可复用仅有已完成任务的 Session", async (t) => {
   const dashboardPath = join(directory, "dashboard.json");
   const ledgerPath = join(directory, "task-ledger.json");
   const reflectionPath = join(directory, "reflection-proposals.json");
+  const dispatchPath = join(directory, "dispatches.json");
   const fakeCliPath = join(directory, "fake-codex-cli.mjs");
   const capturePath = join(directory, "cli-capture.json");
   await mkdir(sessionsRoot, { recursive: true });
@@ -334,7 +335,7 @@ console.log(JSON.stringify({ type: "turn.started" }));
       TASKCENTER_DELEGATIONS_PATH: join(directory, "delegations.json"),
       TASKCENTER_SESSION_SELECTION_PATH: join(directory, "session-selection.json"),
       TASKCENTER_REFLECTION_PROPOSALS_PATH: reflectionPath,
-      TASKCENTER_DISPATCHES_PATH: join(directory, "dispatches.json"),
+      TASKCENTER_DISPATCHES_PATH: dispatchPath,
       TASKCENTER_SESSIONS_ROOT: sessionsRoot,
       TASKCENTER_CODEX_COMMAND: process.execPath,
       TASKCENTER_CODEX_PREFIX_ARGS: JSON.stringify([fakeCliPath]),
@@ -362,4 +363,9 @@ console.log(JSON.stringify({ type: "turn.started" }));
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.equal(JSON.parse(await readFile(capturePath, "utf8")).threadId, sessionId);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try { if (JSON.parse(await readFile(dispatchPath, "utf8")).some((item) => item.status === "completed")) break; } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.ok(JSON.parse(await readFile(dispatchPath, "utf8")).some((item) => item.status === "completed"));
 });

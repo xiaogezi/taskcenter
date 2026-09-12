@@ -2466,7 +2466,6 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
       task_id: "task-mcp",
       event_id: "mcp-routing-native",
       routing_action: "delegate_native",
-      task_class: "implementation",
       orchestrator_model: "gpt-5.6-sol",
       preferred_executor_model: "gpt-5.6-luna",
       selected_executor_model: "gpt-5.6-luna",
@@ -2479,6 +2478,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(routingPayload.accepted, true);
   assert.equal(routingPayload.task.status, "planned");
   assert.equal(routingPayload.task.routing.selectedExecutorModel, "gpt-5.6-luna");
+  assert.equal(routingPayload.task.routing.taskClass, "general");
 
   const selectedRoute = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_routing_select",
