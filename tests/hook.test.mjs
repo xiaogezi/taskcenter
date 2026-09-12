@@ -206,6 +206,43 @@ test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async
   assert.equal(tasks.filter((task) => task.sessionId === sessionId).length, 0);
 });
 
+test("L0 OCR 仅放行确定性 delegate preview/rule 及安全参数", async () => {
+  const sessionId = "ocr-l0-session";
+  await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
+  const allowed = [
+    "ocr delegate preview --format json --from feat-gezi-base --to fix/gezi-base-review-findings",
+    "ocr delegate rule --format=json src/a.ts src/b.ts",
+    "ocr delegate preview --repo '/work/my repo' --rule rules.json --commit HEAD --exclude '*.lock' -f text",
+    "ocr delegate rule -c HEAD --from=main --to=HEAD --repo=/work --rule=rules.json --exclude=dist src/a.ts",
+  ];
+  const denied = [
+    "ocr", "ocr review", "ocr llm test", "ocr delegate apply", "ocr delegate preview extra",
+    "ocr delegate preview --output result.json", "ocr delegate rule --output=result.json src/a.ts",
+    "ocr delegate preview --format sarif", "ocr delegate preview --from", "ocr delegate preview --from=",
+    "ocr delegate preview --from --output=x", "ocr delegate preview --to=--output=x",
+    "ocr delegate preview --unknown", "ocr delegate rule -- src/a.ts",
+    "ocr delegate preview --background-file /tmp/auth.json",
+    "ocr delegate preview --rule=/tmp/auth.json",
+    "ocr delegate preview > result.json", "ocr delegate preview; touch sentinel",
+    'ocr delegate rule "$(touch sentinel)"', "ocr delegate preview | tee result.json",
+    "ocr delegate preview && git branch new-branch",
+  ];
+  for (const prefix of ["", "rtk ", "rtk proxy "]) {
+    for (const [commands, expected] of [[allowed, 0], [denied, 2]]) {
+      for (const command of commands) {
+        const cmd = prefix + command;
+        const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd } });
+        assert.equal(result.code, expected, cmd);
+        if (expected === 0) assert.match(result.stdout, /L0/);
+      }
+    }
+  }
+  const unregistered = await runHook("pre-tool-use", "codex", { session_id: "ocr-unregistered", cwd: "/work", tool_name: "exec_command", tool_input: { cmd: allowed[0] } });
+  assert.equal(unregistered.code, 2);
+  const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+  assert.equal(tasks.filter((task) => task.sessionId === sessionId).length, 0);
+});
+
 test("scheduled_readonly 仅绕过 active task 并限制为 inStory 精确只读能力", async () => {
   const sessionId = "019f0000-0000-7000-8000-00000000008a";
   const instoryRoot = join(tempDir, "inStory");

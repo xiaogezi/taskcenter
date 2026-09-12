@@ -709,10 +709,30 @@ function isReadOnlyCommand(words, heredoc) {
     // Deliberately support print-only programs; arbitrary awk can execute/write.
     return args.length > 0 && /^(?:(?:NR\s*(?:==|<=|>=|<|>)\s*\d+|\/[^/\n]+\/)\s*)?\{\s*print(?:\s+\$(?:0|[1-9]\d*))?\s*;?\s*\}$/.test(args[0]) && args.slice(1).every((arg) => !arg.startsWith("-") && !arg.includes("="));
   }
+  if (executable === "ocr") return isReadOnlyOcr(args);
   if (executable === "sed") return isReadOnlySed(args);
   if (executable === "find") return isReadOnlyFind(args);
   if (executable !== "git") return false;
   return isReadOnlyGit(args);
+}
+
+function isReadOnlyOcr(args) {
+  if (args[0] !== "delegate" || !["preview", "rule"].includes(args[1])) return false;
+  const valueOptions = new Set(["--repo", "--rule", "--from", "--to", "--commit", "-c", "--exclude"]);
+  for (let index = 2; index < args.length; index += 1) {
+    const token = args[index];
+    if (!token.startsWith("-")) {
+      if (args[1] !== "rule" || !token) return false;
+      continue;
+    }
+    const separator = token.indexOf("=");
+    const option = separator < 0 ? token : token.slice(0, separator);
+    if (!valueOptions.has(option) && option !== "--format" && option !== "-f") return false;
+    const value = separator < 0 ? args[++index] : token.slice(separator + 1);
+    if (!value || value.startsWith("-")) return false;
+    if ((option === "--format" || option === "-f") && !["json", "text"].includes(value)) return false;
+  }
+  return true;
 }
 
 function isRecoveryOperation(payload) {
