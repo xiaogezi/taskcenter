@@ -488,9 +488,10 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
     task_id: "task-routing",
     event_id: "routing-native",
     routing_action: "delegate_native",
+    task_class: "general",
     orchestrator_model: "gpt-5.6-sol",
-    preferred_executor_model: "gpt-5.3-codex-spark",
-    selected_executor_model: "gpt-5.3-codex-spark",
+    preferred_executor_model: "gpt-5.6-luna",
+    selected_executor_model: "gpt-5.6-luna",
     dispatch_channel: "native",
     routing_reason: "任务边界清晰，可独立验证。",
     fallback_from: "gpt-5.3-codex-spark",
@@ -508,6 +509,7 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
   assert.equal(first.task.updatedAt, executionState.updatedAt);
   assert.equal(first.task.lastEventId, executionState.lastEventId);
   assert.equal(first.task.routing.action, "delegate_native");
+  assert.throws(() => recordTaskEvent({ ...firstInput, event_id: "routing-wrong-preferred", preferred_executor_model: "gpt-6-astra", selected_executor_model: "gpt-6-astra" }), /集中配置不一致/);
   assert.equal(first.task.routing.outcome, "selected");
   assert.equal(first.task.routing.policyVersion, "soft-routing-v1");
   assert.equal(first.task.routing.fallbackFrom, "gpt-5.3-codex-spark");
@@ -555,6 +557,7 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
     () => recordTaskEvent({ ...firstInput, event_id: "routing-invalid", dispatch_channel: "cli" }),
     (error) => error instanceof TaskLedgerError && error.statusCode === 400,
   );
+  assert.doesNotThrow(() => recordTaskEvent({ ...firstInput, event_id: "routing-security", task_class: "security", preferred_executor_model: "gpt-6-astra", selected_executor_model: "gpt-6-astra" }));
 });
 
 test("已登记的外部 Session 不被 Codex 会话清理误删", async () => {
@@ -2452,7 +2455,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.deepEqual(Object.keys(usageReport.windows), ["5h", "24h", "7d"]);
   const lifecycle = JSON.parse(textOf(await client.callTool({ name: "taskcenter_session_lifecycle", arguments: { session_id: "sess-mcp" } })));
   assert.ok(["continue_current_session", "recommend_new_codex_session", "require_handoff_before_continue"].includes(lifecycle.action));
-  assert.match(lifecycle.taskSemantics, /新建 Codex Session 不等于新建 TaskCenter task/);
+  assert.match(lifecycle.taskSemantics, /顺序承载多个/);
   const governance = JSON.parse(textOf(await client.callTool({ name: "taskcenter_governance_metrics", arguments: {} })));
   assert.equal(governance.schemaVersion, "taskcenter-governance-metrics-v2");
 
@@ -2463,6 +2466,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
       task_id: "task-mcp",
       event_id: "mcp-routing-native",
       routing_action: "delegate_native",
+      task_class: "implementation",
       orchestrator_model: "gpt-5.6-sol",
       preferred_executor_model: "gpt-5.6-luna",
       selected_executor_model: "gpt-5.6-luna",
@@ -3129,7 +3133,7 @@ test("控制服务 schedule/archive/unarchive HTTP 闭环", async (context) => {
   assert.equal((await unarchive.json()).task.archivedAt, "");
 });
 
-test("Codex 单目标 Session 拒绝第二任务，关闭后仅能修复原任务，并可跨 Session 恢复", async (context) => {
+test("Codex Session 可顺序承载多个任务，但同一时间只允许一个活跃任务", async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer();
   context.after(() => child.kill("SIGTERM"));
@@ -3138,10 +3142,11 @@ test("Codex 单目标 Session 拒绝第二任务，关闭后仅能修复原任�
   assert.equal((await post({ type: "task.create", session_id: "sess-one-goal", task_id: "one-goal", title: "原目标", goal: "原目标" })).status, 201);
   const second = await post({ type: "task.create", session_id: "sess-one-goal", task_id: "other-goal", title: "其他目标", goal: "其他目标" });
   assert.equal(second.status, 409);
-  assert.match((await second.json()).error, /new_session_required/);
+  assert.match((await second.json()).error, /ACTIVE_TASK_CONFLICT/);
   assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", status: "cancelled" })).status, 200);
   assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", goal: "其他目标" })).status, 409);
-  assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", status: "in_progress", next_action: "验证原目标" })).status, 200);
+  assert.equal((await post({ type: "task.create", session_id: "sess-one-goal", task_id: "other-goal", title: "其他目标", goal: "其他目标" })).status, 201);
+  assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", status: "in_progress", next_action: "验证原目标" })).status, 409);
   await registerHttpSession(base, "sess-resume-goal");
   const resumed = await fetch(`${base}/task-resume`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ session_id: "sess-resume-goal", task_id: "one-goal", expected_session_id: "sess-one-goal" }) });
   assert.equal(resumed.status, 200);
@@ -3150,7 +3155,9 @@ test("Codex 单目标 Session 拒绝第二任务，关闭后仅能修复原任�
   assert.equal(packet.session_id, "sess-resume-goal");
   assert.ok(Buffer.byteLength(JSON.stringify(packet.handoff)) <= 2048);
   assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", next_action: "旧 Session 不得继续写入" })).status, 403);
-  assert.equal((await post({ type: "task.create", session_id: "sess-one-goal", task_id: "third-goal", title: "其他", goal: "其他" })).status, 409);
+  const third = await post({ type: "task.create", session_id: "sess-one-goal", task_id: "third-goal", title: "其他", goal: "其他" });
+  assert.equal(third.status, 409);
+  assert.match((await third.json()).error, /ACTIVE_TASK_CONFLICT/);
 });
 
 test("Bug：资料、验收、Git 合入核验闭环及伪造/过期防护", async context => {

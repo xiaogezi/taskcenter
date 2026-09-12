@@ -297,6 +297,7 @@ server.registerTool("taskcenter_routing_record", {
     orchestrator_model: z.string().min(1).max(120),
     preferred_executor_model: z.string().min(1).max(120),
     selected_executor_model: z.string().min(1).max(120),
+    task_class: z.enum(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", "ocr", "ocr_review", "independent_review"]),
     dispatch_channel: z.enum(["direct", "native", "cli", "other"]),
     routing_reason: z.string().min(1).max(1_000),
     fallback_from: z.string().max(120).optional(),

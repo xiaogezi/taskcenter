@@ -6,16 +6,13 @@ const actions = Object.freeze({
 
 export function recommendSessionLifecycle({ usage = {}, tasks = [], currentTask = null } = {}) {
   const alerts = Array.isArray(usage.alerts) ? usage.alerts : [];
-  const completed = tasks.filter((task) => ["done_claimed", "verified"].includes(task.status));
-  const projectChanged = Boolean(usage.projectChanged || usage.primaryGoalChanged || primaryGoalChanged(tasks));
+  const projectChanged = Boolean(usage.projectChanged);
   const compressedAfterPhase = alerts.some((item) => item.code === "COMPRESSED_AFTER_MAIN_PHASE");
   const pressure = alerts.some((item) => ["SESSION_CREDIT_SHARE_HIGH", "MODEL_CONTINUATIONS_HIGH"].includes(item.code));
-  const multipleIndependentTasks = alerts.some((item) => item.code === "MULTIPLE_INDEPENDENT_TASKS") || completed.length > 1;
   const reasons = [];
-  if (projectChanged) reasons.push("project_or_primary_goal_changed");
+  if (projectChanged) reasons.push("project_changed");
   if (compressedAfterPhase) reasons.push("compressed_after_main_phase");
   if (pressure) reasons.push("usage_pressure");
-  if (multipleIndependentTasks) reasons.push("multiple_independent_tasks_completed");
   const action = projectChanged
     ? actions.HANDOFF
     : reasons.length
@@ -25,17 +22,8 @@ export function recommendSessionLifecycle({ usage = {}, tasks = [], currentTask 
     action,
     reasons,
     handoff: action === actions.CONTINUE ? "" : buildHandoffPackage({ currentTask, tasks, reasons }),
-    taskSemantics: "新建 Codex Session 不等于新建 TaskCenter task；同一交付继续复用原任务。",
+    taskSemantics: "同一 Codex Session 可顺序承载多个 TaskCenter task；同一时间只允许一个活跃任务。",
   };
-}
-
-function primaryGoalChanged(tasks) {
-  const ordered = tasks
-    .filter((task) => task && (task.goal || task.title))
-    .toSorted((left, right) => Date.parse(left.createdAt || left.updatedAt || "") - Date.parse(right.createdAt || right.updatedAt || ""));
-  if (ordered.length < 2) return false;
-  const identity = (task) => String(task.goal || task.title).trim().toLocaleLowerCase();
-  return identity(ordered.at(-2)) !== identity(ordered.at(-1));
 }
 
 export function buildHandoffPackage({ currentTask = null, tasks = [], reasons = [] } = {}) {
@@ -53,7 +41,7 @@ export function buildHandoffPackage({ currentTask = null, tasks = [], reasons = 
     `未决问题：${list(task.openQuestions)}`,
     `下一步：${task.nextAction || "继续当前任务的下一未完成步骤"}`,
     `换会话原因：${reasons.join(", ") || "none"}`,
-    "语义边界：新建 Codex Session 不等于新建 TaskCenter task；同一交付继续复用原任务。",
+    "语义边界：同一 Session 可顺序承载多个任务；同一时间只允许一个活跃任务。",
   ];
   return truncateUtf8(lines.join("\n"), 2_048);
 }
@@ -93,7 +81,6 @@ export function machineHandoff(task = {}) {
 
 
 export function recommendTaskClose({ new_independent_goal = false, context_large = false, expected_more_rounds = false } = {}) {
-  if (new_independent_goal) return { action: "recommend_new_session", reason: "new_independent_goal" };
   if (context_large && expected_more_rounds) return { action: "recommend_compact", reason: "large_context_with_more_rounds" };
-  return { action: "continue", reason: "small_context_or_finishing" };
+  return { action: "continue", reason: new_independent_goal ? "new_task_same_session" : "small_context_or_finishing" };
 }

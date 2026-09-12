@@ -294,7 +294,7 @@ export class Codex {
   assert.equal(JSON.parse(await readFile(ledgerPath, "utf8")).filter((task) => task.id === taskId).length, 1);
 });
 
-test("独立提案不能复用已完成其他目标的 Session，拒绝前不派发", async (t) => {
+test("独立提案可复用仅有已完成任务的 Session", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "taskcenter-reflection-existing-"));
   const port = 4_000 + Math.floor(Math.random() * 100);
   const sessionId = "019f9100-0000-7000-8000-000000000001";
@@ -355,8 +355,11 @@ console.log(JSON.stringify({ type: "turn.started" }));
     headers,
     body: JSON.stringify({ requestId: "019f9100-0000-7000-8000-000000000099", mode: "existing_session", threadId: sessionId }),
   });
-  assert.equal(response.status, 409);
-  assert.match((await response.json()).error, /new_session_required/);
-  assert.equal(JSON.parse(await readFile(ledgerPath, "utf8")).length, 1);
-  await assert.rejects(readFile(capturePath), { code: "ENOENT" });
+  assert.equal(response.status, 202);
+  assert.equal(JSON.parse(await readFile(ledgerPath, "utf8")).length, 2);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try { if (JSON.parse(await readFile(capturePath, "utf8")).threadId === sessionId) break; } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(JSON.parse(await readFile(capturePath, "utf8")).threadId, sessionId);
 });

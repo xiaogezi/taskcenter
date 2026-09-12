@@ -10,6 +10,8 @@
 
 ## Required workflow
 
+One registered Codex Session may carry multiple formal tasks sequentially. A new task may be created after the previous task is no longer `planned`, `in_progress`, or `blocked`; only one formal task may be active in a Session at a time. Reuse the existing task for the same deliverable, and create a distinct task for a new deliverable without requiring a new Session.
+
 Before changing project files in an MCP-enabled session:
 
 1. Call `taskcenter_session_register` with the real session ID, workspace, agent, provider, and model.

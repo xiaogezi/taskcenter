@@ -127,7 +127,7 @@ test("host-confirmed one-use switch preserves a sealed predecessor and fails clo
     assert.equal(event(create).idempotent, true);
     assert.equal(loadTasks().filter((task) => ["planned", "in_progress", "blocked"].includes(task.status)).length, 1);
     assert.throws(() => event({ ...create, event_id: "replay", task_id: "third" }), /TARGET_MISMATCH|ALREADY_CONSUMED/);
-    assert.throws(() => event({ type: "task.create", task_id: "third", title: "third", goal: "third" }), /new_session_required/);
+    assert.throws(() => event({ type: "task.create", task_id: "third", title: "third", goal: "third" }), /ACTIVE_TASK_CONFLICT/);
     assert.throws(() => event({ type: "task.update", task_id: "old", status: "in_progress" }), /PREDECESSOR_SEALED/);
     assert.equal(switchTaskFingerprint(loadTasks().find((task) => task.id === "old")), before);
     const persisted = JSON.parse(readFileSync(process.env.TASKCENTER_TASK_LEDGER_PATH));

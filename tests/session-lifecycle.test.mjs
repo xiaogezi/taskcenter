@@ -34,17 +34,17 @@ test("压缩或用量压力建议新建 Codex Session 并生成有界交接包",
   });
   assert.equal(result.action, "recommend_new_codex_session");
   assert.match(result.handoff, /目标：生成可靠的用量报告/);
-  assert.match(result.handoff, /新建 Codex Session 不等于新建 TaskCenter task/);
+  assert.match(result.handoff, /顺序承载多个任务/);
   assert.ok(Buffer.byteLength(result.handoff) <= 2_048);
 });
 
-test("项目或主要目标变化要求先交接", () => {
+test("项目变化要求先交接", () => {
   const result = recommendSessionLifecycle({ usage: { projectChanged: true, alerts: [] }, tasks: [task], currentTask: task });
   assert.equal(result.action, "require_handoff_before_continue");
-  assert.deepEqual(result.reasons, ["project_or_primary_goal_changed"]);
+  assert.deepEqual(result.reasons, ["project_changed"]);
 });
 
-test("相邻正式任务目标变化会自动要求交接", () => {
+test("相邻正式任务目标变化可继续同一 Session", () => {
   const result = recommendSessionLifecycle({
     usage: { alerts: [] },
     tasks: [
@@ -52,24 +52,24 @@ test("相邻正式任务目标变化会自动要求交接", () => {
       { ...task, goal: "实现登录页面", createdAt: "2026-08-20T01:00:00Z", status: "in_progress" },
     ],
   });
-  assert.equal(result.action, "require_handoff_before_continue");
-  assert.ok(result.reasons.includes("project_or_primary_goal_changed"));
+  assert.equal(result.action, "continue_current_session");
+  assert.deepEqual(result.reasons, []);
 });
 
-test("同一 Session 完成多个独立任务时建议换 Session 但不新建 TaskCenter task", () => {
+test("同一 Session 完成多个独立任务时仍可继续创建新任务", () => {
   const result = recommendSessionLifecycle({
     usage: { alerts: [] },
     tasks: [{ ...task, status: "done_claimed" }, { ...task, title: "另一交付", status: "verified" }],
   });
-  assert.equal(result.action, "recommend_new_codex_session");
-  assert.match(result.taskSemantics, /复用原任务/);
+  assert.equal(result.action, "continue_current_session");
+  assert.match(result.taskSemantics, /顺序承载多个/);
 });
 
 
 test("task_close 按新目标、上下文和预计续轮给出建议", () => {
   for (const context_large of [false, true]) {
     for (const expected_more_rounds of [false, true]) {
-      assert.equal(recommendTaskClose({ new_independent_goal: true, context_large, expected_more_rounds }).action, "recommend_new_session");
+      assert.equal(recommendTaskClose({ new_independent_goal: true, context_large, expected_more_rounds }).action, context_large && expected_more_rounds ? "recommend_compact" : "continue");
       assert.equal(recommendTaskClose({ context_large, expected_more_rounds }).action, context_large && expected_more_rounds ? "recommend_compact" : "continue");
     }
   }

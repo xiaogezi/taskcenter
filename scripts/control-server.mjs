@@ -240,7 +240,7 @@ const server = createServer(async (request, response) => {
       if (registry.workspace !== task.workspace) throw new TaskLedgerError(409, "恢复 Session 的 workspace 与合同不一致。");
       if (task.sessionId !== body.session_id) {
         if (task.sessionId !== body.expected_session_id) throw new TaskLedgerError(409, "SESSION_BINDING_CHANGED：请重新读取交接状态。");
-        if (loadVisibleTasks().some((item) => item.id !== task.id && (item.sessionId === body.session_id || item.sessionHistory?.includes(body.session_id)))) throw new TaskLedgerError(409, "new_session_required：目标 Session 已绑定另一交付。");
+        if (loadVisibleTasks().some((item) => item.id !== task.id && item.sessionId === body.session_id && ["planned", "in_progress", "blocked"].includes(item.status))) throw new TaskLedgerError(409, "ACTIVE_TASK_CONFLICT：目标 Session 已有其他活跃任务。");
         recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id }, { requireRegistered: true, authorizedResume: true });
       }
       request.method = "GET";
@@ -789,8 +789,8 @@ const server = createServer(async (request, response) => {
         sendJson(response, 200, hydrateReflectionState(currentState, loadVisibleTasks(), dispatches));
         return;
       }
-      if (mode === "existing_session" && loadVisibleTasks().some((task) => task.sessionId === targetSessionId || task.sessionHistory?.includes(targetSessionId))) {
-        throw new DispatchError(409, "new_session_required：改进提案是独立交付目标，请使用新的 Session。");
+      if (mode === "existing_session" && loadVisibleTasks().some((task) => task.sessionId === targetSessionId && ["planned", "in_progress", "blocked"].includes(task.status))) {
+        throw new DispatchError(409, "ACTIVE_TASK_CONFLICT：目标 Session 已有活跃任务。");
       }
       if (Date.now() - lastDispatchAt < 5_000) throw new DispatchError(429, "发送过于频繁，请稍后再试。");
       const executionId = randomUUID();

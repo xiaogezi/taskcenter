@@ -18,6 +18,7 @@ import {
 } from "./task-phase-timing.mjs";
 import { listDelegations } from "./delegation-store.mjs";
 import { normalizeBug } from "./bug-workflow.mjs";
+import { configuredPreferredModel } from "./model-role-config.mjs";
 import { reviewSessionRecords, reviewTaskRecords, withReviewStatus } from "./routing-control.mjs";
 
 import { switchCheckpoint, validateSessionSwitch } from "./session-switch.mjs";
@@ -456,10 +457,6 @@ export function recordTaskEvent(input, options = {}) {
       return switchCheckpoint(predecessor, tasks, sessionRegistry[eventSessionId], listDelegations(id));
     });
   }
-  if (options.requireRegistered && event.type === "task.create" && !current && !isContextShadowTask(event.task_id)) {
-    const previous = tasks.find((task) => !isContextShadowTask(task) && (task.sessionId === eventSessionId || task.sessionHistory?.includes(eventSessionId)));
-    if (previous && !previousTaskId) throw new TaskLedgerError(409, `new_session_required：当前 Session 已绑定 ${previous.id}；同一目标请保留原 task_id，独立目标需新 Session。`);
-  }
   if (options.requireRegistered && current && (current.closedGoal || ["done_claimed", "verified", "cancelled"].includes(current.status)) && event.goal && event.goal !== (current.closedGoal || current.goal)) {
     throw new TaskLedgerError(409, "new_session_required：不能将已关闭任务改造成新的交付目标。");
   }
@@ -495,6 +492,10 @@ export function recordTaskEvent(input, options = {}) {
     : event.type === "task.reminder"
       ? current
       : applyEvent(current, event);
+  const activeConflict = next && !isContextShadowTask(next) && activeTaskStatuses.has(next.status)
+    ? tasks.find((task) => task.id !== next.id && !isContextShadowTask(task) && task.sessionId === next.sessionId && activeTaskStatuses.has(task.status))
+    : null;
+  if (activeConflict) throw new TaskLedgerError(409, `ACTIVE_TASK_CONFLICT：当前 Session 已有活跃任务 ${activeConflict.id}。`);
   if (previousTaskId) {
     next = { ...next, previousTaskId, sessionSwitchId: event.session_switch_id };
     event.previous_task_id = previousTaskId;
@@ -1010,6 +1011,11 @@ function normalizeEvent(input, current = null) {
     if (event.routing_outcome && !routingOutcomes.has(event.routing_outcome)) throw new TaskLedgerError(400, "routing_outcome 无效。");
     if (!event.orchestrator_model || !event.preferred_executor_model || !event.selected_executor_model || !event.routing_reason) {
       throw new TaskLedgerError(400, "路由决定缺少模型或原因字段。");
+    }
+    if (!event.task_class) throw new TaskLedgerError(400, "路由决定缺少 task_class。");
+    const configuredPreferred = configuredPreferredModel(event.task_class);
+    if (!event.route_id && event.preferred_executor_model !== configuredPreferred) {
+      throw new TaskLedgerError(400, `preferred_executor_model 与集中配置不一致：${event.task_class} 应为 ${configuredPreferred}。`);
     }
     const expectedChannel = {
       direct_execute: "direct",

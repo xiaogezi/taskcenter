@@ -71,6 +71,12 @@ export function publicModelRoleConfig(config = loadModelRoleConfig()) {
   };
 }
 
+export function configuredPreferredModel(taskClass, config = loadModelRoleConfig()) {
+  if (!supportedTaskClasses.has(taskClass)) throw new ModelRoleConfigError(`未知 task_class：${taskClass}。`);
+  if (reviewerTaskClasses.has(taskClass)) return config.roles.reviewer.model;
+  return config.roles.executor.taskClassModels[taskClass] || config.roles.executor.model;
+}
+
 export function updateOptionalAstraPolicy(input, actor = "local-ui", now = new Date().toISOString()) {
   loadModelRoleConfig();
   const preset = String(input?.preset || "").trim();
