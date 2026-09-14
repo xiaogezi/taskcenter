@@ -27,7 +27,7 @@ export function reviewerCommand({ promptPath, outputPath, resume, managed }, env
     childEnv.TASKCENTER_MANAGED_REVIEW = JSON.stringify({ route_id: managed.route_id, claim_token: managed.claim_token, workspace: cwd, model, sandbox: "read-only", native_unavailable_reason: managed.native_unavailable_reason });
     args.splice(1, 0, "-c", 'mcp_servers.taskcenter.tools.taskcenter_review_start.approval_mode="approve"', "-c", 'mcp_servers.taskcenter.tools.taskcenter_review_finish.approval_mode="approve"');
     args.splice(1, 0, "-c", `mcp_servers.taskcenter.env.TASKCENTER_MANAGED_REVIEW=${JSON.stringify(childEnv.TASKCENTER_MANAGED_REVIEW)}`);
-    input = "First call taskcenter_review_start with {}. Do not guess UUID, register manually, create tasks or cycles. Only after accepted read the exact returned Subject/Bundle/Rules and every listed file. Submit actual coverage and technical conclusions through taskcenter_review_finish. It assembles the report and releases the lease. A child process ending is not Review completion; only finish accepted with lease_released counts. Remain read-only.\n\n" + input;
+    input = "Call taskcenter_review_start exactly once with {}. If it does not return accepted=true, stop immediately without retrying or inspecting files. Do not guess UUID, register manually, create tasks or cycles. Only after accepted read the exact returned Subject/Bundle/Rules and every listed file. Submit actual coverage and technical conclusions through taskcenter_review_finish. It assembles the report and releases the lease. A child process ending is not Review completion; only finish accepted with lease_released counts. Remain read-only.\n\n" + input;
   }
   return { args, env: childEnv, input, ...(cwd ? { cwd } : {}) };
 }

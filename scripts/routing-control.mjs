@@ -314,20 +314,22 @@ export function routingSelect(input, now = new Date().toISOString()) {
 export function routingResult(input, now = new Date().toISOString()) {
   const config = loadModelRoleConfig();
   const routeId = clean(input.route_id, 200);
-  const outcome = clean(input.outcome, 40);
+  const requestedOutcome = clean(input.outcome, 40);
   const eventId = clean(input.event_id, 200) || `routing-result-${randomUUID()}`;
-  if (!routeId || !terminalOutcomes.has(outcome)) throw new RoutingControlError(400, "routing_result 缺少 route_id 或 outcome 无效。");
+  if (!routeId || !terminalOutcomes.has(requestedOutcome)) throw new RoutingControlError(400, "routing_result 缺少 route_id 或 outcome 无效。");
   const state = readState();
   expireRoutes(state, now);
   const route = state.routes.find((item) => item.id === routeId);
   if (!route) throw new RoutingControlError(404, "route_id 不存在。");
   if (!route.available) throw new RoutingControlError(409, "未发放执行租约的路由不能上报执行结果。");
+  const reviewNotCompleted = Boolean(route.reviewRecord && requestedOutcome === "succeeded" && !route.reviewRecord.attestation_id);
+  const outcome = reviewNotCompleted ? "failed" : requestedOutcome;
 
   const result = {
     outcome,
     httpStatus: normalizeHttpStatus(input.http_status),
-    errorType: clean(input.error_type, 120),
-    errorCode: clean(input.error_code, 160),
+    errorType: clean(input.error_type, 120) || (reviewNotCompleted ? "review_workflow" : ""),
+    errorCode: clean(input.error_code, 160) || (reviewNotCompleted ? "REVIEW_NOT_COMPLETED" : ""),
     requestId: clean(input.request_id, 300),
     quotaLimitId: clean(input.quota_limit_id, 120) || route.quotaLimitId || "",
     quotaRetryAfterAt: clean(input.quota_retry_after_at, 80) || route.quotaResetAt || "",

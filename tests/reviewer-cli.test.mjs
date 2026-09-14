@@ -23,7 +23,8 @@ test("managed launch binds workspace and lifecycle permissions without accepting
   const context = JSON.parse(invocation.env.TASKCENTER_MANAGED_REVIEW);
   assert.equal(context.route_id, "route");
   assert.equal(context.sandbox, "read-only");
-  assert.match(invocation.input, /taskcenter_review_start/);
+  assert.match(invocation.input, /taskcenter_review_start exactly once/);
+  assert.match(invocation.input, /stop immediately without retrying/);
   assert.ok(invocation.args.includes('mcp_servers.taskcenter.tools.taskcenter_review_finish.approval_mode="approve"'));
   assert.throws(() => reviewerCommand({ promptPath: "README.md", outputPath: "/tmp/result", managed: { route_id: "route" } }), /Managed review requires/);
 });

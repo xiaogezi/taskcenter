@@ -110,9 +110,12 @@ test("完整报告和释放不创建 Task，同一 Reviewer 可审查另一个 T
   assert.equal(reviewSessionRecords("reviewer").length, 2);
   assert.equal(task.status, "done_claimed");
 });
-test("没有 Reviewer 报告时 succeeded 只释放 lease，不能产生 approved", () => {
+test("没有 Reviewer 报告时 succeeded 降级失败并释放 lease", () => {
   const route = select(); claim(route);
   const result = routingResult({ route_id: route.route_id, outcome: "succeeded" }, now);
+  assert.equal(result.route.status, "failed");
+  assert.equal(result.route.result.outcome, "failed");
+  assert.equal(result.route.result.error_code, "REVIEW_NOT_COMPLETED");
   assert.equal(result.route.review_record.status, "failed");
   assert.equal(result.route.review_record.verdict, null);
   assert.throws(() => report(route), code("REVIEWER_LEASE_UNAVAILABLE"));
