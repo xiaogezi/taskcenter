@@ -123,6 +123,53 @@ server.registerTool("taskcenter_session_register", {
   inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), project_id: z.string().max(200).optional(), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional(), response_mode: responseMode }).strict(),
 }, async (input) => report("session.register", input));
 
+server.registerTool("taskcenter_task_begin", {
+  title: "开始 TaskCenter 任务",
+  description: "一次完成 Session 登记和 v2 任务创建；同一 Session 可在上一任务关闭后继续创建下一任务。默认返回紧凑状态。",
+  inputSchema: z.object({
+    session_id: z.string().min(1).max(200),
+    workspace: z.string().min(1).max(4_096),
+    event_id: z.string().min(1).max(180),
+    task_id: z.string().max(200).optional(),
+    title: z.string().min(1).max(200),
+    goal: z.string().min(1).max(1_000),
+    scope: z.array(z.string().min(1).max(500)).min(1).max(50),
+    non_goals: z.array(z.string().max(500)).max(50).default([]),
+    acceptance_criteria: z.array(acceptanceCriterion).min(1).max(50),
+    plan: z.array(z.string().min(1).max(500)).min(1).max(20),
+    workflow_profile: z.enum(["fast", "standard", "strict"]).default("fast"),
+    review_policy: z.enum(["not_required", "recommended", "required"]).default("recommended"),
+    execution_environment: z.enum(["local", "worktree", "ci", "remote", "other"]).optional(),
+    verification_plan: z.array(verificationRequirement).max(30).default([]),
+    agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).default("unknown"),
+    provider: z.string().max(80).optional(),
+    model: z.string().max(120).optional(),
+    project_id: z.string().max(200).optional(),
+  }).strict(),
+}, async (input) => {
+  const common = {
+    session_id: input.session_id, workspace: input.workspace, agent: input.agent,
+    provider: input.provider, model: input.model, project_id: input.project_id,
+  };
+  try {
+    const registration = await requestTaskEvent("session.register", { ...common, event_id: `${input.event_id}:session` });
+    if (!registration.accepted) return result(registration);
+    const task = await requestTaskEvent("task.create", {
+      ...common, event_id: `${input.event_id}:task`, task_id: input.task_id,
+      title: input.title, goal: input.goal, scope: input.scope, non_goals: input.non_goals,
+      acceptance_criteria: input.acceptance_criteria, plan: input.plan,
+      contract_version: "v2", workflow_profile: input.workflow_profile,
+      review_policy: input.review_policy, execution_environment: input.execution_environment,
+      verification_plan: input.verification_plan,
+    });
+    if (!task.accepted) return result(task);
+    const compact = compactResult(task);
+    return result({ ...compact, next: "implement", context_ref: `task:${compact.task_id}` });
+  } catch (error) {
+    return result({ error: error.code || "TASKCENTER_REQUEST_FAILED", message: error.message });
+  }
+});
+
 server.registerTool("taskcenter_task_create", {
   title: "创建 TaskCenter 任务",
   description: "在修改代码前创建正式任务。新客户端应使用 contract_version=v2 并填写 scope、non_goals、workflow_profile；standard/strict 还必须提供 verification_plan。旧调用保持 legacy 兼容。",
@@ -618,6 +665,16 @@ server.registerTool("taskcenter_scheduled_readonly_scan_exemption_set", {
 
 async function report(type, input, lifecycle) {
   const { response_mode: responseModeValue = "summary", ...event } = input;
+  try {
+    const payload = await requestTaskEvent(type, event);
+    if (payload.accepted && lifecycle) payload.session_lifecycle = lifecycle;
+    return writeResult(payload, responseModeValue);
+  } catch (e) {
+    return result({ error: e.code || "TASKCENTER_REQUEST_FAILED", message: e.message });
+  }
+}
+
+async function requestTaskEvent(type, event) {
   let response;
   try {
     response = await fetch(`${controlServerUrl}${event.session_id ? "/task-events" : "/core/task-events"}`, {
@@ -625,16 +682,12 @@ async function report(type, input, lifecycle) {
       headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
       body: JSON.stringify({ type, ...event }),
     });
-  } catch (e) {
-    return result({ error: "TASKCENTER_UNAVAILABLE", message: `TaskCenter 控制服务不可用（${controlServerUrl}）。请先运行 npm run dev:live 启动 TaskCenter。`, detail: e.message });
+  } catch (error) {
+    const unavailable = new Error(`TaskCenter 控制服务不可用（${controlServerUrl}）。请先运行 npm run dev:live 启动 TaskCenter。${error.message ? ` ${error.message}` : ""}`);
+    unavailable.code = "TASKCENTER_UNAVAILABLE";
+    throw unavailable;
   }
-  try {
-    const payload = await readJson(response);
-    if (payload.accepted && lifecycle) payload.session_lifecycle = lifecycle;
-    return writeResult(payload, responseModeValue);
-  } catch (e) {
-    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
-  }
+  return readJson(response);
 }
 
 async function reportTaskProgress(input) {
@@ -698,6 +751,10 @@ async function postAcceptance(input) {
 
 function writeResult(payload, responseModeValue) {
   if (responseModeValue === "full" || payload?.error) return result(payload);
+  return result(compactResult(payload));
+}
+
+function compactResult(payload) {
   const task = payload?.task || {};
   const readiness = task.completionReadiness || payload?.completionReadiness || {};
   const missing = [
@@ -718,7 +775,7 @@ function writeResult(payload, responseModeValue) {
   if (payload?.session_lifecycle) compact.session_lifecycle = payload.session_lifecycle;
   // 通知属于账本写入后的可补偿副作用；摘要回包也必须让调用方看见失败警告。
   if (Array.isArray(payload?.warnings) && payload.warnings.length) compact.warnings = payload.warnings;
-  return result(compact);
+  return compact;
 }
 
 async function queryEndpoint(path) {

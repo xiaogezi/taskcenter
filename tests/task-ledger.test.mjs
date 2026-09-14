@@ -2143,7 +2143,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const tools = await client.listTools();
   const toolNames = tools.tools.map((tool) => tool.name);
   for (const expected of [
-    "taskcenter_session_register", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report",
+    "taskcenter_session_register", "taskcenter_task_begin", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report",
     "taskcenter_task_close",
     "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report", "taskcenter_review_cycle_report", "taskcenter_task_phase_report", "taskcenter_task_diagnostic_report",
     "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_task_export", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
@@ -2179,6 +2179,29 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const registerPayload = JSON.parse(textOf(register));
   assert.equal(registerPayload.accepted, true);
   assert.equal(registerPayload.task, null);
+
+  const beginArguments = {
+    session_id: "sess-begin", workspace: "/work", event_id: "begin-first", task_id: "task-begin-first",
+    title: "第一任务", goal: "完成第一任务", scope: ["scripts"], acceptance_criteria: ["完成"], plan: ["执行"],
+  };
+  const begun = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_begin", arguments: beginArguments })));
+  assert.deepEqual({ task_id: begun.task_id, status: begun.status, next: begun.next, context_ref: begun.context_ref }, {
+    task_id: "task-begin-first", status: "planned", next: "implement", context_ref: "task:task-begin-first",
+  });
+  assert.equal(JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_begin", arguments: beginArguments }))).task_id, "task-begin-first");
+  assert.equal(loadTasks().filter((task) => task.sessionId === "sess-begin").length, 1);
+  const conflict = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_task_begin",
+    arguments: { ...beginArguments, event_id: "begin-conflict", task_id: "task-begin-conflict", title: "冲突任务" },
+  })));
+  assert.match(conflict.message, /ACTIVE_TASK_CONFLICT/);
+  await client.callTool({ name: "taskcenter_task_update", arguments: { session_id: "sess-begin", task_id: "task-begin-first", status: "cancelled" } });
+  const nextBegun = JSON.parse(textOf(await client.callTool({
+    name: "taskcenter_task_begin",
+    arguments: { ...beginArguments, event_id: "begin-next", task_id: "task-begin-next", title: "下一任务", goal: "顺序创建" },
+  })));
+  assert.equal(nextBegun.task_id, "task-begin-next");
+  assert.equal(getSessionStatuses([], loadTasks()).find((item) => item.sessionId === "sess-begin").taskCount, 2);
 
   const gateStatusBefore = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_session_gate_exemption_status",

@@ -205,20 +205,19 @@ TaskCenter 是执行合同、运行状态、验证、Review、验收与路由审
 
 默认情况下，每个 Session 按以下顺序执行：
 
-1. `taskcenter_session_register`：提交真实 `session_id`、`workspace`、`agent`、`provider` 和 `model`。
-2. `taskcenter_task_create`：新任务使用 `contract_version=v2`，提交目标、范围、非目标、计划、结构化验收标准、工作流等级、审查策略、可选执行环境，以及 `standard/strict` 所需的验证计划。Session 登记可同时提供稳定的 `project_id`，供后续复用 Advisor 跨 Session 匹配；Codex 适配器可从已验证的 Git 主仓库补齐，非 Git workspace 缺失时保持 unknown。
-3. 收到 `accepted=true` 与独立 `task_id` 后才能执行写操作。
+1. `taskcenter_task_begin`：一次完成 Session 登记和 v2 任务创建，默认只返回任务状态、下一步和本地上下文引用。同一 Session 可在上一任务关闭或取消后顺序创建下一任务，但同一时间只允许一个活跃任务。已有客户端可继续分别调用 `taskcenter_session_register` 和 `taskcenter_task_create`；`standard/strict` 仍须提交验证计划。
+2. 收到 `accepted=true` 与独立 `task_id` 后才能执行写操作。
    Codex 或 Git 创建关联 worktree 后，适配器会从 `.git` 指针自动识别主仓库、当前分支和 `execution_environment=worktree`。每个 worktree 保留独立 `workspace` 与 Subject，稳定 `project_id` 归并到同一项目；TaskCenter 不负责创建、合并或删除 worktree。Context bridge 同时把稳定 `project_id` 和具体 worktree workspace 传给 ProjectContext，使项目知识共享、执行证据隔离。
-4. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
-5. TaskCenter 可用时，Sol 在派发执行器前调用 `taskcenter_routing_select`。它会原子检查模型并发、`Closed/Open/Half-Open` 熔断状态并发放有 TTL 的执行租约；执行结束后调用 `taskcenter_routing_result` 释放租约并回报原始错误。TaskCenter 只给出强建议，不启动 CLI，也不取代 Sol 的风险判断、整合和验收。
+3. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
+4. TaskCenter 可用时，Sol 在派发执行器前调用 `taskcenter_routing_select`。它会原子检查模型并发、`Closed/Open/Half-Open` 熔断状态并发放有 TTL 的执行租约；执行结束后调用 `taskcenter_routing_result` 释放租约并回报原始错误。TaskCenter 只给出强建议，不启动 CLI，也不取代 Sol 的风险判断、整合和验收。
    `/routing` 页面复用 `/usage-report` 与任务账本展示真实额度窗口、重置时间和最近调度记录；模型卡片的并发数字仅表示当前活跃租约，不是历史调用次数。模型未绑定额度池也不等于额度充足，缺失或过期快照会按未知状态展示。
    当前 executor 通过 `roles.executor.task_class_models` 选择角色池内模型：`general`、`search`、`mechanical`、`documentation` 使用默认 Luna；`implementation`、`test`、`architecture`、`migration`、`complex_diagnosis` 使用 Terra；只有 `security`、`data_migration`、`high_risk` 默认使用 GPT-6 Astra。普通任务只回退 Terra，不把 Astra 当作容量兜底；映射到非默认模型的任务在目标模型不可用时不降级。需要因真实失败、风险证据或用户明确判断升至 Astra 时，调用方必须显式传 `preferred_model=gpt-6-astra` 并通过 `routing_record` 写明理由；该显式 Astra 选择同样不降级。Reviewer 固定使用 Astra，fallback 为空并 fail closed；两个角色的推理等级均为 `medium`。返回的 `config_version` 是集中配置内容 SHA-256，`matched_rule` 记录命中规则，`policy_version` 保留路由控制协议版本；配置每次新 `routing_select` 重新加载，运行中的租约不受热更新影响。同一 `event_id` 始终重放原选择，即使配置已更新。
    正式实例的 `TASKCENTER_MODEL_ROLE_CONFIG_PATH` 固定指向控制器工作区的可编辑 `config/model-roles.json`，release worktree 只承载代码，不成为模型策略副本。显式 `preferred_model` 仍优先于 task class 映射；retired 模型沿用既有归一化行为。`manual_only_models` 不进入自动角色池或普通 fallback，只有任务持久化 `execution_model_policy.mode=quota_preferred` 后才能使用。TaskCenter 按 `quota_limit_id` 读取独立额度池：新鲜且未耗尽时选择首选模型，明确耗尽时回到既有 executor 策略，缺失或过期时只在新派发边界做一次受并发限制的探测；额度失败不增加模型质量熔断计数。推理强度也由该配置控制：角色默认值为 `low`，仅 `task_class_reasoning_efforts` 明确列出的类别可提升，路由结果与审计会保留实际强度。Reviewer 始终使用 reviewer 主模型并 fail closed，OCR 继续要求同一 Subject、Bundle 和规则证据，不接受 task class 映射或容量回退。
    回滚时删除对应 `task_class_models` 映射并恢复原 JSON；新派发立即回到 executor 主模型，已发放租约按原策略结算。
-6. Sol 有理由偏离建议，或 TaskCenter 暂时不可用而外部项目允许继续时，按静态规则执行并用 `taskcenter_routing_record` 记录 override；服务恢复后补录执行结果。TaskCenter 不得成为外部项目 build、test、commit 或 release 的单点依赖。本仓库自身启用 Hook 门禁时仍遵循 fail-closed 维护边界。
-7. OCR 独立审查保持 reviewer 独立性：TaskCenter 固定使用集中配置中的 reviewer 主模型并 fail closed，同时记录 `fallback_from`、`fallback_reason`、`retry_after_at` 及同一 Subject、OCR Bundle、规则的引用或 fingerprint。TaskCenter 只返回建议和写入审计；独立只读 Reviewer Session、相同 Bundle/规则加载和实际审查仍由 Agent/OCR Skill 完成。普通实现 CLI Run 不能冒充独立 OCR 审查通过。
-8. Agent 的 `done_claimed` 仅代表执行声明，提交时必须附带 `tests` 或 `evidence`；随后通过验收条件结果、Verification Claim 和独立 Review Attestation 计算 `completion_readiness`。
-9. `accepted` 只能由携带 `TASKCENTER_ACCEPTANCE_TOKEN` 的独立验收适配器通过 `taskcenter_task_acceptance_report` 上报；来源可以是 human、pull_request、ci、task_platform、context_agent、manual 或 other。普通执行 Agent、`task_report` 和浏览器操作均不能直接设置最终验收。
+5. Sol 有理由偏离建议，或 TaskCenter 暂时不可用而外部项目允许继续时，按静态规则执行并用 `taskcenter_routing_record` 记录 override；服务恢复后补录执行结果。TaskCenter 不得成为外部项目 build、test、commit 或 release 的单点依赖。本仓库自身启用 Hook 门禁时仍遵循 fail-closed 维护边界。
+6. OCR 独立审查保持 reviewer 独立性：TaskCenter 固定使用集中配置中的 reviewer 主模型并 fail closed，同时记录 `fallback_from`、`fallback_reason`、`retry_after_at` 及同一 Subject、OCR Bundle、规则的引用或 fingerprint。TaskCenter 只返回建议和写入审计；独立只读 Reviewer Session、相同 Bundle/规则加载和实际审查仍由 Agent/OCR Skill 完成。普通实现 CLI Run 不能冒充独立 OCR 审查通过。
+7. Agent 的 `done_claimed` 仅代表执行声明，提交时必须附带 `tests` 或 `evidence`；随后通过验收条件结果、Verification Claim 和独立 Review Attestation 计算 `completion_readiness`。
+8. `accepted` 只能由携带 `TASKCENTER_ACCEPTANCE_TOKEN` 的独立验收适配器通过 `taskcenter_task_acceptance_report` 上报；来源可以是 human、pull_request、ci、task_platform、context_agent、manual 或 other。普通执行 Agent、`task_report` 和浏览器操作均不能直接设置最终验收。
 
 主 Agent 派发普通 CLI 执行器时不再重复创建正式子任务。主 Agent 通过 `taskcenter_delegation_grant` 为当前正式任务签发短期授权，CLI 先登记自己的真实 Session，再以一次性 token 调用 `taskcenter_delegation_claim`。授权固定绑定父任务、CLI Session、精确 workspace、声明 scope、可选工具集合、执行模型和 TTL；CLI 用 `taskcenter_cli_run_report` 上报 started/running/终态、改动、测试与证据。CLI Run 只显示在主任务详情中，不获得修改主任务状态、审查或验收的权限。只有存在独立交付物、独立生命周期、独立验收或明确交接边界时，才创建正式子任务。
 
@@ -322,7 +321,11 @@ npm pack --dry-run
 
 Apache License 2.0。参见 [LICENSE](LICENSE)。
 
-### 同一 Codex Session 顺序切换任务
+### 同一 Codex Session 顺序承载任务
+
+普通顺序任务无需切换或压缩：关闭或取消当前任务后，直接调用 `taskcenter_task_begin` 创建下一任务。TaskCenter 保留每个独立 `task_id` 的合同、证据和用量归属；Hook 始终绑定该 Session 最新的唯一活跃任务。
+
+仅当上下文已经过大并且需要恢复检查点与显式压缩时，才使用下面的会话切换协议。
 
 `task_close` 的生命周期建议不会执行压缩，也不会授权第二个任务。显式切换使用 `taskcenter-session-switch/v2`（旧版请求和 receipt 不再授权重绑）：
 

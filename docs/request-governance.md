@@ -9,14 +9,16 @@
 - 完整、带引号定界符的 heredoc 是一次性输入。`cat` 的字面量 heredoc 可进入 L0；Python/Node/shell heredoc 是脚本执行，仍需活动任务。TTY 和显式交互选项仍被拒绝。Hook 不替代操作系统沙箱。
 - `fast` 对应 L1：当前 Session 的当前阶段到第 8 次请求返回 `handoff_recommended`；其他 profile 为 35 次。同阶段重复 `started` 不重置预算。转入新 Session 后阶段预算重新计数，task 累计计数保留历史 Session。
 - 从目标 Session JSONL 增量读取 `token_count`，相同累计用量通知去重；不把一次工具调用算作一次模型请求。第二次 `compacted/context_compacted` 后返回 `new_session_recommended`。缺失 Session 文件时返回 `source=unavailable` 和空计数，不将未知伪装为零。
-- 请求到限和两次压缩仅预警并建议在可恢复检查点交接，保留 `recommendation_reasons`；不会单独阻断实现、查询、验证、提交、任务更新或接续。兼容字段 `handoff_required`、`new_session_required` 恒为 false，允许操作不随预算收缩。归属、workspace、写入范围、验证和独立审查门禁继续生效；生命周期中的独立目标变化要求仍保留。
+- 请求到限和两次压缩仅预警并建议在可恢复检查点交接，保留 `recommendation_reasons`；不会单独阻断实现、查询、验证、提交、任务更新或接续。兼容字段 `handoff_required`、`new_session_required` 恒为 false，允许操作不随预算收缩。归属、workspace、写入范围、验证和独立审查门禁继续生效。
 - 新 Hook 遇到旧服务的 prepare 404 时回退原门禁，不要求停机升级。新预算必须随已验证服务部署后才生效。
 
 ## 精简协议
 
 `taskcenter_task_prepare(session_id)` 一次返回合同、当前绑定、Session/task/阶段请求计数、输入 Token 用量、压缩次数、handoff 与允许操作。输入 Token 硬额度没有配置时明确返回 `limit=null`。较大的合同使用响应游标，不默认展开。
 
-`taskcenter_task_resume(session_id, task_id, expected_session_id)` 将同一目标恢复到已登记且 workspace 相同的新 Session，保留 task ID、合同、证据和 Session 历史。源绑定不匹配或目标 Session 已承担另一目标时拒绝。旧 Session 不能继续写该任务，也不能再创建新的独立任务。关闭后可补充、修复、验证原任务，但不能替换其目标；重新打开后仍保留此约束。
+`taskcenter_task_begin(...)` 一次完成 Session 登记和 v2 任务创建；默认摘要只返回状态、`task_id`、下一步和 `context_ref`。同一 Session 在任一时刻只允许一个活跃正式任务，关闭或取消后可直接开始下一任务。
+
+`taskcenter_task_resume(session_id, task_id, expected_session_id)` 将同一目标恢复到已登记且 workspace 相同的新 Session，保留 task ID、合同、证据和 Session 历史。目标 Session 已有活跃任务时拒绝。关闭后可补充、修复、验证原任务，但不能替换其目标；重新打开后仍保留此约束。
 
 `taskcenter_usage_report` 支持以下参数：
 
@@ -34,9 +36,9 @@
 
 默认 MCP 文本响应上限为 4096 UTF-8 字节，超限返回摘要与 `continuation_cursor`。`taskcenter_response_continue` 读取其他响应或 prepare 合同的游标，usage_report 的游标也可传回 usage_report。分页为 `json_text_fragment`，按 offset 拼接后解析 JSON；不会自动续读。游标绑定五分钟的固定快照，过期或服务重启后重新发起原筛选查询。机器可读 handoff 上限为 2048 字节，大字段保留 task 引用。
 
-`task_close` 的可选 `continuation` 是调用方对后续工作的显式判断，不用预算计数代替上下文大小或剩余轮次。成功响应（含默认摘要）返回 `session_lifecycle`：`new_independent_goal=true` → `recommend_new_session`；否则 `context_large=true` 且 `expected_more_rounds=true` → `recommend_compact`；其余或未提供 → `continue`。这些都是建议，不触发压缩、新建 Session 或改变完成就绪度。
+`task_close` 的可选 `continuation` 是调用方对后续工作的显式判断，不用预算计数代替上下文大小或剩余轮次。成功响应（含默认摘要）返回 `session_lifecycle`：`context_large=true` 且 `expected_more_rounds=true` → `recommend_compact`；其余或未提供 → `continue`。独立新目标不再触发换 Session。这些都是建议，不触发压缩或改变完成就绪度。
 
-普通任务推荐调用路径：登记 → 创建 → prepare（仅恢复时）→ 必要证据 → close。复用原子 close，不再为同一收尾结果依次 query/update/status/readiness/report/close。
+普通任务推荐调用路径：begin → prepare（仅恢复时）→ 必要证据 → close。复用原子 close，不再为同一收尾结果依次 query/update/status/readiness/report/close。
 
 ## 部署后的真实观察验收
 
@@ -50,7 +52,7 @@
 | 普通阶段 continuation | 35 次为预警阈值；记录超限及检查点交接原因 |
 | 主 Agent 显式 TaskCenter 调用 | 每任务 ≤10；Hook 内部 HTTP 往返单独记录 |
 | 单次默认 MCP 文本 | ≤4096 字节 |
-| Session 跨独立任务 | 0 |
+| Session 跨独立任务 | 允许顺序复用；同一时刻活跃任务数 ≤1 |
 | 二次压缩后继续实现 | 记录继续原因与检查点交接；不作为硬阻断 |
 | 平均输入 Token | 与用户提供的 131600 基线比较，报告绝对值及下降比例；口径/样本不匹配时不宣称改善 |
 

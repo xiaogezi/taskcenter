@@ -737,7 +737,7 @@ function isReadOnlyOcr(args) {
 
 function isRecoveryOperation(payload) {
   const name = String(payload.tool_name || payload.tool || payload.name || "");
-  return /(?:^|__)taskcenter_(?:task_close|task_update|task_verification_report|task_diagnostic_report|task_prepare|task_resume|session_switch_prepare|session_switch_confirm|task_create|handoff)$/.test(name);
+  return /(?:^|__)taskcenter_(?:task_begin|task_close|task_update|task_verification_report|task_diagnostic_report|task_prepare|task_resume|session_switch_prepare|session_switch_confirm|task_create|handoff)$/.test(name);
 }
 
 function isReadOnlySed(args) {
@@ -1114,7 +1114,7 @@ async function provideTaskPreparationContext() {
   const additionalContext = [
     `TaskCenter 任务准备提示：当前 Session 不在门禁豁免白名单且没有活跃正式任务；${registrationInstruction}。`,
     "如果本轮只做只读检查，可以直接继续。",
-    "如果本轮是主 Agent 的正式工作，必须在第一次工具调用前调用 taskcenter_task_create；如果是 CLI 派发执行器，应领取主 Agent 提供的 delegation，不要为普通 CLI Run 创建正式子任务。",
+    "如果本轮是主 Agent 的正式工作，优先在第一次工具调用前调用 taskcenter_task_begin；旧客户端可继续先登记再调用 taskcenter_task_create。如果是 CLI 派发执行器，应领取主 Agent 提供的 delegation，不要为普通 CLI Run 创建正式子任务。",
     "不要先撞 PreToolUse 门禁，也不要要求用户手动创建任务、启动服务或批准提案。只有 TaskCenter MCP 确实不可用时，才限制为只读并报告 TASKCENTER_UNAVAILABLE。",
   ].join("\n");
   process.stdout.write(JSON.stringify({

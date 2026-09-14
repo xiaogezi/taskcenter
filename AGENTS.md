@@ -14,8 +14,8 @@ One registered Codex Session may carry multiple formal tasks sequentially. A new
 
 Before changing project files in an MCP-enabled session:
 
-1. Call `taskcenter_session_register` with the real session ID, workspace, agent, provider, and model.
-2. Call `taskcenter_task_create` with `contract_version=v2`, goal, scope, non-goals, plan, structured acceptance criteria, workflow profile, review policy, optional execution environment, and a verification plan for `standard` / `strict` work.
+1. Prefer `taskcenter_task_begin` to register the real Session and create the task in one call. Existing clients may call `taskcenter_session_register` followed by `taskcenter_task_create`.
+2. Supply a v2 contract with goal, scope, non-goals, plan, structured acceptance criteria, workflow profile, review policy, optional execution environment, and a verification plan for `standard` / `strict` work.
 3. Continue only after `accepted=true` and a distinct `task_id` are returned.
 
 For delegated CLI execution, the main Agent owns the single formal task. Each CLI executor still uses an independent registered Session, but ordinary search, implementation, test, and evidence-gathering runs must claim a short-lived `taskcenter_delegation_grant` for that parent task instead of creating another formal task. The grant binds parent task, delegate Session, exact workspace, declared scope, optional allowed tools, executor model, and TTL. The CLI reports its lifecycle and evidence with `taskcenter_cli_run_report`; this audit record never changes the parent task status or grants acceptance authority.
