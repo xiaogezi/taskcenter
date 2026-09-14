@@ -3,8 +3,8 @@ import { controlProxyTarget } from "@/lib/control-proxy.mjs";
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
-  if (request.method === "POST" && path[0] === "tasks" && (["bug", "bug-acceptance", "bug-merge"].includes(path.at(-1) || "") || path[2] === "bug-dispatch") && request.headers.get("origin") !== new URL(request.url).origin) {
-    return NextResponse.json({ error: "Bug 操作必须来自当前工作台页面。" }, { status: 403 });
+  if (request.method === "POST" && path[0] === "tasks" && (["actions", "bug", "bug-acceptance", "bug-merge"].includes(path.at(-1) || "") || path[2] === "bug-dispatch") && request.headers.get("origin") !== new URL(request.url).origin) {
+    return NextResponse.json({ error: "任务操作必须来自当前工作台页面。" }, { status: 403 });
   }
   const target = controlProxyTarget(`/${path.join("/")}`, new URL(request.url).search, request.method);
   if (!target) return NextResponse.json({ error: "不允许代理该 Control API 路径。" }, { status: 404 });

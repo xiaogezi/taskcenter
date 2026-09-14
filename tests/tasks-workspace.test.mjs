@@ -28,6 +28,18 @@ test("桌面详情展开时主工作区应开启三列网格", () => {
   assert.match(componentSource, /\["Git 分支", task\?\.workspaceBranch\]/);
 });
 
+test("任务状态列保持可读并提供受控处理入口", () => {
+  const componentSource = readFileSync("features/tasks/TaskWorkspace.tsx", "utf8");
+  const styleSource = readFileSync("app/globals.css", "utf8");
+
+  assert.match(componentSource, /<th>操作<\/th>/);
+  assert.match(componentSource, /task\.status === "blocked" \? \{ action: "start", label: "恢复执行" \}/);
+  assert.match(componentSource, /X-TaskCenter-Action": "delegate"/);
+  assert.match(styleSource, /\.status-chip \{[^}]*display: inline-flex;[^}]*white-space: nowrap;/);
+  assert.match(styleSource, /\.task-table \{[^}]*min-width: 1040px;/);
+  assert.match(styleSource, /\.task-table th:last-child, \.task-actions \{[^}]*position: sticky;[^}]*right: 0;/);
+});
+
 test("四轴状态与需处理判定忽略通用 completion pending", () => {
   const task = { status: "in_progress", verificationStatus: "passed", reviewStatus: "pending", acceptanceStatus: "pending", completionReadiness: { reasons: ["缺少独立审查"] } };
   assert.deepEqual(taskAxes(task), [["执行", "in_progress"], ["验证", "passed"], ["审查", "pending"], ["验收", "pending"]]);
@@ -49,7 +61,8 @@ test("项目筛选把项目 worktree 归并到主项目", () => {
 });
 
 test("同源代理只允许明确的控制台路径和方法", () => {
-  assert.equal(isAllowedControlPath("/tasks/task-1/actions"), false);
+  assert.equal(isAllowedControlPath("/tasks/task-1/actions", "POST"), true);
+  assert.equal(isAllowedControlPath("/tasks/task-1/actions", "GET"), false);
   assert.equal(isAllowedControlPath("/health", "POST"), false);
   assert.equal(isAllowedControlPath("/health", "GET"), true);
   assert.equal(isAllowedControlPath("/routing/optional-astra-policy", "POST"), true);
@@ -62,6 +75,7 @@ test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(isAllowedControlPath("/reflections/item/actions", "GET"), false);
   assert.equal(controlProxyTarget("/tasks", "?view=summary&project=/work&bucket=attention&query=api&page=2&page_size=50&ignored=yes")?.toString(), "http://127.0.0.1:3001/tasks?view=summary&project=%2Fwork&bucket=attention&query=api&page=2&page_size=50");
   assert.equal(controlProxyTarget("/tasks/task-1/events", "?limit=30")?.toString(), "http://127.0.0.1:3001/tasks/task-1/events?limit=30");
+  assert.equal(controlProxyTarget("/tasks/task-1/actions", "", "POST")?.toString(), "http://127.0.0.1:3001/tasks/task-1/actions");
 });
 
 test("模型调度页展示额度、真实调度和刷新反馈", () => {
