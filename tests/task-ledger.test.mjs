@@ -3157,6 +3157,10 @@ test("控制服务 schedule/archive/unarchive HTTP 闭环", async (context) => {
   const unarchive = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "unarchive" }) });
   assert.equal(unarchive.status, 200);
   assert.equal((await unarchive.json()).task.archivedAt, "");
+  const cancel = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "cancel" }) });
+  assert.equal((await cancel.json()).task.status, "cancelled");
+  const restart = await fetch(`${base}/tasks/task-http-governance/actions`, { method: "POST", headers, body: JSON.stringify({ action: "start" }) });
+  assert.equal((await restart.json()).task.status, "in_progress");
 });
 
 test("Codex Session 可顺序承载多个任务，但同一时间只允许一个活跃任务", async (context) => {

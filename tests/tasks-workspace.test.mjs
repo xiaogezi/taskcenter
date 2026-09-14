@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { controlProxyTarget, isAllowedControlPath } from "../lib/control-proxy.mjs";
-import { actionReasons, parseTaskWorkspaceSearch, projectInfo, taskAxes, taskListRequestKey, taskMatchesBucket, taskViewBuckets } from "../lib/task-workspace.mjs";
+import { actionReasons, parseTaskWorkspaceSearch, projectInfo, taskActions, taskAxes, taskListRequestKey, taskMatchesBucket, taskViewBuckets } from "../lib/task-workspace.mjs";
 
 test("任务工作区 URL 仅用列表条件构造请求 key", () => {
   const state = parseTaskWorkspaceSearch("?project=/work&bucket=attention&query=api&page=2&task=t-1&tab=evidence");
@@ -33,16 +33,22 @@ test("任务状态列保持可读并提供受控处理入口", () => {
   const styleSource = readFileSync("app/globals.css", "utf8");
 
   assert.match(componentSource, /<th>操作<\/th>/);
-  assert.match(componentSource, /task\.status === "blocked" \? \{ action: "start", label: "恢复执行" \}/);
   assert.match(componentSource, /X-TaskCenter-Action": "delegate"/);
-  assert.match(componentSource, /\["planned", "in_progress", "blocked"\]\.includes/);
   assert.match(componentSource, /window\.confirm\(`确认关闭任务/);
-  assert.match(componentSource, /void act\(task, "cancel"\)/);
-  assert.match(componentSource, /"关闭任务"/);
+  assert.match(componentSource, /window\.confirm\(`确认归档任务/);
+  assert.match(componentSource, /taskActions\(task\)/);
   assert.match(styleSource, /\.status-chip \{[^}]*display: inline-flex;[^}]*white-space: nowrap;/);
   assert.match(styleSource, /\.task-table \{[^}]*min-width: 1040px;/);
   assert.match(styleSource, /\.task-table th:last-child, \.task-actions \{[^}]*position: sticky;[^}]*right: 0;/);
   assert.match(styleSource, /\.task-action-danger \{ color: #b1413b; \}/);
+});
+
+test("需处理原因映射为可闭环的现有任务操作", () => {
+  assert.deepEqual(taskActions({ status: "blocked" }), [{ action: "start", label: "恢复执行" }, { action: "cancel", label: "关闭任务" }]);
+  assert.deepEqual(taskActions({ status: "planned" }), [{ action: "start", label: "开始执行" }, { action: "cancel", label: "关闭任务" }]);
+  assert.deepEqual(taskActions({ status: "cancelled", verificationStatus: "stale" }), [{ action: "start", label: "重新处理" }, { action: "archive", label: "归档" }]);
+  assert.deepEqual(taskActions({ status: "done_claimed", reviewStatus: "changes_requested" }), [{ action: "start", label: "返工处理" }]);
+  assert.deepEqual(taskActions({ status: "in_progress", blocker: "等待外部输入" }), [{ action: "start", label: "重新处理" }, { action: "cancel", label: "关闭任务" }]);
 });
 
 test("四轴状态与需处理判定忽略通用 completion pending", () => {
