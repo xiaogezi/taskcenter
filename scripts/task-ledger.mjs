@@ -153,7 +153,7 @@ export function isContextShadowTask(taskOrId) {
 }
 
 export function loadVisibleTasks() {
-  return loadTasks().filter((task) => !isContextShadowTask(task));
+  return loadTasks().filter((task) => !task.archivedAt && !isContextShadowTask(task));
 }
 
 export function loadSessionMerges() {

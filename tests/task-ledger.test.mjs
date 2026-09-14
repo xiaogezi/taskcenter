@@ -1184,8 +1184,10 @@ test("归档状态、预计时间校验和旧字段兼容", async () => {
   recordTaskEvent({ type: "task.done_claimed", session_id: "sess-time", task_id: "task-time", event_id: "done-time", status: "done_claimed", evidence: ["时间归档"] });
   recordTaskEvent({ type: "task.review", session_id: "sess-time", task_id: "task-time", event_id: "manual-archive-ok", status: "done_claimed", archived_at: new Date().toISOString() });
   assert.ok(loadTasks()[0].archivedAt);
+  assert.deepEqual(loadVisibleTasks(), []);
   recordTaskEvent({ type: "task.review", session_id: "sess-time", task_id: "task-time", event_id: "manual-unarchive", archived_at: "__UNARCHIVE__" });
   assert.equal(loadTasks()[0].archivedAt, "");
+  assert.deepEqual(loadVisibleTasks().map((task) => task.id), ["task-time"]);
 });
 
 test("估时校准应记录交付截止、有效工时与状态分段", async () => {
