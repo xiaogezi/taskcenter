@@ -60,3 +60,9 @@ git diff --check
 - 项目改动完成且验证通过后，默认自动创建本地 Git 提交，无需再次等待用户确认；除非用户明确要求暂不提交。
 - 功能性改动的提交信息使用 `feat: 中文描述`，描述应准确概括本次交付；修复、文档等明确类型可使用对应 Conventional Commit 前缀并保持中文描述。
 - 自动提交不等于推送。只有用户明确要求时才执行 `git push`、创建 PR 或发布版本。
+
+## 版本与更新日志
+
+- 统一遵循 `CONTRIBUTING.md#versioning-and-changelog`；该章节是版本号、Changelog、部署与正式发布的唯一完整规则，不在其他文件复制一套定义。
+- 影响用户入口、公共协议、持久化、安全边界、模型角色或发布方式的改动，必须在同一提交更新顶部唯一的 `CHANGELOG.md / Unreleased`。其他改动可以不更新，但须在 TaskCenter 证据或 PR 中记录 `changelog: not required` 及理由。
+- 普通提交和 `service:deploy` 不自动修改 SemVer。只有用户明确要求正式发布时，才允许修改版本、封版 Changelog、创建 tag；push、远端 tag、PR 和 hosted release 仍需分别获得明确授权。
