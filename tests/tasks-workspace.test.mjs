@@ -35,9 +35,14 @@ test("任务状态列保持可读并提供受控处理入口", () => {
   assert.match(componentSource, /<th>操作<\/th>/);
   assert.match(componentSource, /task\.status === "blocked" \? \{ action: "start", label: "恢复执行" \}/);
   assert.match(componentSource, /X-TaskCenter-Action": "delegate"/);
+  assert.match(componentSource, /\["planned", "in_progress", "blocked"\]\.includes/);
+  assert.match(componentSource, /window\.confirm\(`确认关闭任务/);
+  assert.match(componentSource, /void act\(task, "cancel"\)/);
+  assert.match(componentSource, /"关闭任务"/);
   assert.match(styleSource, /\.status-chip \{[^}]*display: inline-flex;[^}]*white-space: nowrap;/);
   assert.match(styleSource, /\.task-table \{[^}]*min-width: 1040px;/);
   assert.match(styleSource, /\.task-table th:last-child, \.task-actions \{[^}]*position: sticky;[^}]*right: 0;/);
+  assert.match(styleSource, /\.task-action-danger \{ color: #b1413b; \}/);
 });
 
 test("四轴状态与需处理判定忽略通用 completion pending", () => {

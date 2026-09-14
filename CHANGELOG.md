@@ -4,7 +4,7 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
-- 任务工作区状态标签在窄列中保持完整显示，并恢复计划任务开始、阻塞任务继续和其他异常状态查看原因的可见处理入口；任务状态操作继续受同源代理与 Control API 校验保护。
+- 任务工作区状态标签在窄列中保持完整显示，并恢复计划任务开始、阻塞任务继续、活跃任务二次确认关闭和其他异常状态查看原因的可见处理入口；任务状态操作继续受同源代理与 Control API 校验保护。
 - 归档任务不再进入默认任务列表和看板统计；任务详情与 append-only 事件历史继续保留，避免已完成任务长期堆积为待验证、待验收。
 - 普通代码审查默认改用本地 `ocr_review.ocr_auto_review` MCP，保持免费模型优先和完整费用、积分、覆盖率回报；TaskCenter 正式独立审查继续绑定集中 `reviewer`、独立 Session 与同一 Subject/OCR 证据，普通自动审查不得冒充独立验收。
 - 统一版本号、更新日志、受控部署与正式发布规则：`package.json` 为版本单一来源，Changelog 只保留一个 `Unreleased`，部署继续使用 Git revision，SemVer 与 tag 仅在明确发版时更新。

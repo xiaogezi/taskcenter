@@ -17,7 +17,8 @@ type TaskTokenUsage = { usage: { input: number; cachedInput: number; output: num
 type RoutingInfo = { action?: string; orchestratorModel?: string; preferredExecutorModel?: string; selectedExecutorModel?: string; reasoningEffort?: string; dispatchChannel?: string; reason?: string; outcome?: string; preferenceMode?: string; fallbackReason?: string; quotaLimitId?: string; quotaSnapshotObservedAt?: string; quotaUsedPercent?: number; quotaResetAt?: string; };
 type Task = Record<string, unknown> & { bugClosure?: { status: string };  id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; workspace?: string; workspaceBranch?: string; executionEnvironment?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy; tokenUsage?: TaskTokenUsage | null };
 type State = ReturnType<typeof parseTaskWorkspaceSearch>;
-type PrimaryTaskAction = { action: "start"; label: string };
+type TaskAction = "start" | "cancel";
+type PrimaryTaskAction = { action: TaskAction; label: string };
 const labels: Record<string, string> = { planned: "计划中", in_progress: "执行中", blocked: "已阻塞", done_claimed: "已声明完成", verified: "已验证", cancelled: "已取消", passed: "通过", pending: "待处理", failed: "失败", stale: "已过期", changes_requested: "需修改", ready: "就绪", accepted: "已验收", rejected: "已拒绝", not_required: "不要求", unknown: "未知" };
 const primaryTaskAction = (task: Task): PrimaryTaskAction | null => task.status === "blocked" ? { action: "start", label: "恢复执行" } : task.status === "planned" ? { action: "start", label: "开始执行" } : null;
 const text = (value: unknown) => typeof value === "string" && value.trim() ? value : "未知";
@@ -93,8 +94,9 @@ export function TaskWorkspace() {
   const projects = payload.projects || [];
   const counts = payload.actionCounts || {};
 
-  const act = async (task: Task, action: PrimaryTaskAction["action"]) => {
+  const act = async (task: Task, action: TaskAction) => {
     if (actingTaskId) return;
+    if (action === "cancel" && !window.confirm(`确认关闭任务“${text(task.title)}”？任务历史会保留。`)) return;
     setActingTaskId(task.id);
     setError("");
     try {
@@ -118,13 +120,14 @@ export function TaskWorkspace() {
         const route = task.routing || task.routingHistory?.at(-1);
         const modelCell = [route?.preferredExecutorModel, route?.selectedExecutorModel].filter(Boolean).join(" → ");
         const primaryAction = primaryTaskAction(task);
+        const canClose = ["planned", "in_progress", "blocked"].includes(text(task.status));
         return <tr key={task.id} className={state.task === task.id ? "selected" : ""} onClick={() => update({ task: task.id, tab: "overview" })}>
           <td><span className={`status-chip status-${text(task.status)}`}>{labels[text(task.status)] || text(task.status)}</span>{(task.actionReasons || []).length > 0 && <small className="attention">需处理</small>}</td>
           <td><strong>{text(task.title)}</strong>{task.bugClosure && <small>Bug · {({ repairing: "修复验证中", returned: "验收退回", awaiting_acceptance: "待验收", awaiting_merge: "待合入", completed: "已核验合入", cancelled: "已取消" } as Record<string, string>)[task.bugClosure.status]}</small>}<small>{task.id}</small></td><td>{text(task.project?.label)}{task.executionEnvironment === "worktree" && <small>{text(task.workspaceBranch)}</small>}</td><td>{text(task.currentStep)}</td>
           <td>{modelCell || "未记录"}</td>
           <td title={task.tokenUsage ? `精确值：${task.tokenUsage.totalTokens.toLocaleString("zh-CN")} Token` : undefined}>{task.tokenUsage ? <><strong>总计 {formatTokens(task.tokenUsage.totalTokens)}</strong><small>输入 {formatTokens(task.tokenUsage.usage.input)}（缓存 {formatTokens(task.tokenUsage.usage.cachedInput)}）</small><small>输出 {formatTokens(task.tokenUsage.usage.output)}（推理 {formatTokens(task.tokenUsage.usage.reasoning)}）</small></> : "暂无归属"}</td>
           <td>{formatDate(task.updatedAt)}</td>
-          <td className="task-actions" onClick={(event) => event.stopPropagation()}>{primaryAction ? <button className="task-action" disabled={Boolean(actingTaskId)} onClick={() => void act(task, primaryAction.action)}>{actingTaskId === task.id ? "处理中…" : primaryAction.label}</button> : (task.actionReasons || []).length > 0 ? <button className="task-action" onClick={() => update({ task: task.id, tab: "overview" })}>查看原因</button> : "—"}</td>
+          <td className="task-actions" onClick={(event) => event.stopPropagation()}>{primaryAction && <button className="task-action" disabled={Boolean(actingTaskId)} onClick={() => void act(task, primaryAction.action)}>{actingTaskId === task.id ? "处理中…" : primaryAction.label}</button>}{!primaryAction && (task.actionReasons || []).length > 0 && <button className="task-action" onClick={() => update({ task: task.id, tab: "overview" })}>查看原因</button>}{canClose && <button className="task-action task-action-danger" disabled={Boolean(actingTaskId)} onClick={() => void act(task, "cancel")}>{actingTaskId === task.id ? "处理中…" : "关闭任务"}</button>}{!primaryAction && !(task.actionReasons || []).length && !canClose ? "—" : null}</td>
         </tr>;
       }) : <tr><td colSpan={8}>没有匹配的真实任务。</td></tr>}</tbody></table></div>
       <footer className="task-pagination"><button disabled={state.page <= 1} onClick={() => update({ page: state.page - 1 })}>上一页</button><span>第 {state.page} / {payload.totalPages ?? "未知"} 页</span><button disabled={Boolean(payload.totalPages) && state.page >= Number(payload.totalPages)} onClick={() => update({ page: state.page + 1 })}>下一页</button></footer>
