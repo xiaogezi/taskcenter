@@ -4,6 +4,7 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 普通代码审查默认改用本地 `ocr_review.ocr_auto_review` MCP，保持免费模型优先和完整费用、积分、覆盖率回报；TaskCenter 正式独立审查继续绑定集中 `reviewer`、独立 Session 与同一 Subject/OCR 证据，普通自动审查不得冒充独立验收。
 - 统一版本号、更新日志、受控部署与正式发布规则：`package.json` 为版本单一来源，Changelog 只保留一个 `Unreleased`，部署继续使用 Git revision，SemVer 与 tag 仅在明确发版时更新。
 - TaskCenter MCP 集成改用稳定 launcher：从受控元数据解析当前不可变 release，避免开发工作树缺少依赖或发布切换导致 Codex 工具加载失败。
 
