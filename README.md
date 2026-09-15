@@ -345,6 +345,6 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 
 - `taskcenter_agent_capabilities`：查询 TaskCenter 的 task_protocol、hooks、resume、usage 与可信身份要求。结果是静态适配支持，不表示当前客户端已经配置或连接。
 - `taskcenter_client_context`：查询宿主注入的可信当前 Session。通用入口 `_meta["taskcenter/sessionId"]` 或每会话独立进程的 `TASKCENTER_CALLER_SESSION_ID`；保留 Codex 入口，并拒绝格式错误或冲突。
-- [Kimi Code CLI 接入与验收](integrations/kimi/README.md)：基础任务协议可用；Hook、恢复和用量仍为未适配，不虚报自动身份绑定。
+- [Kimi Code CLI 接入与验收](integrations/kimi/README.md)：提供 Hook + ACP 受管入口、PCA 生命周期、真实身份绑定与上下文用量快照；原生 Hook 需用户配置，费用缺失保持 unknown。
 
 保留任务核心、现有身份数据和 UUID 校验，无数据迁移；回滚代码提交即可撤回新增查询与配置。客户端能力声明不参与授权或绕过任务门禁。

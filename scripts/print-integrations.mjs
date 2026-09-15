@@ -132,6 +132,14 @@ export function claudeMcp(root = defaultRoot) {
   };
 }
 
+export function kimiHooks(root = defaultRoot, pcaRoot = "") {
+  const script = commandQuote(resolve(root, "scripts/kimi-context-hook.mjs"));
+  const command = `node ${script}`;
+  return ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"].map(event =>
+    `[[hooks]]\nevent = ${tomlString(event)}\ncommand = ${tomlString(command)}\ntimeout = 60`
+  ).join("\n\n") + (pcaRoot ? `\n\n# Set TASKCENTER_PCA_ROOT=${pcaRoot} in the client environment.` : "");
+}
+
 export function kimiMcp(root = defaultRoot) {
   return {
     mcpServers: {
@@ -177,4 +185,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   printSection("Claude Code settings.json entries", claudeSettings(root));
   printSection("Claude Code project .mcp.json", claudeMcp(root));
   printSection("Kimi Code CLI .kimi-code/mcp.json", kimiMcp(root));
+  printSection("Kimi Code CLI config.toml hooks", kimiHooks(root));
 }

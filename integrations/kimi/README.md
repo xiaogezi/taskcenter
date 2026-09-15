@@ -28,10 +28,39 @@
 
 不能在全局 mcp.json 固定一个 Session ID供所有会话使用；不能将父 Codex 的环境身份沿用到 Kimi。共享 MCP 进程必须由宿主按请求注入身份。非 UUID 原生身份需要单独设计稳定映射，当前不放宽可信 UUID 校验。
 
-当前没有核实 Kimi 自动注入上述 metadata/env，配置示例不会声称自动绑定成功。需要可信能力时先完成客户端级绑定，再用 `taskcenter_client_context` 核对真实身份。
+原生 Kimi MCP 配置不自动建立绑定；本节下方的受管 ACP 入口使用真实 Session 创建独立 MCP 进程并注入身份，已用 `taskcenter_client_context` 实测。
 
-## 能力与验证边界
+## Hook + ACP 完整接入（Kimi Code CLI 0.43.0）
 
-TaskCenter 的 Kimi Hook、自动恢复、日志/用量采集尚未适配，能力查询返回 false；这不代表 Kimi 产品自身没有这些功能。不会因这些可选能力缺失阻断基础任务管理，也不会自动安装 Hook 或修改用户配置。
+推荐通过受管 ACP 入口运行，无需改写用户全局配置：
 
-仓库测试通过真实 MCP stdio 与隔离 Control API 验证 Kimi 标识的登记、创建、进度、证据关闭及顺序任务；验证了通用身份解析和冲突拒绝。它是协议集成验证，不是 Kimi 模型实际调用工具的端到端实测。人工接入验收应在部署后按上述五步执行一次无项目写入的小任务，并核对账本 agent/session/task 归属。
+```bash
+node scripts/kimi-run.mjs --cwd /absolute/project --pca-root /absolute/ProjectContextAgent --prompt '本轮任务'
+node scripts/kimi-run.mjs --cwd /absolute/project --pca-root /absolute/ProjectContextAgent --session session_<UUID> --prompt '继续任务'
+```
+
+- 自动执行 TaskCenter 登记与任务准备、PCA attach/prepare/commit/detach；正式任务仍按合同创建，回流不等于验收。
+- 复用 PCA 的客户端无关 Hook 与独立 `kimi` 身份；macOS 使用 PCA 的 `mac-node.sh`，避免 SQLite ABI 与 Node 版本不一致。未配置 PCA 根目录或服务失败时有明确诊断，不阻塞 Kimi。
+- ACP 创建返回原生 `session_<UUID>`。ACP 始终使用完整原生 ID；TaskCenter/PCA 使用其中的 UUID，不随机生成、不散列、不读取历史日志。报告同时保留两种表示。其他格式拒绝绑定。
+- 新建后关闭空会话，再通过 `session/load` 将真实 UUID 注入该会话的 TaskCenter MCP 子进程；恢复前从 ACP 会话列表核对所属工作区。父 Codex 的 Session 环境变量不会传给 Kimi。
+- `Ctrl-C` 发送 ACP cancel；五秒未响应则关闭所启动的 ACP 进程。不把取消记为任务完成。
+- 权限请求只允许用户交互确认的 `allow_once`；无终端或未确认时拒绝。不会自动允许永久授权。宿主不声明文件或终端代理能力，未知回调拒绝。
+- 恢复时历史消息重放不进入本轮输出、摘要或用量。仅本轮最终响应的末尾 1200 字符交给 PCA 脱敏与回流；不读取会话正文。
+
+### 原生 Kimi 终端 Hook
+
+`npm run integrations:print` 也生成 `config.toml` 的四个 `[[hooks]]` 条目。用户可将其合并到 `~/.kimi-code/config.toml`，并在启动 Kimi 前设置 `TASKCENTER_PCA_ROOT`。脚本不改写用户配置。用 `kimi doctor config <候选配置>` 校验后，新会话生效。
+
+原生 Hook 支持自动登记/上下文准备/解绑；原生 Stop 未携带最终回答时提交 `automatic_empty`，不虚构知识摘要。完整最终回答回流由受管 ACP 提供。受管 ACP 设置进程标记跳过重复的原生 Hook。
+
+### 用量口径
+
+每次成功结束的受管调用将有界元数据写入 `.local/kimi-runs/<run-id>.json`：原生/TaskCenter Session、工作区、stopReason、取消状态及最后一次 ACP `usage_update` 快照。不保存 prompt、原始回答或认证信息。
+
+`used/size` 是上下文占用，不是本轮输入输出 Token；快照取最后值、不累加。Kimi 未提供 cost 时为 null，没有 usage_update 时整体为 unknown。当前不合并到 Codex 账单估算，也不回填历史用量。
+
+### 验证与边界
+
+本机已通过真实 Kimi ACP 的新建、同会话恢复、TaskCenter 可信身份工具调用与 PCA 上下文注入；单元/协议测试覆盖权限拒绝与单次允许、取消、工作区错配、历史重放隔离、Hook 依赖故障。
+
+这提供了受管 CLI 入口，不会将现有 Codex 看板派发按钮改为 Kimi，也不接管已经在另一终端运行的 Kimi 会话。使用恢复入口前结束该会话的其他交互。现有服务仍须按受控部署规则更新后才能通过稳定 launcher 加载新 MCP 能力声明。

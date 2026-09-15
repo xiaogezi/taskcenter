@@ -2193,7 +2193,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     assert.deepEqual(tool.inputSchema.properties.agent.enum, ["codex", "claude", "workbuddy", "kimi", "unknown"], tool.name);
   }
   const capabilities = JSON.parse(textOf(await client.callTool({ name: "taskcenter_agent_capabilities", arguments: { agent: "kimi" } })));
-  assert.deepEqual(capabilities.clients, [{ agent: "kimi", label: "Kimi Code CLI", hooks: false, resume: false, usage: false, task_protocol: true, trusted_identity: "explicit_host_binding_required" }]);
+  assert.deepEqual(capabilities.clients, [{ agent: "kimi", label: "Kimi Code CLI", hooks: true, resume: true, usage: true, integration_mode: "managed_acp", usage_scope: "context_snapshot", native_hooks_require_configuration: true, task_protocol: true, trusted_identity: "explicit_host_binding_required" }]);
   assert.equal(JSON.parse(textOf(await client.callTool({ name: "taskcenter_client_context", arguments: {}, _meta: { "taskcenter/sessionId": gateSessionId } }))).sessionId, gateSessionId);
   assert.equal(JSON.parse(textOf(await client.callTool({ name: "taskcenter_client_context", arguments: {} }))).error, "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE");
   const kimiRegister = JSON.parse(textOf(await client.callTool({ name: "taskcenter_session_register", arguments: {

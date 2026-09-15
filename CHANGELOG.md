@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- Kimi 增加 Hook + ACP 受管入口：自动登记、PCA 上下文注入与回流、同会话恢复、取消与逐次权限确认；按真实 `session_<UUID>` 绑定 MCP 身份，记录上下文用量快照，未知费用不估算，不读取历史正文或改写用户配置。
+
 - 集中多 Agent 标识与 TaskCenter 适配能力，新增能力查询、通用宿主 Session metadata 入口和身份查询；提供 Kimi Code CLI MCP 配置及基础闭环说明，保持 Codex 兼容和身份冲突拒绝，未适配能力明确标注。
 
 - MCP 的 Session 登记、任务开始与任务更新/报告接口支持 `agent: "kimi"`，保留 Kimi 身份，无需再登记为 `unknown`。
