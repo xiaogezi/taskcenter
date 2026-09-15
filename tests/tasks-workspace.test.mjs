@@ -48,6 +48,9 @@ test("需处理原因映射为可闭环的现有任务操作", () => {
   assert.deepEqual(taskActions({ status: "planned" }), [{ action: "start", label: "开始执行" }, { action: "cancel", label: "关闭任务" }]);
   assert.deepEqual(taskActions({ status: "cancelled", verificationStatus: "stale" }), [{ action: "start", label: "重新处理" }, { action: "archive", label: "归档" }]);
   assert.deepEqual(taskActions({ status: "done_claimed", reviewStatus: "changes_requested" }), []);
+  const oldReviewReasons = [{ code: "review_changes_requested" }, { code: "unresolved_findings" }];
+  assert.deepEqual(taskActions({ status: "done_claimed", actionReasons: oldReviewReasons }), []);
+  assert.deepEqual(taskActions({ status: "done_claimed", actionReasons: [...oldReviewReasons, { code: "acceptance_rejected" }] }), [{ action: "start", label: "返工处理" }]);
   assert.deepEqual(taskActions({ status: "in_progress", blocker: "等待外部输入" }), [{ action: "start", label: "重新处理" }, { action: "cancel", label: "关闭任务" }]);
 });
 

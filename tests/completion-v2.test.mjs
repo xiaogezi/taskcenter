@@ -195,7 +195,7 @@ test("Review v3 修复后 Subject 更新仍可关联上一轮基础 Attestation"
   const fixedSubject = { ...subject(), value: "artifact:v2" };
   reviewed = withCompletionState({ ...reviewed, currentSubject: fixedSubject });
   assert.equal(reviewed.reviewStatus, "stale");
-  assert.equal(reviewed.reviewStatus, "stale");
+  assert.ok(!reviewed.completionReadiness.reasons.includes("review_stale"), "审查过期不成为流程阻塞原因");
   reviewed = applyCompletionEvent(reviewed, { type: "review_cycle.reported", review_cycle: { cycle_id: "cycle-inc", subject_ref: fixedSubject, reviewer: actor("reviewer"), model: "luna", review_scope: "incremental", base_attestation_id: "att-full", phase: "completed", implementation_ready_at: "2026-08-17T01:10:00.000Z", review_requested_at: "2026-08-17T01:11:00.000Z", review_started_at: "2026-08-17T01:12:00.000Z", review_finished_at: "2026-08-17T01:13:00.000Z", outcome: "approved" } });
   reviewed = applyCompletionEvent(reviewed, { type: "review.reported", review_attestation: { id: "att-inc", reviewer: actor("reviewer"), subject_ref: fixedSubject, scope: "a.mjs", review_contract_version: "v3", cycle_id: "cycle-inc", cycle_number: 2, review_scope: "incremental", base_attestation_id: "att-full", reviewed_files: ["a.mjs"], changed_files_since_previous_review: ["a.mjs"], findings: [], spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unresolved_findings: 0, unverified_requirements: [], observed_at: at } });
   assert.equal(reviewed.reviewAttestations[1].base_attestation_id, "att-full");
