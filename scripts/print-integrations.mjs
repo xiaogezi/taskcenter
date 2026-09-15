@@ -132,6 +132,18 @@ export function claudeMcp(root = defaultRoot) {
   };
 }
 
+export function kimiMcp(root = defaultRoot) {
+  return {
+    mcpServers: {
+      taskcenter: {
+        command: "node",
+        args: [resolve(root, "scripts", "taskcenter-mcp-launcher.mjs")],
+        env: { TASKCENTER_AGENT: "kimi" },
+      },
+    },
+  };
+}
+
 export function cliCommands(root = defaultRoot) {
   const mcp = commandQuote(resolve(root, "scripts", "taskcenter-mcp-launcher.mjs"));
   return {
@@ -164,4 +176,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   printSection("Claude Code MCP CLI", commands.claude);
   printSection("Claude Code settings.json entries", claudeSettings(root));
   printSection("Claude Code project .mcp.json", claudeMcp(root));
+  printSection("Kimi Code CLI .kimi-code/mcp.json", kimiMcp(root));
 }

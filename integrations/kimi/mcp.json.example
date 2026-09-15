@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "taskcenter": {
+      "command": "node",
+      "args": ["__TASKCENTER_ROOT__/scripts/taskcenter-mcp-launcher.mjs"],
+      "env": { "TASKCENTER_AGENT": "kimi" }
+    }
+  }
+}

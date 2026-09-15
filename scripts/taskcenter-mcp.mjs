@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { resolveTrustedMcpSession } from "./mcp-session-context.mjs";
+import { AGENT_IDS, agentCapabilities } from "./agent-clients.mjs";
 import { TASKCENTER_VERSION } from "./version.mjs";
 import { recommendTaskClose } from "./session-lifecycle.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
@@ -65,7 +66,7 @@ const taskFields = {
   bug: z.object(Object.fromEntries(["source", "version", "preconditions", "steps", "actual", "expected", "acceptanceSteps", "testArtifact", "targetBranch"].map(key => [key, z.string().min(1).max(3000)]))).strict().optional(),
   response_mode: responseMode,
   session_id: z.string().min(1).max(200).optional(),
-  agent: z.enum(["codex", "claude", "workbuddy", "kimi", "unknown"]).optional(),
+  agent: z.enum(AGENT_IDS).optional(),
   provider: z.string().max(80).optional(),
   model: z.string().max(120).optional(),
   workspace: z.string().max(4_096).optional(),
@@ -117,10 +118,20 @@ const taskFields = {
   workspace_policy: z.object({ version: z.string().max(80).optional(), require_independent_review: z.boolean().optional(), allowed_acceptance_sources: z.array(z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"])).optional(), allowed_acceptance_actors: z.array(z.string().max(200)).optional() }).strict().optional(),
 };
 
+server.registerTool("taskcenter_agent_capabilities", {
+  description: "查询 TaskCenter 已实现的客户端适配能力；不代表客户端已连接，也不授予权限。",
+  inputSchema: z.object({ agent: z.enum(AGENT_IDS).optional() }).strict(),
+}, async ({ agent }) => result({ clients: (agent ? [agent] : AGENT_IDS).map(agentCapabilities) }));
+
+server.registerTool("taskcenter_client_context", {
+  description: "读取宿主注入的可信 Session 身份；缺失或冲突时返回错误，不生成或猜测 ID。",
+  inputSchema: z.object({}).strict(),
+}, async (_input, extra) => result(resolveTrustedMcpSession(extra)));
+
 server.registerTool("taskcenter_session_register", {
   title: "注册 TaskCenter Session",
   description: "开始任务前登记当前 Session、工作目录和任务协议。",
-  inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(["codex", "claude", "workbuddy", "kimi", "unknown"]).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), project_id: z.string().max(200).optional(), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional(), response_mode: responseMode }).strict(),
+  inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(AGENT_IDS).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), project_id: z.string().max(200).optional(), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional(), response_mode: responseMode }).strict(),
 }, async (input) => report("session.register", input));
 
 server.registerTool("taskcenter_task_begin", {
@@ -141,7 +152,7 @@ server.registerTool("taskcenter_task_begin", {
     review_policy: z.enum(["not_required", "recommended", "required"]).default("recommended"),
     execution_environment: z.enum(["local", "worktree", "ci", "remote", "other"]).optional(),
     verification_plan: z.array(verificationRequirement).max(30).default([]),
-    agent: z.enum(["codex", "claude", "workbuddy", "kimi", "unknown"]).default("unknown"),
+    agent: z.enum(AGENT_IDS).default("unknown"),
     provider: z.string().max(80).optional(),
     model: z.string().max(120).optional(),
     project_id: z.string().max(200).optional(),

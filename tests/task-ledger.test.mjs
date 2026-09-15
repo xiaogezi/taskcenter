@@ -71,6 +71,11 @@ test("MCP Session 上下文：请求 threadId 优先、兼容环境变量且冲�
     TASKCENTER_CALLER_SESSION_ID: otherSessionId,
   }).error, "TASKCENTER_SESSION_CONTEXT_MISMATCH");
   assert.equal(resolveTrustedMcpSession({}, {}).error, "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE");
+  assert.deepEqual(resolveTrustedMcpSession({ _meta: { "taskcenter/sessionId": requestSessionId } }, {}), { sessionId: requestSessionId });
+  assert.equal(resolveTrustedMcpSession({ _meta: { "taskcenter/sessionId": requestSessionId, threadId: otherSessionId } }, {}).error, "TASKCENTER_SESSION_CONTEXT_MISMATCH");
+  assert.equal(resolveTrustedMcpSession({ _meta: { "taskcenter/sessionId": "" } }, {}).error, "TASKCENTER_SESSION_CONTEXT_INVALID");
+  assert.equal(resolveTrustedMcpSession({ _meta: { "taskcenter/sessionId": requestSessionId } }, { TASKCENTER_CALLER_SESSION_ID: otherSessionId }).error, "TASKCENTER_SESSION_CONTEXT_MISMATCH");
+  assert.equal(resolveTrustedMcpSession({ session_id: requestSessionId }, {}).error, "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE");
 });
 
 test("Control API 返回单任务完整详情，摘要列表仍不携带证据", async (context) => {
@@ -2187,6 +2192,10 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   for (const tool of tools.tools.filter((item) => item.inputSchema.properties?.agent)) {
     assert.deepEqual(tool.inputSchema.properties.agent.enum, ["codex", "claude", "workbuddy", "kimi", "unknown"], tool.name);
   }
+  const capabilities = JSON.parse(textOf(await client.callTool({ name: "taskcenter_agent_capabilities", arguments: { agent: "kimi" } })));
+  assert.deepEqual(capabilities.clients, [{ agent: "kimi", label: "Kimi Code CLI", hooks: false, resume: false, usage: false, task_protocol: true, trusted_identity: "explicit_host_binding_required" }]);
+  assert.equal(JSON.parse(textOf(await client.callTool({ name: "taskcenter_client_context", arguments: {}, _meta: { "taskcenter/sessionId": gateSessionId } }))).sessionId, gateSessionId);
+  assert.equal(JSON.parse(textOf(await client.callTool({ name: "taskcenter_client_context", arguments: {} }))).error, "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE");
   const kimiRegister = JSON.parse(textOf(await client.callTool({ name: "taskcenter_session_register", arguments: {
     session_id: "sess-begin", agent: "kimi", workspace: "/work",
   } })));
@@ -2194,7 +2203,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
 
   const beginArguments = {
     session_id: "sess-begin", agent: "kimi", workspace: "/work", event_id: "begin-first", task_id: "task-begin-first",
-    title: "第一任务", goal: "完成第一任务", scope: ["scripts"], acceptance_criteria: ["完成"], plan: ["执行"],
+    title: "第一任务", goal: "完成第一任务", scope: ["scripts"], acceptance_criteria: [{ id: "done", description: "完成", required: true }], plan: ["执行"],
   };
   const begun = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_begin", arguments: beginArguments })));
   assert.deepEqual({ task_id: begun.task_id, status: begun.status, next: begun.next, context_ref: begun.context_ref }, {
@@ -2208,7 +2217,16 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     arguments: { ...beginArguments, event_id: "begin-conflict", task_id: "task-begin-conflict", title: "冲突任务" },
   })));
   assert.match(conflict.message, /ACTIVE_TASK_CONFLICT/);
-  await client.callTool({ name: "taskcenter_task_update", arguments: { session_id: "sess-begin", task_id: "task-begin-first", agent: "kimi", status: "cancelled" } });
+  const progress = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_report", arguments: { session_id: "sess-begin", task_id: "task-begin-first", agent: "kimi", status: "in_progress", current_step: "完成验证" } })));
+  assert.equal(progress.accepted, true);
+  const kimiClosed = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_close", arguments: {
+    session_id: "sess-begin", task_id: "task-begin-first", agent: "kimi", tests: ["isolated protocol passed"], evidence: ["test:protocol"],
+    close_requirements: [{ requirement_id: "done", status: "passed", evidence_refs: ["test:protocol"] }],
+  } })));
+  assert.equal(kimiClosed.accepted, true);
+  assert.equal(kimiClosed.status, "done_claimed");
+  assert.equal(loadTasks().find((task) => task.id === "task-begin-first").agent, "kimi");
+  assert.equal(loadSessionRegistry()["sess-begin"].agent, "kimi");
   const nextBegun = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_task_begin",
     arguments: { ...beginArguments, event_id: "begin-next", task_id: "task-begin-next", title: "下一任务", goal: "顺序创建" },

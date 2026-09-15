@@ -338,3 +338,13 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 准备、执行开始、失败和 receipt 审计位于运行态数据目录的 `session-switch.jsonl`；消费证据位于任务事件账本。记录损坏、receipt 过期、关闭证据变化或工作区变脏均拒绝。执行开始后中断或恢复失败不自动重试压缩；旧绑定保留，等待检查点过期后重新准备，先排除宿主故障。账本写入中断而消费事件已持久化时返回 `SWITCH_LEDGER_RECOVERY_REQUIRED`，需恢复一致账本后重试，不能重发一个新目标绕过。部署会保留运行态数据；测试使用独立目录。协议信任明确配置的本机 App Server、Session 文件和本地控制面，不声称防御可任意篡改这些文件的本机进程。
 
 宿主接口依据：[官方 Codex App Server — Trigger thread compaction](https://learn.chatgpt.com/docs/app-server#trigger-thread-compaction)；调用字段同时使用本机 `codex app-server generate-json-schema --experimental` 核对。适配器的隔离协议测试不是桌面宿主实测；未配置真实端点时，能力仍不可用，原绑定保持不变。
+
+### 多 Agent 基础接入
+
+客户端标识和已实现适配能力集中在 `scripts/agent-clients.mjs`，MCP schema 共用该列表。新增客户端只维护此定义，并补充对应配置与协议测试；agent 名称不授予权限，provider/model 仍独立上报。
+
+- `taskcenter_agent_capabilities`：查询 TaskCenter 的 task_protocol、hooks、resume、usage 与可信身份要求。结果是静态适配支持，不表示当前客户端已经配置或连接。
+- `taskcenter_client_context`：查询宿主注入的可信当前 Session。通用入口 `_meta["taskcenter/sessionId"]` 或每会话独立进程的 `TASKCENTER_CALLER_SESSION_ID`；保留 Codex 入口，并拒绝格式错误或冲突。
+- [Kimi Code CLI 接入与验收](integrations/kimi/README.md)：基础任务协议可用；Hook、恢复和用量仍为未适配，不虚报自动身份绑定。
+
+保留任务核心、现有身份数据和 UUID 校验，无数据迁移；回滚代码提交即可撤回新增查询与配置。客户端能力声明不参与授权或绕过任务门禁。

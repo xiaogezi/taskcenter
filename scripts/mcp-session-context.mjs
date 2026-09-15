@@ -7,19 +7,21 @@ function normalizeSessionId(value) {
 
 export function resolveTrustedMcpSession(extra, env = process.env) {
   const metadata = extra?._meta;
-  const hasThreadId = metadata !== null
-    && typeof metadata === "object"
-    && Object.hasOwn(metadata, "threadId");
-  const metadataSessionId = hasThreadId ? normalizeSessionId(metadata.threadId) : "";
+  // Only transport metadata is accepted; tool arguments never establish identity.
+  const metadataKeys = ["threadId", "taskcenter/sessionId"];
+  const metadataSessionIds = metadataKeys
+    .filter((key) => metadata !== null && typeof metadata === "object" && Object.hasOwn(metadata, key))
+    .map((key) => normalizeSessionId(metadata[key]));
+  const metadataSessionId = metadataSessionIds[0] || "";
   const environmentSessionIds = ENV_SESSION_KEYS
     .map((key) => normalizeSessionId(env[key]))
     .filter(Boolean);
   const uniqueEnvironmentSessionIds = [...new Set(environmentSessionIds)];
 
-  if (hasThreadId && !UUID_PATTERN.test(metadataSessionId)) {
+  if (metadataSessionIds.some((sessionId) => !UUID_PATTERN.test(sessionId))) {
     return {
       error: "TASKCENTER_SESSION_CONTEXT_INVALID",
-      message: "Codex MCP 请求中的可信 threadId 不是有效 UUID。",
+      message: "MCP 宿主注入的可信 Session ID 不是有效 UUID。",
     };
   }
   if (uniqueEnvironmentSessionIds.some((sessionId) => !UUID_PATTERN.test(sessionId))) {
@@ -28,7 +30,7 @@ export function resolveTrustedMcpSession(extra, env = process.env) {
       message: "MCP 运行时注入的 Session ID 不是有效 UUID。",
     };
   }
-  if (uniqueEnvironmentSessionIds.length > 1) {
+  if (uniqueEnvironmentSessionIds.length > 1 || new Set(metadataSessionIds).size > 1) {
     return {
       error: "TASKCENTER_SESSION_CONTEXT_MISMATCH",
       message: "MCP 运行时注入了相互冲突的 Session ID。",
@@ -39,7 +41,7 @@ export function resolveTrustedMcpSession(extra, env = process.env) {
   if (metadataSessionId && environmentSessionId && metadataSessionId !== environmentSessionId) {
     return {
       error: "TASKCENTER_SESSION_CONTEXT_MISMATCH",
-      message: "Codex MCP 请求 threadId 与运行时 Session ID 不一致。",
+      message: "MCP 请求 Session ID 与运行时 Session ID 不一致。",
     };
   }
 
@@ -48,6 +50,6 @@ export function resolveTrustedMcpSession(extra, env = process.env) {
     ? { sessionId }
     : {
         error: "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE",
-        message: "MCP 运行时没有可信的当前 Codex Session ID。",
+        message: "MCP 运行时没有可信的当前 Session ID。",
       };
 }

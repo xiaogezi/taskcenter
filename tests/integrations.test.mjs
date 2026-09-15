@@ -3,6 +3,7 @@ import test from "node:test";
 import { join, resolve } from "node:path";
 import {
   claudeMcp,
+  kimiMcp,
   claudeSettings,
   cliCommands,
   codexHooks,
@@ -13,6 +14,8 @@ import {
 const root = resolve("Task Center");
 
 test("integration config generators use the selected absolute root", () => {
+  assert.equal(kimiMcp(root).mcpServers.taskcenter.args[0], join(root, "scripts", "taskcenter-mcp-launcher.mjs"));
+  assert.deepEqual(kimiMcp(root).mcpServers.taskcenter.env, { TASKCENTER_AGENT: "kimi" });
   assert.ok(codexToml(root).includes(join(root, "scripts", "taskcenter-mcp-launcher.mjs").replaceAll("\\", "\\\\")));
   assert.equal(
     claudeMcp(root).mcpServers.taskcenter.args[0],
@@ -45,6 +48,7 @@ test("checked-in JSON integration examples are valid", async () => {
     "integrations/codex/hooks.json.example",
     "integrations/codex/scheduled-readonly-hooks.json.example",
     "integrations/claude/mcp.json.example",
+    "integrations/kimi/mcp.json.example",
     "integrations/claude/settings.json.example",
   ]) {
     const content = await readFile(path, "utf8");

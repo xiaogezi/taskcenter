@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 集中多 Agent 标识与 TaskCenter 适配能力，新增能力查询、通用宿主 Session metadata 入口和身份查询；提供 Kimi Code CLI MCP 配置及基础闭环说明，保持 Codex 兼容和身份冲突拒绝，未适配能力明确标注。
+
 - MCP 的 Session 登记、任务开始与任务更新/报告接口支持 `agent: "kimi"`，保留 Kimi 身份，无需再登记为 `unknown`。
 
 - 修复旧接口返回的审查原因仍可能触发任务重新处理的问题；明确验证审查过期不阻塞流程，移除重复测试断言。
