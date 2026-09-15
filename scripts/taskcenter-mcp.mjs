@@ -65,7 +65,7 @@ const taskFields = {
   bug: z.object(Object.fromEntries(["source", "version", "preconditions", "steps", "actual", "expected", "acceptanceSteps", "testArtifact", "targetBranch"].map(key => [key, z.string().min(1).max(3000)]))).strict().optional(),
   response_mode: responseMode,
   session_id: z.string().min(1).max(200).optional(),
-  agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(),
+  agent: z.enum(["codex", "claude", "workbuddy", "kimi", "unknown"]).optional(),
   provider: z.string().max(80).optional(),
   model: z.string().max(120).optional(),
   workspace: z.string().max(4_096).optional(),
@@ -120,7 +120,7 @@ const taskFields = {
 server.registerTool("taskcenter_session_register", {
   title: "注册 TaskCenter Session",
   description: "开始任务前登记当前 Session、工作目录和任务协议。",
-  inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), project_id: z.string().max(200).optional(), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional(), response_mode: responseMode }).strict(),
+  inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(["codex", "claude", "workbuddy", "kimi", "unknown"]).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), project_id: z.string().max(200).optional(), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional(), response_mode: responseMode }).strict(),
 }, async (input) => report("session.register", input));
 
 server.registerTool("taskcenter_task_begin", {
@@ -141,7 +141,7 @@ server.registerTool("taskcenter_task_begin", {
     review_policy: z.enum(["not_required", "recommended", "required"]).default("recommended"),
     execution_environment: z.enum(["local", "worktree", "ci", "remote", "other"]).optional(),
     verification_plan: z.array(verificationRequirement).max(30).default([]),
-    agent: z.enum(["codex", "claude", "workbuddy", "unknown"]).default("unknown"),
+    agent: z.enum(["codex", "claude", "workbuddy", "kimi", "unknown"]).default("unknown"),
     provider: z.string().max(80).optional(),
     model: z.string().max(120).optional(),
     project_id: z.string().max(200).optional(),

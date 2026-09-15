@@ -2184,8 +2184,16 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(registerPayload.accepted, true);
   assert.equal(registerPayload.task, null);
 
+  for (const tool of tools.tools.filter((item) => item.inputSchema.properties?.agent)) {
+    assert.deepEqual(tool.inputSchema.properties.agent.enum, ["codex", "claude", "workbuddy", "kimi", "unknown"], tool.name);
+  }
+  const kimiRegister = JSON.parse(textOf(await client.callTool({ name: "taskcenter_session_register", arguments: {
+    session_id: "sess-begin", agent: "kimi", workspace: "/work",
+  } })));
+  assert.equal(kimiRegister.accepted, true);
+
   const beginArguments = {
-    session_id: "sess-begin", workspace: "/work", event_id: "begin-first", task_id: "task-begin-first",
+    session_id: "sess-begin", agent: "kimi", workspace: "/work", event_id: "begin-first", task_id: "task-begin-first",
     title: "第一任务", goal: "完成第一任务", scope: ["scripts"], acceptance_criteria: ["完成"], plan: ["执行"],
   };
   const begun = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_begin", arguments: beginArguments })));
@@ -2194,12 +2202,13 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   });
   assert.equal(JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_begin", arguments: beginArguments }))).task_id, "task-begin-first");
   assert.equal(loadTasks().filter((task) => task.sessionId === "sess-begin").length, 1);
+  assert.equal(loadTasks().find((task) => task.id === "task-begin-first").agent, "kimi");
   const conflict = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_task_begin",
     arguments: { ...beginArguments, event_id: "begin-conflict", task_id: "task-begin-conflict", title: "冲突任务" },
   })));
   assert.match(conflict.message, /ACTIVE_TASK_CONFLICT/);
-  await client.callTool({ name: "taskcenter_task_update", arguments: { session_id: "sess-begin", task_id: "task-begin-first", status: "cancelled" } });
+  await client.callTool({ name: "taskcenter_task_update", arguments: { session_id: "sess-begin", task_id: "task-begin-first", agent: "kimi", status: "cancelled" } });
   const nextBegun = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_task_begin",
     arguments: { ...beginArguments, event_id: "begin-next", task_id: "task-begin-next", title: "下一任务", goal: "顺序创建" },

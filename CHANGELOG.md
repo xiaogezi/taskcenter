@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- MCP 的 Session 登记、任务开始与任务更新/报告接口支持 `agent: "kimi"`，保留 Kimi 身份，无需再登记为 `unknown`。
+
 - 修复旧接口返回的审查原因仍可能触发任务重新处理的问题；明确验证审查过期不阻塞流程，移除重复测试断言。
 
 - 所有任务的 Review 均改为非阻塞信息，包括 `strict` 与历史 `required` 合同；审查缺失、过期、拒绝或未解决发现不再阻断完成判断、待验收分组或自动产生返工要求。审查真实性、验证、权限和独立验收约束继续保留，不批量改写历史记录。
