@@ -270,27 +270,8 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
       if (["standard", "strict"].includes(task.workflowProfile) && !hasPortableEvidence(claim)) reasons.push("portable_evidence_missing");
     }
   }
-  if (reviewRequired(task)) {
-    if (task.review_status === "pending") reasons.push("review_pending");
-    if (task.review_status === "changes_requested") reasons.push("review_changes_requested");
-    const review = (task.reviewAttestations || []).filter((item) => item.effective_review !== false).at(-1);
-    if (!review) reasons.push("required_review_missing");
-    else {
-      if (currentSubject && !sameSubject(review.subject_ref, currentSubject)) { staleEvidence.push(review.id); reasons.push("review_stale"); }
-      if (review.unresolved_findings > 0) { unresolvedFindings.push(...(review.finding_refs?.length ? review.finding_refs : [review.id])); reasons.push("unresolved_findings_exist"); }
-      if (["v2", "v3"].includes(review.review_contract_version)) {
-        if (review.spec_verdict !== "compliant") reasons.push("review_spec_not_compliant");
-        if (review.quality_verdict !== "approved") reasons.push("review_quality_not_approved");
-        if (review.unverified_requirements.length) {
-          missingRequirements.push(...review.unverified_requirements.map((item) => item.requirement_id));
-          reasons.push("review_requirements_unverified");
-        }
-      }
-      if (review.verdict === "rejected") reasons.push("review_rejected");
-      else if (review.verdict !== "approved") reasons.push("review_changes_requested");
-      if (task.workspacePolicy?.requireIndependentReview !== false && !independent(task.ownerActor, review.reviewer)) reasons.push("reviewer_not_independent");
-    }
-  }
+  // Review is advisory for every profile, including historical required contracts.
+  // Keep reviewStatus/attestations truthful without turning them into workflow gates.
   const claimReasons = [...reasons];
   if (task.bug && bugClosure(task, reasons.length === 0)?.status !== "completed") claimReasons.push("bug_acceptance_or_merge_pending");
   return {

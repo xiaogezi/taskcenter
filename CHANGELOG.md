@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 所有任务的 Review 均改为非阻塞信息，包括 `strict` 与历史 `required` 合同；审查缺失、过期、拒绝或未解决发现不再阻断完成判断、待验收分组或自动产生返工要求。审查真实性、验证、权限和独立验收约束继续保留，不批量改写历史记录。
+
 - 本项目协作默认由用户安排外部 Agent Review，实施 Agent 不自动派发、等待、导入或处理审查结果；补充外部审查注意事项。此调整仅影响协作规则，不修改接口或历史审查策略。
 
 - 已完成任务支持通过 `taskcenter_task_resume` 在当前或新 Session 接续原交付，恢复执行状态且不受等待时长限制；提交后的合并、验证无需重复建任务，仍校验任务归属、工作区和单活跃任务。Hook 拦截提示优先引导接续原任务。

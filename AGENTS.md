@@ -30,7 +30,7 @@ Review is arranged by the user through external Agents. Unless explicitly asked 
 
 Create a formal child task only when the work has an independently owned deliverable, lifecycle, acceptance criteria, or handoff boundary. Delegation is not permission to mutate the parent task contract, completion state, review, or acceptance.
 
-`done_claimed` is only the execution claim. Report acceptance-criterion results and verification claims against the current `SubjectReference`; when review is required, follow the active Workspace Policy. Final acceptance must use the independently authorized acceptance API; Context is one optional acceptance adapter, not a core dependency.
+`done_claimed` is only the execution claim. Report acceptance-criterion results and verification claims against the current `SubjectReference`. Review never blocks completion, commit, handoff, merge eligibility or authorized deployment, including strict and historical required tasks. Keep Review status and evidence truthful; do not automatically process external findings. This supersedes any earlier blocking-review wording in these rules. Final acceptance must use the independently authorized acceptance API; Context is one optional acceptance adapter, not a core dependency.
 
 Exception: when the Hook explicitly reports `TaskCenter 门禁豁免白名单放行`, the current real Session may proceed without registration or an active task. Do not infer this exception from the content-reading allowlist; only the separate local gate-exemption allowlist grants it. Command safety checks still apply.
 

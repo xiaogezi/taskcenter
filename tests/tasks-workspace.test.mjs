@@ -47,7 +47,7 @@ test("需处理原因映射为可闭环的现有任务操作", () => {
   assert.deepEqual(taskActions({ status: "blocked" }), [{ action: "start", label: "恢复执行" }, { action: "cancel", label: "关闭任务" }]);
   assert.deepEqual(taskActions({ status: "planned" }), [{ action: "start", label: "开始执行" }, { action: "cancel", label: "关闭任务" }]);
   assert.deepEqual(taskActions({ status: "cancelled", verificationStatus: "stale" }), [{ action: "start", label: "重新处理" }, { action: "archive", label: "归档" }]);
-  assert.deepEqual(taskActions({ status: "done_claimed", reviewStatus: "changes_requested" }), [{ action: "start", label: "返工处理" }]);
+  assert.deepEqual(taskActions({ status: "done_claimed", reviewStatus: "changes_requested" }), []);
   assert.deepEqual(taskActions({ status: "in_progress", blocker: "等待外部输入" }), [{ action: "start", label: "重新处理" }, { action: "cancel", label: "关闭任务" }]);
 });
 
@@ -58,10 +58,15 @@ test("四轴状态与需处理判定忽略通用 completion pending", () => {
   assert.equal(taskMatchesBucket(task, "attention"), false);
 });
 
-test("失败或过期的验证、审查和验收进入需处理", () => {
-  for (const task of [{ verificationStatus: "failed" }, { verificationStatus: "stale" }, { reviewStatus: "changes_requested" }, { reviewStatus: "stale" }, { acceptanceStatus: "rejected" }]) {
+test("失败或过期的验证和验收进入需处理，Review 不干预流程", () => {
+  for (const task of [{ verificationStatus: "failed" }, { verificationStatus: "stale" }, { acceptanceStatus: "rejected" }]) {
     assert.equal(actionReasons(task).length > 0, true);
     assert.equal(taskViewBuckets(task).attention, true);
+  }
+  for (const reviewStatus of ["pending", "stale", "changes_requested", "rejected"]) {
+    const task = { status: "done_claimed", verificationStatus: "passed", acceptanceStatus: "pending", reviewStatus, reviewAttestations: [{ unresolvedFindings: 2 }] };
+    assert.deepEqual(actionReasons(task), []);
+    assert.equal(taskViewBuckets(task).awaiting_acceptance, true);
   }
 });
 

@@ -114,9 +114,10 @@ test("验证证据绑定的 legacy revision 不得改写当前结构化 SubjectR
   assert.equal(packet.legacyCurrentRevision, "legacy-revision", "旧 revision 只作为兼容审计字段保留");
 });
 
-test("required review 缺失、有 findings 或旧 revision 时均不得 ready", () => {
+test("required review 不阻塞流程，审查真实性与验证失效校验仍保留", () => {
   const required = applyCompletionEvent(standardTask({ reviewPolicy: "required" }), verification());
-  assert.ok(required.completionReadiness.reasons.includes("required_review_missing"));
+  assert.equal(required.completionReadiness.ready, true);
+  assert.equal(required.reviewStatus, "pending");
   assert.throws(() => applyCompletionEvent(required, {
     type: "review.reported",
     created_at: "2026-08-17T00:03:00.000Z",
@@ -137,7 +138,21 @@ test("required review 缺失、有 findings 或旧 revision 时均不得 ready",
   assert.equal(reviewed.completionReadiness.ready, true);
   const changed = applyCompletionEvent(reviewed, { type: "task.update", created_at: "2026-08-17T00:04:00.000Z", revision: revisionB });
   assert.equal(changed.reviewStatus, "stale");
-  assert.ok(changed.completionReadiness.reasons.includes("review_stale"));
+  assert.ok(!changed.completionReadiness.reasons.includes("review_stale"));
+  assert.ok(changed.completionReadiness.reasons.includes("verification_stale"));
+});
+
+test("所有profile和历史审查策略均不因Review状态阻塞", () => {
+  for (const workflowProfile of ["fast", "standard", "strict"]) {
+    for (const reviewPolicy of ["not_required", "recommended", "required"]) {
+      for (const verdict of [null, "changes_requested", "rejected"]) {
+        const reviewAttestations = verdict ? [{ id: "external", reviewer: "reviewer", revision: revisionA, scope: "all", verdict, unresolved_findings: verdict === "changes_requested" ? 1 : 0, observed_at: "2026-08-17T00:00:00Z" }] : [];
+        const task = applyCompletionEvent(standardTask({ workflowProfile, reviewPolicy, reviewAttestations }), verification());
+        assert.equal(task.completionReadiness.completionClaim.allowed, true, `${workflowProfile}/${reviewPolicy}/${verdict}`);
+        assert.notEqual(task.reviewStatus, "passed");
+      }
+    }
+  }
 });
 
 test("老任务查询迁移为 legacy 且不会误标 accepted", () => {

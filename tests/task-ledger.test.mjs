@@ -2558,7 +2558,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     },
   });
   const beforeReview = await client.callTool({ name: "taskcenter_task_completion_readiness", arguments: { task_id: "task-mcp-v2" } });
-  assert.equal(JSON.parse(textOf(beforeReview)).completionReadiness.ready, false);
+  assert.equal(JSON.parse(textOf(beforeReview)).completionReadiness.ready, true, "真实 MCP 流程在审查前即可完成");
   const reviewSubject = { type: "external", value: "revision-mcp", observed_at: "2026-08-17T00:00:00.000Z" };
   const cycleReport = await client.callTool({
     name: "taskcenter_review_cycle_report",
