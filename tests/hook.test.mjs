@@ -160,6 +160,26 @@ test("预算到限仍允许实现验证提交及任务更新，prepare 返回绑
   assert.equal(targetPrepared.new_session_recommended, true);
   assert.equal(targetPrepared.handoff_required, false);
   assert.equal((await run("exec_command", { cmd: "touch x" })).code, 2, "原 Session 不再具有写入归属");
+  const targetRun = (tool_name, tool_input) => runHook("pre-tool-use", "codex", { session_id: target, cwd: "/work", tool_name, tool_input });
+  const finish = await post({ type: "task.update", session_id: target, task_id: created.task.id, status: "done_claimed", evidence: ["fixture completion"], due_at: "2020-01-01T00:00:00.000Z" });
+  assert.equal(finish.status, 200);
+  const denied = await targetRun("exec_command", { cmd: "git merge feature" });
+  assert.equal(denied.code, 2);
+  assert.match(denied.stderr, /taskcenter_task_resume/);
+  assert.match((await runHook("user-prompt-submit", "codex", { session_id: target, cwd: "/work" })).stdout, /taskcenter_task_resume/);
+  assert.equal((await targetRun("mcp__taskcenter__taskcenter_task_resume", {})).code, 0);
+  assert.equal((await resume("wrong-owner")).status, 409);
+  const other = await post({ type: "task.create", session_id: target, workspace: "/work", task_id: "resume-conflict", title: "另一交付", goal: "另一交付", plan: ["implement"], acceptance_criteria: ["pass"], contract_version: "v2", scope: ["other"], non_goals: [], review_policy: "not_required", workflow_profile: "fast" });
+  assert.equal(other.status, 201);
+  assert.equal((await resume(target)).status, 409, "同 Session 接续不能绕过单活跃任务限制");
+  assert.equal((await post({ type: "task.update", session_id: target, task_id: "resume-conflict", status: "cancelled" })).status, 200);
+  const continued = await resume(target);
+  assert.equal(continued.status, 200);
+  const continuedTask = await continued.json();
+  assert.equal(continuedTask.task_id, created.task.id);
+  assert.equal(continuedTask.active_task.status, "in_progress");
+  assert.equal((await targetRun("exec_command", { cmd: "git merge feature" })).code, 0, "同一任务接续后合并命令可通过门禁；不实际执行 Git");
+  assert.equal((await resume(target)).status, 200, "已接续调用可重试");
   // Core closure simulates an independently authorized close without weakening ownership gates.
   const closed = await fetch(`${base}/core/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify({ type: "task.update", session_id: target, task_id: created.task.id, status: "cancelled" }) });
   assert.equal(closed.status, 200);

@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 已完成任务支持通过 `taskcenter_task_resume` 在当前或新 Session 接续原交付，恢复执行状态且不受等待时长限制；提交后的合并、验证无需重复建任务，仍校验任务归属、工作区和单活跃任务。Hook 拦截提示优先引导接续原任务。
+
 - 任务工作区状态标签在窄列中保持完整显示；计划、阻塞和其他需处理任务可直接开始、恢复、重新处理或返工，已取消任务可二次确认归档，活跃任务可二次确认关闭；任务状态操作继续受同源代理与 Control API 校验保护。
 - 归档任务不再进入默认任务列表和看板统计；任务详情与 append-only 事件历史继续保留，避免已完成任务长期堆积为待验证、待验收。
 - 普通代码审查默认改用本地 `ocr_review.ocr_auto_review` MCP，保持免费模型优先和完整费用、积分、覆盖率回报；TaskCenter 正式独立审查继续绑定集中 `reviewer`、独立 Session 与同一 Subject/OCR 证据，普通自动审查不得冒充独立验收。

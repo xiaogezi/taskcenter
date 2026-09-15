@@ -1070,7 +1070,7 @@ async function requireTask() {
   if (task) return task;
   const delegated = await resolveCurrentDelegation();
   if (delegated?.task && delegated?.delegation) return { ...delegated.task, delegation: delegated.delegation };
-  throw new Error("该命令不满足 L0 确定性只读规则，请拆成单条只读命令，或创建 fast/standard/strict 任务。当前 Session 无活跃任务或有效 delegation；CLI 执行器应先领取 taskcenter_delegation_grant，不要为普通 CLI Run 重复创建正式任务。");
+  throw new Error("该命令不满足 L0 确定性只读规则。当前 Session 无活跃任务或有效 delegation；同一交付提交后的合并、验证等后续操作，请调用 taskcenter_task_resume 接续原 task_id（无时间限制），只有新的独立目标才创建 fast/standard/strict 任务。CLI 执行器应先领取 taskcenter_delegation_grant，不要为普通 CLI Run 重复创建正式任务。");
 }
 
 async function prepareCurrentTask() {
@@ -1092,7 +1092,10 @@ async function provideTaskPreparationContext() {
   }
   const prepared = await prepareCurrentTask();
   if (prepared) {
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: JSON.stringify(prepared) } }));
+    const continuation = !prepared.active_task && ["done_claimed", "verified"].includes(prepared.status)
+      ? "\n同一交付的合并、验证等后续工作应调用 taskcenter_task_resume 接续原 task_id，无时间限制；只有新的独立目标才新建任务。"
+      : "";
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: JSON.stringify(prepared) + continuation } }));
     return;
   }
   if (await isGateAllowlistedSession()) return;
@@ -1114,7 +1117,7 @@ async function provideTaskPreparationContext() {
   const additionalContext = [
     `TaskCenter 任务准备提示：当前 Session 不在门禁豁免白名单且没有活跃正式任务；${registrationInstruction}。`,
     "如果本轮只做只读检查，可以直接继续。",
-    "如果本轮是主 Agent 的正式工作，优先在第一次工具调用前调用 taskcenter_task_begin；旧客户端可继续先登记再调用 taskcenter_task_create。如果是 CLI 派发执行器，应领取主 Agent 提供的 delegation，不要为普通 CLI Run 创建正式子任务。",
+    "如果本轮继续同一交付，调用 taskcenter_task_resume 接续原任务；新的独立目标才调用 taskcenter_task_begin。旧客户端可继续先登记再调用 taskcenter_task_create。如果是 CLI 派发执行器，应领取主 Agent 提供的 delegation，不要为普通 CLI Run 创建正式子任务。",
     "不要先撞 PreToolUse 门禁，也不要要求用户手动创建任务、启动服务或批准提案。只有 TaskCenter MCP 确实不可用时，才限制为只读并报告 TASKCENTER_UNAVAILABLE。",
   ].join("\n");
   process.stdout.write(JSON.stringify({

@@ -583,8 +583,8 @@ for (const operation of ["prepare", "confirm"]) {
 }
 
 server.registerTool("taskcenter_task_resume", {
-  title: "在新 Session 恢复原目标",
-  description: "校验原绑定与 workspace 后将同一 task 转交已登记的新 Session；保留合同、身份与证据，返回 prepare 结果。",
+  title: "接续原任务",
+  description: "同一交付提交后继续合并或验证时复用原 task_id，无时间限制。校验原绑定、workspace 与单活跃任务约束；支持当前或新 Session，将 done_claimed/verified 恢复为 in_progress，保留合同与原 Subject 证据。取消任务不自动重新激活；不启动执行器或执行 Git 合并。返回 prepare 结果。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), expected_session_id: z.string().min(1).max(200), event_id: z.string().max(200).optional() }).strict(),
 }, async (input) => postCore("/task-resume", { ...input, response_mode: "full" }));
 
