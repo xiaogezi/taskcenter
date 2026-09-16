@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复 Kimi 原生 Hook 把 Claude 形态 JSON 外壳原样写入 stdout 刷进终端与上下文的问题；现仅输出 `additionalContext` 纯文本，仅在出现 `permissionDecision` 时保留 JSON，并补协议测试。
+
 - 修复 Kimi 原生 Hook 丢失 PCA 上下文注入：Kimi 0.43 的 `UserPromptSubmit` 载荷中 `prompt` 为内容块数组，直接透传给 PCA 共享桥接会因空 prompt 静默跳过 `prepare_turn`；现归一化为文本后再桥接，并补协议测试。
 
 - Kimi 增加 Hook + ACP 受管入口：自动登记、PCA 上下文注入与回流、同会话恢复、取消与逐次权限确认；按真实 `session_<UUID>` 绑定 MCP 身份，记录上下文用量快照，未知费用不估算，不读取历史正文或改写用户配置。

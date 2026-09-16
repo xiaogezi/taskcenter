@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KimiAcp, reportedUsage } from "../scripts/kimi-acp.mjs";
 import { runKimi } from "../scripts/kimi-run.mjs";
-import { handleKimiHook } from "../scripts/kimi-context-hook.mjs";
+import { handleKimiHook, formatKimiStdout } from "../scripts/kimi-context-hook.mjs";
 import { kimiHooks } from "../scripts/print-integrations.mjs";
 
 const taskcenterSessionId = "019f0000-0000-7000-8000-000000000112";
@@ -81,6 +81,17 @@ test("Kimi Hook normalizes content-block prompt before PCA bridging", async () =
   const result = await handleKimiHook(payload, { taskcenter: async () => "", pca });
   assert.equal(result.continue, true);
   assert.equal(pcaPrompt, "前段后段");
+});
+
+test("Kimi Hook stdout 只输出纯文本上下文，不输出 Claude JSON 外壳", () => {
+  assert.equal(formatKimiStdout({ continue: true }), null);
+  assert.equal(formatKimiStdout({ continue: true, hookSpecificOutput: { additionalContext: "  \n" } }), null);
+  assert.equal(
+    formatKimiStdout({ continue: true, hookSpecificOutput: { additionalContext: "上下文" } }),
+    "上下文\n",
+  );
+  const blocking = { continue: true, hookSpecificOutput: { permissionDecision: "deny", additionalContext: "x" } };
+  assert.equal(formatKimiStdout(blocking), JSON.stringify(blocking));
 });
 
 test("ACP wire preserves permission denial and allow-once", async context => {

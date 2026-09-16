@@ -64,11 +64,23 @@ async function taskcenterHook(payload) {
   catch { return stdout.trim(); }
 }
 
+// Kimi 协议：退出码 0 = 允许，stdout 文本可被追加进上下文；本钩子永不阻止，
+// 只输出 additionalContext 纯文本，避免 Claude 形态 JSON 外壳原样刷进终端与上下文。
+// 仅在出现 permissionDecision 时保留 JSON 外壳。
+export function formatKimiStdout(output) {
+  const decision = output?.hookSpecificOutput?.permissionDecision;
+  const text = output?.hookSpecificOutput?.additionalContext;
+  if (decision) return JSON.stringify(output);
+  if (typeof text === "string" && text.trim()) return text.endsWith("\n") ? text : `${text}\n`;
+  return null;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let input = "";
   try {
     for await (const chunk of process.stdin) { input += chunk; if (Buffer.byteLength(input) > 1048576) throw new Error("Hook payload 超过 1 MiB"); }
     const output = process.env.TASKCENTER_KIMI_MANAGED === "1" ? { continue: true } : await handleKimiHook(JSON.parse(input), { diagnostic: message => console.error(message) });
-    console.log(JSON.stringify(output));
+    const stdout = formatKimiStdout(output);
+    if (stdout) console.log(stdout);
   } catch (error) { console.error(error.message); console.log(JSON.stringify({ continue: true })); }
 }
