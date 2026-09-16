@@ -66,6 +66,23 @@ test("Kimi Hook isolates failures, uses distinct PCA client and never needs tran
   assert.match(kimiHooks("/tmp/Task Center"), /event = "SessionStart"/);
 });
 
+test("Kimi Hook normalizes content-block prompt before PCA bridging", async () => {
+  let pcaPrompt;
+  const pca = {
+    connectionTimeoutsForEvent: () => ({}),
+    createClientIdentity: value => value,
+    createConnectedCallTool: async () => ({ callTool: () => {}, close: async () => {} }),
+    handleHook: async (payload) => { pcaPrompt = payload.prompt; return { continue: true }; },
+  };
+  const payload = {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, cwd: tmpdir(),
+    prompt: [{ type: "text", text: "前段" }, { type: "image" }, { type: "text", text: "后段" }],
+  };
+  const result = await handleKimiHook(payload, { taskcenter: async () => "", pca });
+  assert.equal(result.continue, true);
+  assert.equal(pcaPrompt, "前段后段");
+});
+
 test("ACP wire preserves permission denial and allow-once", async context => {
   if (process.platform === "win32") return context.skip("POSIX executable fixture");
   const dir = await mkdtemp(join(tmpdir(), "kimi-wire-")); context.after(() => rm(dir, { recursive: true, force: true }));

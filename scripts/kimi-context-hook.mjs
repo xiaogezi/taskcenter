@@ -9,10 +9,23 @@ import { pathToFileURL } from "node:url";
 const exec = promisify(execFile);
 const events = { SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", Stop: "stop", SessionEnd: "session-end" };
 
+// Kimi 0.43 的 UserPromptSubmit 载荷里 prompt 是内容块数组（[{"type":"text","text":"..."}]），
+// PCA 共享桥接只接受字符串；在此归一化，否则 prepare_turn 会被空 prompt 静默跳过。
+function promptText(value) {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map(part => (part && typeof part === "object" && typeof part.text === "string" ? part.text : ""))
+      .join("")
+      .trim();
+  }
+  return "";
+}
+
 export async function handleKimiHook(payload, options = {}) {
   if (!events[payload?.hook_event_name]) return { continue: true };
   if (!payload.session_id || !payload.cwd) throw new Error("Kimi Hook 缺少真实 session_id/cwd");
-  payload = { ...payload, session_id: kimiTaskcenterSessionId(payload.session_id) };
+  payload = { ...payload, session_id: kimiTaskcenterSessionId(payload.session_id), prompt: promptText(payload.prompt) };
   const messages = [];
   const diagnostic = options.diagnostic || (() => {});
   // Each dependency fails independently; context availability never grants acceptance.
