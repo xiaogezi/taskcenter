@@ -17,7 +17,7 @@ type TaskTokenUsage = { usage: { input: number; cachedInput: number; output: num
 type RoutingInfo = { action?: string; orchestratorModel?: string; preferredExecutorModel?: string; selectedExecutorModel?: string; reasoningEffort?: string; dispatchChannel?: string; reason?: string; outcome?: string; preferenceMode?: string; fallbackReason?: string; quotaLimitId?: string; quotaSnapshotObservedAt?: string; quotaUsedPercent?: number; quotaResetAt?: string; };
 type Task = Record<string, unknown> & { bugClosure?: { status: string };  id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; workspace?: string; workspaceBranch?: string; executionEnvironment?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy; tokenUsage?: TaskTokenUsage | null };
 type State = ReturnType<typeof parseTaskWorkspaceSearch>;
-type TaskAction = "start" | "cancel" | "archive";
+type TaskAction = "start" | "cancel" | "archive" | "unarchive";
 type TaskRowAction = { action: TaskAction; label: string };
 const labels: Record<string, string> = { planned: "计划中", in_progress: "执行中", blocked: "已阻塞", done_claimed: "已声明完成", verified: "已验证", cancelled: "已取消", passed: "通过", pending: "待处理", failed: "失败", stale: "已过期", changes_requested: "需修改", ready: "就绪", accepted: "已验收", rejected: "已拒绝", not_required: "不要求", unknown: "未知" };
 const text = (value: unknown) => typeof value === "string" && value.trim() ? value : "未知";
@@ -38,6 +38,9 @@ export function TaskWorkspace() {
   const [loadedListKey, setLoadedListKey] = useState("");
   const [pollTick, setPollTick] = useState(0);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const actionInFlight = useRef(false);
   const [actingTaskId, setActingTaskId] = useState("");
   const [detail, setDetail] = useState<{ taskId: string; value: Task | null }>({ taskId: "", value: null });
   const [events, setEvents] = useState<{ taskId: string; values: Record<string, unknown>[] }>({ taskId: "", values: [] });
@@ -73,7 +76,7 @@ export function TaskWorkspace() {
     fetch(`/api/control/tasks?${params}`, { signal: controller.signal })
       .then(async (response) => { const body = await response.json(); if (!response.ok) throw new Error(body.error || "任务摘要加载失败"); return body; })
       .then((body) => { setPayload(body); setError(""); }).catch((cause) => { if (cause.name !== "AbortError") setError(cause.message || "任务摘要加载失败"); })
-      .finally(() => { listInFlight.current = false; if (!controller.signal.aborted) setLoadedListKey(listKey); });
+      .finally(() => { listInFlight.current = false; if (!controller.signal.aborted) { setLoadedListKey(listKey); setRefreshing(false); } });
     return () => controller.abort();
   }, [listKey, pollTick, state.bucket, state.page, state.project, state.query]);
 
@@ -94,44 +97,50 @@ export function TaskWorkspace() {
   const counts = payload.actionCounts || {};
 
   const act = async (task: Task, action: TaskAction) => {
-    if (actingTaskId) return;
-    if (action === "cancel" && !window.confirm(`确认关闭任务“${text(task.title)}”？任务历史会保留。`)) return;
-    if (action === "archive" && !window.confirm(`确认归档任务“${text(task.title)}”？任务历史会保留，可在归档记录中恢复。`)) return;
+    if (actionInFlight.current) return;
+    if (action === "start" && !window.confirm(`将任务“${text(task.title)}”设为执行中？这里只更新任务状态，不会自动启动或唤醒 Agent；请在关联会话继续处理。`)) return;
+    if (action === "cancel" && !window.confirm(`确认取消任务“${text(task.title)}”？任务历史会保留，此操作不会停止正在运行的 Agent。`)) return;
+    if (action === "archive" && !window.confirm(`确认归档任务“${text(task.title)}”？任务将从列表隐藏，历史会保留；请保存详情链接以便取消归档。`)) return;
+    actionInFlight.current = true;
     setActingTaskId(task.id);
+    setNotice("");
     setError("");
     try {
       const response = await fetch(`/api/control/tasks/${encodeURIComponent(task.id)}/actions`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" }, body: JSON.stringify({ action }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "任务操作失败");
+      setNotice(action === "start" ? "任务已设为执行中，请在关联会话继续处理。" : action === "cancel" ? "任务已取消；Agent 运行状态未改变。" : action === "archive" ? "任务已归档，当前详情中可取消归档。" : "已取消归档，任务重新显示在列表中。");
+      if (action === "archive") update({ task: task.id, tab: "overview" });
       setPollTick((current) => current + 1);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "任务操作失败");
     } finally {
+      actionInFlight.current = false;
       setActingTaskId("");
     }
   };
 
   return <main className={state.task ? "task-workspace with-open-detail" : "task-workspace"}>
     <aside className="task-nav"><a className="task-logo" href="/tasks">TASK<span>CENTER</span></a><nav><a className="active" href="/tasks">任务工作区</a><a href="/sessions">会话</a><a href="/routing">模型调度</a><a href="/improvements">改进建议</a><a href="/settings">设置</a></nav></aside>
-    <section className="task-main"><header className="task-header"><div><p>LOCAL CONTROL API</p><h1>任务工作区</h1><small>任务事实、证据与活动均来自本地 Control API。</small></div></header>
+    <section className="task-main"><header className="task-header"><div><p>LOCAL CONTROL API</p><h1>任务工作区</h1><small>任务事实、证据与活动均来自本地 Control API。</small></div><button disabled={refreshing || loading} onClick={() => { setRefreshing(true); setPollTick(current => current + 1); }}>{refreshing ? "刷新中…" : "刷新"}</button></header>
       <section className="task-stats" aria-label="任务统计">{([['attention','需处理'],['in_progress','执行中'],['awaiting_verification','待验证'],['awaiting_acceptance','待验收'],['awaiting_merge','待合入'],['bugs','Bug'],['completed_bugs','已合入 Bug'],['blocked','阻塞'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
       <section className="task-filters"><select value={state.project} onChange={(event) => update({ project: event.target.value, page: 1 })}><option value="all">全部项目</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.label}</option>)}</select><input value={state.query} onChange={(event) => update({ query: event.target.value, page: 1 })} placeholder="搜索标题、ID 或目标" /><span>共 {payload.total ?? "未知"} 条</span></section>
-      {error && <p className="task-error" role="status">{error}</p>}<div className="task-table-wrap"><table className="task-table"><thead><tr><th>状态</th><th>任务名称</th><th>项目</th><th>当前阶段</th><th>执行模型</th><th>Token</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{loading && !tasks.length ? <tr><td colSpan={8}>正在加载真实任务摘要…</td></tr> : tasks.length ? tasks.map((task) => {
+      {notice && <p role="status">{notice}</p>}{error && <p className="task-error" role="status">{error}</p>}<div className="task-table-wrap"><table className="task-table"><thead><tr><th>状态</th><th>任务名称</th><th>项目</th><th>当前阶段</th><th>执行模型</th><th>Token</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{loading && !tasks.length ? <tr><td colSpan={8}>正在加载真实任务摘要…</td></tr> : tasks.length ? tasks.map((task) => {
         const route = task.routing || task.routingHistory?.at(-1);
         const modelCell = [route?.preferredExecutorModel, route?.selectedExecutorModel].filter(Boolean).join(" → ");
         const actions = taskActions(task) as TaskRowAction[];
         return <tr key={task.id} className={state.task === task.id ? "selected" : ""} onClick={() => update({ task: task.id, tab: "overview" })}>
           <td><span className={`status-chip status-${text(task.status)}`}>{labels[text(task.status)] || text(task.status)}</span>{(task.actionReasons || []).length > 0 && <small className="attention">需处理</small>}</td>
-          <td><strong>{text(task.title)}</strong>{task.bugClosure && <small>Bug · {({ repairing: "修复验证中", returned: "验收退回", awaiting_acceptance: "待验收", awaiting_merge: "待合入", completed: "已核验合入", cancelled: "已取消" } as Record<string, string>)[task.bugClosure.status]}</small>}<small>{task.id}</small></td><td>{text(task.project?.label)}{task.executionEnvironment === "worktree" && <small>{text(task.workspaceBranch)}</small>}</td><td>{text(task.currentStep)}</td>
+          <td><button onClick={() => update({ task: task.id, tab: "overview" })}>{text(task.title)}</button>{task.bugClosure && <small>Bug · {({ repairing: "修复验证中", returned: "验收退回", awaiting_acceptance: "待验收", awaiting_merge: "待合入", completed: "已核验合入", cancelled: "已取消" } as Record<string, string>)[task.bugClosure.status]}</small>}<small>{task.id}</small></td><td>{text(task.project?.label)}{task.executionEnvironment === "worktree" && <small>{text(task.workspaceBranch)}</small>}</td><td>{text(task.currentStep)}</td>
           <td>{modelCell || "未记录"}</td>
           <td title={task.tokenUsage ? `精确值：${task.tokenUsage.totalTokens.toLocaleString("zh-CN")} Token` : undefined}>{task.tokenUsage ? <><strong>总计 {formatTokens(task.tokenUsage.totalTokens)}</strong><small>输入 {formatTokens(task.tokenUsage.usage.input)}（缓存 {formatTokens(task.tokenUsage.usage.cachedInput)}）</small><small>输出 {formatTokens(task.tokenUsage.usage.output)}（推理 {formatTokens(task.tokenUsage.usage.reasoning)}）</small></> : "暂无归属"}</td>
           <td>{formatDate(task.updatedAt)}</td>
           <td className="task-actions" onClick={(event) => event.stopPropagation()}>{actions.length ? actions.map((item) => <button className={`task-action ${["cancel", "archive"].includes(item.action) ? "task-action-danger" : ""}`} disabled={Boolean(actingTaskId)} key={item.action} onClick={() => void act(task, item.action)}>{actingTaskId === task.id ? "处理中…" : item.label}</button>) : "—"}</td>
         </tr>;
       }) : <tr><td colSpan={8}>没有匹配的真实任务。</td></tr>}</tbody></table></div>
-      <footer className="task-pagination"><button disabled={state.page <= 1} onClick={() => update({ page: state.page - 1 })}>上一页</button><span>第 {state.page} / {payload.totalPages ?? "未知"} 页</span><button disabled={Boolean(payload.totalPages) && state.page >= Number(payload.totalPages)} onClick={() => update({ page: state.page + 1 })}>下一页</button></footer>
+      <footer className="task-pagination"><button disabled={state.page <= 1} onClick={() => update({ page: state.page - 1 })}>上一页</button><span>第 {state.page} / {payload.totalPages ?? "未知"} 页</span><button disabled={refreshing || !payload.totalPages || state.page >= Number(payload.totalPages)} onClick={() => update({ page: state.page + 1 })}>下一页</button></footer>
     </section>
-    {state.task && <aside className="task-detail" aria-label="任务详情"><button className="detail-close" onClick={() => update({ task: "", tab: "overview" })}>关闭</button><h2>{text((detail.taskId === state.task ? detail.value?.title : undefined) || tasks.find((task) => task.id === state.task)?.title)}</h2><small>{state.task}</small><div className="detail-tabs">{([['overview','概览'],['bug','Bug 闭环'],['routing','调度'],['evidence','证据'],['activity','活动']] as const).map(([tab, label]) => <button className={state.tab === tab ? "selected" : ""} key={tab} onClick={() => update({ tab })}>{label}</button>)}</div>{state.tab === "bug" && detail.taskId === state.task && detail.value && <BugDetails key={state.task} task={detail.value} onChanged={() => setPollTick(current => current + 1)} />}{state.tab === "overview" && <DetailOverview task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "routing" && <RoutingDetails task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "evidence" && <Evidence task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "activity" && <Activity events={events.taskId === state.task ? events.values : []} />}</aside>}
+    {state.task && <aside className="task-detail" aria-label="任务详情"><button className="detail-close" onClick={() => update({ task: "", tab: "overview" })}>关闭</button><h2>{text((detail.taskId === state.task ? detail.value?.title : undefined) || tasks.find((task) => task.id === state.task)?.title)}</h2><small>{state.task}</small>{detail.taskId === state.task && detail.value && <section aria-label="任务操作"><p>以下操作只更新任务记录，不会启动或停止 Agent。</p>{(taskActions(detail.value) as TaskRowAction[]).map(item => <button disabled={Boolean(actingTaskId)} key={item.action} onClick={() => void act(detail.value!, item.action)}>{actingTaskId === state.task ? "处理中…" : item.label}</button>)}{typeof detail.value.sessionId === "string" && <p><a href={`/sessions?session=${encodeURIComponent(detail.value.sessionId)}`}>查看关联会话</a></p>}</section>}<div className="detail-tabs">{([['overview','概览'],['bug','Bug 闭环'],['routing','调度'],['evidence','证据'],['activity','活动']] as const).map(([tab, label]) => <button className={state.tab === tab ? "selected" : ""} key={tab} onClick={() => update({ tab })}>{label}</button>)}</div>{state.tab === "bug" && detail.taskId === state.task && detail.value && <BugDetails key={state.task} task={detail.value} onChanged={() => setPollTick(current => current + 1)} />}{state.tab === "overview" && <DetailOverview task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "routing" && <RoutingDetails task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "evidence" && <Evidence task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "activity" && <Activity events={events.taskId === state.task ? events.values : []} />}</aside>}
   </main>;
 }
 
