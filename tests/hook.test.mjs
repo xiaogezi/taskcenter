@@ -194,6 +194,41 @@ test("SessionStart Hook 登记真实会话且可幂等重放", async () => {
   const status = await getStatus("hook-session");
   assert.equal(status.status, "registered");
   assert.equal(status.agent, "claude");
+  const context = JSON.parse(first.stdout).hookSpecificOutput;
+  assert.equal(context.hookEventName, "SessionStart");
+  assert.match(context.additionalContext, /"session_id":"hook-session"/);
+  assert.match(context.additionalContext, /scope、plan、acceptance_criteria/);
+  assert.match(context.additionalContext, /不传 create_new/);
+  assert.match(context.additionalContext, /关闭时引用原 id/);
+  const denied = await runHook("pre-tool-use", "claude", { session_id: "hook-session", cwd: "/work", tool_name: "Write", tool_input: { file_path: "/work/probe.txt", content: "probe" } });
+  assert.equal(denied.code, 2);
+  assert.match(denied.stderr, /"session_id":"hook-session"/);
+  assert.match(denied.stderr, /不要添加 local_/);
+});
+
+test("Claude 写入门禁仅接受真实 Session 的任务，前缀身份不能替代", async () => {
+  const sessionId = "claude-real-identity";
+  const alias = `local_${sessionId}`;
+  for (const id of [sessionId, alias]) {
+    assert.equal((await runHook("session-start", "claude", { session_id: id, cwd: "/work" })).code, 0);
+  }
+  const create = async (id) => {
+    const response = await fetch(`${base}/task-events`, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" },
+      body: JSON.stringify({ type: "task.create", session_id: id, workspace: "/work", agent: "claude", title: "identity", goal: "identity", non_goals: [], plan: ["verify"], scope: ["probe"], acceptance_criteria: [{ id: "write", description: "same session", required: true }], contract_version: "v2", workflow_profile: "fast", review_policy: "recommended" }),
+    });
+    const result = await response.json();
+    assert.equal(result.accepted, true, JSON.stringify(result));
+  };
+  const probe = () => runHook("pre-tool-use", "claude", { session_id: sessionId, cwd: "/work", tool_name: "Write", tool_input: { file_path: "/work/probe.txt", content: "probe" } });
+  await create(alias);
+  const denied = await probe();
+  assert.equal(denied.code, 2);
+  assert.match(denied.stderr, /"session_id":"claude-real-identity"/);
+  await create(sessionId);
+  const allowed = await probe();
+  assert.equal(allowed.code, 0, allowed.stderr);
+  assert.match(allowed.stdout, /任务门禁通过/);
 });
 
 test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async () => {

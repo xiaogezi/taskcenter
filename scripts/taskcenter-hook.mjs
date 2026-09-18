@@ -48,7 +48,9 @@ try {
   if (scheduledReadonly) validateScheduledReadonlyIdentity();
   if (action === "session-start") {
     await registerSession();
-    console.log(`TaskCenter Session 已登记: ${sessionId}`);
+    if (agent === "claude" && !scheduledReadonly) {
+      console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: claudeLifecycleContext() } }));
+    } else console.log(`TaskCenter Session 已登记: ${sessionId}`);
   } else if (action === "stop") {
     // Completion readiness remains observable through TaskCenter, but ending a
     // Codex turn must never interrupt the user's active workflow.
@@ -139,7 +141,21 @@ try {
     process.exit(0);
   }
   console.error(`TaskCenter Hook: ${error.message}`);
+  if (agent === "claude" && sessionId && !scheduledReadonly) {
+    console.error(`真实 Hook 身份：${JSON.stringify({ session_id: sessionId, workspace })}。不要添加 local_ 或自拟测试身份。通过 MCP 查询该 Session 的任务；同一交付接续使用 taskcenter_task_resume，新目标使用 taskcenter_task_begin（必填 plan、scope）。身份一致不代表其他门禁条件已满足。`);
+  }
   process.exitCode = ["pre-tool-use", "post-tool-use"].includes(action) ? 2 : 1;
+}
+
+function claudeLifecycleContext() {
+  return [
+    `TaskCenter Session 已登记: ${sessionId}`,
+    `真实 Hook 身份：${JSON.stringify({ session_id: sessionId, workspace, agent, provider })}。所有 TaskCenter 调用沿用此 session_id，不添加 local_、不自拟测试 ID。`,
+    "taskcenter_task_begin 已包含登记；新目标须提供 event_id、session_id、workspace、title、goal、scope、plan、acceptance_criteria。推荐结构化验收项 {id,description,required}，关闭时引用原 id；字符串验收项才自动生成 acceptance-N。已有同一交付先查询并 resume，不重复创建。",
+    "Context 已有 Hook 注入时复用其 client_session_id、semantic task_id、turn_id，不重复 attach/commit。手动接入且 execution_mode=taskcenter 时：task_begin → context.open_task(execution_task_id=返回的 TaskCenter task_id，不传 create_new) → prepare_turn(task_id=返回的语义 task_id) → commit_turn(同一语义 task_id/turn_id) → task_close(TaskCenter task_id)。",
+    "MCP 接口成功不等于写入门禁通过。验收必须核对真实 Hook Session 下的任务绑定与授权范围内的实际写入，不以自拟身份或 replayed=true 的回执冒充新鲜端到端验证。",
+    `完整参数模板与验收步骤：${resolve(projectRoot, "docs/claude-lifecycle.md")}`,
+  ].join("\n");
 }
 
 function scheduledReadonlyConfig() {

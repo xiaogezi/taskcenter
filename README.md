@@ -147,6 +147,8 @@ v2 任务不能通过普通 `taskcenter_task_report(done_claimed)` 绕过闭环�
 
 ### Claude Code
 
+首次接入或排查任务门禁时，按 [Claude 真实身份与生命周期指南](docs/claude-lifecycle.md) 操作。SessionStart 会注入真实 Hook 身份；不要自拟或给 ID 添加 `local_` 前缀。
+
 注册用户级 MCP：
 
 ```bash

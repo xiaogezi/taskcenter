@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- Claude SessionStart 注入真实 Hook 身份与生命周期调用指引，门禁拒绝时回显真实 Session；补齐完整参数、Context 语义绑定及验收项 ID 模板，防止自拟身份的 MCP 冒烟测试被误认为真实会话验收。
+
 - 修复治理指标刷新大体积中文任务历史索引时的堆内存溢出：减少解码副本并按任务分段原子写回，保持索引格式、历史记录与现有内存上限。
 
 - 引入同进程静态 Harness 适配层，统一能力查询与执行回执，迁移 Codex SDK/CLI 和 Kimi 受管 ACP 调用，保留旧入口与历史数据；会话页展示真实支持范围与用量口径。未知或未适配操作不回退到 Codex，通信异常保留结果未知并阻止普通派发重复提交。
