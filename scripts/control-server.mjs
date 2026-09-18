@@ -236,11 +236,15 @@ const server = createServer(async (request, response) => {
       const registry = loadSessionRegistry()[body.session_id];
       if (!task || !registry) throw new TaskLedgerError(409, "恢复需要已有 task_id 和已登记的真实 Session。");
       if (registry.workspace !== task.workspace) throw new TaskLedgerError(409, "恢复 Session 的 workspace 与合同不一致。");
+      if (["cancelled", "removed"].includes(task.status)) throw new TaskLedgerError(409, "TASK_NOT_RESUMABLE：已取消或移除任务不能接手。");
       const reopen = ["done_claimed", "verified"].includes(task.status);
       if (task.sessionId !== body.session_id || reopen) {
         if (task.sessionId !== body.expected_session_id) throw new TaskLedgerError(409, "SESSION_BINDING_CHANGED：请重新读取交接状态。");
+        if (task.sessionId !== body.session_id && listDelegations(task.id).some((item) => !item.expired && ["issued", "active"].includes(item.status))) {
+          throw new TaskLedgerError(409, "ACTIVE_DELEGATION_CONFLICT：请先结束或撤销原任务委派，再接手。");
+        }
         if (loadVisibleTasks().some((item) => item.id !== task.id && item.sessionId === body.session_id && ["planned", "in_progress", "blocked"].includes(item.status))) throw new TaskLedgerError(409, "ACTIVE_TASK_CONFLICT：目标 Session 已有其他活跃任务。");
-        recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id, ...(reopen ? { status: "in_progress" } : {}) }, { requireRegistered: true, authorizedResume: true });
+        recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id, ...((reopen || task.sessionId !== body.session_id) ? { status: "in_progress" } : {}) }, { requireRegistered: true, authorizedResume: true });
       }
       request.method = "GET";
       request.url = `/task-prepare?session_id=${encodeURIComponent(body.session_id)}`;

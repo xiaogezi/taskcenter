@@ -2712,6 +2712,9 @@ test("V2 通用核心 API：无 Session 创建、离线导入、独立验收与�
   assert.equal(created.status, 201);
   const done = await fetch(`${base}/core/task-events`, { method: "POST", headers: coreHeaders, body: JSON.stringify({ type: "task.report", event_id: "core-v2-done", task_id: "core-v2-task", status: "done_claimed", tests: ["external CI"], subject_ref: subject, actor: { type: "ci", id: "build" } }) });
   assert.equal(done.status, 200);
+  const coreTask = (await done.json()).task;
+  assert.equal(coreTask.creatorActor.type, "human");
+  assert.equal(coreTask.executorActor.id, "author", "CI 证据不会转移执行者");
   const imported = await fetch(`${base}/tasks/import-evidence`, {
     method: "POST", headers: coreHeaders,
     body: JSON.stringify({ task_id: "core-v2-task", events: [
@@ -3205,7 +3208,7 @@ test("Codex Session 可顺序承载多个任务，但同一时间只允许一个
   const second = await post({ type: "task.create", session_id: "sess-one-goal", task_id: "other-goal", title: "其他目标", goal: "其他目标" });
   assert.equal(second.status, 409);
   assert.match((await second.json()).error, /ACTIVE_TASK_CONFLICT/);
-  assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", status: "cancelled" })).status, 200);
+  assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", status: "done_claimed", evidence: ["原目标完成"] })).status, 200);
   assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", goal: "其他目标" })).status, 409);
   assert.equal((await post({ type: "task.create", session_id: "sess-one-goal", task_id: "other-goal", title: "其他目标", goal: "其他目标" })).status, 201);
   assert.equal((await post({ type: "task.update", session_id: "sess-one-goal", task_id: "one-goal", status: "in_progress", next_action: "验证原目标" })).status, 409);

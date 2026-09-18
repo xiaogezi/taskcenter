@@ -594,8 +594,8 @@ for (const operation of ["prepare", "confirm"]) {
 }
 
 server.registerTool("taskcenter_task_resume", {
-  title: "接续原任务",
-  description: "同一交付提交后继续合并或验证时复用原 task_id，无时间限制。校验原绑定、workspace 与单活跃任务约束；支持当前或新 Session，将 done_claimed/verified 恢复为 in_progress，保留合同与原 Subject 证据。取消任务不自动重新激活；不启动执行器或执行 Git 合并。返回 prepare 结果。",
+  title: "接手或接续共享任务",
+  description: "任意客户端可用已登记的真实 Session 接手同一 workspace 的任务，不限创建客户端。先查询任务，expected_session_id 必须等于当前 sessionId；接手后旧 Session 失去主执行权，保留创建者、合同、Subject、证据和交接记录。未结束/撤销的有效委派阻止跨 Session 接手；目标 Session 不能已有其他活跃任务。跨 Session 接手或恢复已完成任务进入 in_progress，取消/移除任务拒绝。重复请求不重复交接。仅转移逻辑执行权，不停止已运行进程，不启动客户端；原执行者应先停止操作。返回 prepare 结果。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), expected_session_id: z.string().min(1).max(200), event_id: z.string().max(200).optional() }).strict(),
 }, async (input) => postCore("/task-resume", { ...input, response_mode: "full" }));
 

@@ -149,6 +149,8 @@ v2 任务不能通过普通 `taskcenter_task_report(done_claimed)` 绕过闭环�
 
 首次接入或排查任务门禁时，按 [Claude 真实身份与生命周期指南](docs/claude-lifecycle.md) 操作。SessionStart 会注入真实 Hook 身份；不要自拟或给 ID 添加 `local_` 前缀。
 
+任意客户端创建的任务可由另一已启动客户端接手，复用同一 task ID；调用顺序和边界见 [跨客户端共享任务接手](docs/shared-task-handoff.md)。
+
 注册用户级 MCP：
 
 ```bash

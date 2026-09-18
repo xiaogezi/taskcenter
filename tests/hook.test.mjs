@@ -662,6 +662,54 @@ test("Stop 不因完成就绪度或 Review 缺口打断 Codex 回复", async () 
   }
 });
 
+test("跨客户端共享任务保留创建者和证据，接手后旧 Session 失去写入权", async () => {
+  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(body) });
+  for (const from of ["codex", "claude", "kimi"]) for (const to of ["codex", "claude", "kimi"]) {
+    if (from === to) continue;
+    const source = `handoff-${from}-${to}-source`, target = `handoff-${from}-${to}-target`;
+    for (const [session_id, agent] of [[source, from], [target, to]]) assert.equal((await runHook("session-start", agent, { session_id, cwd: "/work" })).code, 0);
+    const created = await (await post("/task-events", { type: "task.create", session_id: source, workspace: "/work", title: "共享任务", goal: "同一交付", plan: ["执行"], scope: ["probe"], non_goals: [], acceptance_criteria: ["通过"], contract_version: "v2", workflow_profile: "fast", review_policy: "recommended", evidence: ["创建时证据"] })).json();
+    assert.equal(created.accepted, true, JSON.stringify(created));
+    const task_id = created.task.id;
+    const resume = () => post("/task-resume", { session_id: target, task_id, expected_session_id: source });
+    assert.equal((await resume()).status, 200);
+    assert.equal((await resume()).status, 200);
+    const task = (await (await fetch(`${base}/tasks`)).json()).tasks.find(item => item.id === task_id);
+    assert.equal(task.creatorActor.id, source);
+    assert.equal(task.executorActor.id, target);
+    assert.equal(task.agent, to);
+    assert.equal(task.status, "in_progress");
+    assert.equal(task.handoffs.length, 1);
+    assert.equal(task.handoffs[0].fromSessionId, source);
+    assert.equal(task.handoffs[0].toSessionId, target);
+    for (const field of ["goal", "scope", "acceptanceCriteria", "currentSubject", "evidence"]) assert.deepEqual(task[field], created.task[field], field);
+    for (const event_id of [`stale-${source}`, `manual-stale-${source}`]) assert.equal((await post("/task-events", { type: "task.update", event_id, session_id: source, task_id, goal: "非法覆盖" })).status, 403);
+    for (const [session_id, agent, expected] of [[source, from, 2], [target, to, 0]]) assert.equal((await runHook("pre-tool-use", agent, { session_id, cwd: "/work", tool_name: "Write", tool_input: { file_path: "/work/probe", content: "test" } })).code, expected);
+  }
+});
+
+test("共享任务阻止有效委派和并发抢接", async () => {
+  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(body) });
+  const source = "handoff-race-source", targets = ["handoff-race-claude", "handoff-race-kimi"];
+  for (const session_id of [source, ...targets]) await runHook("session-start", "codex", { session_id, cwd: "/work" });
+  const created = await (await post("/task-events", { type: "task.create", session_id: source, workspace: "/work", title: "race", goal: "race" })).json();
+  const task_id = created.task.id;
+  const grantResponse = await post("/delegations/grant", { parent_session_id: source, task_id, workspace: "/work", scope: ["."], executor_model: "test-model", ttl_seconds: 600 });
+  assert.equal(grantResponse.status, 201);
+  const grant = await grantResponse.json();
+  const resume = session_id => post("/task-resume", { session_id, task_id, expected_session_id: source });
+  const blocked = await resume(targets[0]);
+  assert.equal(blocked.status, 409);
+  assert.match((await blocked.json()).error, /ACTIVE_DELEGATION_CONFLICT/);
+  assert.equal((await post("/delegations/revoke", { delegation_id: grant.delegation.id, parent_session_id: source })).status, 200);
+  const results = await Promise.all(targets.map(resume));
+  assert.deepEqual(results.map(result => result.status).sort(), [200, 409]);
+  const task = (await (await fetch(`${base}/tasks`)).json()).tasks.find(item => item.id === task_id);
+  assert.equal(task.handoffs.length, 1);
+  assert.equal((await post("/task-events", { type: "task.update", session_id: task.sessionId, task_id, status: "cancelled" })).status, 200);
+  assert.equal((await resume(source)).status, 409);
+});
+
 test("CLI Session 领取 delegation 后通过主任务门禁且不创建子任务", async () => {
   const parentSessionId = "019f0000-0000-7000-8000-000000000092";
   const cliSessionId = "019f0000-0000-7000-8000-000000000093";

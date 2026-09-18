@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 补齐跨客户端共享任务接手：复用 resume，保留创建者、当前执行者与交接记录；有效委派未结束时拒绝换手，旧 Session 不能借手动事件前缀继续更新任务。支持已启动客户端接手，不自动启动执行器。
+
 - Claude SessionStart 注入真实 Hook 身份与生命周期调用指引，门禁拒绝时回显真实 Session；补齐完整参数、Context 语义绑定及验收项 ID 模板，防止自拟身份的 MCP 冒烟测试被误认为真实会话验收。
 
 - 修复治理指标刷新大体积中文任务历史索引时的堆内存溢出：减少解码副本并按任务分段原子写回，保持索引格式、历史记录与现有内存上限。

@@ -468,7 +468,7 @@ export function recordTaskEvent(input, options = {}) {
     const ownerSession = canonicalSessionId(current.sessionId);
     const sameOwnerSession = Boolean(ownerSession && eventSessionId && ownerSession === eventSessionId);
     const authorizedPhaseSession = phaseEvidence && authorizePhaseSession(current, event, sameOwnerSession);
-    if (!options.authorizedResume && !event.event_id.startsWith("manual-") && !reviewEvidence && !authorizedPhaseSession && current.sessionId && event.session_id && !sameOwnerSession) {
+    if (!options.authorizedResume && (options.requireRegistered || !event.event_id.startsWith("manual-")) && !reviewEvidence && !authorizedPhaseSession && current.sessionId && event.session_id && !sameOwnerSession) {
       throw new TaskLedgerError(403, "当前 Session 不是该任务的登记 Session。");
     }
     if (options.requireRegistered && (reviewEvidence || (phaseEvidence && !sameOwnerSession)) && !isRegistered) {
@@ -1206,6 +1206,11 @@ function applyEvent(current, event) {
     sessionId: preservesTaskOwner ? base.sessionId : (event.session_id || base.sessionId),
     sessionHistory: event.type === "task.resume" ? [...new Set([...(base.sessionHistory || []), base.sessionId])] : (base.sessionHistory || []),
     ownerActor: event.type === "task.create" ? (event.actor || base.ownerActor) : base.ownerActor,
+    creatorActor: base.creatorActor || base.ownerActor || null,
+    executorActor: ["task.create", "task.resume"].includes(event.type) ? event.actor : (base.executorActor || null),
+    handoffs: event.type === "task.resume" && base.sessionId !== event.session_id
+      ? [...(base.handoffs || []), { eventId: event.event_id, fromSessionId: base.sessionId, toSessionId: event.session_id, fromAgent: base.agent || "unknown", toAgent: event.agent, recordedAt: now }]
+      : (base.handoffs || []),
     agent: preservesTaskOwner ? base.agent : event.agent !== "unknown" ? event.agent : (base.agent || "unknown"),
     provider: preservesTaskOwner ? base.provider : event.provider !== "unknown" ? event.provider : (base.provider || "unknown"),
     model: preservesTaskOwner ? base.model : event.model !== "unknown" ? event.model : (base.model || "unknown"),
