@@ -341,9 +341,9 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 
 ### 多 Agent 基础接入
 
-客户端标识和已实现适配能力集中在 `scripts/agent-clients.mjs`，MCP schema 共用该列表。新增客户端只维护此定义，并补充对应配置与协议测试；agent 名称不授予权限，provider/model 仍独立上报。
+客户端模块集中在 `scripts/harnesses/`，`index.mjs` 静态注册并提供统一调用；`scripts/agent-clients.mjs` 保留兼容导出，MCP schema 与会话页面共用能力信息。接入范围、调用契约、迁移与回滚见 [Harness 适配层](docs/harness-adapters.md)。agent 名称不授予权限，provider/model 仍独立上报。
 
-- `taskcenter_agent_capabilities`：查询 TaskCenter 的 task_protocol、hooks、resume、usage 与可信身份要求。结果是静态适配支持，不表示当前客户端已经配置或连接。
+- `taskcenter_agent_capabilities`：查询 TaskCenter 的 task_protocol、hooks、resume、usage、operations、用量口径与可信身份要求。结果是静态适配支持，运行可用性未经探测时明确为 unknown，不表示当前客户端已经配置或连接。
 - `taskcenter_client_context`：查询宿主注入的可信当前 Session。通用入口 `_meta["taskcenter/sessionId"]` 或每会话独立进程的 `TASKCENTER_CALLER_SESSION_ID`；保留 Codex 入口，并拒绝格式错误或冲突。
 - [Kimi Code CLI 接入与验收](integrations/kimi/README.md)：提供 Hook + ACP 受管入口、PCA 生命周期、真实身份绑定与上下文用量快照；原生 Hook 需用户配置，费用缺失保持 unknown。
 

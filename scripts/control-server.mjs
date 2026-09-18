@@ -15,8 +15,7 @@ import {
 } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { verifyBugMerge } from "./bug-workflow.mjs";
 import { BugDispatchError, BugDispatchQueue } from "./bug-dispatch-queue.mjs";
@@ -28,9 +27,8 @@ import {
 import { ModelRoleConfigError, updateOptionalAstraPolicy } from "./model-role-config.mjs";
 import {
   defaultSessionsRoot,
-  inspectSessionState,
-  resumeSession,
 } from "./session-cli.mjs";
+import { HarnessError, HARNESS_IDS, LEGACY_HARNESS_ID, dispatchHarnessId, harnessCapabilities, invokeHarness, requireHarnessOperation } from "./harnesses/index.mjs";
 import {
   completeContextTasks,
   completeTasksByReconciliation,
@@ -349,7 +347,7 @@ const server = createServer(async (request, response) => {
       const titles = new Map(loadSessionTitles().map((item) => [item.id, item]));
       const usageBySession = new Map((currentUsageReport().lifetime?.bySession || []).map((item) => [item.sessionId, item]));
       const sessions = getSessionStatuses(availableSessionIds(), loadVisibleTasks())
-        .map((session) => ({ ...session, title: titles.get(session.sessionId)?.title || "", updatedAt: latestTimestamp(titles.get(session.sessionId)?.updatedAt, session.lastSeenAt, session.lastTaskAt), tokenUsage: usageBySession.get(session.sessionId) || null }))
+        .map((session) => ({ ...session, harness: harnessCapabilities(HARNESS_IDS.includes(session.agent) ? session.agent : "unknown"), title: titles.get(session.sessionId)?.title || "", updatedAt: latestTimestamp(titles.get(session.sessionId)?.updatedAt, session.lastSeenAt, session.lastTaskAt), tokenUsage: usageBySession.get(session.sessionId) || null }))
         .sort((left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt));
       sendJson(response, 200, { sessions });
       return;
@@ -831,6 +829,10 @@ const server = createServer(async (request, response) => {
         updatedAt: new Date().toISOString(),
         error: "",
       };
+      if (!dryRun && mode === "existing_session") {
+        requireHarnessOperation(dispatchHarness(record), "inspectSession");
+        requireHarnessOperation(dispatchHarness(record), "resumeSession");
+      }
       persistJsonObject(reflectionProposalsPath, started.state);
       dispatches.push(record);
       persistDispatches();
@@ -843,14 +845,15 @@ const server = createServer(async (request, response) => {
           ensureReflectionTask(proposal, execution, targetSessionId);
           record.pendingPrompt = prompt;
           record.workingDirectory = projectRoot;
-          const sessionState = inspectSessionState(record.threadId, sessionsRoot);
+          const sessionState = await inspectDispatchSession(record);
           if (sessionState.busy || activeThreadDispatches.has(record.threadId)) {
             finishDispatch(record, "queued", "目标 Session 正忙，正式任务已创建，空闲后自动投递。", false);
           } else {
             void startExistingDispatch(record);
           }
         } else {
-          const result = await sendToCodex(mode, "", prompt, projectRoot, {
+          const result = await sendToHarness(mode, "", prompt, projectRoot, {
+            onEvent: event => { record.executionStatus = event.status; persistDispatches(); },
             onThreadStarted: async (sessionId) => {
               record.threadId = sessionId;
               ensureReflectionTask(proposal, execution, sessionId);
@@ -863,7 +866,7 @@ const server = createServer(async (request, response) => {
         }
       } catch (error) {
         const reason = safeError(error);
-        finishDispatch(record, "failed", `改进任务派发失败：${reason}`);
+        finishDispatch(record, error.outcome === "unknown" ? "unknown" : "failed", `改进任务派发结果：${reason}`);
         blockReflectionTask(record, reason);
         throw new DispatchError(502, `改进任务未能启动：${reason}`);
       }
@@ -1257,7 +1260,7 @@ const server = createServer(async (request, response) => {
           item.requirementId === body.requirementId &&
           (item.contextThreadId || item.sourceThreadId || item.threadId) === body.threadId &&
           item.mode === mode &&
-          ["queued", "delivering", "running"].includes(item.status),
+          ["queued", "delivering", "running", "unknown"].includes(item.status),
       );
       if (duplicate) {
         throw new DispatchError(409, "这条需求正在投递到该 Session，请稍候。");
@@ -1288,7 +1291,7 @@ const server = createServer(async (request, response) => {
           if (mode === "existing_session") {
             record.pendingPrompt = target.prompt;
             record.workingDirectory = target.cwd;
-            const state = inspectSessionState(record.threadId, sessionsRoot);
+            const state = await inspectDispatchSession(record);
             if (state.busy || activeThreadDispatches.has(record.threadId)) {
               const reason = state.busy
                 ? `目标 Session 正在处理 ${state.activeTurns.length} 个 turn`
@@ -1298,13 +1301,13 @@ const server = createServer(async (request, response) => {
               void startExistingDispatch(record);
             }
           } else {
-            const result = await sendToCodex(mode, record.threadId, target.prompt, target.cwd);
+            const result = await sendToHarness(mode, record.threadId, target.prompt, target.cwd, { onEvent: event => { record.executionStatus = event.status; persistDispatches(); } });
             record.threadId = result.threadId;
             finishDispatch(record, "delivered");
           }
         } catch (error) {
           const reason = safeError(error);
-          finishDispatch(record, "failed", `投递失败：${reason}`);
+          finishDispatch(record, error.outcome === "unknown" ? "unknown" : "failed", `投递结果：${reason}`);
           throw new DispatchError(502, `消息未能投递到目标 Session：${reason}`);
         }
       }
@@ -1313,7 +1316,7 @@ const server = createServer(async (request, response) => {
     }
     sendJson(response, 404, { error: "接口不存在。" });
   } catch (error) {
-    const known = error instanceof SessionSwitchError || error instanceof BugDispatchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
+    const known = error instanceof HarnessError || error instanceof SessionSwitchError || error instanceof BugDispatchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
     const statusCode = known ? error.statusCode : 500;
     if (!known) {
       console.error("TaskCenter control error:", safeError(error));
@@ -1417,7 +1420,7 @@ server.listen(port, host, () => {
   console.log(`TaskCenter control server is listening on http://${host}:${port}.`);
 });
 
-function dispatchPilotIntent(intent) {
+async function dispatchPilotIntent(intent) {
   try {
     if (dryRun) {
       updatePilotIntentIfOpen(intent.intent_id, "failed", { message: "dry-run 环境只记录 intent，不派发主脑。" });
@@ -1442,7 +1445,7 @@ function dispatchPilotIntent(intent) {
     };
     dispatches.push(record);
     persistDispatches();
-    const state = inspectSessionState(record.threadId, sessionsRoot);
+    const state = await inspectDispatchSession(record);
     if (state.busy || activeThreadDispatches.has(record.threadId)) return;
     void startExistingDispatch(record);
   } catch (error) {
@@ -1456,47 +1459,22 @@ function updatePilotIntentIfOpen(intentId, status, patch) {
   return updatePilotIntent(contextManagementPilotPath, intentId, status, patch);
 }
 
-async function sendToCodex(mode, threadId, prompt, workingDirectory, hooks = {}) {
-  const moduleName = process.env.TASKCENTER_CODEX_SDK_MODULE || "@openai/codex-sdk";
-  const moduleSpecifier = isAbsolute(moduleName) ? pathToFileURL(moduleName).href : moduleName;
-  const { Codex } = await import(moduleSpecifier);
-  const codex = new Codex();
-  const options = {
-    workingDirectory: validCwd(workingDirectory),
-    sandboxMode: "workspace-write",
-    approvalPolicy: "on-request",
-  };
-  const thread = mode === "new_session"
-    ? codex.startThread(options)
-    : codex.resumeThread(threadId, options);
-  const { events } = await thread.runStreamed(prompt);
-  const iterator = events[Symbol.asyncIterator]();
-  const first = await iterator.next();
-  if (first.done) throw new Error("Codex SDK 未返回任务启动事件");
-  if (first.value?.type === "error" || first.value?.type === "turn.failed") {
-    throw new Error(first.value.message || "目标 Session 拒绝接收消息");
-  }
-  const startedThreadId = first.value?.type === "thread.started"
-    ? first.value.thread_id
-    : threadId;
-  if (mode === "new_session" && !startedThreadId) {
-    throw new Error("Codex SDK 未返回新 Session ID");
-  }
-  await hooks.onThreadStarted?.(startedThreadId);
-  void drainDelegation(iterator);
-  return { threadId: startedThreadId };
+function dispatchHarness(record) {
+  return dispatchHarnessId({ ...record, threadId: canonicalSessionId(record.threadId || record.contextThreadId) }, loadSessionRegistry());
 }
 
-async function drainDelegation(iterator) {
-  try {
-    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
-      if (next.value?.type === "error" || next.value?.type === "turn.failed") {
-        console.error("TaskCenter delegated turn failed after delivery:", safeError(next.value.message));
-      }
-    }
-  } catch (error) {
-    console.error("TaskCenter delegated stream failed after delivery:", safeError(error));
-  }
+async function inspectDispatchSession(record) {
+  return invokeHarness(dispatchHarness(record), "inspectSession", { sessionId: record.threadId, sessionsRoot });
+}
+
+async function sendToHarness(mode, threadId, prompt, workingDirectory, hooks = {}) {
+  if (mode !== "new_session") throw new HarnessError("HARNESS_INVALID_INPUT", "Existing sessions must use the queued resume path", 400);
+  return invokeHarness(LEGACY_HARNESS_ID, "createSession", { prompt, workingDirectory: validCwd(workingDirectory), ...hooks,
+    onEvent: event => {
+      if (["failed", "unknown"].includes(event.status)) console.error("TaskCenter delegated turn:", event.status, safeError(event.message));
+      hooks.onEvent?.(event);
+    },
+  });
 }
 
 function finishDispatch(record, status, error, clearPending = true) {
@@ -1529,13 +1507,14 @@ async function startExistingDispatch(record) {
   activeThreadDispatches.add(record.threadId);
   finishDispatch(record, "delivering", "", false);
   try {
-    await resumeSession({
-      threadId: record.threadId,
+    await invokeHarness(dispatchHarness(record), "resumeSession", {
+      sessionId: record.threadId,
+      onEvent: event => { record.executionStatus = event.status; persistDispatches(); },
       prompt: record.pendingPrompt,
       workingDirectory: validCwd(record.workingDirectory),
       sessionsRoot,
       onStarted: () => {
-        finishDispatch(record, "running", "消息已写入原 Session，Codex 正在处理。", false);
+        finishDispatch(record, "running", "消息已写入原 Session，客户端正在处理。", false);
         if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "processing", { message: `主脑 Session ${record.threadId} 正在处理。` });
       },
     });
@@ -1548,7 +1527,7 @@ async function startExistingDispatch(record) {
     }
   } catch (error) {
     const reason = safeError(error);
-    finishDispatch(record, "failed", `投递失败：${reason}`);
+    finishDispatch(record, error.outcome === "unknown" ? "unknown" : "failed", `投递结果：${reason}`);
     if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: reason });
     blockReflectionTask(record, reason);
   } finally {
@@ -1679,7 +1658,7 @@ async function processQueue() {
     for (const record of dispatches.filter((item) => item.status === "queued")) {
       try {
         if (activeThreadDispatches.has(record.threadId)) continue;
-        const state = inspectSessionState(record.threadId, sessionsRoot);
+        const state = await inspectDispatchSession(record);
         if (state.busy) continue;
         void startExistingDispatch(record);
       } catch (error) {

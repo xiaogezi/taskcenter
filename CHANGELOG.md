@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 引入同进程静态 Harness 适配层，统一能力查询与执行回执，迁移 Codex SDK/CLI 和 Kimi 受管 ACP 调用，保留旧入口与历史数据；会话页展示真实支持范围与用量口径。未知或未适配操作不回退到 Codex，通信异常保留结果未知并阻止普通派发重复提交。
+
 - 整理手动按钮：任务列表与详情共享状态操作，已完成任务可重新处理或归档，归档详情可取消归档；明确状态操作不会自动启动或停止 Agent。改进建议区分刷新与重新分析，试点按钮明确请求语义，补充提交防重、Bug 取消编辑与派发状态刷新入口。
 
 - 修复 Kimi 原生 Hook 把 Claude 形态 JSON 外壳原样写入 stdout 刷进终端与上下文的问题；现仅输出 `additionalContext` 纯文本，仅在出现 `permissionDecision` 时保留 JSON，并补协议测试。

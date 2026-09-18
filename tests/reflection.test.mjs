@@ -321,6 +321,7 @@ writeFileSync(process.env.TASKCENTER_CLI_CAPTURE, JSON.stringify({ threadId, pro
 appendFileSync(process.env.TASKCENTER_TEST_SESSION_PATH, JSON.stringify({ type: "event_msg", timestamp: new Date().toISOString(), payload: { type: "user_message", message: prompt } }) + "\\n");
 console.log(JSON.stringify({ type: "thread.started", thread_id: threadId }));
 console.log(JSON.stringify({ type: "turn.started" }));
+console.log(JSON.stringify({ type: "turn.completed" }));
 `);
   const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
     cwd: process.cwd(),
@@ -351,6 +352,15 @@ console.log(JSON.stringify({ type: "turn.started" }));
     try { if ((await fetch(`${base}/health`)).ok) break; } catch { await new Promise((resolve) => setTimeout(resolve, 50)); }
   }
   const headers = { Origin: "http://localhost:3000", "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" };
+  const registryPath = join(directory, "session-registry.json");
+  await writeFile(registryPath, JSON.stringify({ [sessionId]: { sessionId, agent: "claude", workspace: process.cwd() } }));
+  const unsupported = await fetch(`${base}/reflections/reflection-evidence-gap/execute`, {
+    method: "POST", headers, body: JSON.stringify({ mode: "existing_session", threadId: sessionId, requestId: "019f9100-0000-7000-8000-000000000098" }),
+  });
+  assert.equal(unsupported.status, 409);
+  assert.match((await unsupported.json()).error, /尚未适配/);
+  assert.equal(JSON.parse(await readFile(registryPath, "utf8"))[sessionId].agent, "claude");
+  await writeFile(registryPath, JSON.stringify({ [sessionId]: { sessionId, agent: "codex", workspace: process.cwd() } }));
   const response = await fetch(`${base}/reflections/reflection-evidence-gap/execute`, {
     method: "POST",
     headers,
