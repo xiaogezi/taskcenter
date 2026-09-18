@@ -65,15 +65,15 @@ async function refreshGovernance() {
   if (refreshingGovernance) return;
   refreshingGovernance = true;
   try {
-    const index = await updateTaskEventIndex({ sourcePath: taskEventsPath, indexPath: taskEventIndexPath });
+    const { events, offset } = await updateTaskEventIndex({ sourcePath: taskEventsPath, indexPath: taskEventIndexPath });
     const tasks = loadVisibleTasks();
     const delegationEvents = listDelegations().flatMap((delegation) =>
       (delegation.events || []).map((event) => ({ ...event, task_id: delegation.taskId })));
     const usageReport = readJson(usageReportPath, emptyUsageReport());
     await writeJsonAtomic(governanceMetricsPath, {
-      ...buildGovernanceMetrics({ tasks, events: [...(index.events || []), ...delegationEvents], usageReport }),
+      ...buildGovernanceMetrics({ tasks, events: [...(events || []), ...delegationEvents], usageReport }),
       generatedAt: new Date().toISOString(),
-      source: { mode: "incremental_snapshot", taskEventOffset: index.offset, delegationStore: delegationsPath },
+      source: { mode: "incremental_snapshot", taskEventOffset: offset, delegationStore: delegationsPath },
     });
     await writeWorkerHealth(governanceHealthPath, "governance", true);
   } catch (error) {

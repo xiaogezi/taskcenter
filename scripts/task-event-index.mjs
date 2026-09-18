@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
-import { writeJsonAtomic } from "./usage-index.mjs";
 
 const INDEX_VERSION = 6;
 
@@ -10,7 +10,7 @@ export async function updateTaskEventIndex(options) {
   const now = Number(options.now || Date.now());
   const cutoff = now - Number(options.retentionMs || 24 * 60 * 60_000);
   const info = existsSync(options.sourcePath) ? await stat(options.sourcePath) : null;
-  const previous = await readJson(options.indexPath, null);
+  let previous = await readJson(options.indexPath, null);
   const identity = info ? `${info.dev || 0}:${info.ino || 0}` : "missing";
   const previousOffset = Number(previous?.offset || 0);
   const checkpointMatches = info && previous?.checkpointHash && previous?.headHash
@@ -18,6 +18,7 @@ export async function updateTaskEventIndex(options) {
     && previous.headHash === await jsonlCheckpointFingerprint(options.sourcePath, Math.min(previousOffset, 4096));
   const reusable = previous?.version === INDEX_VERSION && previous.identity === identity && info && info.size >= previousOffset && checkpointMatches;
   const index = reusable ? previous : { version: INDEX_VERSION, identity, offset: 0, events: [], byTask: {}, skippedOversizedLines: 0, checkpointHash: "", headHash: "" };
+  previous = null;
 
   if (info && info.size > Number(index.offset || 0)) {
     const result = await consumeJsonl(options.sourcePath, {
@@ -43,8 +44,27 @@ export async function updateTaskEventIndex(options) {
   index.headHash = info ? await jsonlCheckpointFingerprint(options.sourcePath, Math.min(index.offset, 4096)) : "";
   index.events = (index.events || []).filter((event) => eventTime(event) >= cutoff);
   index.updatedAt = new Date(now).toISOString();
-  await writeJsonAtomic(options.indexPath, index);
+  await writeIndexAtomic(options.indexPath, index);
   return index;
+}
+
+async function writeIndexAtomic(path, index) {
+  // Keep the existing JSON schema and atomic replacement without allocating a
+  // second full history string. Each task contains at most 100 events.
+  async function* chunks() {
+    const { byTask, ...metadata } = index;
+    yield `${JSON.stringify(metadata).slice(0, -1)},"byTask":{`;
+    let separator = "";
+    for (const [taskId, events] of Object.entries(byTask)) {
+      yield `${separator}${JSON.stringify(taskId)}:${JSON.stringify(events)}`;
+      separator = ",";
+    }
+    yield "}}\n";
+  }
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  await writeFile(temporary, chunks(), { mode: 0o600 });
+  await rename(temporary, path);
 }
 
 function eventTime(event) {
@@ -71,5 +91,7 @@ function compactTaskEvent(event) {
 }
 
 async function readJson(path, fallback) {
-  try { return JSON.parse(await readFile(path, "utf8")); } catch { return fallback; }
+  // Decode once: chunked UTF-8 reads retain a rope that JSON.parse must flatten,
+  // temporarily duplicating large, non-ASCII index strings on the JS heap.
+  try { return JSON.parse((await readFile(path)).toString("utf8")); } catch { return fallback; }
 }

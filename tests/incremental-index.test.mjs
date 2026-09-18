@@ -1,12 +1,41 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 
 import { consumeJsonl } from "../scripts/jsonl-stream.mjs";
 import { updateTaskEventIndex } from "../scripts/task-event-index.mjs";
 import { updateUsageIndex } from "../scripts/usage-index.mjs";
+
+test("大体积中文任务历史在 128 MB 堆内完成重建和增量读写", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "taskcenter-event-memory-"));
+  try {
+    const sourcePath = join(dir, "events.jsonl");
+    const indexPath = join(dir, "index.json");
+    for (let task = 0; task < 2400; task += 1) {
+      await appendFile(sourcePath, Array.from({ length: 100 }, (_, event) => JSON.stringify({
+        task_id: `task-${task}`, event_id: `${task}-${event}`, type: "task.update",
+        recorded_at: "2020-01-01T00:00:00Z", reason: "中文".repeat(40),
+      })).join("\n") + "\n");
+    }
+    const moduleUrl = new URL("../scripts/task-event-index.mjs", import.meta.url).href;
+    const code = `import assert from 'node:assert/strict';
+      import { updateTaskEventIndex } from ${JSON.stringify(moduleUrl)};
+      const index = await updateTaskEventIndex(${JSON.stringify({ sourcePath, indexPath })});
+      assert.equal(Object.keys(index.byTask).length, 2400);
+      assert.equal(index.byTask['task-2399'].length, 100);
+      assert.equal(index.byTask['task-2399'][99].reason, '中文'.repeat(40));
+      assert.equal(index.events.length, 0);`;
+    for (const phase of ["rebuild", "incremental"]) {
+      const result = spawnSync(process.execPath, ["--max-old-space-size=128", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 30_000, cwd: dir });
+      assert.equal(result.status, 0, `${phase}: ${result.error || result.signal || result.stderr}`);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("JSONL 游标只提交完整行，并在追加后续读", async () => {
   const dir = await mkdtemp(join(tmpdir(), "taskcenter-jsonl-"));
