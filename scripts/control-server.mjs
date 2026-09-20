@@ -129,6 +129,16 @@ const usageHealthPath = resolve(process.env.TASKCENTER_USAGE_HEALTH_PATH || join
 const governanceHealthPath = resolve(process.env.TASKCENTER_GOVERNANCE_HEALTH_PATH || join(projectRoot, ".local", "runtime", "governance-worker-health.json"));
 const contextManagementPilotPath = pilotEventsPath(projectRoot);
 const host = "127.0.0.1";
+function releaseInfo() {
+  const revision = String(process.env.TASKCENTER_RELEASE_REVISION || "").trim();
+  let version = "";
+  try {
+    const parsed = JSON.parse(readFileSync(resolve(projectRoot, "package.json"), "utf8"));
+    if (parsed && typeof parsed.version === "string") version = parsed.version.trim();
+  } catch { /* 读不到 package.json 时版本留空 */ }
+  return { version, revision: revision ? (revision.length > 12 ? revision.slice(0, 12) : revision) : "" };
+}
+
 const port = Number(process.env.TASKCENTER_CONTROL_PORT || 3001);
 const dryRun = process.env.TASKCENTER_DISPATCH_DRY_RUN === "1";
 const reconcileLiveSessions = process.env.TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION !== "1";
@@ -175,7 +185,7 @@ const server = createServer(async (request, response) => {
       const heartbeat = inspectFile(watcherHeartbeatPath, true);
       const watcherFresh = heartbeat.readable && Date.now() - Date.parse(heartbeat.updatedAt) < 30_000;
       const memory = process.memoryUsage();
-      sendJson(response, 200, { ok: true, dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()), rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable, delegationsReadable: inspectFile(delegationsPath).readable, routingControlReadable: inspectFile(routingControlPath).readable }, metrics: { usage: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000), governance: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) }, routing: { models: routingHealth(), roles: routingRoles() }, watcher: { ...heartbeat, healthy: watcherFresh } });
+      sendJson(response, 200, { ok: true, release: releaseInfo(), dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()), rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable, delegationsReadable: inspectFile(delegationsPath).readable, routingControlReadable: inspectFile(routingControlPath).readable }, metrics: { usage: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000), governance: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) }, routing: { models: routingHealth(), roles: routingRoles() }, watcher: { ...heartbeat, healthy: watcherFresh } });
       return;
     }
     if (request.method === "POST" && request.url === "/sync") {

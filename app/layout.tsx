@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import VersionBadge from "./version-badge";
 
 export const metadata: Metadata = {
   title: "TaskCenter | 本地任务工作台",
@@ -17,7 +18,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>
+        {children}
+        <VersionBadge />
+      </body>
     </html>
   );
 }

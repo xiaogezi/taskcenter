@@ -4,6 +4,7 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 页面新增版本徽章：/health 透出 release（package version + 部署 revision），所有工作台页面右下角展示
 - 修复：模型调度页 governance 读取接入代理白名单（/governance-metrics），避免整页加载失败
 - 修复：任务事件索引裁剪无消费方的大文本字段（reason/review_reason/routing_reason 等），只保留详情白名单渲染与去重字段，源事件文件完整保留；索引体积下降、128 MB 堆下增量重建稳定（全量测试恢复全绿）。
 - 额度池模型：config/model-roles.json 新增 quota_pools 定义（provider/models/source/notes），model-role-config 解析并随 /routing/health 透出；实测 kimi/claude CLI 无官方余额查询接口，MiMo/K3 池按 runtime-signal 标注（余额未知、仅限流信号与本地累计），Codex 池按官方 rate_limits 标注；额度池页面显示来源、覆盖模型、主次窗口与观测时间。
