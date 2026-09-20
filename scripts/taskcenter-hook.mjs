@@ -31,7 +31,7 @@ const workspace = String(event.cwd || process.env.CLAUDE_PROJECT_DIR || process.
 let scheduledReadonly = scheduledReadonlyConfig();
 
 try {
-  if (action === "pre-tool-use" && isTrustedRecoveryCommand(event)) {
+  if ((action === "pre-tool-use" || action === "scheduled-pre-tool-use") && isTrustedRecoveryCommand(event)) {
     console.log("TaskCenter 固定恢复命令放行");
     process.exit(0);
   }

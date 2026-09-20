@@ -167,6 +167,14 @@ test("离线恢复白名单兼容 Codex exec_command 格式与受限 rtk/cd 包�
   });
   assert.equal(workdirOutside.code, 2, "tool_input.workdir 在项目外时应拒绝");
 
+  // Codex exec_command 实际走的是 scheduled-pre-tool-use action（hooks.json 第二个 matcher）。
+  const scheduledRecovery = await runHook("scheduled-pre-tool-use", "codex", {
+    session_id: "",
+    tool_name: "exec_command",
+    tool_input: { cmd: "node scripts/taskcenter-control.mjs start", workdir: rootPath },
+  });
+  assert.equal(scheduledRecovery.code, 0, "scheduled-pre-tool-use 应急恢复命令也应放行");
+
   // 仍拒绝：cd 后接非恢复命令、cd 到别的目录、拼接额外写操作。
   for (const [toolName, toolInput] of [
     ["Bash", { command: `cd ${rootPath} && touch /tmp/evil && node scripts/taskcenter-control.mjs start` }],
