@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 受管 Claude/Kimi 派发统一接入现有 Harness 操作，保留任务领取、逐工具权限和型号回执校验；集中配置支持客户端多模型目录及四个已核实的 Kimi 型号，旧 profile 继续兼容。
+
 - 子任务派发收敛为主窗口自主选择 Luna、MiMo、K3；关闭 Codex 自动升级和容量回退，其他既有 Codex 执行型号标记退役，主窗口模型及历史记录不变。
 
 - 修复任务创建与幂等重放整文件拆分事件历史导致控制服务内存溢出的问题；改为倒序分块读取，保留历史数据及原有幂等校验。

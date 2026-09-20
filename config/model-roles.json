@@ -7,11 +7,52 @@
       "provider": "moonshot",
       "reasoning_effort": "low"
     },
+    "kimi-k2.8-preview": {
+      "harness": "kimi",
+      "model_key": "k2.8-preview",
+      "reasoning_effort": "low"
+    },
+    "kimi-k2.7-highspeed": {
+      "harness": "kimi",
+      "model_key": "k2.7-highspeed",
+      "reasoning_effort": "low"
+    },
     "claude-mimo": {
       "harness": "claude",
       "model": "mimo-v2.5-pro",
       "provider": "xiaomi",
       "reasoning_effort": "medium"
+    },
+    "kimi-k3-standard": {
+      "harness": "kimi",
+      "model_key": "k3",
+      "reasoning_effort": "low"
+    }
+  },
+  "cli_clients": {
+    "kimi": {
+      "provider": "moonshot",
+      "models": {
+        "k2.8-preview": "kimi-code/kimi-for-coding",
+        "k2.7-highspeed": "kimi-code/kimi-for-coding-highspeed",
+        "k3": "kimi-code/k3",
+        "k3-256k": "kimi-code/k3-256k"
+      },
+      "reasoning_efforts": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "claude": {
+      "provider": "xiaomi",
+      "models": {
+        "mimo-v2.5-pro": "mimo-v2.5-pro"
+      },
+      "reasoning_efforts": [
+        "low",
+        "medium"
+      ]
     }
   },
   "optional_astra_policy": {
@@ -74,6 +115,9 @@
       "id": "kimi",
       "provider": "moonshot",
       "models": [
+        "kimi-code/kimi-for-coding",
+        "kimi-code/kimi-for-coding-highspeed",
+        "kimi-code/k3",
         "kimi-code/k3-256k"
       ],
       "source": "runtime-signal",

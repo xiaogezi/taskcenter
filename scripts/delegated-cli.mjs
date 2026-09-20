@@ -1,12 +1,11 @@
-import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, appendFileSync, existsSync } from "node:fs";
+import { accessSync, constants, mkdtempSync, readFileSync, writeFileSync, rmSync, appendFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, isAbsolute } from "node:path";
+import { dirname, join, resolve, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { cliProfile } from "./cli-profile.mjs";
 import { claimCli, checkCliTool, control } from "./delegated-cli-hook.mjs";
-import { runKimi } from "./harnesses/kimi-session.mjs";
-import { resolveSpawnCommand } from "./platform-command.mjs";
+import { requireHarnessOperation } from "./harnesses/index.mjs";
+export { claudeInvocation, claudeReceipt } from "./harnesses/claude-delegated.mjs";
 
 export function validateCliManifest(input) {
   for (const key of ["profile", "task_id", "parent_session_id", "route_id", "delegation_id", "claim_token", "workspace", "prompt_path", "output_path"]) if (typeof input[key] !== "string" || !input[key].trim()) throw new Error(`Missing ${key}`);
@@ -18,49 +17,11 @@ export function validateCliManifest(input) {
   return { ...input, workspace: resolve(input.workspace), timeout_ms };
 }
 
-export function claudeInvocation(manifest, manifestPath, profile, env = process.env) {
-  const command = [process.execPath, resolve(import.meta.dirname, "delegated-cli-hook.mjs")].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(" ");
-  const hooks = Object.fromEntries(["SessionStart", "PreToolUse"].map(name => [name, [{ matcher: "", hooks: [{ type: "command", command }] }]]));
-  const tools = manifest.mode === "read-only" ? "Read,Glob,Grep" : "Read,Glob,Grep,Write,Edit,Bash";
-  const childEnv = { ...env, TASKCENTER_CLI_MANIFEST: manifestPath };
-  for (const key of ["CODEX_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID", "TASKCENTER_CALLER_SESSION_ID", "TASKCENTER_MANAGED_REVIEW"]) delete childEnv[key];
-  return { args: ["--print", "--verbose", "--output-format", "stream-json", "--model", profile.model, "--effort", profile.effort, "--permission-mode", "dontAsk", "--tools", tools, "--allowedTools", tools, "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--settings", JSON.stringify({ hooks })], env: childEnv };
-}
-
-export function claudeReceipt(event) {
-  if (event?.type !== "result") return null;
-  return { status: event.is_error || event.subtype !== "success" || event.permission_denials?.length ? "failed" : "completed", sessionId: event.session_id, reportedModels: Object.keys(event.modelUsage || {}), summary: String(event.result || "").slice(-1200), rawStatus: event.subtype || "unknown", usage: event.usage || null };
-}
-
-async function runClaude(manifest, manifestPath, profile, prompt, signal, logPath) {
-  const invocation = claudeInvocation(manifest, manifestPath, profile);
-  const executable = resolveSpawnCommand("claude", { env: invocation.env });
-  const child = spawn(executable.command, [...executable.argsPrefix, ...invocation.args], { cwd: manifest.workspace, env: invocation.env, stdio: ["pipe", "pipe", "pipe"] });
-  let buffer = "", receipt = null, bytes = 0, parseError;
-  const stop = () => child.kill("SIGTERM");
-  signal.addEventListener("abort", stop, { once: true });
-  const timer = setInterval(() => { if (signal.aborted) child.kill("SIGKILL"); }, 5000);
-  const log = chunk => { bytes += Buffer.byteLength(chunk); if (bytes > 16 * 1024 * 1024) { parseError = new Error("CLI_LOG_LIMIT"); stop(); } else appendFileSync(logPath, chunk); };
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", chunk => {
-    log(chunk); buffer += chunk;
-    if (buffer.length > 4 * 1024 * 1024) { parseError = new Error("CLI_FRAME_LIMIT"); stop(); return; }
-    let index;
-    while ((index = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
-      if (!line.trim()) continue;
-      try { receipt = claudeReceipt(JSON.parse(line)) || receipt; } catch { parseError = new Error("CLI_INVALID_JSON"); stop(); }
-    }
-  });
-  child.stderr.on("data", log);
-  child.stdin.on("error", () => {});
-  try {
-    const exited = new Promise((accept, reject) => { child.once("error", reject); child.once("close", (code, sig) => accept({ code, signal: sig })); });
-    child.stdin.end(prompt);
-    const exit = await exited;
-    if (parseError) throw parseError;
-    return { ...(receipt || { status: "unknown", reportedModels: [] }), ...exit, status: signal.aborted ? "cancelled" : exit.code === 0 ? receipt?.status || "unknown" : "failed" };
-  } finally { clearInterval(timer); signal.removeEventListener("abort", stop); }
+export function cliFailureKind(message) {
+  if (/MCP tool call requires approval|approval policy is never/i.test(message)) return "tool_approval";
+  if (/EACCES|EPERM|sandbox|read.only file system/i.test(message)) return "filesystem_permission";
+  if (/CLI_(?:PERMISSION_DENIED|READ_ONLY|TOOL_UNSUPPORTED|NOT_CLAIMED|GRANT_MISMATCH)|claim rejected|TaskCenter.*门禁/i.test(message)) return "task_permission";
+  return "cli_execution";
 }
 
 const quotaLikePattern = /rate.?limit|quota|429|retry.?after/i;
@@ -74,7 +35,7 @@ export async function runDelegatedCli(input, dependencies = {}) {
   manifest.receipt_path = join(temporary, "claimed.json");
   writeFileSync(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
   const logPath = `${manifest.output_path}.log`;
-  let sessionId, result, failure, reportError;
+  let sessionId, result, failure, reportError, permissionFailure;
   let lastPermissionReportAt = 0;
   const controller = new AbortController(), signal = controller.signal;
   const abort = () => controller.abort();
@@ -94,41 +55,39 @@ export async function runDelegatedCli(input, dependencies = {}) {
     })();
   }, 60_000);
   try {
+    if (!statSync(manifest.workspace).isDirectory()) throw new Error("CLI_WORKSPACE_INVALID");
+    accessSync(manifest.prompt_path, constants.R_OK);
+    accessSync(dirname(manifest.output_path), constants.W_OK);
+    if (manifest.mode === "workspace-write") accessSync(manifest.workspace, constants.W_OK);
     // No prompt is submitted to Kimi before claim; Claude tools require the SessionStart receipt.
     const prompt = readFileSync(manifest.prompt_path, "utf8");
     writeFileSync(logPath, "", { mode: 0o600, flag: "wx" });
     if (existsSync(manifest.output_path)) throw new Error("CLI_OUTPUT_EXISTS");
-    if (profile.harness === "claude") {
-      result = await (dependencies.runClaude || runClaude)(manifest, manifestPath, profile, prompt, signal, logPath);
-      if (existsSync(manifest.receipt_path)) sessionId = JSON.parse(readFileSync(manifest.receipt_path, "utf8")).sessionId;
-      if (!sessionId || result.sessionId !== sessionId) throw new Error("CLI_NOT_CLAIMED");
-    } else {
-      let logBytes = 0;
-      const run = await (dependencies.runKimi || runKimi)({ cwd: manifest.workspace, model: profile.model, thinking: profile.effort, mode: manifest.mode === "read-only" ? "plan" : "default", prompt, signal,
-        onSessionReady: async value => {
-          await claimCli(manifest, value.taskcenterSessionId, request);
-          sessionId = value.taskcenterSessionId;
-          await request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: "running", summary: "CLI 会话已领取，开始执行" }).catch(() => {});
-          await request("/delegations/touch", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace }).catch(() => {});
-        },
-        permission: async params => {
-          const call = params.toolCall || {};
-          const tool = { read: "Read", search: "Grep", edit: "Edit", execute: "Bash" }[call.kind];
-          if (!sessionId || !tool || !call.rawInput) return null;
-          try {
-            const nowMs = Date.now();
-            if (nowMs - lastPermissionReportAt >= 60_000) {
-              lastPermissionReportAt = nowMs;
-              void request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: "waiting_permission", summary: `等待权限：${tool}` }).catch(() => {});
-            }
-            await checkCliTool(manifest, sessionId, tool, call.rawInput);
-            return params.options?.find(option => option.kind === "allow_once")?.optionId || null;
-          } catch { return null; }
-        },
-        update: value => { const text = JSON.stringify(value) + "\n"; logBytes += Buffer.byteLength(text); if (logBytes <= 16 * 1024 * 1024) appendFileSync(logPath, text); },
-      });
-      result = { status: run.cancelled ? "cancelled" : run.stopReason === "end_turn" ? "completed" : "unknown", sessionId, reportedModels: run.reportedModel ? [run.reportedModel] : [], reportedThinking: run.reportedThinking, summary: run.finalText, rawStatus: run.stopReason, usage: run.usage };
-    }
+    let logBytes = 0;
+    result = await requireHarnessOperation(profile.harness, "runDelegatedCli")({ manifest, manifestPath, profile, prompt, signal, logPath, dependencies,
+      onSessionReady: async value => {
+        await claimCli(manifest, value.taskcenterSessionId, request);
+        sessionId = value.taskcenterSessionId;
+        await request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: "running", summary: "CLI 会话已领取，开始执行" }).catch(() => {});
+        await request("/delegations/touch", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace }).catch(() => {});
+      },
+      authorizeTool: async (tool, rawInput) => {
+        if (!sessionId || !tool || !rawInput) { permissionFailure = "CLI_NOT_CLAIMED_OR_INVALID_TOOL"; return false; }
+        try {
+          const nowMs = Date.now();
+          if (nowMs - lastPermissionReportAt >= 60_000) {
+            lastPermissionReportAt = nowMs;
+            void request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: "waiting_permission", summary: `等待权限：${tool}` }).catch(() => {});
+          }
+          await checkCliTool(manifest, sessionId, tool, rawInput);
+          return true;
+        } catch (error) { permissionFailure = String(error.message).slice(0, 1000); return false; }
+      },
+      update: value => { const text = JSON.stringify(value) + "\n"; logBytes += Buffer.byteLength(text); if (logBytes <= 16 * 1024 * 1024) appendFileSync(logPath, text); },
+    });
+    if (existsSync(manifest.receipt_path)) sessionId = JSON.parse(readFileSync(manifest.receipt_path, "utf8")).sessionId;
+    if (!sessionId || result.sessionId !== sessionId) throw new Error("CLI_NOT_CLAIMED");
+    if (permissionFailure || result.permissionDenied) throw new Error(`CLI_PERMISSION_DENIED: ${permissionFailure || "客户端拒绝工具授权"}`);
     if (result.status === "completed" && (!result.reportedModels.length || !result.reportedModels.includes(profile.model))) result.status = "unknown";
   } catch (error) {
     failure = error.message;
@@ -141,12 +100,13 @@ export async function runDelegatedCli(input, dependencies = {}) {
     clearTimeout(timeout); clearInterval(heartbeat); process.off("SIGINT", abort); process.off("SIGTERM", abort);
     if (!sessionId && existsSync(manifest.receipt_path)) sessionId = JSON.parse(readFileSync(manifest.receipt_path, "utf8")).sessionId;
     const outcome = result?.status === "completed" ? "succeeded" : result?.status === "cancelled" ? "cancelled" : "failed";
-    const evidence = { ...result, error: failure || null, task_id: manifest.task_id, route_id: manifest.route_id, delegation_id: manifest.delegation_id, role: profile.role, harness: profile.harness, requested_model: profile.model, requested_effort: profile.effort, effective_effort: result?.reportedThinking || null, observed_at: new Date().toISOString(), log_path: logPath };
+    const failureKind = failure ? cliFailureKind(failure) : null;
+    const evidence = { ...result, error: failure || null, failure_kind: failureKind, task_id: manifest.task_id, route_id: manifest.route_id, delegation_id: manifest.delegation_id, role: profile.role, harness: profile.harness, requested_model: profile.model, requested_effort: profile.effort, effective_effort: result?.reportedThinking || null, observed_at: new Date().toISOString(), log_path: logPath };
     try {
       if (sessionId) await request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: outcome, summary: String(result?.summary || outcome).slice(-1000), evidence: [JSON.stringify(evidence).slice(0, 1000)], error: failure || (outcome === "failed" ? result?.rawStatus || "CLI_OUTCOME_UNKNOWN" : "") });
       else await request("/delegations/revoke", { delegation_id: manifest.delegation_id, parent_session_id: manifest.parent_session_id });
     } catch (error) { reportError = error.message; }
-    try { await request("/routing/result", { route_id: manifest.route_id, session_id: manifest.parent_session_id, outcome, ...(outcome === "failed" ? { error_type: "cli_execution", error_code: failure || "CLI_OUTCOME_UNKNOWN" } : {}) }); } catch (error) { reportError = [reportError, error.message].filter(Boolean).join("; "); }
+    try { await request("/routing/result", { route_id: manifest.route_id, session_id: manifest.parent_session_id, outcome, ...(outcome === "failed" ? { error_type: failureKind || "cli_execution", error_code: failure || "CLI_OUTCOME_UNKNOWN" } : {}) }); } catch (error) { reportError = [reportError, error.message].filter(Boolean).join("; "); }
     try { writeFileSync(manifest.output_path, JSON.stringify({ ...evidence, report_error: reportError || null }, null, 2) + "\n", { mode: 0o600, flag: "wx" }); }
     finally { rmSync(temporary, { recursive: true, force: true }); }
   }

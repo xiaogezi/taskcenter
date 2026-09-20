@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cliProfile } from "../scripts/cli-profile.mjs";
 import { claimCli } from "../scripts/delegated-cli-hook.mjs";
-import { claudeInvocation, claudeReceipt, runDelegatedCli } from "../scripts/delegated-cli.mjs";
+import { cliFailureKind, claudeInvocation, claudeReceipt, runDelegatedCli } from "../scripts/delegated-cli.mjs";
+import { harnessCapabilities, requireHarnessOperation } from "../scripts/harnesses/index.mjs";
 
 test("Claude 入口保留权限门禁、移除父身份且不把退出码当完成", () => {
   const p = cliProfile("claude-mimo");
@@ -27,7 +28,7 @@ test("CLAIM 校验父任务、真实执行身份及模型，拒绝伪成功", as
 });
 
 test("CLI 成功和初始化失败都回写并释放原租约，未知型号不能报成功", async () => {
-  for (const mode of ["success", "claim-failure", "unknown-model", "report-failure"]) {
+  for (const mode of ["success", "claim-failure", "unknown-model", "wrong-model", "cancelled", "report-failure"]) {
     const dir = mkdtempSync(join(tmpdir(), "cli-test-")), calls = [];
     const manifest = { profile: "kimi-k3", task_id: "task", parent_session_id: "parent", workspace: dir, delegation_id: "grant", route_id: "route", claim_token: "secret", prompt_path: join(dir, "prompt"), output_path: join(dir, "result"), mode: "read-only" };
     writeFileSync(manifest.prompt_path, "bounded probe");
@@ -40,18 +41,68 @@ test("CLI 成功和初始化失败都回写并释放原租约，未知型号不�
         if (path === "/delegations/report" && mode === "report-failure") throw new Error("report rejected");
         return { accepted: true, delegation: { taskId: "task", parentSessionId: "parent", executorModel: profile.model, delegateSessionId: "child", workspace: dir, status: "active" } };
       },
-      runKimi: async input => { assert.equal(input.thinking, profile.effort); assert.equal(input.mode, "plan"); await input.onSessionReady({ taskcenterSessionId: "child" }); prompted = true; return { stopReason: "end_turn", reportedModel: mode === "unknown-model" ? null : profile.model, reportedThinking: profile.effort, finalText: "result" }; },
+      runKimi: async input => { assert.equal(input.thinking, profile.effort); assert.equal(input.mode, "plan"); await input.onSessionReady({ taskcenterSessionId: "child" }); prompted = true; return { cancelled: mode === "cancelled", stopReason: "end_turn", reportedModel: mode === "unknown-model" ? null : mode === "wrong-model" ? "different-model" : profile.model, reportedThinking: profile.effort, finalText: "result" }; },
     };
     try {
       if (mode === "success") await runDelegatedCli(manifest, dependencies);
       else await assert.rejects(runDelegatedCli(manifest, dependencies));
       assert.equal(prompted, mode !== "claim-failure");
       assert.equal(calls.filter(c => c.path === "/routing/result").length, 1);
-      assert.equal(calls.find(c => c.path === "/routing/result").body.outcome, ["success", "report-failure"].includes(mode) ? "succeeded" : "failed");
+      assert.equal(calls.find(c => c.path === "/routing/result").body.outcome, ["success", "report-failure"].includes(mode) ? "succeeded" : mode === "cancelled" ? "cancelled" : "failed");
       const output = JSON.parse(readFileSync(manifest.output_path, "utf8"));
       assert.equal(output.requested_model, profile.model);
       assert.equal(output.role, "executor");
       assert.equal(JSON.stringify(output).includes("secret"), false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
+});
+
+test("受管执行能力静态注册，Kimi 权限仅转换为一次授权", async () => {
+  for (const id of ["kimi", "claude"]) assert.equal(harnessCapabilities(id).operations.runDelegatedCli.supported, true);
+  assert.equal(harnessCapabilities("codex").operations.runDelegatedCli.supported, false);
+  assert.throws(() => requireHarnessOperation("unknown", "runDelegatedCli"), /尚未适配/);
+  const run = requireHarnessOperation("kimi", "runDelegatedCli");
+  for (const allowed of [false, true]) {
+    await run({ manifest: { workspace: "/work", mode: "read-only" }, profile: cliProfile("kimi-k2.8-preview"),
+      onSessionReady: async () => {}, authorizeTool: async (tool, input) => {
+        assert.equal(tool, "Read"); assert.deepEqual(input, { path: "README.md" }); return allowed;
+      },
+      dependencies: { runKimi: async input => {
+        assert.equal(input.model, "kimi-code/kimi-for-coding");
+        assert.equal(await input.permission({ toolCall: { kind: "read", rawInput: { path: "README.md" } }, options: [{ kind: "allow_once", optionId: "once" }, { kind: "allow_always", optionId: "always" }] }), allowed ? "once" : null);
+        return { stopReason: "unknown" };
+      } },
+    });
+  }
+});
+
+test("Claude 受管适配经统一编排验证领取回执", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cli-claude-test-"));
+  const manifest = { profile: "claude-mimo", task_id: "task", parent_session_id: "parent", workspace: dir, delegation_id: "grant", route_id: "route", claim_token: "secret", prompt_path: join(dir, "prompt"), output_path: join(dir, "result"), mode: "read-only" };
+  writeFileSync(manifest.prompt_path, "probe");
+  try {
+    const result = await runDelegatedCli(manifest, { control: async () => ({ accepted: true }), runClaude: async (received, manifestPath, profile) => {
+      assert.equal(received.mode, "read-only");
+      const stored = JSON.parse(readFileSync(manifestPath, "utf8"));
+      writeFileSync(stored.receipt_path, JSON.stringify({ sessionId: "real-child" }));
+      return { status: "completed", sessionId: "real-child", reportedModels: [profile.model] };
+    } });
+    assert.equal(result.sessionId, "real-child");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+ test("权限错误分类保留根因", () => {
+  assert.equal(cliFailureKind("MCP tool call requires approval, but approval policy is never"), "tool_approval");
+  assert.equal(cliFailureKind("CLI_PERMISSION_DENIED: EACCES"), "filesystem_permission");
+  assert.equal(cliFailureKind("CLI_PERMISSION_DENIED: CLI_READ_ONLY"), "task_permission");
+ });
+
+test("启动前检查失败仍撤销授权并释放路由", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cli-preflight-")), calls = [];
+  try {
+    const manifest = { profile: "kimi-k3", task_id: "task", parent_session_id: "parent", workspace: join(dir, "missing"), delegation_id: "grant", route_id: "route", claim_token: "secret", prompt_path: join(dir, "prompt"), output_path: join(dir, "result"), mode: "read-only" };
+    await assert.rejects(runDelegatedCli(manifest, { control: async path => { calls.push(path); }, runKimi: async () => assert.fail("must not launch") }), /ENOENT/);
+    assert.deepEqual(calls, ["/delegations/revoke", "/routing/result"]);
+    assert.equal(JSON.parse(readFileSync(manifest.output_path)).status, "failed");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -15,7 +15,7 @@ export const HARNESS_IDS = Object.freeze(adapters.map(adapter => adapter.id));
 export const LEGACY_HARNESS_ID = "codex";
 export const HARNESS_CLIENTS = Object.freeze(Object.fromEntries(adapters.map(adapter => [adapter.id, Object.freeze(adapter.client)])));
 const registry = new Map(adapters.map(adapter => [adapter.id, adapter]));
-const operations = ["createSession", "resumeSession", "inspectSession", "openSession", "cancelSession"];
+const operations = ["createSession", "resumeSession", "inspectSession", "openSession", "cancelSession", "runDelegatedCli"];
 
 export class HarnessError extends Error {
   constructor(code, message, statusCode = 409, outcome = "not_started", cause) {

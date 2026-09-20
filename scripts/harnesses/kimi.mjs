@@ -1,4 +1,5 @@
 import { runKimi } from "./kimi-session.mjs";
+import { runKimiDelegated } from "./kimi-delegated.mjs";
 
 async function run({ workingDirectory, sessionId, onEvent = () => {}, ...input }) {
   let nativeId = sessionId;
@@ -18,5 +19,5 @@ export const kimiAdapter = {
   client: { label: "Kimi Code CLI", hooks: true, resume: true, usage: true, integration_mode: "managed_acp", usage_scope: "context_snapshot", native_hooks_require_configuration: true },
   identity: "explicit_host_binding_required",
   usageScope: "context_snapshot",
-  operations: { createSession: run, resumeSession: run },
+  operations: { createSession: run, resumeSession: run, runDelegatedCli: runKimiDelegated },
 };
