@@ -715,6 +715,13 @@ function isReadOnlyCommand(words, heredoc) {
   const executable = basename(tokens[0]);
   const args = tokens.slice(1);
   if (heredoc && executable !== "cat") return false;
+  if (["which", "command", "type"].includes(executable)) {
+    // `command NAME` executes NAME; only its explicit lookup forms are read-only.
+    const options = { which: ["-a", "-s"], command: ["-v", "-V"], type: ["-a", "-p", "-P", "-t"] }[executable];
+    const names = options.includes(args[0]) ? args.slice(1) : args;
+    if (executable === "command" && names === args) return false;
+    return names.length > 0 && names.every(name => /^[A-Za-z0-9_./+][A-Za-z0-9_./+:-]*$/.test(name));
+  }
   if (executable === "tail" && args.some((arg) => /^--(?:follow|retry)(?:=|$)|^-[^-]*[fF]/.test(arg))) return false;
   if (args.some((token) => /(?:^|[/\\])(?:auth\.json|\.env(?:\.[^/\\]+)?|id_rsa|id_ed25519)(?:$|[/\\])/.test(token))) return false;
   if (executable === "adb") return args.length === 1 && args[0] === "version" || args[0] === "devices" && (args.length === 1 || args.length === 2 && args[1] === "-l");
@@ -1086,7 +1093,7 @@ async function requireTask() {
   if (task) return task;
   const delegated = await resolveCurrentDelegation();
   if (delegated?.task && delegated?.delegation) return { ...delegated.task, delegation: delegated.delegation };
-  throw new Error("该命令不满足 L0 确定性只读规则。当前 Session 无活跃任务或有效 delegation；同一交付提交后的合并、验证等后续操作，请调用 taskcenter_task_resume 接续原 task_id（无时间限制），只有新的独立目标才创建 fast/standard/strict 任务。CLI 执行器应先领取 taskcenter_delegation_grant，不要为普通 CLI Run 重复创建正式任务。");
+  throw new Error("该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。当前 Session 无活跃任务或有效 delegation；实际执行、合并、验证或写入需调用 taskcenter_task_resume 接续同一交付，新的独立目标才创建任务。CLI 执行器应先领取 taskcenter_delegation_grant。");
 }
 
 async function prepareCurrentTask() {

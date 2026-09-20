@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复无活跃任务时 CLI 路径探测被 Hook 误拦：精确放行 which、command -v/-V 和 type 查询，保留实际执行与写入授权；拒绝提示区分未识别只读命令与已检测写入。
+
 - 新增 Kimi／Claude 可选 CLI 执行入口及集中 profile：绑定原任务路由和 delegation，真实 Session 领取后执行、回写并释放租约；请求型号、报告型号和推理档位分开记录。保留默认 executor/reviewer，未知结果不自动重试。
 
 - 补齐跨客户端共享任务接手：复用 resume，保留创建者、当前执行者与交接记录；有效委派未结束时拒绝换手，旧 Session 不能借手动事件前缀继续更新任务。支持已启动客户端接手，不自动启动执行器。

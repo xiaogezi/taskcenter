@@ -231,6 +231,23 @@ test("Claude 写入门禁仅接受真实 Session 的任务，前缀身份不能�
   assert.match(allowed.stdout, /任务门禁通过/);
 });
 
+test("L0 路径探测跨客户端放行，但不能借 command 包装执行", async () => {
+  for (const agent of ["codex", "claude", "kimi"]) {
+    const session_id = `lookup-${agent}`;
+    await runHook("session-start", agent, { session_id, cwd: "/work" });
+    for (const cmd of ["which kimi claude", "rtk proxy which -a claude", "command -v kimi", "command -V claude", "type claude", "type -a kimi", "/usr/bin/which node"]) {
+      const result = await runHook("pre-tool-use", agent, { session_id, cwd: "/work", tool_name: "Bash", tool_input: { command: cmd } });
+      assert.equal(result.code, 0, `${agent}: ${cmd}`);
+      assert.match(result.stdout, /L0/);
+    }
+    for (const cmd of ["command touch sentinel", "command -p touch sentinel", "command -v kimi && touch sentinel", "which kimi > result", "which $(touch sentinel)", "which --bad kimi", "type -f x", "command", "which"]) {
+      const result = await runHook("pre-tool-use", agent, { session_id, cwd: "/work", tool_name: "Bash", tool_input: { command: cmd } });
+      assert.equal(result.code, 2, `${agent}: ${cmd}`);
+      assert.match(result.stderr, /L0_COMMAND_NOT_RECOGNIZED/);
+    }
+  }
+});
+
 test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async () => {
   const sessionId = "019f0000-0000-7000-8000-000000000089";
   assert.equal((await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" })).code, 0);
