@@ -715,6 +715,7 @@ function isReadOnlyCommand(words, heredoc) {
   const executable = basename(tokens[0]);
   const args = tokens.slice(1);
   if (heredoc && executable !== "cat") return false;
+  if (isCliVersionQuery(executable, args)) return true;
   if (["which", "command", "type"].includes(executable)) {
     // `command NAME` executes NAME; only its explicit lookup forms are read-only.
     const options = { which: ["-a", "-s"], command: ["-v", "-V"], type: ["-a", "-p", "-P", "-t"] }[executable];
@@ -874,11 +875,17 @@ function interpreterInvocation(command) {
   return { executable, args: tokens.slice(index + 1) };
 }
 
+function isCliVersionQuery(executable, args) {
+  const options = { node: ["--version", "-v"], claude: ["--version", "-v"], kimi: ["--version", "-V"] };
+  return args.length === 1 && Boolean(options[executable]?.includes(args[0]));
+}
+
 function isTerminalQuery(executable, args) {
+  if (isCliVersionQuery(executable, args)) return true;
   if (args.length !== 1) return false;
   const option = args[0];
   if (["bash", "dash", "fish", "sh", "zsh"].includes(executable)) return ["--version", "--help"].includes(option);
-  if (executable === "node") return ["-v", "-h", "--version", "--help"].includes(option);
+  if (executable === "node") return ["-h", "--help"].includes(option);
   if (["python", "python3"].includes(executable)) return ["-V", "-h", "--version", "--help"].includes(option);
   if (["powershell", "pwsh"].includes(executable)) {
     if (["-h", "-help", "--help", "-?", "/?"].includes(option.toLowerCase())) return true;

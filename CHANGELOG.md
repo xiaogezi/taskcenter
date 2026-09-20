@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 补齐 Node、Claude、Kimi 精确版本查询的 L0 放行，复用同一版本判定供终端检测使用；携带执行参数、重定向或写入的组合仍需任务授权。
+
 - 修复无活跃任务时 CLI 路径探测被 Hook 误拦：精确放行 which、command -v/-V 和 type 查询，保留实际执行与写入授权；拒绝提示区分未识别只读命令与已检测写入。
 
 - 新增 Kimi／Claude 可选 CLI 执行入口及集中 profile：绑定原任务路由和 delegation，真实 Session 领取后执行、回写并释放租约；请求型号、报告型号和推理档位分开记录。保留默认 executor/reviewer，未知结果不自动重试。

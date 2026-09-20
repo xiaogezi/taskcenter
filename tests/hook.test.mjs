@@ -235,12 +235,12 @@ test("L0 路径探测跨客户端放行，但不能借 command 包装执行", as
   for (const agent of ["codex", "claude", "kimi"]) {
     const session_id = `lookup-${agent}`;
     await runHook("session-start", agent, { session_id, cwd: "/work" });
-    for (const cmd of ["which kimi claude", "rtk proxy which -a claude", "command -v kimi", "command -V claude", "type claude", "type -a kimi", "/usr/bin/which node"]) {
+    for (const cmd of ["which kimi claude", "rtk proxy which -a claude", "command -v kimi", "command -V claude", "type claude", "type -a kimi", "/usr/bin/which node", "rtk proxy node --version", "rtk proxy claude --version", "rtk proxy kimi --version", "node -v", "claude -v", "kimi -V", "/usr/local/bin/node --version"]) {
       const result = await runHook("pre-tool-use", agent, { session_id, cwd: "/work", tool_name: "Bash", tool_input: { command: cmd } });
       assert.equal(result.code, 0, `${agent}: ${cmd}`);
       assert.match(result.stdout, /L0/);
     }
-    for (const cmd of ["command touch sentinel", "command -p touch sentinel", "command -v kimi && touch sentinel", "which kimi > result", "which $(touch sentinel)", "which --bad kimi", "type -f x", "command", "which"]) {
+    for (const cmd of ["command touch sentinel", "command -p touch sentinel", "command -v kimi && touch sentinel", "which kimi > result", "which $(touch sentinel)", "which --bad kimi", "type -f x", "command", "which", "node --version -e 'process.exit()'", "claude --version -p hello", "kimi --version --prompt hello", "kimi -v", "node --version > result", "claude --version && touch sentinel"]) {
       const result = await runHook("pre-tool-use", agent, { session_id, cwd: "/work", tool_name: "Bash", tool_input: { command: cmd } });
       assert.equal(result.code, 2, `${agent}: ${cmd}`);
       assert.match(result.stderr, /L0_COMMAND_NOT_RECOGNIZED/);
