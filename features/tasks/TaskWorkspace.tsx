@@ -17,12 +17,18 @@ type ExecutionModelPolicy = {
 type TaskTokenUsage = { usage: { input: number; cachedInput: number; output: number; reasoning: number }; totalTokens: number; count: number; attribution: "estimated" | "unattributed" };
 type RoutingInfo = { action?: string; orchestratorModel?: string; preferredExecutorModel?: string; selectedExecutorModel?: string; reasoningEffort?: string; dispatchChannel?: string; reason?: string; outcome?: string; preferenceMode?: string; fallbackReason?: string; quotaLimitId?: string; quotaSnapshotObservedAt?: string; quotaUsedPercent?: number; quotaResetAt?: string; };
 type CliRun = { id: string; status?: string; runStatus?: string; executorModel?: string; delegateSessionId?: string; evidence?: string[]; claimedAt?: string; lastObservedAt?: string; completedAt?: string; error?: string };
-type Task = Record<string, unknown> & { bugClosure?: { status: string };  id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; workspace?: string; workspaceBranch?: string; executionEnvironment?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy; tokenUsage?: TaskTokenUsage | null; cliRuns?: CliRun[] };
+type Task = Record<string, unknown> & { bugClosure?: { status: string };  id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; workspace?: string; workspaceBranch?: string; executionEnvironment?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy; tokenUsage?: TaskTokenUsage | null; cliRuns?: CliRun[]; runs?: Array<{ ended_at?: string; ended_reason?: string; session_id?: string }>; sessionDetachedAt?: string };
 type State = ReturnType<typeof parseTaskWorkspaceSearch>;
 type TaskAction = "start" | "cancel" | "archive" | "unarchive";
 type TaskRowAction = { action: TaskAction; label: string };
-const labels: Record<string, string> = { planned: "计划中", in_progress: "执行中", blocked: "已阻塞", done_claimed: "已声明完成", verified: "已验证", cancelled: "已取消", passed: "通过", pending: "待处理", failed: "失败", stale: "已过期", changes_requested: "需修改", ready: "就绪", accepted: "已验收", rejected: "已拒绝", not_required: "不要求", unknown: "未知" };
+const labels: Record<string, string> = { planned: "计划中", in_progress: "执行中", blocked: "已阻塞", done_claimed: "已声明完成", verified: "已验证", cancelled: "已取消", passed: "通过", pending: "待处理", failed: "失败", stale: "已过期", changes_requested: "需修改", ready: "就绪", accepted: "已验收", rejected: "已拒绝", not_required: "不要求", unknown: "未知", execution_unconfirmed: "执行待确认" };
 const text = (value: unknown) => typeof value === "string" && value.trim() ? value : "未知";
+// 执行终态与完成判定解耦：任务仍在账本但运行已收口且会话脱离时，展示“执行待确认”而非“执行中”。
+const displayStatus = (task: Task) => {
+  const runs = task.runs || [];
+  if (task.status === "in_progress" && runs.length && !runs.some((run) => !run.ended_at) && task.sessionDetachedAt) return "execution_unconfirmed";
+  return task.status || "unknown";
+};
 const formatDate = (value: unknown) => typeof value === "string" && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "未知";
 const tokenFormatter = new Intl.NumberFormat("en-US", { notation: "compact", maximumSignificantDigits: 3 });
 const formatTokens = (value: number) => tokenFormatter.format(Math.max(0, Number(value || 0)));
@@ -165,7 +171,7 @@ export function TaskWorkspace() {
         const modelCell = [route?.preferredExecutorModel, route?.selectedExecutorModel].filter(Boolean).join(" → ");
         const actions = taskActions(task) as TaskRowAction[];
         return <tr key={task.id} className={state.task === task.id ? "selected" : ""} onClick={() => update({ task: task.id, tab: "overview" })}>
-          <td><span className={`status-chip status-${text(task.status)}`}>{labels[text(task.status)] || text(task.status)}</span>{(task.actionReasons || []).length > 0 && <small className="attention">需处理</small>}</td>
+          <td><span className={`status-chip status-${text(task.status)}`}>{labels[displayStatus(task)] || text(task.status)}</span>{(task.actionReasons || []).length > 0 && <small className="attention">需处理</small>}</td>
           <td><button onClick={() => update({ task: task.id, tab: "overview" })}>{text(task.title)}</button>{task.bugClosure && <small>Bug · {({ repairing: "修复验证中", returned: "验收退回", awaiting_acceptance: "待验收", awaiting_merge: "待合入", completed: "已核验合入", cancelled: "已取消" } as Record<string, string>)[task.bugClosure.status]}</small>}<small>{task.id}</small></td><td>{text(task.project?.label)}{task.executionEnvironment === "worktree" && <small>{text(task.workspaceBranch)}</small>}</td><td>{text(task.currentStep)}</td>
           <td>{modelCell || "未记录"}</td>
           <td title={task.tokenUsage ? `精确值：${task.tokenUsage.totalTokens.toLocaleString("zh-CN")} Token` : undefined}>{task.tokenUsage ? <><strong>总计 {formatTokens(task.tokenUsage.totalTokens)}</strong><small>输入 {formatTokens(task.tokenUsage.usage.input)}（缓存 {formatTokens(task.tokenUsage.usage.cachedInput)}）</small><small>输出 {formatTokens(task.tokenUsage.usage.output)}（推理 {formatTokens(task.tokenUsage.usage.reasoning)}）</small></> : "暂无归属"}</td>

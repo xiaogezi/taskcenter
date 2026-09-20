@@ -251,7 +251,7 @@ test("创建事件超出5000条缓存仍幂等，缺失投影拒绝复活", asyn
   assert.deepEqual(loadTasks(), []);
 });
 
-test("查询缺失会话任务不会写账本，后续事件保留历史removed记录", async (context) => {
+test("查询缺失会话任务不会写账本；reconcile 收口运行并保留任务，不自动移除", async (context) => {
   await resetLedger();
   recordTaskEvent({ type: "task.create", task_id: "orphan", session_id: "absent-session" });
   const dashboardPath = join(tempDir, "empty-source.json");
@@ -268,13 +268,21 @@ test("查询缺失会话任务不会写账本，后续事件保留历史removed�
   assert.equal((await (await fetch(`${base}/tasks`)).json()).tasks[0].id, "orphan");
   await registerHttpSession(base, "new-session");
   assert.equal(loadTasks().find((item) => item.id === "orphan").status, "planned", "写事件也不能隐式移除其他任务");
-  reconcileTasks([]); // Simulate a historical removal without involving the HTTP query path.
+  reconcileTasks([]); // Session 脱离：收口运行并保留任务，不自动移除。
   recordTaskEvent({ type: "task.create", task_id: "survivor", session_id: "new-session" });
   const raw = JSON.parse(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"));
-  assert.equal(raw.find((item) => item.id === "orphan").status, "removed");
-  assert.throws(() => recordTaskEvent({ type: "task.create", task_id: "orphan", session_id: "absent-session" }), /TASK_LEDGER_RECOVERY_REQUIRED/);
+  const orphan = raw.find((item) => item.id === "orphan");
+  assert.equal(orphan.status, "planned", "reconcile 不自动移除任务，也不伪造完成");
+  assert.ok(orphan.sessionDetachedAt, "reconcile 标记会话脱离");
+  assert.equal(orphan.runs.at(-1).ended_reason, "session_detached", "reconcile 收口运行");
+  assert.ok(orphan.runs.at(-1).ended_at, "运行结束时间已记录");
+  // 任务保留后，同 session 重复 create 走恢复语义：不抛错、不重复创建，仍指向同一任务。
+  const resumed = recordTaskEvent({ type: "task.create", task_id: "orphan", session_id: "absent-session" });
+  assert.equal(resumed.task.id, "orphan", "恢复语义仍绑定原任务");
+  assert.equal(loadTasks().filter((task) => task.id === "orphan").length, 1, "不重复创建任务");
   await rm(envPaths.TASKCENTER_TASK_EVENTS_PATH);
-  assert.throws(() => recordTaskEvent({ type: "task.create", task_id: "orphan", session_id: "absent-session" }), /TASK_LEDGER_RECOVERY_REQUIRED/);
+  const resumedAgain = recordTaskEvent({ type: "task.create", task_id: "orphan", session_id: "absent-session" });
+  assert.equal(resumedAgain.task.id, "orphan");
 });
 
 async function startControlServer(options = {}) {
@@ -569,14 +577,19 @@ test("L0 仅聚合 Session 审计且不创建任务或事件历史", async () =>
   assert.throws(() => recordSessionL0Audit("not-registered"), /尚未登记/);
 });
 
-test("任务 session_id 不在当前会话源时拒绝创建并可清理旧记录", async () => {
+test("任务 session_id 不在当前会话源时拒绝创建；脱离任务收口运行并保留", async () => {
   await resetLedger();
   recordTaskEvent({ type: "task.create", session_id: "sess-stale", task_id: "task-stale", title: "旧任务", goal: "旧目标" });
   recordTaskEvent({ type: "task.create", session_id: "sess-current", task_id: "task-current", title: "当前任务", goal: "当前目标" });
 
   const removed = reconcileTasks(["sess-current"]);
   assert.deepEqual(removed.map((task) => task.id), ["task-stale"]);
-  assert.deepEqual(loadTasks().map((task) => task.id), ["task-current"]);
+  const after = loadTasks();
+  assert.deepEqual(after.map((task) => task.id).sort(), ["task-current", "task-stale"], "脱离任务保留在账本");
+  const stale = after.find((task) => task.id === "task-stale");
+  assert.ok(stale.sessionDetachedAt, "脱离任务标记会话脱离");
+  assert.equal(stale.runs.at(-1).ended_reason, "session_detached");
+  assert.equal(stale.status, "planned", "不自动判定完成");
   assert.throws(
     () => recordTaskEvent({ type: "task.create", session_id: "sess-missing", task_id: "task-missing", title: "失配任务", goal: "失配目标" }, { availableSessionIds: ["sess-current"] }),
     (error) => error instanceof TaskLedgerError && error.statusCode === 409,
@@ -3589,4 +3602,55 @@ test("顺序切换 HTTP 验证身份，Hook 保持关闭任务通道", async (co
     assert.equal(hook.code, 0, hook.stderr);
     assert.match(hook.stdout, /收尾通道/);
   }
+});
+
+
+test("运行收口：Run 生命周期与 session 切换、结束事件解耦", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", session_id: "run-s1", task_id: "run-task", title: "运行任务", goal: "目标", acceptance_criteria: [{ id: "done", description: "验收完成" }] });
+  let task = loadTasks()[0];
+  assert.equal(task.runs.length, 1, "create 打开首个 Run");
+  assert.equal(task.runs[0].session_id, "run-s1");
+  assert.ok(task.runs[0].started_at, "Run 有开始时间");
+  assert.equal(task.runs[0].ended_at, "", "Run 仍在运行");
+  assert.equal(task.status, "planned", "Run 状态与任务完成判定解耦");
+
+  recordTaskEvent({ type: "task.resume", task_id: "run-task", session_id: "run-s1", agent: "a1" }, { authorizedResume: true });
+  task = loadTasks()[0];
+  assert.equal(task.runs.length, 1, "同 session resume 延续当前 Run");
+
+  recordTaskEvent({ type: "task.resume", task_id: "run-task", session_id: "run-s2", agent: "a2" }, { authorizedResume: true });
+  task = loadTasks()[0];
+  assert.equal(task.runs.length, 2, "换 session resume 新开 Run");
+  assert.equal(task.runs[0].ended_reason, "handoff");
+  assert.ok(task.runs[0].ended_at, "旧 Run 记录结束时间");
+  assert.equal(task.runs[1].session_id, "run-s2");
+  assert.equal(task.runs[1].ended_at, "", "新 Run 运行中");
+
+  recordTaskEvent({ type: "task.close", session_id: "run-s2", task_id: "run-task", status: "done_claimed", evidence: ["e"], close_requirements: [{ requirement_id: "done", status: "passed", evidence_refs: ["e"], checked_at: "2026-08-25T00:00:00.000Z", checked_by: { type: "task_platform", id: "taskcenter-test" } }] });
+  task = loadTasks()[0];
+  assert.equal(task.runs[1].ended_reason, "completed");
+  assert.ok(task.runs[1].ended_at);
+  assert.equal(task.status, "done_claimed", "close 正常推进完成判定");
+});
+
+test("故障场景：不调用 task_close，会话脱离后运行收口为 session_detached，任务保留且不伪造完成", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", session_id: "fault-s1", task_id: "fault-task", title: "未收尾任务", goal: "目标" });
+  let task = loadTasks()[0];
+  assert.ok(task.runs.at(-1) && !task.runs.at(-1).ended_at, "不调 close 时 Run 保持运行");
+
+  reconcileTasks(["other-session"]);
+  task = loadTasks()[0];
+  assert.ok(task.sessionDetachedAt, "reconcile 标记会话脱离");
+  assert.equal(task.runs.at(-1).ended_reason, "session_detached", "运行被收口");
+  assert.ok(task.runs.at(-1).ended_at);
+  assert.equal(task.status, "planned", "不伪造完成");
+  assert.notEqual(task.status, "done_claimed", "绝不伪造验收");
+
+  const firstDetach = task.runs.at(-1).ended_at;
+  reconcileTasks(["other-session"]);
+  task = loadTasks()[0];
+  assert.equal(task.runs.at(-1).ended_at, firstDetach, "重复 reconcile 幂等");
+  assert.ok(task.sessionDetachedAt, "首次脱离时间保留");
 });

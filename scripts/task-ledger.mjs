@@ -349,20 +349,30 @@ export function reconcileTasks(availableSessionIds) {
   });
   if (!stale.length) return [];
   const now = new Date().toISOString();
-  const removedIds = new Set(stale.map((task) => task.id));
-  const nextTasks = tasks.map((task) => removedIds.has(task.id)
-    ? { ...task, status: "removed", updatedAt: now, lastEventId: `cleanup-${randomUUID()}` }
+  const staleIds = new Set(stale.map((task) => task.id));
+  // 任务不随会话消失而失去归属：收口 Run（session_detached）并标记会话脱离，保留任务与未决事项；
+  // 不自动判定完成/失败，也不允许安全接管；removed 仅保留给显式移除操作。
+  const nextTasks = tasks.map((task) => staleIds.has(task.id)
+    ? withDetachedRun(task, now)
     : task);
   persistTasks(nextTasks);
   mkdirSync(dirname(taskReconcilePath), { recursive: true });
   appendFileSync(taskReconcilePath, `${JSON.stringify({
     type: "task.reconcile",
-    removedAt: now,
-    reason: "任务 session_id 不在当前可用 Codex 会话源中",
+    detachedAt: now,
+    reason: "任务 session_id 不在当前可用 Codex 会话源中：收口运行并保留任务（不自动移除）",
     availableSessionCount: available.size,
     tasks: stale.map((task) => ({ id: task.id, sessionId: task.sessionId, title: task.title })),
   })}\n`, { mode: 0o600 });
   return stale;
+}
+
+function withDetachedRun(task, now) {
+  let next = { ...task, sessionDetachedAt: task.sessionDetachedAt || now, updatedAt: now, lastEventId: `detach-${randomUUID()}` };
+  const runs = [...(next.runs || [])];
+  const last = runs[runs.length - 1];
+  if (last && !last.ended_at) runs[runs.length - 1] = { ...last, ended_at: now, ended_reason: "session_detached" };
+  return { ...next, runs };
 }
 
 function readLedger() {
@@ -1222,6 +1232,8 @@ function applyEvent(current, event) {
     estimateHistory: [],
     expectedAtHistory: [],
     dueAtExplicit: false,
+    runs: [],
+    sessionDetachedAt: "",
   };
   const preservesTaskOwner = ["review.reported", "review_cycle.reported", "phase.reported"].includes(event.type);
   let next = {
@@ -1291,6 +1303,13 @@ function applyEvent(current, event) {
   next = applyTimingTransition(current, base, next, event, now);
   if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;
   if (event.type === "task.review") next.status = event.status || base.status;
+  // 运行收口：执行生命周期（Run/Attempt）与任务完成判定解耦。
+  // task.create / task.resume 打开 Run；close/done_claimed/blocked/cancelled/report(done) 收口 Run。
+  if (["task.create", "task.resume"].includes(event.type)) next = withRunOpened(next, event, now);
+  if (["task.close", "task.done_claimed", "task.blocked", "task.cancelled"].includes(event.type)
+    || (event.type === "task.report" && event.status === "done_claimed")) {
+    next = withRunClosed(next, event, now, event.type === "task.blocked" ? "blocked" : event.type === "task.cancelled" ? "cancelled" : "completed");
+  }
   try {
     next = applyCompletionEvent(next, event);
     if (event.type === "phase.reported") next = applyTaskPhaseEvent(next, event);
@@ -1306,9 +1325,44 @@ function applyEvent(current, event) {
   return next;
 }
 
+const RUNS_LIMIT = 50;
+
+function currentRunningRun(task) {
+  const runs = task.runs || [];
+  const last = runs[runs.length - 1];
+  return last && !last.ended_at ? last : null;
+}
+
+function runSummary(task) {
+  const runs = task.runs || [];
+  const last = runs[runs.length - 1] || null;
+  return { count: runs.length, running: Boolean(last && !last.ended_at), last: last || null };
+}
+
+// 打开一个 Run：同 session 延续当前 Run；切换到新 session 时结束旧 Run（handoff）并新开。
+function withRunOpened(task, event, now) {
+  const runs = [...(task.runs || [])];
+  const last = runs[runs.length - 1];
+  if (last && !last.ended_at && last.session_id === event.session_id) return task;
+  if (last && !last.ended_at) runs[runs.length - 1] = { ...last, ended_at: now, ended_reason: "handoff" };
+  runs.push({ run_id: `run-${randomUUID()}`, session_id: event.session_id, actor: event.actor || "unknown", agent: event.agent || "unknown", started_at: now, ended_at: "", ended_reason: "" });
+  return { ...task, runs: runs.slice(-RUNS_LIMIT) };
+}
+
+// 收口当前 Run：记录结束时间与原因，不改变任务完成判定。
+function withRunClosed(task, event, now, reason) {
+  const runs = [...(task.runs || [])];
+  const last = runs[runs.length - 1];
+  if (!last) return task;
+  if (!last.ended_at) runs[runs.length - 1] = { ...last, ended_at: now, ended_reason: reason };
+  return { ...task, runs };
+}
+
 function auditState(task) {
+  const summary = runSummary(task);
   return {
     execution_status: task.status,
+    run_status: summary.running ? "running" : (task.sessionDetachedAt ? "detached" : summary.count ? "ended" : "none"),
     verification_status: task.verificationStatus || "not_required",
     review_status: task.reviewStatus || "not_required",
     acceptance_status: task.acceptanceStatus || "pending",
