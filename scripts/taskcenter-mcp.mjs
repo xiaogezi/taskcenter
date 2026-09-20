@@ -373,6 +373,7 @@ server.registerTool("taskcenter_routing_select", {
   inputSchema: z.object({
     task_id: z.string().min(1).max(200),
     preferred_model: z.string().min(1).max(120).optional().describe("兼容单次执行覆盖；任务配置 quota_preferred 时由持久化策略接管"),
+    cli_profile: z.string().min(1).max(120).optional().describe("显式选择集中配置中的可选 CLI 通道，不改变默认 executor/reviewer；仅用于普通 CLI 执行"),
     task_class: z.enum(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", "ocr", "ocr_review", "independent_review"]),
     channel: z.enum(["direct", "native", "cli", "other"]),
     event_id: z.string().max(200).optional(),

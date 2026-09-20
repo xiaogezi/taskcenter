@@ -1,5 +1,9 @@
 {
   "schema_version": "taskcenter-model-roles-v1",
+  "cli_profiles": {
+    "kimi-k3": { "harness": "kimi", "model": "kimi-code/k3-256k", "provider": "moonshot", "reasoning_effort": "low" },
+    "claude-mimo": { "harness": "claude", "model": "mimo-v2.5-pro", "provider": "xiaomi", "reasoning_effort": "medium" }
+  },
   "optional_astra_policy": {
     "preset": "saving",
     "threshold_percent": 0,

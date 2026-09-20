@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 
 export class KimiAcp {
-  constructor({ command = "kimi", env = process.env, cwd, permission = async () => null, update = () => {}, timeout = 60000 } = {}) {
+  constructor({ command = "kimi", model, env = process.env, cwd, permission = async () => null, update = () => {}, timeout = 60000 } = {}) {
     const resolved = resolveSpawnCommand(command, { env });
-    this.child = spawn(resolved.command, [...resolved.argsPrefix, "acp"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    this.child = spawn(resolved.command, [...resolved.argsPrefix, ...(model ? ["--model", model] : []), "acp"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     this.pending = new Map(); this.sequence = 0; this.buffer = ""; this.stderr = ""; this.timeout = timeout;
     this.permission = permission; this.update = update;
     this.child.stdout.on("data", chunk => {

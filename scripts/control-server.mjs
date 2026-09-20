@@ -706,6 +706,11 @@ const server = createServer(async (request, response) => {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
       const session = getSessionStatuses(availableSessionIds(), loadVisibleTasks()).find((item) => item.sessionId === body.session_id);
+      if (body.route_id) {
+        const route = routeForId(body.route_id);
+        const grant = listDelegations().find(item => item.id === body.delegation_id);
+        if (!route || route.status !== "leased" || Date.parse(route.expiresAt) <= Date.now() || route.channel !== "cli" || route.taskId !== grant?.taskId || route.selectedModel !== grant.executorModel || route.selectedModel !== body.executor_model || session?.model !== route.selectedModel || (route.harness && route.harness !== session?.agent)) throw new DelegationError(409, "CLI_ROUTE_MISMATCH：需要与授权一致且有效的 CLI 路由。");
+      }
       const result = claimDelegation(body, session);
       sendJson(response, 200, { accepted: true, ...result });
       return;

@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 新增 Kimi／Claude 可选 CLI 执行入口及集中 profile：绑定原任务路由和 delegation，真实 Session 领取后执行、回写并释放租约；请求型号、报告型号和推理档位分开记录。保留默认 executor/reviewer，未知结果不自动重试。
+
 - 补齐跨客户端共享任务接手：复用 resume，保留创建者、当前执行者与交接记录；有效委派未结束时拒绝换手，旧 Session 不能借手动事件前缀继续更新任务。支持已启动客户端接手，不自动启动执行器。
 
 - Claude SessionStart 注入真实 Hook 身份与生命周期调用指引，门禁拒绝时回显真实 Session；补齐完整参数、Context 语义绑定及验收项 ID 模板，防止自拟身份的 MCP 冒烟测试被误认为真实会话验收。

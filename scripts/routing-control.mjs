@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, resolve } from "node:path";
 import { loadModelRoleConfig, publicModelRoleConfig } from "./model-role-config.mjs";
 import { sameSubject } from "./completion-state.mjs";
+import { cliProfile } from "./cli-profile.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const routingControlPath = resolve(process.env.TASKCENTER_ROUTING_CONTROL_PATH || resolve(projectRoot, "data", "routing-control.json"));
@@ -129,7 +130,9 @@ export function routingSelect(input, now = new Date().toISOString()) {
     if (isReviewTaskClass(input.task_class)) throw new RoutingControlError(503, error.message, "REVIEWER_UNAVAILABLE");
     throw error;
   }
-  const requestedPreferredModel = clean(input.preferred_model, 120);
+  const profile = input.cli_profile ? cliProfile(input.cli_profile) : null;
+  if (profile && (input.channel !== "cli" || isReviewTaskClass(input.task_class) || input.execution_model_policy?.mode === "quota_preferred" || (input.preferred_model && input.preferred_model !== profile.model))) throw new RoutingControlError(400, "CLI profile 仅用于显式普通执行，不改变正式 Reviewer 或额度策略。");
+  const requestedPreferredModel = profile?.model || clean(input.preferred_model, 120);
   const executionModelPolicy = normalizeExecutionModelPolicy(input.execution_model_policy);
   const taskId = clean(input.task_id, 200);
   const taskClass = clean(input.task_class, 80) || "general";
@@ -137,7 +140,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const orchestratorModel = clean(input.orchestrator_model, 120);
   const roleName = ocrTaskClasses.has(taskClass) ? "reviewer" : "executor";
   const role = config.roles[roleName];
-  const selectedReasoningEffort = role.taskClassReasoningEfforts?.[taskClass] || role.reasoningEffort;
+  const selectedReasoningEffort = profile?.effort || role.taskClassReasoningEfforts?.[taskClass] || role.reasoningEffort;
   const mappedModel = optionalAstraModel(taskClass, role, config) || role.taskClassModels?.[taskClass] || role.model;
   const quotaPreferred = roleName === "executor" && executionModelPolicy.mode === "quota_preferred";
   if (quotaPreferred && !config.manualOnlyModels.includes(executionModelPolicy.preferredModel)) {
@@ -157,6 +160,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const state = readState();
   expireRoutes(state, now);
   const signatureInput = { taskId, orchestratorModel, requestedPreferredModel, executionModelPolicy, taskClass, channel };
+  if (profile) signatureInput.cliProfile = input.cli_profile;
   if (input.review_context) signatureInput.reviewContext = input.review_context;
   if (reviewArtifacts) signatureInput.reviewArtifacts = reviewArtifacts;
   const signature = signatureOf(signatureInput);
@@ -267,6 +271,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
     selectedReasoningEffort,
     taskClass,
     channel,
+    ...(profile ? { cliProfile: input.cli_profile, harness: profile.harness } : {}),
     circuitState: selected.state,
     reason,
     fallbackFrom,
@@ -564,6 +569,7 @@ function publicRoute(route) {
     orchestrator_model: route.orchestratorModel || "unknown",
     preferred_model: route.preferredModel,
     selected_model: route.selectedModel || null,
+    ...(route.cliProfile ? { cli_profile: route.cliProfile, harness: route.harness, role: "executor" } : {}),
     reasoning_effort: route.selectedReasoningEffort || "low",
     task_class: route.taskClass,
     channel: route.channel,

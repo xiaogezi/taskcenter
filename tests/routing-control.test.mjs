@@ -16,6 +16,7 @@ process.env.TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_TERRA = "2";
 
 const roleConfig = {
   schema_version: "taskcenter-model-roles-v1",
+  cli_profiles: { optional: { harness: "claude", model: "optional-model", provider: "test", reasoning_effort: "low" } },
   roles: {
     executor: { model: "gpt-5.6-luna", reasoning_effort: "medium", fallback_models: ["gpt-5.6-terra"], task_class_models: { architecture: "gpt-5.6-terra", security: "gpt-5.6-terra", migration: "gpt-5.6-terra", data_migration: "gpt-5.6-terra", complex_diagnosis: "gpt-5.6-terra", high_risk: "gpt-5.6-terra" }, concurrency_limit: 1 },
     reviewer: { model: "gpt-5.6-luna", reasoning_effort: "medium", fallback_models: [], concurrency_limit: 1 },
@@ -43,6 +44,17 @@ const reviewArtifacts = {
 };
 
 test.after(async () => rm(directory, { recursive: true, force: true }));
+
+test("可选 CLI profile 显式路由并记录客户端与档位，不改变默认角色", () => {
+  const selected = routingSelect({ ...baseInput, cli_profile: "optional" });
+  assert.equal(selected.route.selected_model, "optional-model");
+  assert.equal(selected.route.harness, "claude");
+  assert.equal(selected.route.reasoning_effort, "low");
+  assert.equal(selected.roles.executor.model, luna);
+  assert.equal(selected.roles.reviewer.model, luna);
+  assert.throws(() => routingSelect({ ...baseInput, cli_profile: "optional", task_class: "ocr" }), /Reviewer/);
+  assert.throws(() => routingSelect({ ...baseInput, cli_profile: "optional", channel: "native" }), /CLI/);
+});
 test.beforeEach(async () => rm(statePath, { force: true }));
 
 test("routing_select 原子发放租约、幂等重放并在并发满时回退", () => {

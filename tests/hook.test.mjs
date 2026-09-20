@@ -710,6 +710,22 @@ test("共享任务阻止有效委派和并发抢接", async () => {
   assert.equal((await resume(source)).status, 409);
 });
 
+test("可选 CLI 领取绑定路由与型号，错误路由不消耗授权", async () => {
+  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
+  const parent = "optional-cli-parent", child = "optional-cli-child";
+  await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
+  const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "optional CLI", goal: "optional CLI" })).json();
+  const selected = await (await post("/routing/select", { task_id: created.task.id, task_class: "test", channel: "cli", cli_profile: "claude-mimo" })).json();
+  assert.equal(selected.accepted, true, JSON.stringify(selected));
+  const route = selected.route;
+  const grant = await (await post("/delegations/grant", { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: route.selected_model, ttl_seconds: 60 })).json();
+  await runHook("session-start", "claude", { session_id: child, cwd: "/work", model: route.selected_model });
+  const claim = { session_id: child, workspace: "/work", delegation_id: grant.delegation.id, claim_token: grant.claimToken, executor_model: route.selected_model };
+  assert.equal((await post("/delegations/claim", { ...claim, route_id: "missing-route" })).status, 409);
+  const response = await post("/delegations/claim", { ...claim, route_id: route.route_id });
+  assert.equal(response.status, 200, await response.text());
+});
+
 test("CLI Session 领取 delegation 后通过主任务门禁且不创建子任务", async () => {
   const parentSessionId = "019f0000-0000-7000-8000-000000000092";
   const cliSessionId = "019f0000-0000-7000-8000-000000000093";

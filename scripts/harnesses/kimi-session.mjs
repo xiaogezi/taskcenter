@@ -3,7 +3,7 @@ import { kimiTaskcenterSessionId } from "../kimi-session-identity.mjs";
 import { KimiAcp, reportedUsage } from "../kimi-acp.mjs";
 import { handleKimiHook } from "../kimi-context-hook.mjs";
 
-export async function runKimi({ cwd, session, prompt, pcaRoot, permission, update = () => {}, onSessionReady = () => {}, signal, client, hook = handleKimiHook, mcpEntry = resolve(import.meta.dirname, "../taskcenter-mcp-launcher.mjs") }) {
+export async function runKimi({ cwd, session, model, thinking, mode, prompt, pcaRoot, permission, update = () => {}, onSessionReady = () => {}, signal, client, hook = handleKimiHook, mcpEntry = resolve(import.meta.dirname, "../taskcenter-mcp-launcher.mjs") }) {
   cwd = resolve(cwd);
   const env = { ...process.env };
   for (const key of ["CODEX_SESSION_ID", "CODEX_THREAD_ID", "TASKCENTER_CALLER_SESSION_ID"]) delete env[key];
@@ -18,7 +18,7 @@ export async function runKimi({ cwd, session, prompt, pcaRoot, permission, updat
     if (value?.sessionUpdate === "agent_message_chunk" && value.content?.type === "text") finalText = (finalText + value.content.text).slice(-1200);
     update(value);
   };
-  const acp = client || new KimiAcp({ cwd, env, permission, update: onUpdate });
+  const acp = client || new KimiAcp({ cwd, model, env, permission, update: onUpdate });
   if (client) client.update = onUpdate;
   const cancel = () => { cancelled = true; if (sessionId) acp.notify("session/cancel", { sessionId }); cancellationTimer ||= setTimeout(() => { void acp.close(); }, 5000); };
   signal?.addEventListener("abort", cancel, { once: true });
@@ -43,13 +43,23 @@ export async function runKimi({ cwd, session, prompt, pcaRoot, permission, updat
       }
       if (!matched) throw new Error("Kimi Session not found in the requested workspace; refusing to resume");
     }
-    await acp.request("session/load", { sessionId, cwd, mcpServers: [{ name: "taskcenter", command: process.execPath, args: [mcpEntry], env: [{ name: "TASKCENTER_CALLER_SESSION_ID", value: taskcenterSessionId }, { name: "TASKCENTER_AGENT", value: "kimi" }] }] });
+    const loaded = await acp.request("session/load", { sessionId, cwd, mcpServers: [{ name: "taskcenter", command: process.execPath, args: [mcpEntry], env: [{ name: "TASKCENTER_CALLER_SESSION_ID", value: taskcenterSessionId }, { name: "TASKCENTER_AGENT", value: "kimi" }] }] });
     opened = true;
+    let configOptions = loaded?.configOptions || [];
+    for (const [id, value] of [["thinking", thinking], ["mode", mode]]) {
+      if (!value) continue;
+      if (!configOptions.find(option => option.id === id)?.options?.some(option => option.value === value)) throw new Error(`Kimi does not advertise ${id}=${value}`);
+      const configured = await acp.request("session/set_config_option", { sessionId, configId: id, value });
+      configOptions = configured.configOptions || [];
+      if (configOptions.find(option => option.id === id)?.currentValue !== value) throw new Error(`Kimi did not confirm ${id}=${value}`);
+    }
+    const reportedModel = configOptions.find(option => option.category === "model")?.currentValue || loaded?.models?.currentModelId || null;
+    const reportedThinking = configOptions.find(option => option.id === "thinking")?.currentValue || null;
     const lifecycle = (name, extra = {}) => hook({ hook_event_name: name, session_id: taskcenterSessionId, cwd, ...extra }, { pcaRoot, diagnostic: message => console.error(message) });
     await lifecycle("SessionStart"); attached = true;
     const context = await lifecycle("UserPromptSubmit", { prompt });
     if (signal?.aborted || cancelled) { cancel(); throw new Error("Kimi run cancelled before prompt"); }
-    onSessionReady({ sessionId, taskcenterSessionId });
+    await onSessionReady({ sessionId, taskcenterSessionId, reportedModel, reportedThinking });
     const blocks = [{ type: "text", text: prompt }];
     const injection = context?.hookSpecificOutput?.additionalContext;
     if (injection) blocks.push({ type: "text", text: injection });
@@ -57,7 +67,7 @@ export async function runKimi({ cwd, session, prompt, pcaRoot, permission, updat
     const result = await acp.request("session/prompt", { sessionId, prompt: blocks }, 30 * 60 * 1000);
     stopReason = result.stopReason || "unknown";
     if (!cancelled && stopReason === "end_turn") await hook({ hook_event_name: "Stop", session_id: taskcenterSessionId, cwd }, { pcaRoot, summary: finalText, diagnostic: message => console.error(message) });
-    return { sessionId, taskcenterSessionId, cwd, stopReason, usage, usage_status: usage ? "reported" : "unknown", cancelled };
+    return { sessionId, taskcenterSessionId, cwd, stopReason, finalText, reportedModel, reportedThinking, usage, usage_status: usage ? "reported" : "unknown", cancelled };
   } finally {
     clearTimeout(cancellationTimer);
     signal?.removeEventListener("abort", cancel);

@@ -151,6 +151,8 @@ v2 任务不能通过普通 `taskcenter_task_report(done_claimed)` 绕过闭环�
 
 任意客户端创建的任务可由另一已启动客户端接手，复用同一 task ID；调用顺序和边界见 [跨客户端共享任务接手](docs/shared-task-handoff.md)。
 
+主会话也可通过 [可选 CLI 执行入口](docs/delegated-cli.md) 在原任务下授权 Kimi／Claude 执行；型号与推理档位集中配置，默认角色不变。
+
 注册用户级 MCP：
 
 ```bash
