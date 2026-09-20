@@ -49,6 +49,9 @@ export function grantDelegation(input, task, now = new Date().toISOString()) {
     createdAt: now,
     expiresAt: new Date(Date.parse(now) + ttlSeconds * 1_000).toISOString(),
     claimedAt: "",
+    lastObservedAt: "",
+    runStatus: "",
+    runStatusAt: "",
     completedAt: "",
     claimToken,
     claimTokenHash: hash(claimToken),
@@ -111,6 +114,9 @@ export function reportDelegation(input, now = new Date().toISOString()) {
   }
   assertDelegate(grant, input.session_id, input.workspace, now);
   grant.status = terminalRunStatuses.has(status) ? status : "active";
+  grant.runStatus = status;
+  grant.runStatusAt = now;
+  grant.lastObservedAt = now;
   grant.changedFiles = normalizeList(input.changed_files, 100, 500);
   grant.tests = normalizeList(input.tests, 50, 500);
   grant.evidence = normalizeList(input.evidence, 50, 1_000);
@@ -126,10 +132,14 @@ export function touchDelegation(input, now = new Date().toISOString()) {
   const grant = requireGrant(state, input.delegation_id);
   assertDelegate(grant, input.session_id, input.workspace, now);
   const tool = clean(input.tool_name, 120);
-  if (grant.allowedTools.length && (!tool || !grant.allowedTools.some((allowed) => sameToolFamily(allowed, tool)))) throw new DelegationError(403, `工具 ${tool || "unknown"} 不在 delegation 允许范围内。`);
-  assertScope(grant, tool, input.paths);
-  if (tool) grant.toolCalls[tool] = (grant.toolCalls[tool] || 0) + 1;
-  grant.lastUsedAt = now;
+  if (tool) {
+    if (grant.allowedTools.length && !grant.allowedTools.some((allowed) => sameToolFamily(allowed, tool))) throw new DelegationError(403, `工具 ${tool} 不在 delegation 允许范围内。`);
+    assertScope(grant, tool, input.paths);
+    grant.toolCalls[tool] = (grant.toolCalls[tool] || 0) + 1;
+    grant.lastUsedAt = now;
+  }
+  // 纯心跳 touch（无 tool_name）只更新最后观测时间，不改动工具调用与 scope。
+  grant.lastObservedAt = now;
   persistState(state);
   return { delegation: publicGrant(grant, now) };
 }
@@ -283,7 +293,7 @@ function normalizeTtl(value) {
 
 function normalizeRunStatus(value) {
   const status = clean(value, 40);
-  if (!["started", "running", "succeeded", "failed", "cancelled"].includes(status)) throw new DelegationError(400, "CLI Run 状态无效。");
+  if (!["started", "running", "waiting_permission", "waiting_quota", "succeeded", "failed", "cancelled"].includes(status)) throw new DelegationError(400, "CLI Run 状态无效。");
   return status;
 }
 

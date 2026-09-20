@@ -1403,7 +1403,7 @@ function taskSummary(task) {
 }
 
 function compactDelegationRun(run) {
-  return Object.fromEntries(["id", "status", "delegateSessionId", "executorModel", "scope", "toolCalls", "completedAt"].flatMap((key) => run[key] === undefined ? [] : [[key, run[key]]]));
+  return Object.fromEntries(["id", "status", "runStatus", "runStatusAt", "delegateSessionId", "executorModel", "scope", "toolCalls", "claimedAt", "lastObservedAt", "completedAt", "error"].flatMap((key) => run[key] === undefined ? [] : [[key, run[key]]]));
 }
 
 function metricSnapshotStatus(snapshotPath, healthPath, maxAgeMs) {

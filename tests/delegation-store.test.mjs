@@ -131,3 +131,42 @@ test("scope 拒绝绝对路径和上级目录", async () => {
     );
   }
 });
+
+test("CLI Run 中间态保持 active 并记录运行状态，终态落定", async () => {
+  await reset();
+  const issued = grantDelegation(grantInput({ scope: ["."], allowed_tools: ["exec_command"] }), parent, start);
+  claimDelegation({ delegation_id: issued.delegation.id, claim_token: issued.claimToken, session_id: delegate.sessionId, workspace }, delegate, "2026-08-18T08:01:00.000Z");
+  const running = reportDelegation({ delegation_id: issued.delegation.id, session_id: delegate.sessionId, workspace, event_id: "run-running", status: "running", summary: "开始执行" }, "2026-08-18T08:01:30.000Z");
+  assert.equal(running.delegation.status, "active");
+  assert.equal(running.delegation.runStatus, "running");
+  assert.equal(running.delegation.completedAt, "");
+  const waiting = reportDelegation({ delegation_id: issued.delegation.id, session_id: delegate.sessionId, workspace, event_id: "run-waiting-permission", status: "waiting_permission", summary: "等待权限" }, "2026-08-18T08:02:00.000Z");
+  assert.equal(waiting.delegation.status, "active");
+  assert.equal(waiting.delegation.runStatus, "waiting_permission");
+  const quota = reportDelegation({ delegation_id: issued.delegation.id, session_id: delegate.sessionId, workspace, event_id: "run-waiting-quota", status: "waiting_quota", summary: "限流中断" }, "2026-08-18T08:02:30.000Z");
+  assert.equal(quota.delegation.runStatus, "waiting_quota");
+  assert.equal(quota.delegation.completedAt, "");
+  const done = reportDelegation({ delegation_id: issued.delegation.id, session_id: delegate.sessionId, workspace, event_id: "run-done", status: "succeeded", summary: "完成" }, "2026-08-18T08:03:00.000Z");
+  assert.equal(done.delegation.status, "succeeded");
+  assert.equal(done.delegation.runStatus, "succeeded");
+  assert.ok(done.delegation.completedAt);
+  assert.equal(parent.status, "in_progress");
+  assert.throws(
+    () => reportDelegation({ delegation_id: issued.delegation.id, session_id: delegate.sessionId, workspace, event_id: "run-bad", status: "unknown", summary: "x" }, "2026-08-18T08:03:01.000Z"),
+    (error) => error instanceof DelegationError && error.statusCode === 400,
+  );
+});
+
+test("纯心跳 touch 只更新 lastObservedAt，不改动工具与 scope", async () => {
+  await reset();
+  const issued = grantDelegation(grantInput({ scope: ["."], allowed_tools: ["Bash"] }), parent, start);
+  claimDelegation({ delegation_id: issued.delegation.id, claim_token: issued.claimToken, session_id: delegate.sessionId, workspace }, delegate, "2026-08-18T08:01:00.000Z");
+  const touched = touchDelegation({ delegation_id: issued.delegation.id, session_id: delegate.sessionId, workspace, tool_name: "Bash", paths: ["scripts/example.mjs"] }, "2026-08-18T08:02:00.000Z");
+  assert.equal(touched.delegation.toolCalls.Bash, 1);
+  assert.equal(touched.delegation.lastObservedAt, "2026-08-18T08:02:00.000Z");
+  const heartbeat = touchDelegation({ delegation_id: issued.delegation.id, session_id: delegate.sessionId, workspace }, "2026-08-18T08:03:00.000Z");
+  assert.equal(heartbeat.delegation.lastObservedAt, "2026-08-18T08:03:00.000Z");
+  assert.equal(heartbeat.delegation.lastUsedAt, "2026-08-18T08:02:00.000Z");
+  assert.equal(heartbeat.delegation.toolCalls.Bash, 1);
+  assert.equal(heartbeat.delegation.status, "active");
+});

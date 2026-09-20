@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- delegation CLI 运行增加中间态与心跳：领取后上报 running，权限校验与限流中断记录 waiting_permission/waiting_quota，执行中定期 touch 更新最后观测时间。任务详情展示 CLI 运行状态（启动/执行/等待权限/等待限流/失联/终态）与最后观测，失联与失败分开，信号不足标待确认。
+
 - 任务详情与活动随刷新更新，分别展示加载、失败与上次成功观测；失败保留同任务旧数据，切换任务和迟到响应不串用。区分路由选择与有绑定证据的客户端报告模型，活动仅展示允许字段，工具调用不再暗示执行成功。
 
 - 任务查询支持服务端按任务与 Session 精准过滤及显式 `view=summary`；默认 full 保留完整字段、全部结果和归档可见性。单任务摘要减少不必要历史，查询失败不再伪装成空结果，完成报告预读复用精准查询。

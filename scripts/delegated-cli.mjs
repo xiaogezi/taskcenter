@@ -63,6 +63,9 @@ async function runClaude(manifest, manifestPath, profile, prompt, signal, logPat
   } finally { clearInterval(timer); signal.removeEventListener("abort", stop); }
 }
 
+const quotaLikePattern = /rate.?limit|quota|429|retry.?after/i;
+function isQuotaLike(value) { return quotaLikePattern.test(String(value || "")); }
+
 export async function runDelegatedCli(input, dependencies = {}) {
   const manifest = validateCliManifest(input), profile = cliProfile(manifest.profile);
   const request = dependencies.control || control;
@@ -72,10 +75,24 @@ export async function runDelegatedCli(input, dependencies = {}) {
   writeFileSync(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
   const logPath = `${manifest.output_path}.log`;
   let sessionId, result, failure, reportError;
+  let lastPermissionReportAt = 0;
   const controller = new AbortController(), signal = controller.signal;
   const abort = () => controller.abort();
   const timeout = setTimeout(abort, manifest.timeout_ms);
   process.once("SIGINT", abort); process.once("SIGTERM", abort);
+  // 心跳：领取后定期 touch 更新 lastObservedAt，作为执行中/失联的观测依据；失败不影响执行。
+  const heartbeat = setInterval(() => {
+    void (async () => {
+      try {
+        if (!sessionId && existsSync(manifest.receipt_path)) {
+          const receipt = JSON.parse(readFileSync(manifest.receipt_path, "utf8"));
+          if (receipt?.sessionId) sessionId = receipt.sessionId;
+        }
+        if (!sessionId) return;
+        await request("/delegations/touch", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace });
+      } catch { /* 心跳失败不中断 CLI 执行 */ }
+    })();
+  }, 60_000);
   try {
     // No prompt is submitted to Kimi before claim; Claude tools require the SessionStart receipt.
     const prompt = readFileSync(manifest.prompt_path, "utf8");
@@ -88,21 +105,40 @@ export async function runDelegatedCli(input, dependencies = {}) {
     } else {
       let logBytes = 0;
       const run = await (dependencies.runKimi || runKimi)({ cwd: manifest.workspace, model: profile.model, thinking: profile.effort, mode: manifest.mode === "read-only" ? "plan" : "default", prompt, signal,
-        onSessionReady: async value => { await claimCli(manifest, value.taskcenterSessionId, request); sessionId = value.taskcenterSessionId; },
+        onSessionReady: async value => {
+          await claimCli(manifest, value.taskcenterSessionId, request);
+          sessionId = value.taskcenterSessionId;
+          await request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: "running", summary: "CLI 会话已领取，开始执行" }).catch(() => {});
+          await request("/delegations/touch", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace }).catch(() => {});
+        },
         permission: async params => {
           const call = params.toolCall || {};
           const tool = { read: "Read", search: "Grep", edit: "Edit", execute: "Bash" }[call.kind];
           if (!sessionId || !tool || !call.rawInput) return null;
-          try { await checkCliTool(manifest, sessionId, tool, call.rawInput); return params.options?.find(option => option.kind === "allow_once")?.optionId || null; } catch { return null; }
+          try {
+            const nowMs = Date.now();
+            if (nowMs - lastPermissionReportAt >= 60_000) {
+              lastPermissionReportAt = nowMs;
+              void request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: "waiting_permission", summary: `等待权限：${tool}` }).catch(() => {});
+            }
+            await checkCliTool(manifest, sessionId, tool, call.rawInput);
+            return params.options?.find(option => option.kind === "allow_once")?.optionId || null;
+          } catch { return null; }
         },
         update: value => { const text = JSON.stringify(value) + "\n"; logBytes += Buffer.byteLength(text); if (logBytes <= 16 * 1024 * 1024) appendFileSync(logPath, text); },
       });
       result = { status: run.cancelled ? "cancelled" : run.stopReason === "end_turn" ? "completed" : "unknown", sessionId, reportedModels: run.reportedModel ? [run.reportedModel] : [], reportedThinking: run.reportedThinking, summary: run.finalText, rawStatus: run.stopReason, usage: run.usage };
     }
     if (result.status === "completed" && (!result.reportedModels.length || !result.reportedModels.includes(profile.model))) result.status = "unknown";
-  } catch (error) { failure = error.message; result = { status: signal.aborted ? "cancelled" : "failed" }; }
+  } catch (error) {
+    failure = error.message;
+    result = { status: signal.aborted ? "cancelled" : "failed" };
+    if (sessionId && !signal.aborted && isQuotaLike(failure)) {
+      try { await request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: "waiting_quota", summary: String(failure).slice(-400) }); } catch { /* 限流中间态上报失败不影响原错误 */ }
+    }
+  }
   finally {
-    clearTimeout(timeout); process.off("SIGINT", abort); process.off("SIGTERM", abort);
+    clearTimeout(timeout); clearInterval(heartbeat); process.off("SIGINT", abort); process.off("SIGTERM", abort);
     if (!sessionId && existsSync(manifest.receipt_path)) sessionId = JSON.parse(readFileSync(manifest.receipt_path, "utf8")).sessionId;
     const outcome = result?.status === "completed" ? "succeeded" : result?.status === "cancelled" ? "cancelled" : "failed";
     const evidence = { ...result, error: failure || null, task_id: manifest.task_id, route_id: manifest.route_id, delegation_id: manifest.delegation_id, role: profile.role, harness: profile.harness, requested_model: profile.model, requested_effort: profile.effort, effective_effort: result?.reportedThinking || null, observed_at: new Date().toISOString(), log_path: logPath };

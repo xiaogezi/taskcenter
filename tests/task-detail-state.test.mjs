@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CLI_LOST_AFTER_MS,
+  cliRunStatusLabel,
   describeActivityEvent,
   fetchInFlight,
   isValidEventsResponse,
@@ -150,4 +152,27 @@ test("活动白名单：routing.decision 仅模型/动作/结果，其他事件�
   assert.equal(describeActivityEvent(null), null);
   assert.equal(describeActivityEvent("x"), null);
   assert.equal(describeActivityEvent({}).type, "未知事件");
+});
+
+test("CLI 运行状态：终态直读、active 按心跳判断失联、信号不足待确认", () => {
+  const now = Date.parse("2026-09-20T10:00:00.000Z");
+  const fresh = new Date(now - 30_000).toISOString();
+  const stale = new Date(now - CLI_LOST_AFTER_MS - 1_000).toISOString();
+  assert.equal(cliRunStatusLabel(null).label, "未知");
+  assert.equal(cliRunStatusLabel({ status: "issued" }).label, "未领取");
+  assert.equal(cliRunStatusLabel({ status: "succeeded" }).label, "成功");
+  assert.equal(cliRunStatusLabel({ status: "failed" }).label, "失败");
+  assert.equal(cliRunStatusLabel({ status: "cancelled" }).label, "取消");
+  assert.equal(cliRunStatusLabel({ status: "revoked" }).label, "已撤销");
+  assert.equal(cliRunStatusLabel({ status: "expired" }).label, "已过期");
+  assert.equal(cliRunStatusLabel({ status: "active" }).label, "待确认");
+  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "started", lastObservedAt: fresh }, now).label, "启动中");
+  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "running", lastObservedAt: fresh }, now).label, "执行中");
+  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "waiting_permission", lastObservedAt: fresh }, now).label, "等待权限");
+  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "waiting_quota", lastObservedAt: fresh }, now).label, "等待限流恢复");
+  const lost = cliRunStatusLabel({ status: "active", runStatus: "running", lastObservedAt: stale }, now);
+  assert.equal(lost.label, "失联");
+  assert.equal(lost.lost, true);
+  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "waiting_quota", lastObservedAt: stale }, now).label, "失联");
+  assert.equal(cliRunStatusLabel({ status: "active", lastObservedAt: fresh }, now).label, "执行中");
 });

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { parseTaskWorkspaceSearch, taskActions, taskAxes, taskListRequestKey } from "@/lib/task-workspace.mjs";
-import { describeActivityEvent, fetchInFlight, lastSuccessText, reduceDetailFailure, reduceDetailSuccess, reduceEventsFailure, reduceEventsSuccess, parseClientReport } from "@/lib/task-detail.mjs";
+import { cliRunStatusLabel, describeActivityEvent, fetchInFlight, lastSuccessText, reduceDetailFailure, reduceDetailSuccess, reduceEventsFailure, reduceEventsSuccess, parseClientReport } from "@/lib/task-detail.mjs";
 
 import { BugDetails } from "./BugDetails";
 
@@ -16,7 +16,7 @@ type ExecutionModelPolicy = {
 };
 type TaskTokenUsage = { usage: { input: number; cachedInput: number; output: number; reasoning: number }; totalTokens: number; count: number; attribution: "estimated" | "unattributed" };
 type RoutingInfo = { action?: string; orchestratorModel?: string; preferredExecutorModel?: string; selectedExecutorModel?: string; reasoningEffort?: string; dispatchChannel?: string; reason?: string; outcome?: string; preferenceMode?: string; fallbackReason?: string; quotaLimitId?: string; quotaSnapshotObservedAt?: string; quotaUsedPercent?: number; quotaResetAt?: string; };
-type CliRun = { id: string; executorModel?: string; delegateSessionId?: string; evidence?: string[] };
+type CliRun = { id: string; status?: string; runStatus?: string; executorModel?: string; delegateSessionId?: string; evidence?: string[]; claimedAt?: string; lastObservedAt?: string; completedAt?: string; error?: string };
 type Task = Record<string, unknown> & { bugClosure?: { status: string };  id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; workspace?: string; workspaceBranch?: string; executionEnvironment?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy; tokenUsage?: TaskTokenUsage | null; cliRuns?: CliRun[] };
 type State = ReturnType<typeof parseTaskWorkspaceSearch>;
 type TaskAction = "start" | "cancel" | "archive" | "unarchive";
@@ -217,11 +217,15 @@ function RoutingDetails({ fetch }: { fetch: DetailFetch | null }) {
     ].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{text(value)}</dd></div>)}</dl>
     <h3>CLI 执行记录</h3>{runs.length ? runs.map(run => {
       const report = parseClientReport(run);
+      const runState = cliRunStatusLabel(run);
       return <section key={run.id}><small>{run.id}</small><dl>{[
+        ["运行状态", runState.lost ? `${runState.label}（失联）` : runState.label],
+        ["最后观测", run.lastObservedAt ? formatDate(run.lastObservedAt) : "未观测"],
         ["请求模型", run.executorModel || "未记录"],
         ["客户端报告模型", report?.models.join("、") || "未报告"],
         ["请求 effort（回执）", report?.requestedEffort || "未报告"],
         ["客户端报告 effort", report?.effectiveEffort || "未报告"],
+        ...(run.error ? [["失败原因", run.error] as [string, string]] : []),
       ].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl></section>;
     }) : <p>暂无 CLI 执行记录，客户端报告模型未报告。</p>}
     {route?.action === "direct_execute" && <p>此次路由选择主代理直接执行；没有 CLI 运行记录不代表任务未执行。</p>}
