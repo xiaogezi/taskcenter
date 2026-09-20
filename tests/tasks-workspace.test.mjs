@@ -87,6 +87,8 @@ test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(isAllowedControlPath("/tasks/task-1/actions", "GET"), false);
   assert.equal(isAllowedControlPath("/health", "POST"), false);
   assert.equal(isAllowedControlPath("/health", "GET"), true);
+  assert.equal(isAllowedControlPath("/governance-metrics", "GET"), true);
+  assert.equal(isAllowedControlPath("/governance-metrics", "POST"), false);
   assert.equal(isAllowedControlPath("/routing/optional-astra-policy", "POST"), true);
   assert.equal(isAllowedControlPath("/context-management-pilots", "GET"), true);
   assert.equal(isAllowedControlPath("/context-management-pilots/intents", "POST"), true);
