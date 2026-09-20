@@ -25,7 +25,7 @@ test("桌面详情展开时主工作区应开启三列网格", () => {
   assert.match(componentSource, /输入 \{formatTokens\(task\.tokenUsage\.usage\.input\)\}（缓存/);
   assert.match(componentSource, /\["输入 Token", inputTokens\]/);
   assert.match(componentSource, /\["输出 Token", outputTokens\]/);
-  assert.match(componentSource, /\["Git 分支", task\?\.workspaceBranch\]/);
+  assert.match(componentSource, /\["Git 分支", task\.workspaceBranch\]/);
 });
 
 test("任务状态列保持可读并提供受控处理入口", () => {

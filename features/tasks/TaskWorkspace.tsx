@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { parseTaskWorkspaceSearch, taskActions, taskAxes, taskListRequestKey } from "@/lib/task-workspace.mjs";
+import { describeActivityEvent, fetchInFlight, lastSuccessText, reduceDetailFailure, reduceDetailSuccess, reduceEventsFailure, reduceEventsSuccess, parseClientReport } from "@/lib/task-detail.mjs";
 
 import { BugDetails } from "./BugDetails";
 
@@ -15,7 +16,8 @@ type ExecutionModelPolicy = {
 };
 type TaskTokenUsage = { usage: { input: number; cachedInput: number; output: number; reasoning: number }; totalTokens: number; count: number; attribution: "estimated" | "unattributed" };
 type RoutingInfo = { action?: string; orchestratorModel?: string; preferredExecutorModel?: string; selectedExecutorModel?: string; reasoningEffort?: string; dispatchChannel?: string; reason?: string; outcome?: string; preferenceMode?: string; fallbackReason?: string; quotaLimitId?: string; quotaSnapshotObservedAt?: string; quotaUsedPercent?: number; quotaResetAt?: string; };
-type Task = Record<string, unknown> & { bugClosure?: { status: string };  id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; workspace?: string; workspaceBranch?: string; executionEnvironment?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy; tokenUsage?: TaskTokenUsage | null };
+type CliRun = { id: string; executorModel?: string; delegateSessionId?: string; evidence?: string[] };
+type Task = Record<string, unknown> & { bugClosure?: { status: string };  id: string; title?: string; status?: string; updatedAt?: string; verificationStatus?: string; reviewStatus?: string; acceptanceStatus?: string; currentStep?: string; nextAction?: string; blocker?: string; goal?: string; workspace?: string; workspaceBranch?: string; executionEnvironment?: string; evidence?: string[]; changedFiles?: string[]; tests?: string[]; revision?: string; currentSubject?: { type?: string; value?: string }; project?: { id: string; label: string }; actionReasons?: Reason[]; routing?: RoutingInfo; routingHistory?: RoutingInfo[]; executionModelPolicy?: ExecutionModelPolicy; tokenUsage?: TaskTokenUsage | null; cliRuns?: CliRun[] };
 type State = ReturnType<typeof parseTaskWorkspaceSearch>;
 type TaskAction = "start" | "cancel" | "archive" | "unarchive";
 type TaskRowAction = { action: TaskAction; label: string };
@@ -31,9 +33,20 @@ const freshnessText = (value: unknown) => {
   return `${Math.max(0, Math.floor((Date.now() - at) / 60000))} 分钟`;
 };
 const emptyTasks: Task[] = [];
+type DetailFetch = { taskId: string; tick: number; error: string; lastSuccessAt: number; value: Task | null };
+const initialDetailFetch: DetailFetch = { taskId: "", tick: -1, error: "", lastSuccessAt: 0, value: null };
+type EventsFetch = { taskId: string; tick: number; error: string; lastSuccessAt: number; values: Record<string, unknown>[] };
+const initialEventsFetch: EventsFetch = { taskId: "", tick: -1, error: "", lastSuccessAt: 0, values: [] };
+
+function subscribeLocation(onChange: () => void) {
+  window.addEventListener("popstate", onChange);
+  return () => window.removeEventListener("popstate", onChange);
+}
+const locationSearch = () => window.location.search;
+const serverSearch = () => "";
 
 export function TaskWorkspace() {
-  const [state, setState] = useState<State>(() => parseTaskWorkspaceSearch(typeof window === "undefined" ? "" : window.location.search));
+  const state = parseTaskWorkspaceSearch(useSyncExternalStore(subscribeLocation, locationSearch, serverSearch));
   const [payload, setPayload] = useState<{ tasks?: Task[]; total?: number; totalPages?: number; actionCounts?: Record<string, number>; projects?: Array<{ id: string; label: string }> }>({});
   const [loadedListKey, setLoadedListKey] = useState("");
   const [pollTick, setPollTick] = useState(0);
@@ -42,8 +55,8 @@ export function TaskWorkspace() {
   const [refreshing, setRefreshing] = useState(false);
   const actionInFlight = useRef(false);
   const [actingTaskId, setActingTaskId] = useState("");
-  const [detail, setDetail] = useState<{ taskId: string; value: Task | null }>({ taskId: "", value: null });
-  const [events, setEvents] = useState<{ taskId: string; values: Record<string, unknown>[] }>({ taskId: "", values: [] });
+  const [detailFetch, setDetailFetch] = useState<DetailFetch>(initialDetailFetch);
+  const [eventsFetch, setEventsFetch] = useState<EventsFetch>(initialEventsFetch);
   const listInFlight = useRef(false);
   const listKey = taskListRequestKey(state);
 
@@ -52,14 +65,8 @@ export function TaskWorkspace() {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(next)) if (value && !(key === "project" && value === "all") && !(key === "bucket" && value === "all") && !(key === "page" && value === 1) && !(key === "tab" && value === "overview")) params.set(key, String(value));
     window.history.pushState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
-    setState(next);
+    window.dispatchEvent(new PopStateEvent("popstate"));
   }, [state]);
-
-  useEffect(() => {
-    const onPopState = () => setState(parseTaskWorkspaceSearch(window.location.search));
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => { if (document.visibilityState === "visible" && !listInFlight.current) setPollTick((current) => current + 1); }, 15_000);
@@ -83,13 +90,41 @@ export function TaskWorkspace() {
   useEffect(() => {
     if (!state.task) return;
     const controller = new AbortController();
-    fetch(`/api/control/tasks/${encodeURIComponent(state.task)}`, { signal: controller.signal })
-      .then(async (response) => { const body = await response.json(); if (!response.ok) throw new Error(body.error || "任务详情加载失败"); return body.task as Task; })
-      .then((value) => { if (!controller.signal.aborted) setDetail({ taskId: state.task, value }); }).catch(() => { if (!controller.signal.aborted) setDetail({ taskId: state.task, value: null }); });
-    fetch(`/api/control/tasks/${encodeURIComponent(state.task)}/events?limit=50`, { signal: controller.signal })
-      .then((response) => response.ok ? response.json() : { events: [] }).then((body) => { if (!controller.signal.aborted) setEvents({ taskId: state.task, values: body.events || [] }); }).catch(() => { if (!controller.signal.aborted) setEvents({ taskId: state.task, values: [] }); });
+    const isCurrent = () => !controller.signal.aborted;
+    const requestedTaskId = state.task;
+    const requestTick = pollTick;
+    const taskParam = encodeURIComponent(requestedTaskId);
+    fetch(`/api/control/tasks/${taskParam}`, { signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null);
+        if (!response.ok) throw new Error((body && typeof body.error === "string" && body.error) || "任务详情加载失败");
+        if (body === null) throw new Error("任务详情响应不是有效 JSON");
+        return body;
+      })
+      .then((body) => { if (isCurrent()) setDetailFetch((previous) => reduceDetailSuccess(previous, body, requestedTaskId, requestTick, Date.now())); })
+      .catch((cause) => {
+        if (!isCurrent() || cause?.name === "AbortError") return;
+        setDetailFetch((previous) => reduceDetailFailure(previous, cause?.message || "任务详情加载失败", requestedTaskId, requestTick));
+      });
+    fetch(`/api/control/tasks/${taskParam}/events?limit=50`, { signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null);
+        if (!response.ok) throw new Error((body && typeof body.error === "string" && body.error) || "活动加载失败");
+        if (body === null) throw new Error("活动响应不是有效 JSON");
+        return body;
+      })
+      .then((body) => { if (isCurrent()) setEventsFetch((previous) => reduceEventsSuccess(previous, body, requestedTaskId, requestTick, Date.now())); })
+      .catch((cause) => {
+        if (!isCurrent() || cause?.name === "AbortError") return;
+        setEventsFetch((previous) => reduceEventsFailure(previous, cause?.message || "活动加载失败", requestedTaskId, requestTick));
+      });
     return () => controller.abort();
   }, [state.task, pollTick]);
+
+  const detail = detailFetch.taskId === state.task ? detailFetch : null;
+  const events = eventsFetch.taskId === state.task ? eventsFetch : null;
+  const detailLoading = fetchInFlight(detailFetch, state.task, pollTick);
+  const eventsLoading = fetchInFlight(eventsFetch, state.task, pollTick);
 
   const tasks = payload.tasks ?? emptyTasks;
   const loading = loadedListKey !== listKey;
@@ -125,7 +160,7 @@ export function TaskWorkspace() {
     <section className="task-main"><header className="task-header"><div><p>LOCAL CONTROL API</p><h1>任务工作区</h1><small>任务事实、证据与活动均来自本地 Control API。</small></div><button disabled={refreshing || loading} onClick={() => { setRefreshing(true); setPollTick(current => current + 1); }}>{refreshing ? "刷新中…" : "刷新"}</button></header>
       <section className="task-stats" aria-label="任务统计">{([['attention','需处理'],['in_progress','执行中'],['awaiting_verification','待验证'],['awaiting_acceptance','待验收'],['awaiting_merge','待合入'],['bugs','Bug'],['completed_bugs','已合入 Bug'],['blocked','阻塞'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
       <section className="task-filters"><select value={state.project} onChange={(event) => update({ project: event.target.value, page: 1 })}><option value="all">全部项目</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.label}</option>)}</select><input value={state.query} onChange={(event) => update({ query: event.target.value, page: 1 })} placeholder="搜索标题、ID 或目标" /><span>共 {payload.total ?? "未知"} 条</span></section>
-      {notice && <p role="status">{notice}</p>}{error && <p className="task-error" role="status">{error}</p>}<div className="task-table-wrap"><table className="task-table"><thead><tr><th>状态</th><th>任务名称</th><th>项目</th><th>当前阶段</th><th>执行模型</th><th>Token</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{loading && !tasks.length ? <tr><td colSpan={8}>正在加载真实任务摘要…</td></tr> : tasks.length ? tasks.map((task) => {
+      {notice && <p role="status">{notice}</p>}{error && <p className="task-error" role="status">{error}</p>}<div className="task-table-wrap"><table className="task-table"><thead><tr><th>状态</th><th>任务名称</th><th>项目</th><th>当前阶段</th><th>路由选择模型</th><th>Token</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{loading && !tasks.length ? <tr><td colSpan={8}>正在加载真实任务摘要…</td></tr> : tasks.length ? tasks.map((task) => {
         const route = task.routing || task.routingHistory?.at(-1);
         const modelCell = [route?.preferredExecutorModel, route?.selectedExecutorModel].filter(Boolean).join(" → ");
         const actions = taskActions(task) as TaskRowAction[];
@@ -140,19 +175,35 @@ export function TaskWorkspace() {
       }) : <tr><td colSpan={8}>没有匹配的真实任务。</td></tr>}</tbody></table></div>
       <footer className="task-pagination"><button disabled={state.page <= 1} onClick={() => update({ page: state.page - 1 })}>上一页</button><span>第 {state.page} / {payload.totalPages ?? "未知"} 页</span><button disabled={refreshing || !payload.totalPages || state.page >= Number(payload.totalPages)} onClick={() => update({ page: state.page + 1 })}>下一页</button></footer>
     </section>
-    {state.task && <aside className="task-detail" aria-label="任务详情"><button className="detail-close" onClick={() => update({ task: "", tab: "overview" })}>关闭</button><h2>{text((detail.taskId === state.task ? detail.value?.title : undefined) || tasks.find((task) => task.id === state.task)?.title)}</h2><small>{state.task}</small>{detail.taskId === state.task && detail.value && <section aria-label="任务操作"><p>以下操作只更新任务记录，不会启动或停止 Agent。</p>{(taskActions(detail.value) as TaskRowAction[]).map(item => <button disabled={Boolean(actingTaskId)} key={item.action} onClick={() => void act(detail.value!, item.action)}>{actingTaskId === state.task ? "处理中…" : item.label}</button>)}{typeof detail.value.sessionId === "string" && <p><a href={`/sessions?session=${encodeURIComponent(detail.value.sessionId)}`}>查看关联会话</a></p>}</section>}<div className="detail-tabs">{([['overview','概览'],['bug','Bug 闭环'],['routing','调度'],['evidence','证据'],['activity','活动']] as const).map(([tab, label]) => <button className={state.tab === tab ? "selected" : ""} key={tab} onClick={() => update({ tab })}>{label}</button>)}</div>{state.tab === "bug" && detail.taskId === state.task && detail.value && <BugDetails key={state.task} task={detail.value} onChanged={() => setPollTick(current => current + 1)} />}{state.tab === "overview" && <DetailOverview task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "routing" && <RoutingDetails task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "evidence" && <Evidence task={detail.taskId === state.task ? detail.value : null} />}{state.tab === "activity" && <Activity events={events.taskId === state.task ? events.values : []} />}</aside>}
+    {state.task && <aside className="task-detail" aria-label="任务详情"><button className="detail-close" onClick={() => update({ task: "", tab: "overview" })}>关闭</button><h2>{text(detail?.value?.title || tasks.find((task) => task.id === state.task)?.title)}</h2><small>{state.task}</small>{detail?.value && <section aria-label="任务操作"><p>以下操作只更新任务记录，不会启动或停止 Agent。</p>{(taskActions(detail.value) as TaskRowAction[]).map(item => <button disabled={Boolean(actingTaskId)} key={item.action} onClick={() => void act(detail.value!, item.action)}>{actingTaskId === state.task ? "处理中…" : item.label}</button>)}{typeof detail.value.sessionId === "string" && <p><a href={`/sessions?session=${encodeURIComponent(detail.value.sessionId)}`}>查看关联会话</a></p>}</section>}<div className="detail-tabs">{([['overview','概览'],['bug','Bug 闭环'],['routing','调度'],['evidence','证据'],['activity','活动']] as const).map(([tab, label]) => <button className={state.tab === tab ? "selected" : ""} key={tab} onClick={() => update({ tab })}>{label}</button>)}</div>{state.tab !== "activity" && <FetchStatus fetch={detail} loading={detailLoading} label="详情" />}{state.tab === "bug" && detail?.value && <BugDetails key={state.task} task={detail.value} onChanged={() => setPollTick(current => current + 1)} />}{state.tab === "overview" && <DetailOverview fetch={detail} />}{state.tab === "routing" && <RoutingDetails fetch={detail} />}{state.tab === "evidence" && <Evidence fetch={detail} />}{state.tab === "activity" && <Activity fetch={events} loading={eventsLoading} />}</aside>}
   </main>;
 }
 
-function DetailOverview({ task }: { task: Task | null }) { const route = task?.routing || task?.routingHistory?.at(-1); const tokenTotal = task?.tokenUsage ? `${formatTokens(task.tokenUsage.totalTokens)} Token` : "暂无归属"; const inputTokens = task?.tokenUsage ? `${formatTokens(task.tokenUsage.usage.input)}（其中缓存 ${formatTokens(task.tokenUsage.usage.cachedInput)}）` : "暂无归属"; const outputTokens = task?.tokenUsage ? `${formatTokens(task.tokenUsage.usage.output)}（其中推理 ${formatTokens(task.tokenUsage.usage.reasoning)}）` : "暂无归属"; return <div className="detail-content"><h3>目标</h3><p>{text(task?.goal)}</p><dl>{[["当前步骤", task?.currentStep], ["下一步", task?.nextAction], ["阻塞", task?.blocker], ["执行环境", task?.executionEnvironment], ["Git 分支", task?.workspaceBranch], ["Workspace", task?.workspace], ["执行模型", route?.selectedExecutorModel], ["Token 总计", tokenTotal], ["输入 Token", inputTokens], ["输出 Token", outputTokens], ["选择理由", route?.reason]].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{text(value)}</dd></div>)}{taskAxes(task || {}).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{labels[text(value)] || text(value)}</dd></div>)}</dl><h3>需处理原因</h3><ul>{task?.actionReasons?.length ? task.actionReasons.map((reason) => <li key={reason.code}>{reason.label}{reason.detail ? `：${reason.detail}` : ""}</li>) : <li>{task ? "当前无需要处理原因" : "未知"}</li>}</ul></div>; }
-function RoutingDetails({ task }: { task: Task | null }) {
-  const route = task?.routing || task?.routingHistory?.at(-1);
-  const executionPolicy = task?.executionModelPolicy || {};
+function FetchStatus({ fetch, loading, label }: { fetch: { error: string; lastSuccessAt: number } | null; loading: boolean; label: string }) {
+  return <div role="status">{loading && <p>{fetch?.lastSuccessAt ? `正在刷新${label}…` : `正在加载${label}…`}</p>}{fetch?.error && <p className="task-error">读取失败：{fetch.error}</p>}{fetch?.lastSuccessAt ? <small>{label} · {lastSuccessText(fetch.lastSuccessAt)}{fetch.error ? "（保留旧数据）" : ""}</small> : fetch?.error ? <small>尚无成功数据</small> : null}</div>;
+}
+
+function DetailOverview({ fetch }: { fetch: DetailFetch | null }) {
+  const task = fetch?.value ?? null;
+  if (!task) return null;
+  const route = task.routing || task.routingHistory?.at(-1);
+  const tokenTotal = task.tokenUsage ? `${formatTokens(task.tokenUsage.totalTokens)} Token` : "暂无归属";
+  const inputTokens = task.tokenUsage ? `${formatTokens(task.tokenUsage.usage.input)}（其中缓存 ${formatTokens(task.tokenUsage.usage.cachedInput)}）` : "暂无归属";
+  const outputTokens = task.tokenUsage ? `${formatTokens(task.tokenUsage.usage.output)}（其中推理 ${formatTokens(task.tokenUsage.usage.reasoning)}）` : "暂无归属";
+  return <div className="detail-content"><h3>目标</h3><p>{text(task.goal)}</p><dl>{[["当前步骤", task.currentStep], ["下一步", task.nextAction], ["阻塞", task.blocker], ["执行环境", task.executionEnvironment], ["Git 分支", task.workspaceBranch], ["Workspace", task.workspace], ["路由选择模型", route?.selectedExecutorModel], ["Token 总计", tokenTotal], ["输入 Token", inputTokens], ["输出 Token", outputTokens], ["选择理由", route?.reason]].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{text(value)}</dd></div>)}{taskAxes(task).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{labels[text(value)] || text(value)}</dd></div>)}</dl><h3>需处理原因</h3><ul>{task.actionReasons?.length ? task.actionReasons.map((reason) => <li key={reason.code}>{reason.label}{reason.detail ? `：${reason.detail}` : ""}</li>) : <li>当前无需要处理原因</li>}</ul></div>;
+}
+function RoutingDetails({ fetch }: { fetch: DetailFetch | null }) {
+  const task = fetch?.value ?? null;
+  if (!task) return null;
+  const route = task.routing || task.routingHistory?.at(-1);
+  const executionPolicy = task.executionModelPolicy || {};
+  const runs = Array.isArray(task.cliRuns) ? task.cliRuns.filter(run => run && typeof run.id === "string") : [];
   return <div className="detail-content"><h3>调度信息</h3>
     <dl>{[
-      ["首选模型", route?.preferredExecutorModel || route?.selectedExecutorModel || "未知"],
-      ["实际模型", route?.selectedExecutorModel || "未触发路由"],
-      ["推理 effort", route?.reasoningEffort || "未记录"],
+      ["执行方式", route?.action === "direct_execute" ? "主代理直接执行（路由记录）" : route?.action || "未记录"],
+      ["路由选择模型", route?.selectedExecutorModel || "未触发路由"],
+      ["首选模型", route?.preferredExecutorModel || "未记录"],
+      ["路由请求 effort", route?.reasoningEffort || "未记录"],
       ["调度偏好", route?.preferenceMode || executionPolicy.mode || "auto"],
       ["触发通道", route?.dispatchChannel || "未记录"],
       ["回退原因", route?.fallbackReason || "无"],
@@ -164,8 +215,30 @@ function RoutingDetails({ task }: { task: Task | null }) {
       ["额度观测时间", route?.quotaSnapshotObservedAt || "未记录"],
       ["额度重置时间", route?.quotaResetAt || "未记录"],
     ].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{text(value)}</dd></div>)}</dl>
+    <h3>CLI 执行记录</h3>{runs.length ? runs.map(run => {
+      const report = parseClientReport(run);
+      return <section key={run.id}><small>{run.id}</small><dl>{[
+        ["请求模型", run.executorModel || "未记录"],
+        ["客户端报告模型", report?.models.join("、") || "未报告"],
+        ["请求 effort（回执）", report?.requestedEffort || "未报告"],
+        ["客户端报告 effort", report?.effectiveEffort || "未报告"],
+      ].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl></section>;
+    }) : <p>暂无 CLI 执行记录，客户端报告模型未报告。</p>}
+    {route?.action === "direct_execute" && <p>此次路由选择主代理直接执行；没有 CLI 运行记录不代表任务未执行。</p>}
     <p className="attention">路由策略来源：同源 Control API 控制面，前端仅展示，不复刻规则。</p>
   </div>;
 }
-function Evidence({ task }: { task: Task | null }) { const rows = [["Revision", task?.revision], ["Subject", task?.currentSubject?.value || task?.currentSubject?.type], ["证据", task?.evidence], ["测试", task?.tests], ["改动文件", task?.changedFiles], ["验证摘要", task?.verificationClaims], ["审查摘要", task?.reviewAttestations]] as const; return <div className="detail-content">{rows.map(([title, values]) => <section key={title}><h3>{title}</h3><ul>{Array.isArray(values) && values.length ? values.map((value, index) => <li key={index}>{typeof value === "string" ? value : JSON.stringify(value)}</li>) : !Array.isArray(values) && values ? <li>{String(values)}</li> : <li>未知</li>}</ul></section>)}</div>; }
-function Activity({ events }: { events: Record<string, unknown>[] }) { return <div className="detail-content"><ul>{events.length ? events.map((event, index) => <li key={index}><strong>{text(event.type)}</strong><br />{formatDate(event.occurred_at || event.recorded_at)}</li>) : <li>未知</li>}</ul></div>; }
+function Evidence({ fetch }: { fetch: DetailFetch | null }) {
+  const task = fetch?.value ?? null;
+  if (!task) return null;
+  const evidenceLabels: Record<string, string> = { 证据: "尚未提交证据", 测试: "尚未提交测试", 改动文件: "未记录", 验证摘要: "暂无记录", 审查摘要: "暂无记录" };
+  const rows: Array<[string, unknown]> = [["Revision", task.revision], ["Subject", task.currentSubject?.value || task.currentSubject?.type], ["证据", task.evidence], ["测试", task.tests], ["改动文件", task.changedFiles], ["验证摘要", (task as Record<string, unknown>).verificationClaims], ["审查摘要", (task as Record<string, unknown>).reviewAttestations]];
+  return <div className="detail-content">{rows.map(([title, values]) => {
+    const emptyLabel = evidenceLabels[title] || "未记录";
+    return <section key={title}><h3>{title}</h3><ul>{Array.isArray(values) && values.length ? values.map((value, index) => <li key={index}>{typeof value === "string" ? value : JSON.stringify(value)}</li>) : !Array.isArray(values) && values ? <li>{String(values)}</li> : <li>{values === undefined || values === null ? "未记录" : emptyLabel}</li>}</ul></section>;
+  })}</div>;
+}
+function Activity({ fetch, loading }: { fetch: EventsFetch | null; loading: boolean }) {
+  const items = (fetch?.values || []).map(describeActivityEvent).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  return <div className="detail-content"><FetchStatus fetch={fetch} loading={loading} label="活动" />{items.length ? <ul>{items.map((item, index) => <li key={index}><strong>{labels[item.type] || item.type}</strong><br />{item.time ? formatDate(item.time) : "未知时间"}{item.lines.map((line) => <span key={line}><br />{line}</span>)}{item.note && <small><br />{item.note}</small>}</li>)}</ul> : fetch?.lastSuccessAt ? <p>暂无活动</p> : null}</div>;
+}
