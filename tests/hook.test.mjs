@@ -175,6 +175,31 @@ test("离线恢复白名单兼容 Codex exec_command 格式与受限 rtk/cd 包�
   });
   assert.equal(scheduledRecovery.code, 0, "scheduled-pre-tool-use 应急恢复命令也应放行");
 
+  // Codex 会话 cwd 常落在兄弟项目（如 ProjectContextAgent），用绝对路径启动 ReqRadar 服务应放行。
+  const absFromOtherCwd = await runHook("pre-tool-use", "codex", {
+    session_id: "",
+    cwd: "/Users/gezi/Documents/project/ProjectContextAgent",
+    tool_name: "Bash",
+    tool_input: { command: `node ${rootPath}/scripts/taskcenter-control.mjs start` },
+  });
+  assert.equal(absFromOtherCwd.code, 0, "绝对路径形式在非 ReqRadar cwd 下也应放行");
+
+  const absRestart = await runHook("pre-tool-use", "codex", {
+    session_id: "",
+    cwd: rootPath,
+    tool_name: "Bash",
+    tool_input: { command: `node ${rootPath}/scripts/taskcenter-control.mjs restart` },
+  });
+  assert.equal(absRestart.code, 2, "绝对路径 restart 不在白名单");
+
+  const absOtherScript = await runHook("pre-tool-use", "codex", {
+    session_id: "",
+    cwd: rootPath,
+    tool_name: "Bash",
+    tool_input: { command: "node /tmp/evil.mjs start" },
+  });
+  assert.equal(absOtherScript.code, 2, "绝对路径指向非 TaskCenter 脚本应拒绝");
+
   // 仍拒绝：cd 后接非恢复命令、cd 到别的目录、拼接额外写操作。
   for (const [toolName, toolInput] of [
     ["Bash", { command: `cd ${rootPath} && touch /tmp/evil && node scripts/taskcenter-control.mjs start` }],

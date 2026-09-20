@@ -675,11 +675,8 @@ function isTrustedRecoveryCommand(payload) {
   // Codex 用 cmd，Bash 用 command。
   const raw = String(toolInput.cmd || toolInput.command || "").trim();
   if (!raw) return false;
-  // Codex exec_command 把工作目录放在 tool_input.workdir，不是顶层 payload.cwd。
   const cwdValue = payload.cwd || toolInput.workdir || payload.workdir || "";
-  if (typeof cwdValue !== "string" || !cwdValue) return false;
-  if (!samePath(resolve(cwdValue), projectRoot)) return false;
-  // 规范化：剥离 rtk / rtk proxy 前缀与前导 cd <dir> &&，再精确匹配白名单。
+  // 规范化：剥离 rtk / rtk proxy 前缀与前导 cd <dir> &&。
   let command = raw;
   const tokens = command.split(/\s+/);
   if (tokens[0] === "rtk") {
@@ -690,20 +687,32 @@ function isTrustedRecoveryCommand(payload) {
   const parts = command.split("&&");
   if (parts.length > 1 && parts[0].trim().startsWith("cd ")) {
     const cdArgs = parts[0].trim().slice(3).trim();
-    // 只有 cd 到项目根（或 . / 无参数）才允许剥离；cd 到别的目录视为不可信命令。
+    const cwdBase = typeof cwdValue === "string" && cwdValue ? cwdValue : ".";
     let cdOk = cdArgs === "" || cdArgs === ".";
     if (!cdOk) {
       const target = cdArgs.replace(/^['"]|['"]$/g, "");
-      cdOk = samePath(resolve(cwdValue, target), projectRoot);
+      cdOk = samePath(resolve(cwdBase, target), projectRoot);
     }
     if (cdOk) command = parts.slice(1).join("&&").trim();
   }
-  return new Set([
+  // 白名单：相对路径形式要求 cwd 在项目根；绝对路径形式自带项目身份，不强制 cwd。
+  const relativeAllowed = new Set([
     "node scripts/taskcenter-control.mjs start",
     "node scripts/taskcenter-control.mjs status",
     "/bin/bash scripts/taskcenter-control.sh start",
     "/bin/bash scripts/taskcenter-control.sh status",
-  ]).has(command);
+  ]);
+  if (relativeAllowed.has(command)) {
+    // 相对路径形式必须 cwd 在项目根，否则脚本根本不存在。
+    return typeof cwdValue === "string" && cwdValue && samePath(resolve(cwdValue), projectRoot);
+  }
+  // 绝对路径形式：node <abs>/scripts/taskcenter-control.mjs start|status
+  const absMatch = command.match(/^node\s+(\/\S*\/scripts\/taskcenter-control\.mjs)\s+(start|status)$/);
+  if (absMatch) {
+    const scriptPath = resolve(absMatch[1]);
+    return samePath(scriptPath, resolve(projectRoot, "scripts", "taskcenter-control.mjs"));
+  }
+  return false;
 }
 
 async function isL0ReadOnlyInspection(payload) {
