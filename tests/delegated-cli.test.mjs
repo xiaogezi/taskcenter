@@ -106,3 +106,24 @@ test("启动前检查失败仍撤销授权并释放路由", async () => {
     assert.equal(JSON.parse(readFileSync(manifest.output_path)).status, "failed");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+ test("Kimi 将同一工具更新中的参数关联到精简权限请求，终态清除", async () => {
+  const run = requireHarnessOperation("kimi", "runDelegatedCli");
+  const seen = [];
+  await run({ manifest: { workspace: "/work", mode: "workspace-write" }, profile: cliProfile("kimi-k3"), onSessionReady: async () => {}, authorizeTool: async (tool, input) => { seen.push([tool, input]); return tool === "Bash" && input?.command === "pwd"; }, dependencies: { runKimi: async input => {
+    input.update({ sessionUpdate: "tool_call", toolCallId: "a", kind: "execute" });
+    input.update({ sessionUpdate: "tool_call_update", toolCallId: "a", rawInput: { command: "pwd" } });
+    const options = [{ kind: "allow_once", optionId: "once" }];
+    input.update({ sessionUpdate: "tool_call", toolCallId: "snapshot", kind: "execute" });
+    input.update({ sessionUpdate: "tool_call_update", toolCallId: "snapshot", status: "in_progress", content: [{ type: "content", content: { type: "text", text: '{"command":"pwd"}' } }] });
+    assert.equal(await input.permission({ toolCall: { toolCallId: "snapshot" }, options }), "once");
+    input.update({ sessionUpdate: "tool_call_update", toolCallId: "snapshot", status: "in_progress", content: [{ type: "content", content: { type: "text", text: '{"command":' } }] });
+    assert.equal(await input.permission({ toolCall: { toolCallId: "snapshot" }, options }), null);
+    assert.equal(await input.permission({ toolCall: { toolCallId: "a" }, options }), "once");
+    assert.equal(await input.permission({ toolCall: { toolCallId: "b" }, options }), null);
+    input.update({ sessionUpdate: "tool_call_update", toolCallId: "a", status: "completed" });
+    assert.equal(await input.permission({ toolCall: { toolCallId: "a" }, options }), null);
+    return { stopReason: "end_turn" };
+  } } });
+  assert.deepEqual(seen[0], ["Bash", { command: "pwd" }]);
+ });

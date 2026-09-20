@@ -72,7 +72,7 @@ export async function runDelegatedCli(input, dependencies = {}) {
         await request("/delegations/touch", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace }).catch(() => {});
       },
       authorizeTool: async (tool, rawInput) => {
-        if (!sessionId || !tool || !rawInput) { permissionFailure = "CLI_NOT_CLAIMED_OR_INVALID_TOOL"; return false; }
+        if (!sessionId || !tool || !rawInput) { permissionFailure = !sessionId ? "CLI_NOT_CLAIMED" : !tool ? "CLI_TOOL_UNSUPPORTED" : "CLI_TOOL_INPUT_MISSING"; return false; }
         try {
           const nowMs = Date.now();
           if (nowMs - lastPermissionReportAt >= 60_000) {
