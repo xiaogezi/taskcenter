@@ -196,7 +196,7 @@ export function loadSessionRegistry() {
   // 兼容注册表上线前的历史事件：已有 session.register 也应显示为已登记。
   try {
     if (useLegacyEvents && existsSync(taskEventsPath)) {
-      for (const line of readFileSync(taskEventsPath, "utf8").split("\n")) {
+      for (const line of taskEventLinesForward()) {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
         if (event.type !== "session.register" || !event.session_id) continue;
@@ -664,6 +664,27 @@ function* taskEventLinesBackwards() {
       }
     }
     if (carry) yield Buffer.from(carry, "latin1").toString("utf8");
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function* taskEventLinesForward() {
+  const descriptor = openSync(taskEventsPath, "r");
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let carry = "";
+  try {
+    let position = 0;
+    const total = fstatSync(descriptor).size;
+    while (position < total) {
+      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, position);
+      if (bytesRead <= 0) break;
+      position += bytesRead;
+      const lines = (carry + buffer.subarray(0, bytesRead).toString("latin1")).split("\n");
+      carry = lines.pop() || "";
+      for (const line of lines) yield Buffer.from(line, "latin1").toString("utf8");
+    }
+    if (carry.trim()) yield Buffer.from(carry, "latin1").toString("utf8");
   } finally {
     closeSync(descriptor);
   }
