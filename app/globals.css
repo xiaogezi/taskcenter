@@ -52,4 +52,4 @@ button { cursor: pointer; }
 .bug-details button { padding: 8px 12px; margin: 4px 0; border: 1px solid #dce3ed; border-radius: 6px; }
 .bug-details button:disabled { opacity: .5; cursor: not-allowed; }
 
-.version-badge { background: rgba(255,255,255,.85); border: 1px solid #e4e8ef; border-radius: 99px; bottom: 8px; box-shadow: 0 2px 8px rgba(24,33,52,.08); color: #8992a3; font-size: 11px; letter-spacing: .02em; padding: 3px 10px; position: fixed; right: 10px; z-index: 20; }
+.version-badge { background: rgba(255,255,255,.85); border: 1px solid #e4e8ef; border-radius: 99px; bottom: 8px; box-shadow: 0 2px 8px rgba(24,33,52,.08); color: #8992a3; font-size: 11px; letter-spacing: .02em; padding: 3px 10px; position: fixed; left: 10px; z-index: 20; }
