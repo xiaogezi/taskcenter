@@ -303,6 +303,8 @@ export function buildCliRunMetrics(delegations = []) {
   const byModel = {};
   let runs = 0, active = 0, succeeded = 0, failed = 0, cancelled = 0;
   const tokens = { input: 0, output: 0, total: 0, reported: 0 };
+  let lastFinishedAt = 0;
+  let durationSum = 0, durationCount = 0, durationMax = 0;
   for (const delegation of delegations) {
     if (!delegation || typeof delegation !== "object" || typeof delegation.id !== "string") continue;
     runs += 1;
@@ -312,7 +314,7 @@ export function buildCliRunMetrics(delegations = []) {
     else if (status === "failed") failed += 1;
     else if (status === "cancelled") cancelled += 1;
     const model = typeof delegation.executorModel === "string" && delegation.executorModel ? delegation.executorModel : "unknown";
-    const entry = byModel[model] || (byModel[model] = { runs: 0, active: 0, succeeded: 0, failed: 0, cancelled: 0 });
+    const entry = byModel[model] || (byModel[model] = { runs: 0, active: 0, succeeded: 0, failed: 0, cancelled: 0, durationSum: 0, durationCount: 0, durationMax: 0, lastFinishedAt: 0 });
     entry.runs += 1;
     if (status === "active") entry.active += 1;
     else if (status === "succeeded") entry.succeeded += 1;
@@ -325,6 +327,33 @@ export function buildCliRunMetrics(delegations = []) {
       tokens.total += usage.total;
       tokens.reported += 1;
     }
+    // 运行时长：completedAt - claimedAt（兜底 createdAt）
+    const start = Date.parse(delegation.claimedAt || delegation.createdAt || "");
+    const end = Date.parse(delegation.completedAt || "");
+    if (Number.isFinite(end) && end > 0) {
+      if (end > lastFinishedAt) lastFinishedAt = end;
+      if (Number.isFinite(start) && start > 0) {
+        const dur = end - start;
+        if (dur > 0) {
+          durationSum += dur;
+          durationCount += 1;
+          if (dur > durationMax) durationMax = dur;
+          entry.durationSum += dur;
+          entry.durationCount += 1;
+          if (dur > entry.durationMax) entry.durationMax = dur;
+        }
+      }
+      if (end > entry.lastFinishedAt) entry.lastFinishedAt = end;
+    }
   }
-  return { runs, active, succeeded, failed, cancelled, byModel, tokens };
+  return {
+    runs, active, succeeded, failed, cancelled, byModel, tokens,
+    lastFinishedAt: lastFinishedAt || null,
+    duration: {
+      count: durationCount,
+      avgMs: durationCount > 0 ? Math.round(durationSum / durationCount) : null,
+      maxMs: durationMax || null,
+      totalMs: durationSum || null,
+    },
+  };
 }
