@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { parseTaskWorkspaceSearch, taskActions, taskAxes, taskListRequestKey } from "@/lib/task-workspace.mjs";
-import { cliRunStatusLabel, describeActivityEvent, fetchInFlight, lastSuccessText, reduceDetailFailure, reduceDetailSuccess, reduceEventsFailure, reduceEventsSuccess, parseClientReport } from "@/lib/task-detail.mjs";
+import { cliRunStatusLabel, describeActivityEvent, fetchInFlight, lastSuccessText, reduceDetailFailure, reduceDetailSuccess, reduceEventsFailure, reduceEventsSuccess, parseClientReport, parseClientUsage } from "@/lib/task-detail.mjs";
 
 import { BugDetails } from "./BugDetails";
 
@@ -218,6 +218,7 @@ function RoutingDetails({ fetch }: { fetch: DetailFetch | null }) {
     <h3>CLI 执行记录</h3>{runs.length ? runs.map(run => {
       const report = parseClientReport(run);
       const runState = cliRunStatusLabel(run);
+      const usage = parseClientUsage(run);
       return <section key={run.id}><small>{run.id}</small><dl>{[
         ["运行状态", runState.lost ? `${runState.label}（失联）` : runState.label],
         ["最后观测", run.lastObservedAt ? formatDate(run.lastObservedAt) : "未观测"],
@@ -225,6 +226,7 @@ function RoutingDetails({ fetch }: { fetch: DetailFetch | null }) {
         ["客户端报告模型", report?.models.join("、") || "未报告"],
         ["请求 effort（回执）", report?.requestedEffort || "未报告"],
         ["客户端报告 effort", report?.effectiveEffort || "未报告"],
+        ["回执用量", usage ? `输入 ${formatTokens(usage.input ?? 0)} · 输出 ${formatTokens(usage.output ?? 0)}` : "未报告"],
         ...(run.error ? [["失败原因", run.error] as [string, string]] : []),
       ].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl></section>;
     }) : <p>暂无 CLI 执行记录，客户端报告模型未报告。</p>}

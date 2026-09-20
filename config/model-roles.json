@@ -1,8 +1,18 @@
 {
   "schema_version": "taskcenter-model-roles-v1",
   "cli_profiles": {
-    "kimi-k3": { "harness": "kimi", "model": "kimi-code/k3-256k", "provider": "moonshot", "reasoning_effort": "low" },
-    "claude-mimo": { "harness": "claude", "model": "mimo-v2.5-pro", "provider": "xiaomi", "reasoning_effort": "medium" }
+    "kimi-k3": {
+      "harness": "kimi",
+      "model": "kimi-code/k3-256k",
+      "provider": "moonshot",
+      "reasoning_effort": "low"
+    },
+    "claude-mimo": {
+      "harness": "claude",
+      "model": "mimo-v2.5-pro",
+      "provider": "xiaomi",
+      "reasoning_effort": "medium"
+    }
   },
   "optional_astra_policy": {
     "preset": "saving",
@@ -44,6 +54,46 @@
   "manual_only_models": [
     "gpt-5.3-codex-spark"
   ],
-  "retired_models": [
+  "retired_models": [],
+  "quota_pools": [
+    {
+      "id": "codex",
+      "provider": "codex",
+      "models": [
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-6-astra",
+        "gpt-5.3-codex-spark"
+      ],
+      "source": "official-api",
+      "notes": "Codex 主额度，来自本机会话 rate_limits；按 limit_id 匹配，用于 quota_preferred 准入"
+    },
+    {
+      "id": "codex_bengalfox",
+      "provider": "codex",
+      "models": [
+        "gpt-5.3-codex-spark"
+      ],
+      "source": "official-api",
+      "notes": "GPT-5.3-Codex-Spark 独立额度窗口，manual_only"
+    },
+    {
+      "id": "kimi",
+      "provider": "moonshot",
+      "models": [
+        "kimi-code/k3-256k"
+      ],
+      "source": "runtime-signal",
+      "notes": "无官方余额查询接口；余额未知，仅限流信号与本地累计"
+    },
+    {
+      "id": "claude",
+      "provider": "xiaomi",
+      "models": [
+        "mimo-v2.5-pro"
+      ],
+      "source": "runtime-signal",
+      "notes": "无官方余额查询接口；余额未知，仅限流信号与本地累计"
+    }
   ]
 }

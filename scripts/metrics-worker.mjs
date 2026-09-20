@@ -71,7 +71,7 @@ async function refreshGovernance() {
       (delegation.events || []).map((event) => ({ ...event, task_id: delegation.taskId })));
     const usageReport = readJson(usageReportPath, emptyUsageReport());
     await writeJsonAtomic(governanceMetricsPath, {
-      ...buildGovernanceMetrics({ tasks, events: [...(events || []), ...delegationEvents], usageReport }),
+      ...buildGovernanceMetrics({ tasks, events: [...(events || []), ...delegationEvents], usageReport, delegations: listDelegations() }),
       generatedAt: new Date().toISOString(),
       source: { mode: "incremental_snapshot", taskEventOffset: offset, delegationStore: delegationsPath },
     });

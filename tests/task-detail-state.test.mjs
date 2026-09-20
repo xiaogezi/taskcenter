@@ -9,6 +9,7 @@ import {
   isValidTaskResponse,
   lastSuccessText,
   parseClientReport,
+  parseClientUsage,
   reduceDetailFailure,
   reduceDetailSuccess,
   reduceEventsFailure,
@@ -175,4 +176,16 @@ test("CLI 运行状态：终态直读、active 按心跳判断失联、信号不
   assert.equal(lost.lost, true);
   assert.equal(cliRunStatusLabel({ status: "active", runStatus: "waiting_quota", lastObservedAt: stale }, now).label, "失联");
   assert.equal(cliRunStatusLabel({ status: "active", lastObservedAt: fresh }, now).label, "执行中");
+});
+
+test("客户端回执用量：只采信绑定证据并容错解析 usage", () => {
+  const base = { delegation_id: "run-a", sessionId: "session-a" };
+  const run = (evidence) => ({ id: "run-a", delegateSessionId: "session-a", evidence });
+  assert.deepEqual(parseClientUsage(run([JSON.stringify({ ...base, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3 } })])), { input: 10, output: 5, cacheRead: 3, cacheWrite: null });
+  assert.deepEqual(parseClientUsage(run([JSON.stringify({ ...base, usage: { prompt_tokens: "40", completion_tokens: 8 } })])), { input: 40, output: 8, cacheRead: null, cacheWrite: null });
+  assert.equal(parseClientUsage(run([JSON.stringify({ ...base })])), null);
+  assert.equal(parseClientUsage(run([JSON.stringify({ ...base, delegation_id: "other" })])), null);
+  assert.equal(parseClientUsage(run(["plain"])), null);
+  assert.equal(parseClientUsage({ id: "run-a", evidence: [] }), null);
+  assert.equal(parseClientUsage(null), null);
 });

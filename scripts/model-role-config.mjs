@@ -40,6 +40,7 @@ export function loadModelRoleConfig() {
   const manualOnlyModels = uniqueModels(input.manual_only_models || [], "manual_only_models");
   const retiredModels = uniqueModels(input.retired_models, "retired_models");
   const optionalAstraPolicy = readOptionalAstraPolicy(input.optional_astra_policy);
+  const quotaPools = normalizeQuotaPools(input.quota_pools);
   const activeModels = new Set([
     executor.model,
     reviewer.model,
@@ -56,7 +57,7 @@ export function loadModelRoleConfig() {
     schemaVersion: input.schema_version,
     contentHash: createHash("sha256").update(raw).digest("hex"),
     roles: { executor, reviewer },
-    manualOnlyModels, retiredModels, optionalAstraPolicy,
+    manualOnlyModels, retiredModels, optionalAstraPolicy, quotaPools,
   };
 }
 
@@ -68,6 +69,7 @@ export function publicModelRoleConfig(config = loadModelRoleConfig()) {
     reviewer: publicRole(config.roles.reviewer),
     manual_only_models: config.manualOnlyModels,
     optional_astra_policy: config.optionalAstraPolicy,
+    quota_pools: config.quotaPools,
   };
 }
 
@@ -186,4 +188,23 @@ function publicRole(role) {
     task_class_models: role.taskClassModels,
     task_class_reasoning_efforts: role.taskClassReasoningEfforts,
   };
+}
+
+const allowedQuotaPoolSources = new Set(["official-api", "runtime-signal", "unknown"]);
+function normalizeQuotaPools(value) {
+  if (!Array.isArray(value)) return [];
+  const pools = [];
+  for (const pool of value) {
+    if (!pool || typeof pool !== "object" || typeof pool.id !== "string" || !pool.id.trim()) continue;
+    const models = Array.isArray(pool.models) ? [...new Set(pool.models.filter((model) => typeof model === "string" && model.trim()).map((model) => model.trim()))] : [];
+    if (!models.length) continue;
+    pools.push({
+      id: pool.id.trim(),
+      provider: typeof pool.provider === "string" && pool.provider.trim() ? pool.provider.trim() : "unknown",
+      models,
+      source: allowedQuotaPoolSources.has(pool.source) ? pool.source : "unknown",
+      notes: typeof pool.notes === "string" && pool.notes.trim() ? pool.notes.trim() : "",
+    });
+  }
+  return pools;
 }

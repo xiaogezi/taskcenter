@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildGovernanceMetrics } from "../scripts/governance-metrics.mjs";
+import { buildCliRunMetrics, buildGovernanceMetrics } from "../scripts/governance-metrics.mjs";
 
 test("治理看板按 profile、任务类别和模型输出稳健统计", () => {
   const tasks = [
@@ -83,4 +83,36 @@ test("in-progress 与过夜 Review 不进入完成耗时占比，空样本明确
   assert.equal(report.durationMs.p50, null);
   assert.equal(report.reviews.timeMs.wallToTaskRatio.sampleCount, 0);
   assert.ok(report.reviews.reviewLoopWarnings.some((item) => item.type === "wall_clock_distorted"));
+});
+
+test("CLI 执行器聚合统计运行状态分布与回执 Token", () => {
+  const metrics = buildCliRunMetrics([
+    { id: "a", status: "succeeded", executorModel: "k3", evidence: [JSON.stringify({ delegation_id: "a", usage: { input_tokens: 100, output_tokens: 20 } })] },
+    { id: "b", status: "failed", executorModel: "k3", evidence: ["plain"] },
+    { id: "c", status: "active", executorModel: "mimo", evidence: [JSON.stringify({ delegation_id: "c", usage: { prompt_tokens: 50 } })] },
+    { id: "d", status: "cancelled", executorModel: "k3" },
+    { id: "e", status: "succeeded", executorModel: "k3", evidence: [JSON.stringify({ delegation_id: "wrong", usage: { input_tokens: 999 } })] },
+  ]);
+  assert.equal(metrics.runs, 5);
+  assert.equal(metrics.succeeded, 2);
+  assert.equal(metrics.failed, 1);
+  assert.equal(metrics.active, 1);
+  assert.equal(metrics.cancelled, 1);
+  assert.equal(metrics.byModel.k3.runs, 4);
+  assert.equal(metrics.byModel.k3.succeeded, 2);
+  assert.equal(metrics.byModel.mimo.active, 1);
+  assert.equal(metrics.tokens.input, 150);
+  assert.equal(metrics.tokens.output, 20);
+  assert.equal(metrics.tokens.total, 170);
+  assert.equal(metrics.tokens.reported, 2);
+});
+
+test("治理指标聚合携带 CLI 执行器数据", () => {
+  const report = buildGovernanceMetrics({
+    tasks: [],
+    events: [],
+    delegations: [{ id: "a", status: "succeeded", executorModel: "k3", evidence: [JSON.stringify({ delegation_id: "a", usage: { input_tokens: 10 } })] }],
+  });
+  assert.equal(report.cliRuns.runs, 1);
+  assert.equal(report.cliRuns.tokens.input, 10);
 });

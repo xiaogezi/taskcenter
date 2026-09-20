@@ -4,6 +4,10 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 额度池模型：config/model-roles.json 新增 quota_pools 定义（provider/models/source/notes），model-role-config 解析并随 /routing/health 透出；实测 kimi/claude CLI 无官方余额查询接口，MiMo/K3 池按 runtime-signal 标注（余额未知、仅限流信号与本地累计），Codex 池按官方 rate_limits 标注；额度池页面显示来源、覆盖模型、主次窗口与观测时间。
+- 今日用量与执行器消耗：模型调度页新增"今日用量（24 小时）"（主代理 Token 与成本估算）与"CLI 执行器消耗"（运行次数、状态分布、按模型分组、回执 Token）；任务详情 CLI 执行记录显示每次回执用量；governance-metrics 新增 cliRuns 聚合，metrics-worker 定期写入。
+- 模型健康卡片补充限流恢复时间、最后错误、最后成功；试点评估口径见 docs/delegated-cli-pilot.md。
+
 - delegation CLI 运行增加中间态与心跳：领取后上报 running，权限校验与限流中断记录 waiting_permission/waiting_quota，执行中定期 touch 更新最后观测时间。任务详情展示 CLI 运行状态（启动/执行/等待权限/等待限流/失联/终态）与最后观测，失联与失败分开，信号不足标待确认。
 
 - 任务详情与活动随刷新更新，分别展示加载、失败与上次成功观测；失败保留同任务旧数据，切换任务和迟到响应不串用。区分路由选择与有绑定证据的客户端报告模型，活动仅展示允许字段，工具调用不再暗示执行成功。

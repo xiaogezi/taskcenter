@@ -8,7 +8,7 @@ export function readTaskEvents(path) {
   });
 }
 
-export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = null } = {}) {
+export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = null, delegations = [] } = {}) {
   const visible = tasks.filter((task) => task.status !== "removed");
   const groups = {
     workflow_profile: groupMetrics(visible, events, (task) => task.workflowProfile || "legacy"),
@@ -49,6 +49,7 @@ export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = 
     reviews,
     groups,
     comparisons: buildMatchedComparisons(groups, usageReport?.windows || []),
+    cliRuns: buildCliRunMetrics(delegations),
   };
 }
 
@@ -259,3 +260,71 @@ function subjectKey(subject) { return subject ? `${subject.type}:${subject.value
 function groupCount(values, keyOf) { const map = new Map(); for (const value of values) { const key = keyOf(value); map.set(key, (map.get(key) || 0) + 1); } return map; }
 function countBy(values, field) { return Object.fromEntries([...groupCount(values, (item) => item[field] || "unknown").entries()].sort(([left], [right]) => left.localeCompare(right))); }
 function ratioOf(values, field, expected) { return values.length ? values.filter((item) => item[field] === expected).length / values.length : null; }
+
+const CLI_USAGE_INPUT_KEYS = ["input_tokens", "inputTokens", "prompt_tokens", "input"];
+const CLI_USAGE_OUTPUT_KEYS = ["output_tokens", "outputTokens", "completion_tokens", "output"];
+
+function cliUsageToken(usage, keys) {
+  for (const key of keys) {
+    const value = usage[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  }
+  return null;
+}
+
+function delegationUsageTokens(delegation) {
+  if (!delegation || typeof delegation !== "object" || typeof delegation.id !== "string") return null;
+  const evidence = Array.isArray(delegation.evidence) ? delegation.evidence : [];
+  for (const entry of evidence) {
+    if (typeof entry !== "string") continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(entry);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    if (parsed.delegation_id !== delegation.id) continue;
+    if (typeof delegation.delegateSessionId === "string" && delegation.delegateSessionId && parsed.sessionId !== delegation.delegateSessionId) continue;
+    const usage = parsed.usage;
+    if (!usage || typeof usage !== "object" || Array.isArray(usage)) continue;
+    const input = cliUsageToken(usage, CLI_USAGE_INPUT_KEYS);
+    const output = cliUsageToken(usage, CLI_USAGE_OUTPUT_KEYS);
+    if (input === null && output === null) continue;
+    return { input: input ?? 0, output: output ?? 0, total: (input ?? 0) + (output ?? 0) };
+  }
+  return null;
+}
+
+// CLI 执行器聚合：运行次数、状态分布、按执行器模型分组、回执 Token 累计。
+// 只统计 delegation 回执证据中可解析的用量，缺失不推断为 0。
+export function buildCliRunMetrics(delegations = []) {
+  const byModel = {};
+  let runs = 0, active = 0, succeeded = 0, failed = 0, cancelled = 0;
+  const tokens = { input: 0, output: 0, total: 0, reported: 0 };
+  for (const delegation of delegations) {
+    if (!delegation || typeof delegation !== "object" || typeof delegation.id !== "string") continue;
+    runs += 1;
+    const status = delegation.status || "";
+    if (status === "active") active += 1;
+    else if (status === "succeeded") succeeded += 1;
+    else if (status === "failed") failed += 1;
+    else if (status === "cancelled") cancelled += 1;
+    const model = typeof delegation.executorModel === "string" && delegation.executorModel ? delegation.executorModel : "unknown";
+    const entry = byModel[model] || (byModel[model] = { runs: 0, active: 0, succeeded: 0, failed: 0, cancelled: 0 });
+    entry.runs += 1;
+    if (status === "active") entry.active += 1;
+    else if (status === "succeeded") entry.succeeded += 1;
+    else if (status === "failed") entry.failed += 1;
+    else if (status === "cancelled") entry.cancelled += 1;
+    const usage = delegationUsageTokens(delegation);
+    if (usage) {
+      tokens.input += usage.input;
+      tokens.output += usage.output;
+      tokens.total += usage.total;
+      tokens.reported += 1;
+    }
+  }
+  return { runs, active, succeeded, failed, cancelled, byModel, tokens };
+}
