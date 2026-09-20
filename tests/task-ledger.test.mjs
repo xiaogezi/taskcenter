@@ -3654,3 +3654,20 @@ test("故障场景：不调用 task_close，会话脱离后运行收口为 sessi
   assert.equal(task.runs.at(-1).ended_at, firstDetach, "重复 reconcile 幂等");
   assert.ok(task.sessionDetachedAt, "首次脱离时间保留");
 });
+
+
+test("迟到回报绑定原任务：切换任务后旧任务的验证回执仍记入原任务，不按当前活跃任务归属", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", session_id: "sess-late-a", task_id: "late-a", title: "A", goal: "a", scope: ["x"], non_goals: [], acceptance_criteria: [{ id: "done", description: "完成" }], workflow_profile: "standard", verification_plan: [{ id: "tests", title: "单元测试", kind: "test", required: true }] });
+  recordTaskEvent({ type: "task.create", session_id: "sess-late-b", task_id: "late-b", title: "B", goal: "b" });
+  // 已切到 B；A 的迟到验证回执（session 仍是 A）必须记入 A，不能按“当前活跃任务”归属到 B。
+  recordTaskEvent({ type: "verification.reported", task_id: "late-a", session_id: "sess-late-a", verification_claim: { id: "late-v", requirement_id: "tests", kind: "test", status: "passed", observed_at: "2026-08-25T00:00:00.000Z", producer: "codex", producer_session_id: "sess-late-a", evidence_ref: "e", subject_ref: { type: "git_commit", value: "late-commit", observed_at: "2026-08-25T00:00:00.000Z" } } });
+  const tasks = loadTasks();
+  const a = tasks.find((item) => item.id === "late-a");
+  const b = tasks.find((item) => item.id === "late-b");
+  assert.ok(a.verificationClaims.some((claim) => claim.id === "late-v"), "迟到回执记入原任务 A");
+  assert.equal(a.verificationStatus, "passed", "A 的验证状态由 A 的迟到回执推进");
+  assert.equal(a.status, "planned", "验证回执不自动推进完成判定");
+  assert.ok(!(b.verificationClaims || []).length, "B 不受迟到回执影响");
+  assert.equal(b.status, "planned", "B 的账本保持独立");
+});
