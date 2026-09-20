@@ -199,6 +199,25 @@ async function resetLedger() {
   }
 }
 
+test("128 MB 堆下扫描大事件历史仍能创建与幂等重放中文任务", async () => {
+  await resetLedger();
+  execFileSync(process.execPath, ["--max-old-space-size=128", "--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import { appendFileSync } from "node:fs";
+    const { recordTaskEvent } = await import("./scripts/task-ledger.mjs");
+    const input = { type: "task.create", event_id: "中文历史", task_id: "old", session_id: "old", title: "中文任务😀" };
+    recordTaskEvent(input);
+    const block = (JSON.stringify({ note: "无关历史😀".repeat(100) }) + "\\n").repeat(1024);
+    for (let size = 0; size < 192 * 1024 * 1024; size += Buffer.byteLength(block)) {
+      appendFileSync(process.env.TASKCENTER_TASK_EVENTS_PATH, block);
+    }
+    appendFileSync(process.env.TASKCENTER_TASK_EVENTS_PATH, "broken line\\n");
+    assert.equal(recordTaskEvent(input).idempotent, true);
+    assert.equal(recordTaskEvent({ type: "task.create", event_id: "new", task_id: "new", session_id: "new" }).task.id, "new");
+    assert.equal(recordTaskEvent(input).task.title, "中文任务😀");
+  `], { cwd: root, env: process.env, timeout: 30000, stdio: "pipe" });
+});
+
 test("内容字段保留换行缩进，新事件严格重放且兼容旧折叠事件", async () => {
   await resetLedger();
   const input = { type: "task.create", event_id: "multiline", task_id: "multiline", session_id: "multiline", title: "单行\n标题", evidence: ["first\n  second"], plan: ["step\n  detail"], retrospective: "a\n b" };

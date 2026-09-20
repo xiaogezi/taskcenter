@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { taskTimeState, STALE_TASK_MS } from "../app/task-time-state.mjs";
@@ -631,20 +631,42 @@ const idempotentEventFields = [
 
 function findStoredTaskEvent(eventId, missingTaskId = "") {
   if (!existsSync(taskEventsPath)) return null;
-  // ponytail: linear history lookup; use a complete event index if creation latency becomes material.
-  const lines = readFileSync(taskEventsPath, "utf8").split("\n");
+  // ponytail: linear disk scan; add an event index if creation latency becomes material.
   const eventNeedle = JSON.stringify(eventId);
   const taskNeedle = missingTaskId ? JSON.stringify(missingTaskId) : "";
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!lines[index].includes(eventNeedle) && !(taskNeedle && lines[index].includes(taskNeedle))) continue;
+  for (const line of taskEventLinesBackwards()) {
+    if (!line.includes(eventNeedle) && !(taskNeedle && line.includes(taskNeedle))) continue;
     try {
-      const candidate = JSON.parse(lines[index]);
+      const candidate = JSON.parse(line);
       if (candidate.event_id === eventId || (missingTaskId && candidate.type === "task.create" && candidate.task_id === missingTaskId)) return candidate;
     } catch {
       // 忽略其他损坏行，继续寻找精确 event_id。
     }
   }
   return null;
+}
+
+function* taskEventLinesBackwards() {
+  const descriptor = openSync(taskEventsPath, "r");
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let carry = "";
+  try {
+    let position = fstatSync(descriptor).size;
+    while (position > 0) {
+      const length = Math.min(buffer.length, position);
+      position -= length;
+      const bytesRead = readSync(descriptor, buffer, 0, length, position);
+      // Preserve bytes across chunk boundaries before decoding multibyte UTF-8.
+      const lines = (buffer.subarray(0, bytesRead).toString("latin1") + carry).split("\n");
+      carry = lines.shift();
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        yield Buffer.from(lines[index], "latin1").toString("utf8");
+      }
+    }
+    if (carry) yield Buffer.from(carry, "latin1").toString("utf8");
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function storedSwitchEvents() {
