@@ -420,12 +420,22 @@ export function recordTaskEvent(input, options = {}) {
     throw new TaskLedgerError(409, "当前 Session 尚未登记，请先调用 taskcenter_session_register。");
   }
   const processed = loadProcessedEventIds();
+  if (event.type === "task.create" && !current && readLedger().some((task) => task.id === event.task_id)) {
+    throw new TaskLedgerError(409, "TASK_LEDGER_RECOVERY_REQUIRED：任务已移除，请先核对恢复预览，不能重新创建。");
+  }
   const projectedPhaseEvent = event.type === "phase.reported"
     ? (current?.phaseEvents || []).find((item) => item.event_id === event.event_id)
     : null;
-  const storedEvent = processed.has(event.event_id) || event.type === "task.close" || event.session_switch_id || projectedPhaseEvent
-    ? findStoredTaskEvent(event.event_id)
+  // Creation retries must also consult durable history after the bounded ID cache expires.
+  const storedEvent = processed.has(event.event_id) || event.type === "task.create" || event.type === "task.close" || event.session_switch_id || projectedPhaseEvent
+    ? findStoredTaskEvent(event.event_id, event.type === "task.create" && !current ? event.task_id : "")
     : null;
+  if (event.type === "task.create" && storedEvent && storedEvent.event_id !== event.event_id) {
+    if (event.session_switch_id && storedEvent.session_switch_id === event.session_switch_id) {
+      throw new TaskLedgerError(409, "SWITCH_ALREADY_CONSUMED");
+    }
+    throw new TaskLedgerError(409, "TASK_LEDGER_RECOVERY_REQUIRED：历史任务缺失或已移除，请先核对恢复预览，不能重新创建。");
+  }
   if (processed.has(event.event_id) || storedEvent || projectedPhaseEvent) {
     const original = storedEvent;
     if (!original) {
@@ -442,6 +452,9 @@ export function recordTaskEvent(input, options = {}) {
       ? tasks.find((task) => task.id === original.task_id) ?? null
       : null;
     if (original.session_switch_id && !originalTask) throw new TaskLedgerError(409, "SWITCH_LEDGER_RECOVERY_REQUIRED");
+    if (event.type === "task.create" && !originalTask) {
+      throw new TaskLedgerError(409, "TASK_LEDGER_RECOVERY_REQUIRED：历史任务缺失或已移除，请先核对恢复预览，不能重新创建。");
+    }
     // 返回首次持久化的事件，确保外部补偿同步不能被重投 payload 篡改。
     return { event: original, task: originalTask, idempotent: true };
   }
@@ -525,7 +538,9 @@ export function recordTaskEvent(input, options = {}) {
   appendFileSync(taskEventsPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
   const derivedEvents = derivedCompletionEvents(current, next, event);
   for (const derived of derivedEvents) appendFileSync(taskEventsPath, `${JSON.stringify(derived)}\n`, { mode: 0o600 });
-  persistTasks(nextTasks);
+  // Keep removed records available for historical recovery; loadTasks hides them from views.
+  const nextIds = new Set(nextTasks.map((task) => task.id));
+  persistTasks([...readLedger().filter((task) => task.status === "removed" && !nextIds.has(task.id)), ...nextTasks]);
   touchSession(event);
   processed.add(event.event_id);
   for (const derived of derivedEvents) processed.add(derived.event_id);
@@ -601,14 +616,17 @@ const idempotentEventFields = [
   "context_completion_id", "authorization_id", "reason", "actor", "subject_ref", "acceptance_record", "workspace_policy",
 ];
 
-function findStoredTaskEvent(eventId) {
+function findStoredTaskEvent(eventId, missingTaskId = "") {
   if (!existsSync(taskEventsPath)) return null;
+  // ponytail: linear history lookup; use a complete event index if creation latency becomes material.
   const lines = readFileSync(taskEventsPath, "utf8").split("\n");
+  const eventNeedle = JSON.stringify(eventId);
+  const taskNeedle = missingTaskId ? JSON.stringify(missingTaskId) : "";
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!lines[index].includes(eventId)) continue;
+    if (!lines[index].includes(eventNeedle) && !(taskNeedle && lines[index].includes(taskNeedle))) continue;
     try {
       const candidate = JSON.parse(lines[index]);
-      if (candidate.event_id === eventId) return candidate;
+      if (candidate.event_id === eventId || (missingTaskId && candidate.type === "task.create" && candidate.task_id === missingTaskId)) return candidate;
     } catch {
       // 忽略其他损坏行，继续寻找精确 event_id。
     }
@@ -1323,7 +1341,7 @@ function touchSession(event) {
 function persistTasks(tasks) {
   mkdirSync(dirname(taskLedgerPath), { recursive: true });
   const temporaryPath = `${taskLedgerPath}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(tasks.slice(-500), null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(temporaryPath, `${JSON.stringify(tasks, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporaryPath, taskLedgerPath);
   ledgerCache = null;
   normalizedTasksCache = null;

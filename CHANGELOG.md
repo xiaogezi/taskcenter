@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复任务账本超过 500 条时静默丢失历史与活跃任务的问题；查询及普通事件不再因会话源缺失自动移除任务。创建事件超出去重窗口仍核对历史，缺失任务拒绝直接复活；新增[只读恢复证据预览](docs/task-retention-recovery.md)，不自动写回或推断验收状态。
+
 - 补齐 Node、Claude、Kimi 精确版本查询的 L0 放行，复用同一版本判定供终端检测使用；携带执行参数、重定向或写入的组合仍需任务授权。
 
 - 修复无活跃任务时 CLI 路径探测被 Hook 误拦：精确放行 which、command -v/-V 和 type 查询，保留实际执行与写入授权；拒绝提示区分未识别只读命令与已检测写入。

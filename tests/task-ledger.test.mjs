@@ -131,6 +131,64 @@ async function resetLedger() {
   }
 }
 
+test("超过500条保留最早活跃任务、归档记录与冲突约束", async () => {
+  await resetLedger();
+  const { task } = recordTaskEvent({ type: "task.create", task_id: "oldest", session_id: "oldest-session", status: "in_progress" });
+  const seeded = [task, ...Array.from({ length: 499 }, (_, index) => ({
+    ...task, id: `closed-${index}`, sessionId: `closed-session-${index}`, status: "cancelled", archivedAt: task.createdAt,
+  }))];
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify(seeded));
+  recordTaskEvent({ type: "task.create", task_id: "newest", session_id: "newest-session" });
+  assert.equal(loadTasks().length, 501);
+  assert.equal(loadTasks().find((item) => item.id === "oldest").status, "in_progress");
+  assert.ok(loadTasks().find((item) => item.id === "closed-0").archivedAt);
+  assert.throws(() => recordTaskEvent({ type: "task.create", task_id: "conflict", session_id: "oldest-session" }), /ACTIVE_TASK_CONFLICT/);
+});
+
+test("创建事件超出5000条缓存仍幂等，缺失投影拒绝复活", async () => {
+  await resetLedger();
+  const input = { type: "task.create", event_id: "old-create", task_id: "old-task", session_id: "old-session", title: "原任务" };
+  recordTaskEvent(input);
+  await writeFile(envPaths.TASKCENTER_TASK_EVENT_IDS_PATH, JSON.stringify(Array.from({ length: 5000 }, (_, index) => `later-${index}`)));
+  const before = await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8");
+  assert.equal(recordTaskEvent(input).idempotent, true);
+  assert.throws(() => recordTaskEvent({ ...input, title: "篡改" }), /event_id 已被不同事件使用/);
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "[]");
+  assert.throws(() => recordTaskEvent(input), /TASK_LEDGER_RECOVERY_REQUIRED/);
+  assert.throws(() => recordTaskEvent({ ...input, event_id: "different-create" }), /TASK_LEDGER_RECOVERY_REQUIRED/);
+  const implicitId = { ...input };
+  delete implicitId.task_id;
+  assert.throws(() => recordTaskEvent(implicitId), /TASK_LEDGER_RECOVERY_REQUIRED/);
+  assert.equal(await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8"), before);
+  assert.deepEqual(loadTasks(), []);
+});
+
+test("查询缺失会话任务不会写账本，后续事件保留历史removed记录", async (context) => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", task_id: "orphan", session_id: "absent-session" });
+  const dashboardPath = join(tempDir, "empty-source.json");
+  await writeFile(dashboardPath, JSON.stringify({ threads: [], source: { availableThreads: [] } }));
+  const { base, child } = await startControlServer({ TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "0", TASKCENTER_DASHBOARD_PATH: dashboardPath });
+  context.after(() => child.kill("SIGTERM"));
+  const before = await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8");
+  for (const path of ["/tasks", "/tasks?view=summary", "/session-status"]) {
+    const response = await fetch(`${base}${path}`);
+    assert.equal(response.status, 200);
+    await response.json();
+    assert.equal(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"), before);
+  }
+  assert.equal((await (await fetch(`${base}/tasks`)).json()).tasks[0].id, "orphan");
+  await registerHttpSession(base, "new-session");
+  assert.equal(loadTasks().find((item) => item.id === "orphan").status, "planned", "写事件也不能隐式移除其他任务");
+  reconcileTasks([]); // Simulate a historical removal without involving the HTTP query path.
+  recordTaskEvent({ type: "task.create", task_id: "survivor", session_id: "new-session" });
+  const raw = JSON.parse(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"));
+  assert.equal(raw.find((item) => item.id === "orphan").status, "removed");
+  assert.throws(() => recordTaskEvent({ type: "task.create", task_id: "orphan", session_id: "absent-session" }), /TASK_LEDGER_RECOVERY_REQUIRED/);
+  await rm(envPaths.TASKCENTER_TASK_EVENTS_PATH);
+  assert.throws(() => recordTaskEvent({ type: "task.create", task_id: "orphan", session_id: "absent-session" }), /TASK_LEDGER_RECOVERY_REQUIRED/);
+});
+
 async function startControlServer(options = {}) {
   const port = 38_000 + (process.pid % 1_000);
   const child = spawn(process.execPath, ["scripts/control-server.mjs"], {

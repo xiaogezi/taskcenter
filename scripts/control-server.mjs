@@ -39,7 +39,6 @@ import {
   loadTasks,
   loadVisibleTasks,
   reconcileContextShadowTasks,
-  reconcileTasks,
   recordSessionL0Audit,
   recordTaskEvent,
   setSessionScheduledReadonlyScanExemption,
@@ -347,7 +346,6 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "GET" && request.url === "/session-status") {
-      if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
       const titles = new Map(loadSessionTitles().map((item) => [item.id, item]));
       const usageBySession = new Map((currentUsageReport().lifetime?.bySession || []).map((item) => [item.sessionId, item]));
       const sessions = getSessionStatuses(availableSessionIds(), loadVisibleTasks())
@@ -509,7 +507,6 @@ const server = createServer(async (request, response) => {
       if (url.pathname !== "/tasks") {
         // 交给下方 task 子资源路由。
       } else {
-      if (reconcileLiveSessions) reconcileTasks(availableSessionIds());
         const usageByTask = new Map((currentUsageReport().lifetime?.byTask || []).map((item) => [item.id, item]));
         const tasks = loadVisibleTasks().slice().reverse().map((task) => ({ ...task, tokenUsage: usageByTask.get(task.id) || null }));
         if (!url.searchParams.size) {
@@ -1086,7 +1083,6 @@ const server = createServer(async (request, response) => {
         throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
       }
       const sessionIds = availableSessionIds();
-      if (reconcileLiveSessions) reconcileTasks(sessionIds);
       const commitEvent = (authorizedReviewLease = false) => recordTaskEvent(body, {
         ...(reconcileLiveSessions ? { availableSessionIds: sessionIds } : {}),
         requireRegistered: true,
