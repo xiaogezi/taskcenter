@@ -204,23 +204,33 @@ function RoutingDetails({ fetch }: { fetch: DetailFetch | null }) {
   const route = task.routing || task.routingHistory?.at(-1);
   const executionPolicy = task.executionModelPolicy || {};
   const runs = Array.isArray(task.cliRuns) ? task.cliRuns.filter(run => run && typeof run.id === "string") : [];
+  const noRouting = !route || (!route.selectedExecutorModel && route.action !== "direct_execute");
+  // 主代理直接执行、没走 CLI 委托：不罗列一堆"未记录"字段，直接一句话说明。
+  if (noRouting && !runs.length) {
+    return <div className="detail-content">
+      <h3>调度信息</h3>
+      <p>这个任务由主代理直接完成，没有走 CLI 子模型委托，所以没有路由选择、模型选择和 CLI 运行记录。</p>
+      <p className="attention">如果你期望它走 CLI 委托但这里是空的，说明这次执行没有上报 delegation 记录，需要查上报链路。</p>
+    </div>;
+  }
+  const rows: Array<[string, string]> = [
+    ["谁做的", route?.action === "direct_execute" ? "主代理直接做的（路由显式记录）" : route?.action || "未知"],
+    ["用的模型", route?.selectedExecutorModel || "未触发路由选择"],
+    ["首选模型", route?.preferredExecutorModel || "未指定"],
+    ["模型思考强度", route?.reasoningEffort || "未指定"],
+    ["调度偏好", route?.preferenceMode || executionPolicy.mode || "默认（auto）"],
+    ["从哪触发的", route?.dispatchChannel || "未记录"],
+    ["为什么换模型", route?.fallbackReason || "没换过"],
+    ["额度策略", executionPolicy.mode || "默认"],
+    ["优先模型", executionPolicy.preferred_model || "未指定"],
+    ["额度池", executionPolicy.quota_limit_id || route?.quotaLimitId || "未启用配额优先"],
+    ["额度用完是否自动换模型", typeof executionPolicy.fallback_on_exhaustion === "boolean" ? (executionPolicy.fallback_on_exhaustion ? "是" : "否") : "未设置"],
+    ["额度快照新鲜度", freshnessText(route?.quotaSnapshotObservedAt)],
+    ["额度观测时间", route?.quotaSnapshotObservedAt ? formatDate(route.quotaSnapshotObservedAt) : "未观测"],
+    ["额度重置时间", route?.quotaResetAt ? formatDate(route.quotaResetAt) : "未记录"],
+  ];
   return <div className="detail-content"><h3>调度信息</h3>
-    <dl>{[
-      ["执行方式", route?.action === "direct_execute" ? "主代理直接执行（路由记录）" : route?.action || "未记录"],
-      ["路由选择模型", route?.selectedExecutorModel || "未触发路由"],
-      ["首选模型", route?.preferredExecutorModel || "未记录"],
-      ["路由请求 effort", route?.reasoningEffort || "未记录"],
-      ["调度偏好", route?.preferenceMode || executionPolicy.mode || "auto"],
-      ["触发通道", route?.dispatchChannel || "未记录"],
-      ["回退原因", route?.fallbackReason || "无"],
-      ["额度偏好模式", executionPolicy.mode || "未记录"],
-      ["优先模型", executionPolicy.preferred_model || "未记录"],
-      ["额度池", executionPolicy.quota_limit_id || route?.quotaLimitId || "未启用配额优先"],
-      ["额度耗尽回退", typeof executionPolicy.fallback_on_exhaustion === "boolean" ? (executionPolicy.fallback_on_exhaustion ? "是" : "否") : "未记录"],
-      ["快照新鲜度", freshnessText(route?.quotaSnapshotObservedAt)],
-      ["额度观测时间", route?.quotaSnapshotObservedAt || "未记录"],
-      ["额度重置时间", route?.quotaResetAt || "未记录"],
-    ].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{text(value)}</dd></div>)}</dl>
+    <dl>{rows.map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{text(value)}</dd></div>)}</dl>
     <h3>CLI 执行记录</h3>{runs.length ? runs.map(run => {
       const report = parseClientReport(run);
       const runState = cliRunStatusLabel(run);
@@ -229,15 +239,15 @@ function RoutingDetails({ fetch }: { fetch: DetailFetch | null }) {
         ["运行状态", runState.lost ? `${runState.label}（失联）` : runState.label],
         ["最后观测", run.lastObservedAt ? formatDate(run.lastObservedAt) : "未观测"],
         ["请求模型", run.executorModel || "未记录"],
-        ["客户端报告模型", report?.models.join("、") || "未报告"],
-        ["请求 effort（回执）", report?.requestedEffort || "未报告"],
-        ["客户端报告 effort", report?.effectiveEffort || "未报告"],
-        ["回执用量", usage ? `输入 ${formatTokens(usage.input ?? 0)} · 输出 ${formatTokens(usage.output ?? 0)}` : "未报告"],
+        ["客户端实际用的模型", report?.models.join("、") || "未报告"],
+        ["请求时的思考强度", report?.requestedEffort || "未报告"],
+        ["实际思考强度", report?.effectiveEffort || "未报告"],
+        ["Token 用量", usage ? `输入 ${formatTokens(usage.input ?? 0)} · 输出 ${formatTokens(usage.output ?? 0)}` : "未报告"],
         ...(run.error ? [["失败原因", run.error] as [string, string]] : []),
       ].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl></section>;
-    }) : <p>暂无 CLI 执行记录，客户端报告模型未报告。</p>}
-    {route?.action === "direct_execute" && <p>此次路由选择主代理直接执行；没有 CLI 运行记录不代表任务未执行。</p>}
-    <p className="attention">路由策略来源：同源 Control API 控制面，前端仅展示，不复刻规则。</p>
+    }) : <p>这次没有 CLI 运行记录。</p>}
+    {route?.action === "direct_execute" && <p>这次路由选的是主代理直接做；没有 CLI 运行记录不代表任务没执行。</p>}
+    <p className="attention">路由策略来源：同源 Control API 控制面，前端只展示，不重复实现规则。</p>
   </div>;
 }
 function Evidence({ fetch }: { fetch: DetailFetch | null }) {
