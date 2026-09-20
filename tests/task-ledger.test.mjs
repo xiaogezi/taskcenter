@@ -125,6 +125,74 @@ test("Control API 在全量任务上筛选后分页，并返回项目范围 acti
   assert.deepEqual(filtered.projects.find((item) => item.id === "project:alpha"), { id: "project:alpha", label: "Alpha" });
 });
 
+test("Control API task_id 精准查询、session 交集、view 与归档可见性", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "precise-session");
+  const create = await fetch(`${base}/task-events`, {
+    method: "POST", headers: taskHeaders(),
+    body: JSON.stringify({
+      type: "task.create", event_id: "precise-create", task_id: "precise-target", session_id: "precise-session",
+      workspace: "/work", title: "精准目标", goal: "验证精准查询", evidence: ["probe:precise"],
+    }),
+  });
+  assert.equal(create.status, 201);
+  for (let index = 0; index < 40; index += 1) {
+    recordTaskEvent({ type: "task.create", event_id: `noise-${index}`, task_id: `noise-${index}`, session_id: `noise-session-${index}`, title: `无关 ${index}`, evidence: [`noise-evidence-${index}`] });
+  }
+
+  const precise = await (await fetch(`${base}/tasks?task_id=precise-target`)).json();
+  assert.equal(precise.tasks.length, 1);
+  assert.equal(precise.tasks[0].id, "precise-target");
+  assert.deepEqual(precise.tasks[0].evidence, ["probe:precise"], "默认 view 应保持 full 字段");
+  assert.equal(precise.tasks.some((task) => task.id.startsWith("noise-")), false, "精准查询不随无关任务增长");
+
+  const explicitFull = await (await fetch(`${base}/tasks?task_id=precise-target&view=full`)).json();
+  assert.deepEqual(explicitFull.tasks[0].evidence, ["probe:precise"], "显式 view=full 保留完整字段");
+
+  const summary = await (await fetch(`${base}/tasks?task_id=precise-target&view=summary`)).json();
+  assert.equal(summary.tasks.length, 1);
+  assert.equal("evidence" in summary.tasks[0], false, "显式 view=summary 裁剪长历史与证据");
+  assert.equal(summary.tasks[0].id, "precise-target");
+  assert.ok(summary.tasks[0].status);
+  assert.equal(summary.tasks[0].sessionId, "precise-session");
+
+  const intersectMiss = await (await fetch(`${base}/tasks?task_id=precise-target&session_id=other-session`)).json();
+  assert.deepEqual(intersectMiss.tasks, [], "session_id 与 task_id 必须求交集");
+  const intersectHit = await (await fetch(`${base}/tasks?task_id=precise-target&session_id=precise-session`)).json();
+  assert.equal(intersectHit.tasks.length, 1);
+
+  const missing = await fetch(`${base}/tasks?task_id=no-such-task`);
+  assert.equal(missing.status, 200, "task_id 不存在保持可识别空结果而非错误");
+  assert.deepEqual((await missing.json()).tasks, []);
+  const detailMissing = await fetch(`${base}/tasks/no-such-task`);
+  assert.equal(detailMissing.status, 404, "空结果与失败必须可区分");
+
+  const summarySize = Buffer.byteLength(await (await fetch(`${base}/tasks?task_id=precise-target&view=summary`)).text());
+  const seed = loadTasks().find(task => task.id === "precise-target");
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([seed, ...Array.from({ length: 1000 }, (_, index) => ({
+    ...seed, id: `noise-${index}`, sessionId: "noise-session", status: "cancelled", workspace: `/projects/noise-${index}`,
+  }))]));
+  const all = await (await fetch(`${base}/tasks`)).json();
+  assert.equal(all.tasks.length, 1001, "旧无过滤 full 不得截断到500条");
+  assert.equal((await (await fetch(`${base}/tasks?session_id=noise-session`)).json()).tasks.length, 1000);
+  const exactFull = await (await fetch(`${base}/tasks?task_id=precise-target`)).json();
+  assert.deepEqual(exactFull.tasks[0], all.tasks.find(task => task.id === "precise-target"), "精准 full 与旧投影完全一致");
+  const summarySizeAfter = Buffer.byteLength(await (await fetch(`${base}/tasks?task_id=precise-target&view=summary`)).text());
+  assert.equal(summarySizeAfter, summarySize, "单任务响应不随1000条跨项目历史增长");
+  context.diagnostic(`精准摘要响应 UTF-8 bytes: ${summarySize} -> ${summarySizeAfter}; full任务数: ${all.tasks.length}`);
+
+  await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.done_claimed", event_id: "precise-done", task_id: "precise-target", session_id: "precise-session", status: "done_claimed", tests: ["t"], evidence: ["e"] }) });
+  const archive = await fetch(`${base}/tasks/precise-target/actions`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-TaskCenter-Action": "delegate" },
+    body: JSON.stringify({ action: "archive" }),
+  });
+  assert.equal(archive.status, 200);
+  const archived = await (await fetch(`${base}/tasks?task_id=precise-target`)).json();
+  assert.deepEqual(archived.tasks, [], "归档可见性保持原 loadVisibleTasks 语义");
+});
+
 async function resetLedger() {
   for (const path of Object.values(envPaths)) {
     await rm(path, { force: true });
@@ -2775,6 +2843,142 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.deepEqual(JSON.parse(textOf(structuredReadiness)).completionReadiness.currentSubject, structuredSubject);
   assert.equal(JSON.parse(textOf(sameRevisionReadiness)).completionReadiness.ready, true);
   assert.deepEqual(JSON.parse(textOf(sameRevisionReadiness)).completionReadiness.currentSubject, structuredSubject);
+});
+
+test("MCP task_query 精准查询、view 摘要、session 交集与失败可区分", async (context) => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["scripts/taskcenter-mcp.mjs"],
+    env: { ...process.env, TASKCENTER_CONTROL_URL: base },
+    cwd: root,
+  });
+  const client = new Client({ name: "taskcenter-q1-query", version: "0.0.0" });
+  await client.connect(transport);
+  const callTool = client.callTool.bind(client);
+  client.callTool = async (...args) => {
+    const result = await callTool(...args);
+    let payload = JSON.parse(textOf(result));
+    if (!payload.truncated) return result;
+    let text = "";
+    while (payload.continuation_cursor) {
+      payload = JSON.parse(textOf(await callTool({ name: "taskcenter_response_continue", arguments: { cursor: payload.continuation_cursor } })));
+      text += payload.fragment;
+    }
+    return { content: [{ type: "text", text }] };
+  };
+  context.after(async () => { await client.close().catch(() => {}); });
+
+  await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "q1-session", workspace: "/work", agent: "codex" } });
+  await client.callTool({ name: "taskcenter_task_create", arguments: {
+    session_id: "q1-session", task_id: "q1-task", title: "精准查询目标", goal: "验证 task_query",
+    acceptance_criteria: ["查询正确"], plan: ["实现"],
+  } });
+  await client.callTool({ name: "taskcenter_task_report", arguments: {
+    session_id: "q1-session", task_id: "q1-task", status: "done_claimed", tests: ["t"], evidence: ["q1-evidence"],
+  } });
+  for (let index = 0; index < 20; index += 1) {
+    await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: `q1-noise-${index}`, workspace: "/work", agent: "codex" } });
+    await client.callTool({ name: "taskcenter_task_create", arguments: {
+      session_id: `q1-noise-${index}`, task_id: `q1-noise-task-${index}`, title: `无关 ${index}`, goal: "无关夹具",
+      acceptance_criteria: ["x"], plan: ["x"],
+    } });
+  }
+
+  const precise = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "q1-task" } })));
+  assert.equal(precise.tasks.length, 1, "task_id 精准查询不返回无关任务");
+  assert.equal(precise.tasks[0].id, "q1-task");
+  assert.deepEqual(precise.tasks[0].evidence, ["q1-evidence"], "省略 view 时保持旧 full 语义");
+
+  const explicitFull = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "q1-task", view: "full" } })));
+  assert.deepEqual(explicitFull.tasks[0].evidence, ["q1-evidence"], "显式 view=full 保留完整字段");
+
+  const rawSummary = await callTool({ name: "taskcenter_task_query", arguments: { task_id: "q1-task", view: "summary" } });
+  assert.equal(JSON.parse(textOf(rawSummary)).truncated, undefined, "典型单任务摘要一次调用可读");
+  context.diagnostic(`MCP单任务摘要 UTF-8 bytes: ${Buffer.byteLength(textOf(rawSummary))}`);
+  const summary = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "q1-task", view: "summary" } })));
+  assert.equal(summary.tasks.length, 1);
+  assert.equal("evidence" in summary.tasks[0], false, "显式 view=summary 裁剪长历史与证据");
+  assert.equal(summary.tasks[0].id, "q1-task");
+  assert.equal(summary.tasks[0].status, "done_claimed");
+  assert.equal(summary.tasks[0].sessionId, "q1-session");
+
+  const intersectMiss = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "q1-task", session_id: "q1-noise-0" } })));
+  assert.deepEqual(intersectMiss.tasks, [], "session_id 与 task_id 必须求交集");
+  const intersectHit = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "q1-task", session_id: "q1-session" } })));
+  assert.equal(intersectHit.tasks.length, 1);
+
+  const missing = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: "q1-no-such-task" } })));
+  assert.deepEqual(missing.tasks, [], "task_id 不存在保持旧 tasks:[] 语义");
+  assert.equal(missing.error, undefined);
+
+  const sessionQuery = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { session_id: "q1-session" } })));
+  assert.deepEqual(sessionQuery.tasks.map((task) => task.id), ["q1-task"], "仅 session_id 过滤移入服务端");
+
+  const { createServer } = await import("node:http");
+  const seen = [];
+  const stub = createServer((request, response) => {
+    seen.push(request.url);
+    if (request.url.startsWith("/pages/tasks")) {
+      const url = new URL(request.url, "http://localhost");
+      const page = Number(url.searchParams.get("page") || 1);
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ tasks: [{ id: `page-${page}`, status: "planned" }], totalPages: 2 }));
+      return;
+    }
+    if (request.url?.includes("bad-json")) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end("not-json");
+    } else {
+      response.writeHead(500, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "boom" }));
+    }
+  });
+  await new Promise((resolve) => stub.listen(0, "127.0.0.1", resolve));
+  context.after(() => stub.close());
+  const stubBase = `http://127.0.0.1:${stub.address().port}`;
+  const pageClient = new Client({ name: "taskcenter-q1-pages", version: "0.0.0" });
+  await pageClient.connect(new StdioClientTransport({ command: process.execPath, args: ["scripts/taskcenter-mcp.mjs"], env: { ...process.env, TASKCENTER_CONTROL_URL: `${stubBase}/pages` }, cwd: root }));
+  context.after(() => pageClient.close().catch(() => {}));
+  const pages = JSON.parse(textOf(await pageClient.callTool({ name: "taskcenter_task_query", arguments: { view: "summary" } })));
+  assert.deepEqual(pages.tasks.map(task => task.id), ["page-1", "page-2"], "显式全列表摘要续读全部页");
+  assert.equal(seen.length, 2);
+  assert.ok(seen.every(url => url.includes("view=summary") && url.includes("page_size=500")));
+  await pageClient.callTool({ name: "taskcenter_task_query", arguments: {} });
+  assert.equal(seen.at(-1), "/pages/tasks", "旧无过滤调用使用原无分页full入口");
+  await pageClient.callTool({ name: "taskcenter_task_query", arguments: { task_id: "target", session_id: "owner" } });
+  assert.equal(seen.at(-1), "/pages/tasks?task_id=target&session_id=owner", "精准交集在HTTP请求中下推");
+
+  for (const [name, url] of [["http-500", stubBase], ["invalid-json", `${stubBase}/bad-json?x=1`]]) {
+    const failingTransport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["scripts/taskcenter-mcp.mjs"],
+      env: { ...process.env, TASKCENTER_CONTROL_URL: url },
+      cwd: root,
+    });
+    const failingClient = new Client({ name: `taskcenter-q1-${name}`, version: "0.0.0" });
+    await failingClient.connect(failingTransport);
+    context.after(() => failingClient.close().catch(() => {}));
+    const failed = JSON.parse(textOf(await failingClient.callTool({ name: "taskcenter_task_query", arguments: { task_id: "q1-task" } })));
+    assert.equal(failed.error, "TASKCENTER_REQUEST_FAILED", `${name} 失败不能伪装成空任务`);
+    assert.equal(failed.tasks, undefined);
+    await failingClient.close().catch(() => {});
+  }
+
+  const downTransport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["scripts/taskcenter-mcp.mjs"],
+    env: { ...process.env, TASKCENTER_CONTROL_URL: "http://127.0.0.1:1" },
+    cwd: root,
+  });
+  const downClient = new Client({ name: "taskcenter-q1-down", version: "0.0.0" });
+  await downClient.connect(downTransport);
+  const unavailable = JSON.parse(textOf(await downClient.callTool({ name: "taskcenter_task_query", arguments: { task_id: "q1-task" } })));
+  assert.equal(unavailable.error, "TASKCENTER_UNAVAILABLE", "服务不可用不能伪装成空任务");
+  await downClient.close().catch(() => {});
 });
 
 test("V2 通用核心 API：无 Session 创建、离线导入、独立验收与双格式导出", async (context) => {

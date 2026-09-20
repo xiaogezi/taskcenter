@@ -485,18 +485,18 @@ server.registerTool("taskcenter_delegation_revoke", {
 
 server.registerTool("taskcenter_task_query", {
   title: "查询 TaskCenter 任务",
-  description: "查询任务账本；Codex 适配器可按 Session 过滤，通用客户端可省略 Session。",
-  inputSchema: z.object({ session_id: z.string().min(1).max(200).optional(), task_id: z.string().max(200).optional() }).strict(),
-}, async ({ session_id, task_id }) => {
-  let response;
+  description: "查询任务账本；Codex 适配器可按 Session 过滤，通用客户端可省略 Session。task_id 走服务端精准查询并与 session_id 求交集；默认 view=full，显式 view=summary 只返回裁剪摘要。",
+  inputSchema: z.object({
+    session_id: z.string().min(1).max(200).optional(),
+    task_id: z.string().max(200).optional(),
+    view: z.enum(["summary", "full"]).optional(),
+  }).strict(),
+}, async ({ session_id, task_id, view }) => {
   try {
-    response = await fetch(`${controlServerUrl}/tasks`);
-  } catch (e) {
-    return result({ error: "TASKCENTER_UNAVAILABLE", message: `TaskCenter 控制服务不可用（${controlServerUrl}）。请先运行 npm run dev:live 启动 TaskCenter。`, detail: e.message });
+    return result({ tasks: await queryTasks({ task_id, session_id, view }) });
+  } catch (error) {
+    return result({ error: error.code || "TASKCENTER_REQUEST_FAILED", message: error.message });
   }
-  const payload = await readJson(response);
-  const tasks = (payload.tasks || []).filter((task) => (!session_id || task.sessionId === session_id) && (!task_id || task.id === task_id));
-  return result({ tasks });
 });
 
 server.registerTool("taskcenter_task_reuse_check", {
@@ -702,12 +702,43 @@ async function requestTaskEvent(type, event) {
   return readJson(response);
 }
 
+// Preserve unpaged legacy full results; only explicit summary lists use existing server pages.
+async function queryTasks({ task_id, session_id, view } = {}) {
+  const params = new URLSearchParams();
+  if (task_id) params.set("task_id", task_id);
+  if (session_id) params.set("session_id", session_id);
+  if (view === "summary") params.set("view", "summary");
+  const paged = view === "summary" && !task_id && !session_id;
+  if (paged) params.set("page_size", "500");
+  const tasks = [];
+  for (let page = 1; ; page++) {
+    if (paged) params.set("page", String(page));
+    let response;
+    try {
+      response = await fetch(`${controlServerUrl}/tasks${params.size ? `?${params}` : ""}`);
+    } catch (cause) {
+      const error = new Error(`TaskCenter 控制服务不可用（${controlServerUrl}）。`, { cause });
+      error.code = "TASKCENTER_UNAVAILABLE";
+      throw error;
+    }
+    const payload = await readJson(response);
+    if (!Array.isArray(payload?.tasks)) throw new Error("TaskCenter 任务响应缺少 tasks 数组。");
+    tasks.push(...payload.tasks);
+    if (!paged || page >= payload.totalPages) break;
+    if (!Number.isSafeInteger(payload.totalPages) || !payload.tasks.length) throw new Error("TaskCenter 任务分页响应无效。");
+  }
+  if (view !== "summary") return tasks;
+  const fields = ["id", "sessionId", "title", "goal", "status", "currentStep", "nextAction", "blocker", "verificationStatus", "reviewStatus", "acceptanceStatus", "currentSubject", "updatedAt", "routing", "cliRuns"];
+  return tasks.map(task => ({
+    ...Object.fromEntries(fields.filter(key => Object.hasOwn(task, key)).map(key => [key, task[key]])),
+    completionReasons: task.completionReadiness?.reasons || [],
+  }));
+}
+
 async function reportTaskProgress(input) {
   if (input.status !== "done_claimed") return report("task.report", input);
   try {
-    const response = await fetch(`${controlServerUrl}/tasks`);
-    const payload = await readJson(response);
-    const task = (payload.tasks || []).find((item) => item.id === input.task_id);
+    const [task] = await queryTasks({ task_id: input.task_id });
     if (task?.contractVersion === "v2") {
       return result({
         error: "TASKCENTER_ATOMIC_CLOSE_REQUIRED",

@@ -509,6 +509,13 @@ const server = createServer(async (request, response) => {
       } else {
         const usageByTask = new Map((currentUsageReport().lifetime?.byTask || []).map((item) => [item.id, item]));
         const tasks = loadVisibleTasks().slice().reverse().map((task) => ({ ...task, tokenUsage: usageByTask.get(task.id) || null }));
+        const taskId = url.searchParams.get("task_id") || "";
+        const sessionId = url.searchParams.get("session_id") || "";
+        if (taskId || sessionId) {
+          const matching = withDelegations(tasks.filter(task => (!taskId || task.id === taskId) && (!sessionId || task.sessionId === sessionId)));
+          sendJson(response, 200, { tasks: url.searchParams.get("view") === "summary" ? matching.map(taskSummary) : matching });
+          return;
+        }
         if (!url.searchParams.size) {
           sendJson(response, 200, { tasks: withDelegations(tasks) });
           return;
