@@ -4,6 +4,7 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复：任务事件索引裁剪无消费方的大文本字段（reason/review_reason/routing_reason 等），只保留详情白名单渲染与去重字段，源事件文件完整保留；索引体积下降、128 MB 堆下增量重建稳定（全量测试恢复全绿）。
 - 额度池模型：config/model-roles.json 新增 quota_pools 定义（provider/models/source/notes），model-role-config 解析并随 /routing/health 透出；实测 kimi/claude CLI 无官方余额查询接口，MiMo/K3 池按 runtime-signal 标注（余额未知、仅限流信号与本地累计），Codex 池按官方 rate_limits 标注；额度池页面显示来源、覆盖模型、主次窗口与观测时间。
 - 今日用量与执行器消耗：模型调度页新增"今日用量（24 小时）"（主代理 Token 与成本估算）与"CLI 执行器消耗"（运行次数、状态分布、按模型分组、回执 Token）；任务详情 CLI 执行记录显示每次回执用量；governance-metrics 新增 cliRuns 聚合，metrics-worker 定期写入。
 - 模型健康卡片补充限流恢复时间、最后错误、最后成功；试点评估口径见 docs/delegated-cli-pilot.md。

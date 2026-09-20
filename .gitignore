@@ -68,3 +68,6 @@ next-env.d.ts
 /.runs/
 /context-project.local.yaml
 /project-context/
+
+# 并发 Agent 活动目录（部署门禁要求工作区干净，git 忽略但文件不动）
+/.agent-protocol/

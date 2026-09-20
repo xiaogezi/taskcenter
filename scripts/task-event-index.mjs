@@ -81,10 +81,12 @@ function compactMetricEvent(event) {
 }
 
 function compactTaskEvent(event) {
+  // 索引是详情展示的加速层：只保留白名单渲染（describeActivityEvent）与合并去重需要的字段，
+  // 大文本（reason/review_reason/routing_reason 等）留在源事件文件，不入索引以控制 128 MB 堆占用。
   const keys = [
-    "event_id", "task_id", "type", "status", "session_id", "created_at", "occurred_at", "recorded_at", "current_step", "tool_name", "review_reason", "next_action", "reason",
-    "orchestrator_model", "selected_executor_model", "dispatch_channel", "routing_outcome", "routing_reason",
-    "requirement_result", "verification_claim", "review_attestation", "review_cycle", "acceptance_record",
+    "event_id", "task_id", "type", "status", "session_id", "created_at", "occurred_at", "recorded_at",
+    "current_step", "tool_name", "tool_use_id", "next_action",
+    "orchestrator_model", "selected_executor_model", "dispatch_channel", "routing_action", "routing_outcome",
     "phase", "transition", "activity_source", "activity_id", "delegation_id", "review_cycle_id", "subject_ref",
   ];
   return Object.fromEntries(keys.flatMap((key) => event[key] === undefined ? [] : [[key, event[key]]]));

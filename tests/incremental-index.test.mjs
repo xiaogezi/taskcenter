@@ -26,7 +26,12 @@ test("大体积中文任务历史在 128 MB 堆内完成重建和增量读写", 
       const index = await updateTaskEventIndex(${JSON.stringify({ sourcePath, indexPath })});
       assert.equal(Object.keys(index.byTask).length, 2400);
       assert.equal(index.byTask['task-2399'].length, 100);
-      assert.equal(index.byTask['task-2399'][99].reason, '中文'.repeat(40));
+      const lastEvent = index.byTask['task-2399'][99];
+      assert.equal(lastEvent.event_id, '2399-99');
+      assert.equal(lastEvent.type, 'task.update');
+      assert.equal(lastEvent.recorded_at, '2020-01-01T00:00:00Z');
+      assert.equal('reason' in lastEvent, false, '大文本字段不进入索引');
+      assert.equal('review_reason' in lastEvent, false);
       assert.equal(index.events.length, 0);`;
     for (const phase of ["rebuild", "incremental"]) {
       const result = spawnSync(process.execPath, ["--max-old-space-size=128", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 30_000, cwd: dir });
