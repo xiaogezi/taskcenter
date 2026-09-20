@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, resolve } from "node:path";
 import { loadModelRoleConfig, publicModelRoleConfig } from "./model-role-config.mjs";
 import { sameSubject } from "./completion-state.mjs";
-import { cliProfile } from "./cli-profile.mjs";
+import { cliProfile, cliProfileForModel } from "./cli-profile.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const routingControlPath = resolve(process.env.TASKCENTER_ROUTING_CONTROL_PATH || resolve(projectRoot, "data", "routing-control.json"));
@@ -140,7 +140,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
   const orchestratorModel = clean(input.orchestrator_model, 120);
   const roleName = ocrTaskClasses.has(taskClass) ? "reviewer" : "executor";
   const role = config.roles[roleName];
-  const selectedReasoningEffort = profile?.effort || role.taskClassReasoningEfforts?.[taskClass] || role.reasoningEffort;
+  let selectedReasoningEffort = profile?.effort || role.taskClassReasoningEfforts?.[taskClass] || role.reasoningEffort;
   const mappedModel = optionalAstraModel(taskClass, role, config) || role.taskClassModels?.[taskClass] || role.model;
   const quotaPreferred = roleName === "executor" && executionModelPolicy.mode === "quota_preferred";
   if (quotaPreferred && !config.manualOnlyModels.includes(executionModelPolicy.preferredModel)) {
@@ -260,6 +260,20 @@ export function routingSelect(input, now = new Date().toISOString()) {
   }
 
   const selected = ensureHealth(state, selectedModel, now, config);
+  // A default route must report the client that will actually run the selection, so a
+  // later delegation claim cannot bind the leased model to a different harness. A default
+  // non-Codex selection cannot run over `native`, so it is recommended as the resolved
+  // CLI channel; `direct` main-model execution and explicit Codex `native` stay unchanged.
+  let effectiveChannel = channel;
+  let resolvedProfile = profile ? { name: input.cli_profile, harness: profile.harness } : null;
+  if (!profile && roleName === "executor" && (channel === "cli" || (channel === "native" && !requestedPreferredModel))) {
+    resolvedProfile = cliProfileForModel(selectedModel);
+    if (resolvedProfile && channel === "native") effectiveChannel = "cli";
+  }
+  if (!profile && resolvedProfile) {
+    // 路由报告档位必须与 runDelegatedCli 实际使用的 profile 档位一致。
+    selectedReasoningEffort = resolvedProfile.effort;
+  }
   const route = {
     id: clean(input.route_id, 200) || `route_${randomUUID()}`,
     selectEventId: eventId,
@@ -270,8 +284,8 @@ export function routingSelect(input, now = new Date().toISOString()) {
     selectedModel,
     selectedReasoningEffort,
     taskClass,
-    channel,
-    ...(profile ? { cliProfile: input.cli_profile, harness: profile.harness } : {}),
+    channel: effectiveChannel,
+    ...(resolvedProfile ? { cliProfile: resolvedProfile.name, harness: resolvedProfile.harness } : {}),
     circuitState: selected.state,
     reason,
     fallbackFrom,
@@ -286,7 +300,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
     configVersion: config.contentHash,
     policyVersion: config.schemaVersion,
     matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPreferred),
-    requiresNewSession: roleName === "reviewer" ? false : selectedModel !== preferredModel || channel === "cli",
+    requiresNewSession: roleName === "reviewer" ? false : selectedModel !== preferredModel || effectiveChannel === "cli",
     available: true,
     probe,
     status: "leased",

@@ -647,6 +647,9 @@ test("估时提醒事件幂等记录且不改变任务运行态", async () => {
 
 test("模型路由决定只追加审计记录，不改变任务状态", async () => {
   await resetLedger();
+  const executorModel = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles.executor.model;
+  const executorConfig = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles.executor;
+  const securityModel = executorConfig.task_class_models?.security || executorModel;
   recordTaskEvent({
     type: "session.register",
     session_id: "sess-routing",
@@ -672,8 +675,8 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
     event_id: "routing-native",
     routing_action: "delegate_native",
     orchestrator_model: "gpt-5.6-sol",
-    preferred_executor_model: "gpt-5.6-luna",
-    selected_executor_model: "gpt-5.6-luna",
+    preferred_executor_model: executorModel,
+    selected_executor_model: executorModel,
     dispatch_channel: "native",
     routing_reason: "任务边界清晰，可独立验证。",
     fallback_from: "gpt-5.3-codex-spark",
@@ -739,7 +742,7 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
     () => recordTaskEvent({ ...firstInput, event_id: "routing-invalid", dispatch_channel: "cli" }),
     (error) => error instanceof TaskLedgerError && error.statusCode === 400,
   );
-  assert.doesNotThrow(() => recordTaskEvent({ ...firstInput, event_id: "routing-security", task_class: "security", preferred_executor_model: "gpt-5.6-luna", selected_executor_model: "gpt-5.6-luna" }));
+  assert.doesNotThrow(() => recordTaskEvent({ ...firstInput, event_id: "routing-security", task_class: "security", preferred_executor_model: securityModel, selected_executor_model: securityModel }));
 });
 
 test("已登记的外部 Session 不被 Codex 会话清理误删", async () => {
@@ -2294,6 +2297,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   context.after(() => child.kill("SIGTERM"));
 
   const gateSessionId = "019f0000-0000-7000-8000-000000000112";
+  const executorModel = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles.executor.model;
 
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -2699,8 +2703,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
       event_id: "mcp-routing-native",
       routing_action: "delegate_native",
       orchestrator_model: "gpt-5.6-sol",
-      preferred_executor_model: "gpt-5.6-luna",
-      selected_executor_model: "gpt-5.6-luna",
+      preferred_executor_model: executorModel,
+      selected_executor_model: executorModel,
       dispatch_channel: "native",
       routing_reason: "边界清晰，优先原生派发。",
       response_mode: "full",
@@ -2709,7 +2713,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const routingPayload = JSON.parse(textOf(routing));
   assert.equal(routingPayload.accepted, true);
   assert.equal(routingPayload.task.status, "planned");
-  assert.equal(routingPayload.task.routing.selectedExecutorModel, "gpt-5.6-luna");
+  assert.equal(routingPayload.task.routing.selectedExecutorModel, executorModel);
   assert.equal(routingPayload.task.routing.taskClass, "general");
 
   const selectedRoute = JSON.parse(textOf(await client.callTool({
@@ -2717,8 +2721,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     arguments: { task_id: "task-mcp", preferred_model: "gpt-5.3-codex-spark", task_class: "test", channel: "cli", route_id: "route-mcp-compat" },
   })));
   assert.equal(selectedRoute.route.route_id, "route-mcp-compat", "旧客户端不传 response_mode 时仍需取得路由租约");
-  assert.equal(selectedRoute.route.preferred_model, "gpt-5.6-luna");
-  assert.equal(selectedRoute.route.selected_model, "gpt-5.6-luna");
+  assert.equal(selectedRoute.route.preferred_model, executorModel);
+  assert.equal(selectedRoute.route.selected_model, executorModel);
   await client.callTool({ name: "taskcenter_routing_result", arguments: { route_id: selectedRoute.route.route_id, outcome: "succeeded" } });
 
   const query = await client.callTool({ name: "taskcenter_task_query", arguments: { session_id: "sess-mcp" } });

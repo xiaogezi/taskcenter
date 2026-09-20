@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 普通执行默认路由切换为非 Codex 客户端：executor 角色默认 Kimi、回退 MiMo、默认并发一，能力敏感类别（security/data_migration/complex_diagnosis/high_risk）映射 MiMo 并使用 medium 档位；Luna 不进入普通自动首选或回退，仅用户显式授权或 Codex 专属实测时使用；默认路由把选中型号反解为实际 `cli_profile`/`harness` 并始终报告该 profile 实际执行的推理档位，delegation claim 随之校验客户端一致，消除路由报告与实际执行不一致的风险；默认非 Codex 选择请求 `native` 通道时推荐转换为实际 `cli` 通道，`direct` 主模型执行与显式 Codex `native` 路径不变；Reviewer 角色与 fail-closed 行为不变。
+
 - 修复 Kimi ACP 权限请求未携带参数时的工具关联：从同一调用的完整 JSON 参数快照校验权限，保留一次授权和任务门禁。
 
 - 受管 Claude/Kimi 派发统一接入现有 Harness 操作，保留任务领取、逐工具权限和型号回执校验；集中配置支持客户端多模型目录及四个已核实的 Kimi 型号，旧 profile 继续兼容。

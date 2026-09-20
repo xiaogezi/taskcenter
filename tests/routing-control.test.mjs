@@ -331,25 +331,96 @@ test("manual_only Spark 健康状态可观察，退役后隐藏", async () => {
   await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 });
 
-test("当前项目策略只派发 Luna 或显式 MiMo/K3，容量不足不升级", async () => {
+test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动首选或回退", async () => {
   const current = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
   await writeFile(roleConfigPath, current);
+  const kimi = "kimi-code/k3-256k";
+  const mimo = "mimo-v2.5-pro";
   try {
-    for (const taskClass of ["general", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk"]) {
+    await rm(statePath, { force: true });
+    const general = routingSelect({ ...baseInput, event_id: "policy-general" });
+    assert.equal(general.route.selected_model, kimi);
+    assert.equal(general.route.harness, "kimi");
+    assert.equal(general.route.cli_profile, "kimi-k3");
+    assert.equal(general.route.reasoning_effort, "low");
+
+    const second = routingSelect({ ...baseInput, event_id: "policy-second" });
+    assert.equal(second.route.selected_model, mimo, "默认并发为一时回退 MiMo 而不是 Luna");
+    assert.equal(second.route.harness, "claude");
+    assert.equal(second.route.cli_profile, "claude-mimo");
+
+    const third = routingSelect({ ...baseInput, event_id: "policy-third" });
+    assert.equal(third.route.available, false, "两端都占满时不可用，不会自动落到 Luna");
+    assert.equal(third.route.selected_model, null);
+
+    for (const taskClass of ["security", "data_migration", "complex_diagnosis", "high_risk"]) {
       await rm(statePath, { force: true });
-      assert.equal(routingSelect({ ...baseInput, task_class: taskClass }).route.selected_model, luna);
+      const selected = routingSelect({ ...baseInput, task_class: taskClass, event_id: `policy-${taskClass}` });
+      assert.equal(selected.route.selected_model, mimo, `${taskClass} 按能力选择 MiMo`);
+      assert.equal(selected.route.reasoning_effort, "medium");
+      assert.equal(selected.route.harness, "claude");
     }
-    assert.equal(routingSelect({ ...baseInput }).route.selected_model, null);
-    for (const [profile, model] of [["kimi-k3", "kimi-code/k3-256k"], ["claude-mimo", "mimo-v2.5-pro"]]) {
-      await rm(statePath, { force: true });
-      assert.equal(routingSelect({ ...baseInput, cli_profile: profile }).route.selected_model, model);
-    }
+
+    await rm(statePath, { force: true });
+    const explicitLuna = routingSelect({ ...baseInput, preferred_model: luna, event_id: "policy-explicit-luna" });
+    assert.equal(explicitLuna.route.selected_model, luna, "用户显式授权仍可选择 Luna");
+
+    await rm(statePath, { force: true });
+    const nativeDefault = routingSelect({ ...baseInput, channel: "native", event_id: "policy-native-default" });
+    assert.equal(nativeDefault.route.channel, "cli", "默认非 Codex 选择无法走 native，推荐转换为实际 CLI 通道");
+    assert.equal(nativeDefault.route.cli_profile, "kimi-k3");
+    assert.equal(nativeDefault.route.harness, "kimi");
+
+    const directMain = routingSelect({ ...baseInput, channel: "direct", event_id: "policy-direct" });
+    assert.equal(directMain.route.channel, "direct", "direct 主模型语义不被强制改 CLI");
+    assert.equal(directMain.route.cli_profile, undefined);
+
+    await rm(statePath, { force: true });
+    const nativeExplicit = routingSelect({ ...baseInput, channel: "native", preferred_model: luna, event_id: "policy-native-explicit" });
+    assert.equal(nativeExplicit.route.selected_model, luna);
+    assert.equal(nativeExplicit.route.channel, "native", "显式 Codex native 既有路径保持原生语义");
+
     for (const model of [terra, "gpt-6-astra", "gpt-5.6-sol", spark]) {
       await rm(statePath, { force: true });
-      assert.equal(routingSelect({ ...baseInput, preferred_model: model }).route.selected_model, luna);
+      assert.equal(routingSelect({ ...baseInput, preferred_model: model }).route.selected_model, kimi, "退役或 manual_only 覆盖归一为非 Codex 默认");
+    }
+
+    for (const [profile, model] of [["kimi-k3", kimi], ["kimi-k2.7-highspeed", "kimi-code/kimi-for-coding-highspeed"], ["claude-mimo", mimo]]) {
+      await rm(statePath, { force: true });
+      const selected = routingSelect({ ...baseInput, cli_profile: profile });
+      assert.equal(selected.route.selected_model, model);
+      assert.equal(selected.route.cli_profile, profile);
     }
   } finally {
     await writeFile(roleConfigPath, JSON.stringify(roleConfig));
+    await rm(statePath, { force: true });
+  }
+});
+
+test("默认路由推理档位始终等于实际 profile 档位，不只在不支持时才调整", async () => {
+  const custom = {
+    ...roleConfig,
+    cli_profiles: { acme: { harness: "claude", model: "acme-model", provider: "test", reasoning_effort: "low" } },
+    roles: {
+      ...roleConfig.roles,
+      executor: { ...roleConfig.roles.executor, model: "acme-model", reasoning_effort: "medium", fallback_models: [], task_class_models: {} },
+    },
+  };
+  await writeFile(roleConfigPath, `${JSON.stringify(custom)}\n`, "utf8");
+  try {
+    await rm(statePath, { force: true });
+    const selected = routingSelect({ ...baseInput, event_id: "effort-profile-cli" });
+    assert.equal(selected.route.selected_model, "acme-model");
+    assert.equal(selected.route.cli_profile, "acme");
+    assert.equal(selected.route.reasoning_effort, "low", "即使角色档位在客户端支持列表内，也采用 runDelegatedCli 实际 profile 档位");
+
+    await rm(statePath, { force: true });
+    const nativeSelected = routingSelect({ ...baseInput, channel: "native", event_id: "effort-profile-native" });
+    assert.equal(nativeSelected.route.channel, "cli");
+    assert.equal(nativeSelected.route.cli_profile, "acme");
+    assert.equal(nativeSelected.route.reasoning_effort, "low");
+  } finally {
+    await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
     await rm(statePath, { force: true });
   }
 });

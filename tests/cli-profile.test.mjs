@@ -44,3 +44,17 @@ test("未知客户端、型号、冲突别名和不支持的 thinking 在执行�
   save(original);
   assert.throws(() => cliProfile("missing"));
 });
+
+test("按型号反解默认路由实际使用的客户端 profile", async () => {
+  const { cliProfileForModel } = await import("../scripts/cli-profile.mjs");
+  save(original);
+  assert.deepEqual({ name: cliProfileForModel("kimi-code/k3-256k").name, harness: cliProfileForModel("kimi-code/k3-256k").harness }, { name: "kimi-k3", harness: "kimi" });
+  assert.equal(cliProfileForModel("mimo-v2.5-pro").name, "claude-mimo");
+  assert.equal(cliProfileForModel("unknown-model"), null);
+  assert.equal(cliProfileForModel(""), null);
+  const manualOnly = structuredClone(original);
+  manualOnly.manual_only_models = ["kimi-code/k3-256k"];
+  save(manualOnly);
+  assert.equal(cliProfileForModel("kimi-code/k3-256k"), null, "manual_only 型号不解析为可派发 profile");
+  save(original);
+});
