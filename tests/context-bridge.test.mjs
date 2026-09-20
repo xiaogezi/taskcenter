@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -20,6 +21,81 @@ function bridgeOptions(calls, savedMaps, initialMap = {}) {
     },
   };
 }
+
+test("同步超时会取消信号且迟到响应不能写映射或继续完成", async () => {
+  const calls = [], maps = [];
+  let release;
+  let signal;
+  const options = bridgeOptions(calls, maps);
+  options.timeoutMs = 10;
+  options.callTool = async (name, args, context) => {
+    calls.push(name);
+    signal = context.signal;
+    return new Promise((resolve) => { release = resolve; });
+  };
+  const result = await syncContextEvent({ event_id: "timeout", type: "task.done_claimed" }, { id: "timeout-task", workspace: "/work" }, options);
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /结果未知/);
+  assert.equal(signal.aborted, true);
+  release({ task_id: "late-task" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["context.start_task"]);
+  assert.deepEqual(maps, []);
+});
+
+test("映射和审计写入收紧已有文件权限至0600", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "bridge-mode-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const mapPath = join(dir, "map.json"), auditPath = join(dir, "audit.jsonl");
+  await writeFile(mapPath, "{}");
+  await writeFile(auditPath, "");
+  await chmod(mapPath, 0o644);
+  await chmod(auditPath, 0o644);
+  const oldMap = process.env.TASKCENTER_CONTEXT_TASK_MAP_PATH, oldAudit = process.env.TASKCENTER_CONTEXT_AUDIT_PATH;
+  let bridge;
+  try {
+    process.env.TASKCENTER_CONTEXT_TASK_MAP_PATH = mapPath;
+    process.env.TASKCENTER_CONTEXT_AUDIT_PATH = auditPath;
+    bridge = await import(`../scripts/context-bridge.mjs?permissions=${Date.now()}`);
+  } finally {
+    if (oldMap === undefined) delete process.env.TASKCENTER_CONTEXT_TASK_MAP_PATH; else process.env.TASKCENTER_CONTEXT_TASK_MAP_PATH = oldMap;
+    if (oldAudit === undefined) delete process.env.TASKCENTER_CONTEXT_AUDIT_PATH; else process.env.TASKCENTER_CONTEXT_AUDIT_PATH = oldAudit;
+  }
+  const result = await bridge.syncContextEvent({ type: "task.create", event_id: "mode" }, { id: "mode", contextTaskId: "context-mode", workspace: "/work" });
+  assert.equal(result.status, "synced");
+  if (process.platform !== "win32") {
+    assert.equal((await stat(mapPath)).mode & 0o777, 0o600);
+    assert.equal((await stat(auditPath)).mode & 0o777, 0o600);
+  }
+});
+
+test("真实stdio调用卡住时超时关闭Context子进程", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "bridge-cancel-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const fixture = join(dir, "server.mjs");
+  const pidPath = join(dir, "pid");
+  const sdk = new URL("../node_modules/@modelcontextprotocol/sdk/dist/esm/", import.meta.url);
+  await writeFile(fixture, `import {writeFileSync} from 'node:fs';
+import {McpServer} from ${JSON.stringify(new URL("server/mcp.js", sdk).href)};
+import {StdioServerTransport} from ${JSON.stringify(new URL("server/stdio.js", sdk).href)};
+writeFileSync(${JSON.stringify(pidPath)},String(process.pid));
+const server=new McpServer({name:'hanging',version:'1'});
+server.registerTool('context.report_observation',{inputSchema:{}},()=>new Promise(()=>{}));
+await server.connect(new StdioServerTransport());`);
+  const code = `import {readFileSync} from 'node:fs';
+import {syncContextEvent} from './scripts/context-bridge.mjs';
+const result=await syncContextEvent({type:'task.report',event_id:'cancel-real'},{id:'cancel-real',contextTaskId:'ctx',workspace:'/work'},{timeoutMs:1000,audit:false});
+if(result.status!=='failed'||!result.error.includes('超时'))throw new Error(JSON.stringify(result));
+const pid=Number(readFileSync(${JSON.stringify(pidPath)},'utf8'));
+for(let i=0;i<60;i++){try{process.kill(pid,0)}catch{console.log('closed');process.exit(0)}await new Promise(r=>setTimeout(r,100));}
+throw new Error('Context child still alive');`;
+  const result = execFileSync(process.execPath, ["--input-type=module", "-e", code], {
+    cwd: new URL("../", import.meta.url), encoding: "utf8", timeout: 10000,
+    env: { ...process.env, TASKCENTER_CONTEXT_NODE: process.execPath, TASKCENTER_CONTEXT_ROOT: dir, TASKCENTER_CONTEXT_SERVER: fixture,
+      TASKCENTER_CONTEXT_TASK_MAP_PATH: join(dir, "map"), TASKCENTER_CONTEXT_AUDIT_PATH: join(dir, "audit") },
+  });
+  assert.match(result, /closed/);
+});
 
 test("Context bridge 优先使用项目自带的 ABI 兼容启动器", async () => {
   const root = await mkdtemp(join(tmpdir(), "taskcenter-context-command-"));

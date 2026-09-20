@@ -445,7 +445,10 @@ export function recordTaskEvent(input, options = {}) {
     if (event.type === "task.create" && !String(input.task_id || "")) {
       event.task_id = original.task_id;
     }
-    if (!sameIdempotentEvent(original, event)) {
+    const replayEvent = original.text_format === "multiline-v1" ? event : {
+      ...normalizeEvent(input, current, true), event_id: event.event_id, task_id: event.task_id,
+    };
+    if (!sameIdempotentEvent(original, replayEvent)) {
       throw new TaskLedgerError(409, "event_id 已被不同事件使用，拒绝重放。");
     }
     const originalTask = original.task_id
@@ -917,10 +920,11 @@ function persistProcessedEventIds(set) {
   renameSync(temporaryPath, processedEventIdsPath);
 }
 
-function normalizeEvent(input, current = null) {
+function normalizeEvent(input, current = null, legacyText = false) {
   if (!input || typeof input !== "object") throw new TaskLedgerError(400, "任务事件必须是 JSON 对象。");
   const type = String(input.type || "");
   const sessionId = String(input.session_id || "");
+  const content = legacyText ? cleanText : cleanContent;
   const allowedTypes = new Set([
     "session.register", "task.create", "task.resume", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.close", "task.review",
     "task.reminder", "tool.call", "routing.decision", "routing.result", "routing.health", "requirement.reported", "verification.reported", "review.reported", "review_cycle.reported",
@@ -934,6 +938,7 @@ function normalizeEvent(input, current = null) {
     throw new TaskLedgerError(400, "任务事件缺少 task_id。");
   }
   const event = {
+    text_format: "multiline-v1",
     event_id: String(input.event_id || randomUUID()),
     type,
     task_id: String(input.task_id || (type === "task.create" ? `task-${randomUUID()}` : "")),
@@ -952,26 +957,26 @@ function normalizeEvent(input, current = null) {
     goal: cleanText(input.goal, 1_000),
     status: statuses.has(input.status) ? input.status : undefined,
     priority: cleanText(input.priority, 20),
-    plan: cleanList(input.plan, 20, 500),
+    plan: cleanList(input.plan, 20, 500, content),
     current_step: cleanText(input.current_step, 500),
     next_action: cleanText(input.next_action, 500),
     blocker: cleanText(input.blocker, 1_000),
     acceptance_criteria: cleanAcceptanceCriteria(input.acceptance_criteria),
     changed_files: cleanList(input.changed_files, 50, 500),
-    tests: cleanList(input.tests, 30, 500),
-    evidence: cleanList(input.evidence, 30, 1_000),
+    tests: cleanList(input.tests, 30, 500, content),
+    evidence: cleanList(input.evidence, 30, 1_000, content),
     assumptions: cleanList(input.assumptions, 20, 500),
     risks: cleanList(input.risks, 20, 500),
     tradeoffs: cleanList(input.tradeoffs, 20, 500),
     open_questions: cleanList(input.open_questions, 20, 500),
-    retrospective: cleanText(input.retrospective, 2_000),
+    retrospective: content(input.retrospective, 2_000),
     expected_at: cleanText(input.expected_at, 80),
     due_at: cleanText(input.due_at, 80),
     estimated_effort_ms: normalizePositiveInteger(input.estimated_effort_ms),
     estimate_reason: cleanText(input.estimate_reason, 1_000),
     archived_at: cleanText(input.archived_at, 80),
     superseded_by: cleanText(input.superseded_by, 200),
-    review_reason: cleanText(input.review_reason, 1_000),
+    review_reason: content(input.review_reason, 1_000),
     reviewed_at: cleanText(input.reviewed_at, 80),
     tool_name: cleanText(input.tool_name, 120),
     tool_use_id: cleanText(input.tool_use_id, 200),
@@ -1352,9 +1357,13 @@ function cleanText(value, limit) {
   return value.replace(/\s+/g, " ").trim().slice(0, limit);
 }
 
-function cleanList(value, maxItems, maxLength) {
+function cleanContent(value, limit) {
+  return typeof value === "string" ? value.trim().slice(0, limit) : "";
+}
+
+function cleanList(value, maxItems, maxLength, normalize = cleanText) {
   if (!Array.isArray(value)) return [];
-  return value.filter((item) => typeof item === "string").map((item) => cleanText(item, maxLength)).filter(Boolean).slice(0, maxItems);
+  return value.filter((item) => typeof item === "string").map((item) => normalize(item, maxLength)).filter(Boolean).slice(0, maxItems);
 }
 
 function normalizeReviewArtifacts(value) {

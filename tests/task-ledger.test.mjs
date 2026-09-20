@@ -131,6 +131,26 @@ async function resetLedger() {
   }
 }
 
+test("内容字段保留换行缩进，新事件严格重放且兼容旧折叠事件", async () => {
+  await resetLedger();
+  const input = { type: "task.create", event_id: "multiline", task_id: "multiline", session_id: "multiline", title: "单行\n标题", evidence: ["first\n  second"], plan: ["step\n  detail"], retrospective: "a\n b" };
+  const { task } = recordTaskEvent(input);
+  assert.equal(task.title, "单行 标题");
+  assert.equal(task.evidence[0], "first\n  second");
+  assert.equal(task.plan[0], "step\n  detail");
+  assert.equal(task.retrospective, "a\n b");
+  assert.equal(recordTaskEvent(input).idempotent, true);
+  assert.throws(() => recordTaskEvent({ ...input, evidence: ["first second"] }), /不同事件/);
+  const old = JSON.parse((await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8")).trim());
+  delete old.text_format;
+  old.evidence = ["first second"];
+  old.plan = ["step detail"];
+  old.retrospective = "a b";
+  await writeFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, JSON.stringify(old) + "\n");
+  assert.equal(recordTaskEvent(input).idempotent, true);
+  assert.throws(() => recordTaskEvent({ ...input, evidence: ["different"] }), /不同事件/);
+});
+
 test("超过500条保留最早活跃任务、归档记录与冲突约束", async () => {
   await resetLedger();
   const { task } = recordTaskEvent({ type: "task.create", task_id: "oldest", session_id: "oldest-session", status: "in_progress" });

@@ -5,10 +5,12 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { connect, createServer } from "node:net";
@@ -599,26 +601,33 @@ async function openDashboard() {
 }
 
 async function withLock(operation) {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    try {
-      mkdirSync(lockDir);
-      writeJson(resolve(lockDir, "owner.json"), { pid: process.pid, createdAt: new Date().toISOString() });
+  const ownerDir = mkdtempSync(resolve(runtimeDir, ".launcher-owner-"));
+  try {
+    writeJson(resolve(ownerDir, "owner.json"), { pid: process.pid, createdAt: new Date().toISOString() });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
       try {
-        return await operation();
-      } finally {
-        rmSync(lockDir, { recursive: true, force: true });
+        // Publish the fully populated owner atomically; a crash cannot leave a new ownerless lock.
+        symlinkSync(ownerDir, lockDir, process.platform === "win32" ? "junction" : "dir");
+        try {
+          return await operation();
+        } finally {
+          rmSync(lockDir, { recursive: true, force: true });
+        }
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        const owner = readJson(resolve(lockDir, "owner.json"));
+        if (!owner?.pid && attempt === 49) {
+          throw new Error(`启停锁缺少有效 owner：${lockDir}。请确认没有启停进程后人工处理；不会自动删除身份未知的锁。`);
+        }
+        if (owner?.pid && !isProcessAlive(owner.pid)) {
+          rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+        await sleep(100);
       }
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      const owner = readJson(resolve(lockDir, "owner.json"));
-      if (owner?.pid && !isProcessAlive(owner.pid)) {
-        rmSync(lockDir, { recursive: true, force: true });
-        continue;
-      }
-      await sleep(100);
     }
-  }
-  throw new Error("另一个 TaskCenter 启停操作正在执行，请稍后重试。");
+    throw new Error("另一个 TaskCenter 启停操作正在执行，请稍后重试。");
+  } finally { rmSync(ownerDir, { recursive: true, force: true }); }
 }
 
 function rotateLog() {

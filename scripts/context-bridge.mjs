@@ -1,4 +1,4 @@
-import { accessSync, closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -49,8 +49,13 @@ export async function syncContextEvent(event, task, options = {}) {
   if (!task?.id || !event?.event_id) return { status: "skipped", reason: "missing_task_or_event" };
 
   try {
-    const result = await withTimeout(sync(event, task, {
-      callTool: options.callTool || callTool,
+    const result = await withTimeout((signal) => sync(event, task, {
+      callTool: async (...args) => {
+        signal.throwIfAborted();
+        const result = await (options.callTool || callTool)(...args, { signal });
+        signal.throwIfAborted();
+        return result;
+      },
       loadMap: options.loadMap || loadMap,
       saveMap: options.saveMap || saveMap,
     }), options.timeoutMs || timeoutMs);
@@ -287,7 +292,7 @@ async function sync(event, task, dependencies) {
   return { contextTaskId };
 }
 
-async function callTool(name, arguments_) {
+async function callTool(name, arguments_, { signal } = {}) {
   const client = new Client({ name: "taskcenter-context-bridge", version: TASKCENTER_VERSION });
   const transport = new StdioClientTransport({
     command: nodeCommand,
@@ -296,11 +301,16 @@ async function callTool(name, arguments_) {
     env: { ...process.env, TASKCENTER_CONTEXT_BRIDGE: "1" },
     stderr: "pipe",
   });
+  const abort = () => { void client.close().catch(() => {}); };
+  signal?.throwIfAborted();
+  signal?.addEventListener("abort", abort, { once: true });
   try {
-    await client.connect(transport);
-    const result = await client.callTool({ name, arguments: arguments_ });
+    await client.connect(transport, { signal });
+    signal?.throwIfAborted();
+    const result = await client.callTool({ name, arguments: arguments_ }, undefined, { signal });
     return parseContextToolResult(result, name);
   } finally {
+    signal?.removeEventListener("abort", abort);
     await client.close().catch(() => {});
   }
 }
@@ -360,18 +370,33 @@ function loadMap() {
 function saveMap(value) {
   mkdirSync(dirname(mapPath), { recursive: true });
   const temp = `${mapPath}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`);
+  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(temp, 0o600);
   renameSync(temp, mapPath);
 }
 
 function appendAudit(value) {
   mkdirSync(dirname(auditPath), { recursive: true });
-  writeFileSync(auditPath, `${JSON.stringify({ ...value, createdAt: new Date().toISOString() })}\n`, { flag: "a" });
+  const descriptor = openSync(auditPath, "a", 0o600);
+  try {
+    fchmodSync(descriptor, 0o600);
+    writeFileSync(descriptor, `${JSON.stringify({ ...value, createdAt: new Date().toISOString() })}\n`);
+  } finally { closeSync(descriptor); }
 }
 
-function withTimeout(promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`Context MCP 超时（${ms}ms）。`)), ms)),
-  ]);
+async function withTimeout(operation, ms) {
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      operation(controller.signal),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error(`Context MCP 超时（${ms}ms）；已发送操作结果未知，请沿用原幂等键核对。`);
+          controller.abort(error);
+          reject(error);
+        }, ms);
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
 }
