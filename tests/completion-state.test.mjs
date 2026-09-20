@@ -161,3 +161,38 @@ test("老任务查询迁移为 legacy 且不会误标 accepted", () => {
   assert.notEqual(legacy.acceptanceStatus, "accepted");
   assert.equal(legacy.completionReadiness.ready, false);
 });
+
+
+test("无有效观测时间的完成事件不生成 1970 哨兵 Subject", () => {
+  const task = applyCompletionEvent(standardTask(), {
+    type: "task.close",
+    revision: revisionA,
+    status: "done_claimed",
+    // 无 occurred_at / created_at：不伪造观测时间
+  });
+  const subject = task.currentSubject;
+  assert.ok(!subject || !String(subject.observed_at).startsWith("1970"), "不生成 1970 观测时间");
+});
+
+test("快照 Subject 下 revision 漂移的隐式证据不生成 git_worktree_snapshot+提交值 组合", () => {
+  const snapshot = { type: "git_worktree_snapshot", value: "snapshot:structured", observed_at: "2026-08-17T00:00:00.000Z" };
+  const task = withCompletionState({ id: "t-snapshot-drift", status: "done_claimed", currentSubject: snapshot, currentRevision: "commit-old", verificationPlan: [{ id: "tests", title: "测试", kind: "test", required: true }] });
+  const next = applyCompletionEvent(task, {
+    type: "verification.reported",
+    created_at: "2026-08-17T00:01:00.000Z",
+    revision: "commit-new",
+    verification_claim: {
+      id: "claim-drift",
+      requirement_id: "tests",
+      kind: "test",
+      status: "passed",
+      observed_at: "2026-08-17T00:01:00.000Z",
+      producer: "codex",
+      evidence_ref: "test-output:drift",
+    },
+  });
+  const claimSubject = next.verificationClaims[0]?.subject_ref;
+  assert.ok(!claimSubject || claimSubject.type !== "git_worktree_snapshot" || claimSubject.value !== "commit-new", "不把提交值装进快照类型");
+  assert.ok(!String(claimSubject?.observed_at || "").startsWith("1970"), "不生成 1970 观测时间");
+  assert.deepEqual(next.currentSubject, snapshot, "任务 Subject 不被漂移改写");
+});

@@ -65,7 +65,8 @@ export function normalizeActorIdentity(value, fallback = {}) {
 
 export function normalizeCompletionEvent(input, currentSubject = null) {
   const occurredAt = text(input.occurred_at, 80);
-  const fallbackAt = occurredAt || input.created_at || "1970-01-01T00:00:00.000Z";
+  // 无有效观测时间时不生成隐式 Subject：证据必须绑定可信观测时刻，不回落 1970 哨兵。
+  const fallbackAt = occurredAt || input.created_at || "";
   const subject = normalizeSubjectReference(input.subject_ref, occurredAt) || subjectFromRevision(currentSubject, input.revision, fallbackAt);
   const alignSubject = (normalized, raw) => alignImplicitRevisionSubject(
     normalized,
@@ -109,7 +110,8 @@ export function applyCompletionEvent(task, event) {
   if ((taskMutation || event.type === "subject.updated") && event.subject_ref) next.currentSubject = event.subject_ref;
   if (taskMutation && event.revision) {
     next.currentRevision = event.revision;
-    if (!event.subject_ref) next.currentSubject = legacySubject(event.revision, event.occurred_at || event.created_at);
+    // 无有效观测时间时不改写 currentSubject（保留旧候选），避免伪造 1970 观测时间。
+    if (!event.subject_ref && (event.occurred_at || event.created_at)) next.currentSubject = legacySubject(event.revision, event.occurred_at || event.created_at);
   }
   if (event.type === "subject.updated" && !event.subject_ref) throw failure("subject.updated 缺少有效 subject_ref。");
   if (event.type === "requirement.reported") {
@@ -220,7 +222,9 @@ function projectReviewDuplicates(reviews) {
   });
 }
 export function withCompletionState(task) {
-  const currentSubject = task.currentSubject || legacySubject(task.currentRevision, task.updatedAt || task.createdAt);
+  // 迁移层投影：旧任务无时间戳时用当前时间派生 legacy subject（展示用），
+  // 与证据写入路径（normalizeCompletionEvent 不再回落 1970 哨兵）区分开。
+  const currentSubject = task.currentSubject || legacySubject(task.currentRevision, task.updatedAt || task.createdAt || new Date().toISOString());
   const migrated = {
     ...task, contractVersion: task.contractVersion || "legacy", currentSubject,
     acceptanceRequirements: criteria(task),
@@ -287,7 +291,7 @@ export function resolveCompletionSubject(task, subject = null) {
   if (typeof subject === "string" && subject.trim()) {
     return subjectFromRevision(task.currentSubject, subject, task.updatedAt || task.createdAt);
   }
-  return task.currentSubject || legacySubject(task.currentRevision, task.updatedAt || task.createdAt);
+  return task.currentSubject || legacySubject(task.currentRevision, task.updatedAt || task.createdAt || new Date().toISOString());
 }
 
 export function buildCompletionPacket(task) {
@@ -652,10 +656,13 @@ export function sameSubject(left, right) { return Boolean(left && right && left.
 
 function subjectFromRevision(currentSubject, revision, observedAt) {
   const value = text(revision, 500);
-  if (!value) return null;
+  if (!value || !observedAt) return null;
   if (currentSubject && typeof currentSubject === "object" && currentSubject.type !== "none") {
     if ((currentSubject.value || "") === value) return currentSubject;
-    return { ...currentSubject, value, observed_at: observedAt || currentSubject.observed_at };
+    // 快照型 Subject 绑定的是内容快照，不因 revision 漂移而改写；
+    // revision 变化时旧证据保留，新候选必须显式提供 subject_ref，不能把提交值塞进快照类型。
+    if (currentSubject.type === "git_worktree_snapshot") return null;
+    return { ...currentSubject, value, observed_at: observedAt };
   }
   return legacySubject(value, observedAt);
 }
@@ -674,7 +681,7 @@ function independent(left, right) {
   if (leftSession && rightSession && leftSession.toLowerCase() === rightSession.toLowerCase()) return false;
   return `${left.type}:${left.id}` !== `${right.type}:${right.id}`;
 }
-function legacySubject(revision, observedAt) { return revision ? { type: "external", value: text(revision, 500), observed_at: observedAt || new Date().toISOString() } : null; }
+function legacySubject(revision, observedAt) { return revision && observedAt ? { type: "external", value: text(revision, 500), observed_at: observedAt } : null; }
 function hasPortableEvidence(claim) { return [claim.evidence_ref, ...(claim.artifact_refs || [])].filter(Boolean).some((ref) => !/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(ref)); }
 function latestBy(items, field) { const result = new Map(); for (const item of items) if (item?.[field]) result.set(item[field], item); return result; }
 function text(value, limit) { return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, limit) : ""; }
