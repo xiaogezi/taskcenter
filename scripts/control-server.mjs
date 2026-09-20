@@ -51,6 +51,7 @@ import {
   taskLedgerPath,
   TaskLedgerError,
 } from "./task-ledger.mjs";
+import { runReconciliation, queryFindings, lastReconciliation } from "./task-reconciler.mjs";
 import {
   loadTaskReuseDecisions,
   recordTaskReuseDecision,
@@ -168,7 +169,30 @@ const startupContextReconciliation = reconcileContextShadowTasks();
 if (startupContextReconciliation.reconciled.length) {
   console.log(`[TaskCenter] 已收敛 ${startupContextReconciliation.reconciled.length} 条 Context 影子任务。`);
 }
+// 轻量对账：服务启动时恢复未处理记录（收口脱离会话的运行，生成缺项；不伪造验收、不自动重跑）。
+if (reconcileLiveSessions) {
+  try {
+    const startupReconciliation = runReconciliation({ availableSessionIds: availableSessionIds() });
+    if (startupReconciliation.reconciled.length || startupReconciliation.findings.length) {
+      console.log(`[TaskCenter] 启动对账：收口 ${startupReconciliation.reconciled.length} 条脱离运行，发现 ${startupReconciliation.findings.length} 条缺项。`);
+    }
+  } catch (error) {
+    console.error(`[TaskCenter] 启动对账失败：${error?.message || error}`);
+  }
+}
 const queueTimer = setInterval(() => void processQueue(), 5_000);
+// 低频对账扫描：周期性核对运行事实与账本（幂等，只收口脱离运行并生成缺项）。
+const reconciliationTimer = setInterval(() => {
+  if (!reconcileLiveSessions) return;
+  try {
+    const result = runReconciliation({ availableSessionIds: availableSessionIds() });
+    if (result.reconciled.length || result.findings.length) {
+      console.log(`[TaskCenter] 对账扫描：收口 ${result.reconciled.length} 条脱离运行，发现 ${result.findings.length} 条缺项。`);
+    }
+  } catch (error) {
+    console.error(`[TaskCenter] 对账扫描失败：${error?.message || error}`);
+  }
+}, 5 * 60_000);
 queueTimer.unref();
 void processQueue();
 
@@ -354,6 +378,9 @@ const server = createServer(async (request, response) => {
         availableThreads: dashboard.source?.availableThreads ?? dashboard.threads ?? [],
       });
       return;
+    }
+    if (request.method === "GET" && request.url === "/reconciliation") {
+      sendJson(response, 200, { findings: queryFindings(), lastRunAt: lastReconciliation()?.observedAt || null });
     }
     if (request.method === "GET" && request.url === "/session-status") {
       const titles = new Map(loadSessionTitles().map((item) => [item.id, item]));
