@@ -572,7 +572,7 @@ const server = createServer(async (request, response) => {
         const pageSize = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("page_size") || "40", 10) || 40));
         const start = (page - 1) * pageSize;
         const pageTasks = withDelegations(filteredTasks.slice(start, start + pageSize));
-        const actionCounts = Object.fromEntries(["attention", "in_progress", "awaiting_verification", "awaiting_acceptance", "awaiting_merge", "bugs", "completed_bugs", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
+        const actionCounts = Object.fromEntries(["planned", "in_progress", "completed", "attention", "awaiting_verification", "awaiting_acceptance", "awaiting_merge", "bugs", "completed_bugs", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
         actionCounts.all = projectTasks.length;
         const projects = new Map();
         for (const task of presentedTasks) if (!projects.has(task.project.id)) projects.set(task.project.id, task.project);
