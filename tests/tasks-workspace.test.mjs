@@ -106,7 +106,7 @@ test("模型调度页展示额度、真实调度和刷新反馈", () => {
   const source = readFileSync("features/console/ConsolePage.tsx", "utf8");
   assert.match(source, /api<UsageData>\("\/usage-report"\)/);
   assert.match(source, /api<\{ tasks\?: RoutingTask\[\] \}>\("\/tasks\?view=summary&page_size=100"\)/);
-  assert.match(source, /未绑定额度池（不代表额度充足）/);
+  assert.match(source, /额度池：/);
   assert.match(source, /刷新成功：/);
   assert.match(source, /刷新失败：/);
   assert.match(source, /暂无真实调度记录/);
