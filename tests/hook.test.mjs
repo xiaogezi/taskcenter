@@ -150,6 +150,23 @@ test("离线恢复白名单兼容 Codex exec_command 格式与受限 rtk/cd 包�
   });
   assert.equal(cdWrapped.code, 0, "前导 cd 项目根 && 应剥离后放行");
 
+  // Codex 实际 payload：工作目录在 tool_input.workdir，不在顶层 cwd。
+  const workdirOnly = await runHook("pre-tool-use", "codex", {
+    session_id: "",
+    hook_event_name: "PreToolUse",
+    tool_name: "exec_command",
+    tool_input: { cmd: "node scripts/taskcenter-control.mjs start", workdir: rootPath },
+  });
+  assert.equal(workdirOnly.code, 0, "tool_input.workdir 在项目根时应放行");
+
+  const workdirOutside = await runHook("pre-tool-use", "codex", {
+    session_id: "",
+    hook_event_name: "PreToolUse",
+    tool_name: "exec_command",
+    tool_input: { cmd: "node scripts/taskcenter-control.mjs start", workdir: "/tmp" },
+  });
+  assert.equal(workdirOutside.code, 2, "tool_input.workdir 在项目外时应拒绝");
+
   // 仍拒绝：cd 后接非恢复命令、cd 到别的目录、拼接额外写操作。
   for (const [toolName, toolInput] of [
     ["Bash", { command: `cd ${rootPath} && touch /tmp/evil && node scripts/taskcenter-control.mjs start` }],

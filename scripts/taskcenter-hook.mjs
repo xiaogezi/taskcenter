@@ -670,13 +670,15 @@ function isTrustedRecoveryCommand(payload) {
   const toolName = String(payload.tool_name || payload.tool || payload.name || "");
   // 兼容 Bash（主代理）与 exec_command（Codex）两种工具入口。
   if (!["Bash", "exec_command"].includes(toolName)) return false;
-  if (typeof payload.cwd !== "string" || !payload.cwd) return false;
-  if (!samePath(resolve(payload.cwd), projectRoot)) return false;
   const toolInput = payload.tool_input;
   if (!toolInput || typeof toolInput !== "object") return false;
   // Codex 用 cmd，Bash 用 command。
   const raw = String(toolInput.cmd || toolInput.command || "").trim();
   if (!raw) return false;
+  // Codex exec_command 把工作目录放在 tool_input.workdir，不是顶层 payload.cwd。
+  const cwdValue = payload.cwd || toolInput.workdir || payload.workdir || "";
+  if (typeof cwdValue !== "string" || !cwdValue) return false;
+  if (!samePath(resolve(cwdValue), projectRoot)) return false;
   // 规范化：剥离 rtk / rtk proxy 前缀与前导 cd <dir> &&，再精确匹配白名单。
   let command = raw;
   const tokens = command.split(/\s+/);
@@ -692,7 +694,7 @@ function isTrustedRecoveryCommand(payload) {
     let cdOk = cdArgs === "" || cdArgs === ".";
     if (!cdOk) {
       const target = cdArgs.replace(/^['"]|['"]$/g, "");
-      cdOk = samePath(resolve(payload.cwd, target), projectRoot);
+      cdOk = samePath(resolve(cwdValue, target), projectRoot);
     }
     if (cdOk) command = parts.slice(1).join("&&").trim();
   }
