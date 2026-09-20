@@ -24,18 +24,8 @@
     "executor": {
       "model": "gpt-5.6-luna",
       "reasoning_effort": "low",
-      "fallback_models": [
-        "gpt-5.6-terra",
-        "gpt-6-astra"
-      ],
-      "task_class_models": {
-        "architecture": "gpt-5.6-terra",
-        "security": "gpt-6-astra",
-        "migration": "gpt-5.6-terra",
-        "data_migration": "gpt-6-astra",
-        "complex_diagnosis": "gpt-5.6-terra",
-        "high_risk": "gpt-6-astra"
-      },
+      "fallback_models": [],
+      "task_class_models": {},
       "task_class_reasoning_efforts": {
         "security": "medium",
         "data_migration": "medium",
@@ -51,10 +41,13 @@
       "concurrency_limit": 2
     }
   },
-  "manual_only_models": [
-    "gpt-5.3-codex-spark"
+  "manual_only_models": [],
+  "retired_models": [
+    "gpt-5.3-codex-spark",
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-6-astra"
   ],
-  "retired_models": [],
   "quota_pools": [
     {
       "id": "codex",

@@ -739,7 +739,7 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
     () => recordTaskEvent({ ...firstInput, event_id: "routing-invalid", dispatch_channel: "cli" }),
     (error) => error instanceof TaskLedgerError && error.statusCode === 400,
   );
-  assert.doesNotThrow(() => recordTaskEvent({ ...firstInput, event_id: "routing-security", task_class: "security", preferred_executor_model: "gpt-6-astra", selected_executor_model: "gpt-6-astra" }));
+  assert.doesNotThrow(() => recordTaskEvent({ ...firstInput, event_id: "routing-security", task_class: "security", preferred_executor_model: "gpt-5.6-luna", selected_executor_model: "gpt-5.6-luna" }));
 });
 
 test("已登记的外部 Session 不被 Codex 会话清理误删", async () => {
@@ -1963,12 +1963,8 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
     method: "POST", headers: taskHeaders(), body: JSON.stringify({ task_id: "task-routing-control", task_class: "implementation", channel: "cli", event_id: "routing-control-spark" }),
   });
   const sparkRoute = await sparkResponse.json();
-  assert.equal(sparkResponse.status, 201, sparkRoute.error);
-  assert.equal(sparkRoute.route.preferred_model, "gpt-5.3-codex-spark");
-  assert.equal(sparkRoute.route.selected_model, "gpt-5.3-codex-spark");
-  assert.equal(sparkRoute.route.quota_limit_id, "codex_bengalfox");
-  assert.equal(sparkRoute.route.quota_used_percent, 0);
-  await fetch(`${base}/routing/result`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ route_id: sparkRoute.route.route_id, outcome: "succeeded", event_id: "routing-control-spark-result" }) });
+  assert.equal(sparkResponse.status, 409);
+  assert.match(sparkRoute.error, /未配置为 manual_only/);
 });
 
 test("路由状态已持久化但审计首次失败时，同 event_id 可补偿重放且不重复", async (context) => {
