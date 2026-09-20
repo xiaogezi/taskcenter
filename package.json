@@ -57,6 +57,8 @@
     "sync:test": "node scripts/sync-test.mjs",
     "mcp:tasks": "node scripts/taskcenter-mcp.mjs",
     "watch:codex": "node scripts/watch-codex.mjs",
+    "jev:watch": "node scripts/jev-advisor.mjs --watch",
+    "jev:report": "node scripts/jev-advisor.mjs --report",
     "control": "node scripts/control-server.mjs",
     "integrations:print": "node scripts/print-integrations.mjs",
     "desktop:install": "bash scripts/macos/build-taskcenter-app.sh",
