@@ -115,6 +115,57 @@ test("控制服务离线时只放行固定恢复命令", async () => {
   assert.equal(missingWorkspace.code, 2);
 });
 
+test("离线恢复白名单兼容 Codex exec_command 格式与受限 rtk/cd 包装", async () => {
+  const basePayload = {
+    session_id: "",
+    cwd: rootPath,
+    hook_event_name: "PreToolUse",
+  };
+  // Codex 实际入口：tool_name=exec_command + tool_input.cmd。
+  const codexAllowed = await runHook("pre-tool-use", "codex", {
+    ...basePayload,
+    tool_name: "exec_command",
+    tool_input: { cmd: "node scripts/taskcenter-control.mjs start" },
+  });
+  assert.equal(codexAllowed.code, 0, "Codex exec_command 固定恢复命令应放行");
+
+  // rtk 包装与 rtk proxy 包装。
+  for (const cmd of [
+    "rtk node scripts/taskcenter-control.mjs start",
+    "rtk proxy node scripts/taskcenter-control.mjs status",
+  ]) {
+    const allowed = await runHook("pre-tool-use", "codex", {
+      ...basePayload,
+      tool_name: "exec_command",
+      tool_input: { cmd },
+    });
+    assert.equal(allowed.code, 0, `${cmd} 应剥离 rtk 前缀后放行`);
+  }
+
+  // 前导 cd <项目根> && 包装。
+  const cdWrapped = await runHook("pre-tool-use", "codex", {
+    ...basePayload,
+    tool_name: "Bash",
+    tool_input: { command: `cd ${rootPath} && node scripts/taskcenter-control.mjs start` },
+  });
+  assert.equal(cdWrapped.code, 0, "前导 cd 项目根 && 应剥离后放行");
+
+  // 仍拒绝：cd 后接非恢复命令、cd 到别的目录、拼接额外写操作。
+  for (const [toolName, toolInput] of [
+    ["Bash", { command: `cd ${rootPath} && touch /tmp/evil && node scripts/taskcenter-control.mjs start` }],
+    ["exec_command", { cmd: "cd /tmp && node scripts/taskcenter-control.mjs start" }],
+    ["exec_command", { cmd: "node scripts/taskcenter-control.mjs restart" }],
+    ["Bash", { command: "rtk touch /tmp/evil" }],
+  ]) {
+    const blocked = await runHook("pre-tool-use", "codex", {
+      ...basePayload,
+      tool_name: toolName,
+      tool_input: toolInput,
+    });
+    assert.equal(blocked.code, 2, `tool=${toolName} input=${JSON.stringify(toolInput)} 不得进入恢复白名单`);
+  }
+});
+
 await waitForReady();
 after(async () => {
   server.kill("SIGTERM");

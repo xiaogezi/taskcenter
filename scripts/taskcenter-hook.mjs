@@ -667,17 +667,41 @@ function shellQuote(value) {
 }
 
 function isTrustedRecoveryCommand(payload) {
-  if (payload.tool_name !== "Bash") return false;
+  const toolName = String(payload.tool_name || payload.tool || payload.name || "");
+  // 兼容 Bash（主代理）与 exec_command（Codex）两种工具入口。
+  if (!["Bash", "exec_command"].includes(toolName)) return false;
   if (typeof payload.cwd !== "string" || !payload.cwd) return false;
   if (!samePath(resolve(payload.cwd), projectRoot)) return false;
   const toolInput = payload.tool_input;
-  if (!toolInput || typeof toolInput !== "object" || typeof toolInput.command !== "string") return false;
+  if (!toolInput || typeof toolInput !== "object") return false;
+  // Codex 用 cmd，Bash 用 command。
+  const raw = String(toolInput.cmd || toolInput.command || "").trim();
+  if (!raw) return false;
+  // 规范化：剥离 rtk / rtk proxy 前缀与前导 cd <dir> &&，再精确匹配白名单。
+  let command = raw;
+  const tokens = command.split(/\s+/);
+  if (tokens[0] === "rtk") {
+    tokens.shift();
+    if (tokens[0] === "proxy") tokens.shift();
+    command = tokens.join(" ");
+  }
+  const parts = command.split("&&");
+  if (parts.length > 1 && parts[0].trim().startsWith("cd ")) {
+    const cdArgs = parts[0].trim().slice(3).trim();
+    // 只有 cd 到项目根（或 . / 无参数）才允许剥离；cd 到别的目录视为不可信命令。
+    let cdOk = cdArgs === "" || cdArgs === ".";
+    if (!cdOk) {
+      const target = cdArgs.replace(/^['"]|['"]$/g, "");
+      cdOk = samePath(resolve(payload.cwd, target), projectRoot);
+    }
+    if (cdOk) command = parts.slice(1).join("&&").trim();
+  }
   return new Set([
     "node scripts/taskcenter-control.mjs start",
     "node scripts/taskcenter-control.mjs status",
     "/bin/bash scripts/taskcenter-control.sh start",
     "/bin/bash scripts/taskcenter-control.sh status",
-  ]).has(toolInput.command);
+  ]).has(command);
 }
 
 async function isL0ReadOnlyInspection(payload) {
