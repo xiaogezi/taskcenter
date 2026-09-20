@@ -23,6 +23,11 @@
       "provider": "xiaomi",
       "reasoning_effort": "medium"
     },
+    "codex-luna": {
+      "harness": "codex",
+      "model_key": "luna",
+      "reasoning_effort": "low"
+    },
     "kimi-k3-standard": {
       "harness": "kimi",
       "model_key": "k3",
@@ -30,6 +35,16 @@
     }
   },
   "cli_clients": {
+    "codex": {
+      "provider": "openai",
+      "models": {
+        "luna": "gpt-5.6-luna"
+      },
+      "reasoning_efforts": [
+        "low",
+        "medium"
+      ]
+    },
     "kimi": {
       "provider": "moonshot",
       "models": {

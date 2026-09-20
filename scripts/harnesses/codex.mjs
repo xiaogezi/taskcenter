@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { inspectSessionState, resumeSession } from "./codex-session.mjs";
+import { runCodexDelegated } from "./codex-delegated.mjs";
 
 async function createSession({ workingDirectory, prompt, onThreadStarted, onEvent = () => {} }) {
   const moduleName = process.env.TASKCENTER_CODEX_SDK_MODULE || "@openai/codex-sdk";
@@ -51,5 +52,6 @@ export const codexAdapter = {
       } });
       return { ...result, status: "completed", sessionId };
     },
+    runDelegatedCli: runCodexDelegated,
   },
 };

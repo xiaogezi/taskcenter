@@ -58,8 +58,7 @@ test("CLI 成功和初始化失败都回写并释放原租约，未知型号不�
 });
 
 test("受管执行能力静态注册，Kimi 权限仅转换为一次授权", async () => {
-  for (const id of ["kimi", "claude"]) assert.equal(harnessCapabilities(id).operations.runDelegatedCli.supported, true);
-  assert.equal(harnessCapabilities("codex").operations.runDelegatedCli.supported, false);
+  for (const id of ["kimi", "claude", "codex"]) assert.equal(harnessCapabilities(id).operations.runDelegatedCli.supported, true);
   assert.throws(() => requireHarnessOperation("unknown", "runDelegatedCli"), /尚未适配/);
   const run = requireHarnessOperation("kimi", "runDelegatedCli");
   for (const allowed of [false, true]) {

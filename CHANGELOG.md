@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- Codex 受管派发改用本机 app-server：先创建真实 Session、校验型号并领取 delegation，再提交任务；启动前检查可信 TaskCenter Hook 对命令与文件修改的覆盖，缺失时提前拒绝，避免启动后才因权限失败消耗额度。Codex 仍只用于显式授权或专属验证，不进入普通自动路由。
+
 - 普通执行默认路由切换为非 Codex 客户端：executor 角色默认 Kimi、回退 MiMo、默认并发一，能力敏感类别（security/data_migration/complex_diagnosis/high_risk）映射 MiMo 并使用 medium 档位；Luna 不进入普通自动首选或回退，仅用户显式授权或 Codex 专属实测时使用；默认路由把选中型号反解为实际 `cli_profile`/`harness` 并始终报告该 profile 实际执行的推理档位，delegation claim 随之校验客户端一致，消除路由报告与实际执行不一致的风险；默认非 Codex 选择请求 `native` 通道时推荐转换为实际 `cli` 通道，`direct` 主模型执行与显式 Codex `native` 路径不变；Reviewer 角色与 fail-closed 行为不变。
 
 - 修复 Kimi ACP 权限请求未携带参数时的工具关联：从同一调用的完整 JSON 参数快照校验权限，保留一次授权和任务门禁。
