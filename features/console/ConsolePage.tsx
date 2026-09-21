@@ -107,7 +107,7 @@ function Routing() {
   const fmtDur = (ms: number | null | undefined) => { if (!ms || !Number.isFinite(ms)) return "—"; const m = Math.round(ms / 60000); if (m < 60) return `${m}m`; const h = Math.floor(m / 60); return `${h}h${m % 60}m`; };
   const fmtShortTs = (ms: number | null | undefined) => { if (!ms) return "—"; const d = new Date(ms); const now = new Date(); const sameYear = d.getFullYear() === now.getFullYear(); const md = `${d.getMonth()+1}/${d.getDate()}`; return sameYear ? md : `${d.getFullYear()}/${md}`; };
   const running = cr.activeRuns || [];
-  const rows = Object.entries(cr.byModel).sort((a, b) => b[1].runs - a[1].runs);
+  const rows = Object.entries(cr.byModel).sort((a, b) => (b[1].lastFinishedAt || 0) - (a[1].lastFinishedAt || 0));
   const maxRuns = rows[0]?.[1].runs || 1;
   const bucket = (p: number) => p >= 0.5 ? "#2e7d32" : p >= 0.3 ? "#f9a825" : "#c62828";
   const activeDot = (last: number | undefined) => {
@@ -158,7 +158,7 @@ function Routing() {
             <td style={{padding:"8px"}}>{row.runs}</td>
             <td style={{padding:"8px"}}><span style={{color: bucket(r),fontWeight:600}}>{pctText(row.succeeded ?? 0, row.runs)}</span></td>
             <td style={{padding:"8px",color:"#666"}}>{fmtDur(row.durationCount ? (row.durationSum || 0) / row.durationCount : null)}</td>
-            <td style={{padding:"8px",color: today ? "#333" : "#aaa"}}>{fmtShortTs(row.lastFinishedAt)}{row.lastFinishedAt ? " " + new Date(row.lastFinishedAt).toLocaleTimeString("zh-CN",{hour12:false,hour:"2-digit",minute:"2-digit"}) : ""}</td>
+            <td style={{padding:"8px",color: today ? "#333" : "#aaa"}}>{row.lastFinishedAt ? new Date(row.lastFinishedAt).toLocaleString("zh-CN",{hour12:false,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "—"}</td>
           </tr>;
         })}
       </tbody>
