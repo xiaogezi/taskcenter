@@ -95,7 +95,7 @@ export async function runCodexDelegated({ manifest, profile, prompt, signal, log
 
   // --- JSON-RPC transport state ---
   let nextId = 0;
-  const pending = new Map();      // id → { resolve, reject, timer }
+  const pending = new Map();      // id → { method, resolve, reject, timer }
   const listeners = new Map();    // method → Set<callback>
   let partialBuf = "";
   let serverThreadId = null;
@@ -148,7 +148,18 @@ export async function runCodexDelegated({ manifest, profile, prompt, signal, log
         pending.delete(msg.id);
         clearTimeout(entry.timer);
         if (msg.error) entry.reject(new Error(`CODEX_RPC_ERROR: ${msg.error.message || JSON.stringify(msg.error)}`));
-        else entry.resolve(msg.result);
+        else {
+          // Bind the matched response before processing an approval in the same chunk.
+          if (entry.method === "turn/start") {
+            const turnId = msg.result?.turn?.id;
+            if (typeof turnId !== "string" || !turnId) {
+              entry.reject(new Error("CODEX_NO_TURN_ID"));
+              continue;
+            }
+            currentTurnId = turnId;
+          }
+          entry.resolve(msg.result);
+        }
         continue;
       }
       if (msg.method != null && msg.id != null) {
@@ -174,7 +185,7 @@ export async function runCodexDelegated({ manifest, profile, prompt, signal, log
         pending.delete(id);
         reject(new Error(`CODEX_RPC_TIMEOUT: ${method}`));
       }, RPC_TIMEOUT_MS);
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, { method, resolve, reject, timer });
       write({ id, method, params });
     });
   }
@@ -327,17 +338,11 @@ export async function runCodexDelegated({ manifest, profile, prompt, signal, log
     claimed = true;
 
     // --- Phase 5: turn/start ---
-    const turnStartResult = await request("turn/start", {
+    await request("turn/start", {
       threadId: serverThreadId,
       effort: profile.effort,
       input: [{ type: "text", text: prompt }],
     });
-
-    const responseTurnId = turnStartResult?.turn?.id;
-    if (typeof responseTurnId !== "string" || !responseTurnId) {
-      throw new Error("CODEX_NO_TURN_ID");
-    }
-    currentTurnId = responseTurnId;
 
     // A completion that raced ahead of the turn/start response only counts
     // when it matches this exact turn and thread.

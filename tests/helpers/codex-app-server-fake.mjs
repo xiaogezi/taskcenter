@@ -144,9 +144,9 @@ function handleMessage(msg) {
   send({ id, result: {} });
 }
 
-function sendExecApproval(threadId) {
+function sendExecApproval(threadId, prefix = []) {
   const approvalId = ++nextResponseId;
-  send({
+  const request = {
     id: approvalId,
     method: "item/commandExecution/requestApproval",
     params: {
@@ -159,7 +159,8 @@ function sendExecApproval(threadId) {
       kind: "command",
       startedAtMs: Date.now(),
     },
-  });
+  };
+  process.stdout.write([...prefix, request].map(value => JSON.stringify(value)).join("\n") + "\n");
   // Wait for response from client before continuing
   return new Promise((resolve) => {
     pendingResponses.set(approvalId, (response) => {
@@ -203,18 +204,14 @@ function sendUnknownRequest() {
 }
 
 async function handleTurnStart(responseId, params) {
-  // Acknowledge the turn/start request
-  send({ id: responseId, result: { turn: { id: TURN_ID, items: [], status: "inProgress" } } });
-
-  // Send turn/started notification
-  send({ method: "turn/started", params: { threadId: THREAD_ID, turn: { id: TURN_ID, items: [], status: "inProgress" } } });
-
-  // If approval requests are enabled, send them
+  // Batch the start response and approval to deterministically exercise frame ordering.
+  const prefix = [
+    { id: responseId, result: { turn: { id: TURN_ID, items: [], status: "inProgress" } } },
+    { method: "turn/started", params: { threadId: THREAD_ID, turn: { id: TURN_ID, items: [], status: "inProgress" } } },
+  ];
   const threadId = process.env.WRONG_THREAD_APPROVAL === "1" ? "wrong-thread-id" : THREAD_ID;
-
-  if (process.env.SEND_EXEC_APPROVAL === "1") {
-    await sendExecApproval(threadId);
-  }
+  if (process.env.SEND_EXEC_APPROVAL === "1") await sendExecApproval(threadId, prefix);
+  else for (const message of prefix) send(message);
 
   if (process.env.SEND_FILE_APPROVAL === "1") {
     await sendFileChangeApproval(threadId);

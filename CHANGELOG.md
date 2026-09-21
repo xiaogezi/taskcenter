@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复 Codex 同一输出块内 turn/start 回执与命令审批紧邻到达时的身份绑定竞态：先绑定匹配回执，再执行既有 claim、thread、turn 与 Hook 校验，避免合法请求偶发被拒绝。
+
 - Jev 从旁路观察扩展为可启用的派发前判断：阶段类别参与集中路由、同阶段去重、失败确定性回退；主模型直接执行须说明原因并留审计，保留显式模型选择与原有授权门禁。
 
 - Codex 受管派发改用本机 app-server：先创建真实 Session、校验型号并领取 delegation，再提交任务；启动前检查可信 TaskCenter Hook 对命令与文件修改的覆盖，缺失时提前拒绝，避免启动后才因权限失败消耗额度。Codex 仍只用于显式授权或专属验证，不进入普通自动路由。
