@@ -345,13 +345,23 @@ test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动�
     assert.equal(general.route.reasoning_effort, "low");
 
     const second = routingSelect({ ...baseInput, event_id: "policy-second" });
-    assert.equal(second.route.selected_model, mimo, "默认并发为一时回退 MiMo 而不是 Luna");
-    assert.equal(second.route.harness, "claude");
-    assert.equal(second.route.cli_profile, "claude-mimo");
+    assert.equal(second.route.selected_model, kimi, "第二个独立执行复用 K3 的第二个容量名额");
+    assert.equal(second.route.harness, "kimi");
+    assert.equal(second.route.cli_profile, "kimi-k3");
 
     const third = routingSelect({ ...baseInput, event_id: "policy-third" });
-    assert.equal(third.route.available, false, "两端都占满时不可用，不会自动落到 Luna");
-    assert.equal(third.route.selected_model, null);
+    assert.equal(third.route.selected_model, mimo, "K3 两个名额占满后回退 MiMo，而不是 Luna");
+    assert.equal(third.route.harness, "claude");
+    assert.equal(third.route.cli_profile, "claude-mimo");
+
+    const fourth = routingSelect({ ...baseInput, event_id: "policy-fourth" });
+    assert.equal(fourth.route.selected_model, mimo, "Mimo 也使用 executor 角色的第二个容量名额");
+    assert.equal(fourth.route.harness, "claude");
+    assert.equal(fourth.route.cli_profile, "claude-mimo");
+
+    const fifth = routingSelect({ ...baseInput, event_id: "policy-fifth" });
+    assert.equal(fifth.route.available, false, "两端都占满时不可用，不会自动落到 Luna");
+    assert.equal(fifth.route.selected_model, null);
 
     for (const taskClass of ["security", "data_migration", "complex_diagnosis", "high_risk"]) {
       await rm(statePath, { force: true });

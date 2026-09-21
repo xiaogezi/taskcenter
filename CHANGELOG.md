@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 普通 CLI 执行器并发容量调整为每个模型两个租约：K3 两个名额用尽后回退 MiMo 的两个名额，仍不自动使用 Luna；Reviewer 容量不变。
+
 - 修复 Codex 同一输出块内 turn/start 回执与命令审批紧邻到达时的身份绑定竞态：先绑定匹配回执，再执行既有 claim、thread、turn 与 Hook 校验，避免合法请求偶发被拒绝。
 
 - Jev 从旁路观察扩展为可启用的派发前判断：阶段类别参与集中路由、同阶段去重、失败确定性回退；主模型直接执行须说明原因并留审计，保留显式模型选择与原有授权门禁。
