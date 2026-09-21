@@ -305,6 +305,7 @@ export function buildCliRunMetrics(delegations = []) {
   const tokens = { input: 0, output: 0, total: 0, reported: 0 };
   let lastFinishedAt = 0;
   let durationSum = 0, durationCount = 0, durationMax = 0;
+  const activeRuns = [];
   for (const delegation of delegations) {
     if (!delegation || typeof delegation !== "object" || typeof delegation.id !== "string") continue;
     runs += 1;
@@ -316,7 +317,15 @@ export function buildCliRunMetrics(delegations = []) {
     const model = typeof delegation.executorModel === "string" && delegation.executorModel ? delegation.executorModel : "unknown";
     const entry = byModel[model] || (byModel[model] = { runs: 0, active: 0, succeeded: 0, failed: 0, cancelled: 0, durationSum: 0, durationCount: 0, durationMax: 0, lastFinishedAt: 0 });
     entry.runs += 1;
-    if (status === "active") entry.active += 1;
+    if (status === "active") {
+      entry.active += 1;
+      const startedAt = Date.parse(delegation.claimedAt || delegation.createdAt || "");
+      activeRuns.push({
+        model,
+        startedAt: Number.isFinite(startedAt) ? startedAt : null,
+        taskId: delegation.taskId || "",
+      });
+    }
     else if (status === "succeeded") entry.succeeded += 1;
     else if (status === "failed") entry.failed += 1;
     else if (status === "cancelled") entry.cancelled += 1;
@@ -349,6 +358,7 @@ export function buildCliRunMetrics(delegations = []) {
   return {
     runs, active, succeeded, failed, cancelled, byModel, tokens,
     lastFinishedAt: lastFinishedAt || null,
+    activeRuns,
     duration: {
       count: durationCount,
       avgMs: durationCount > 0 ? Math.round(durationSum / durationCount) : null,
