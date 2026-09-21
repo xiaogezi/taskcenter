@@ -226,6 +226,14 @@ TaskCenter 是执行合同、运行状态、验证、Review、验收与路由审
 7. Agent 的 `done_claimed` 仅代表执行声明，提交时必须附带 `tests` 或 `evidence`；随后通过验收条件结果、Verification Claim 和独立 Review Attestation 计算 `completion_readiness`。
 8. `accepted` 只能由携带 `TASKCENTER_ACCEPTANCE_TOKEN` 的独立验收适配器通过 `taskcenter_task_acceptance_report` 上报；来源可以是 human、pull_request、ci、task_platform、context_agent、manual 或 other。普通执行 Agent、`task_report` 和浏览器操作均不能直接设置最终验收。
 
+### Jev 参与派发前判断
+
+服务进程设置 `TASKCENTER_JEV_ROUTING=1` 并通过环境提供 `TYPESAFE_API_KEY` 后，普通 `/routing/select` 请求先让 Jev 判断任务类别与 `delegate/direct/needs_context`，再消费集中模型配置。请求可提供稳定的 `phase_id` 和简短 `phase_summary`；不发送代码、日志或完整会话。相同任务与阶段语义输入在进程内复用结果（包含失败与并发中的请求）；服务重启后可重新判断。
+
+`direct` 请求必须携带 `direct_reason`，在远程调用与租约之前校验。Jev 的 direct 建议不会自动启动主模型执行；`needs_context` 返回可处理的拒绝，要求补足目标或范围。超时、缺失密钥、敏感输入或无效响应沿用原任务类别和非 Codex 执行策略，不循环重试；显式型号、配额策略与 Reviewer 边界继续生效。结果中的 `jev_decision` 保留判断、用量、延迟与降级原因供审计。
+
+这项能力只作用于实际提交的路由请求，不会替主代理启动进程，也不能拦截绕开路由的主模型操作。主代理须按项目规则在新执行阶段先请求判断。关闭环境开关可恢复旧路由行为；后续服务启动仍需提供开关和密钥环境，密钥不写入仓库。已连接的 MCP 客户端需要重新连接才能看到新增可选字段。
+
 主 Agent 派发普通 CLI 执行器时不再重复创建正式子任务。主 Agent 通过 `taskcenter_delegation_grant` 为当前正式任务签发短期授权，CLI 先登记自己的真实 Session，再以一次性 token 调用 `taskcenter_delegation_claim`。授权固定绑定父任务、CLI Session、精确 workspace、声明 scope、可选工具集合、执行模型和 TTL；CLI 用 `taskcenter_cli_run_report` 上报 started/running/终态、改动、测试与证据。CLI Run 只显示在主任务详情中，不获得修改主任务状态、审查或验收的权限。只有存在独立交付物、独立生命周期、独立验收或明确交接边界时，才创建正式子任务。
 
 scope 为文件工具提供可执行的路径边界；可识别路径超出 scope 时 Hook 会阻断。任意 Shell 命令无法可靠静态证明实际写入路径，因此只有 scope 显式为整个 workspace（`.`）时才允许，同时仍受精确 workspace、Session、TTL 和 `allowed_tools` 约束。该机制是任务授权边界，不替代 Codex sandbox 或操作系统隔离。

@@ -673,6 +673,8 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
     session_id: "sess-routing",
     task_id: "task-routing",
     event_id: "routing-native",
+    direct_reason: "人工选择执行路径",
+    jev_decision: { model: "jev-1.13.0", phase_id: "phase-one", input_hash: "hash", status: "succeeded", execution_choice: "delegate", usage: { input_tokens: 80, output_tokens: 12 }, latency_ms: 25 },
     routing_action: "delegate_native",
     orchestrator_model: "gpt-5.6-sol",
     preferred_executor_model: executorModel,
@@ -694,6 +696,10 @@ test("模型路由决定只追加审计记录，不改变任务状态", async ()
   assert.equal(first.task.updatedAt, executionState.updatedAt);
   assert.equal(first.task.lastEventId, executionState.lastEventId);
   assert.equal(first.task.routing.action, "delegate_native");
+  assert.equal(first.task.routing.directReason, "人工选择执行路径");
+  assert.equal(first.task.routing.jevDecision.phase_id, "phase-one");
+  assert.equal(first.task.routing.jevDecision.usage.input_tokens, 80);
+  assert.throws(() => recordTaskEvent({ ...firstInput, direct_reason: "changed" }), /event_id/);
   assert.throws(() => recordTaskEvent({ ...firstInput, event_id: "routing-wrong-preferred", preferred_executor_model: "gpt-6-astra", selected_executor_model: "gpt-6-astra" }), /集中配置不一致/);
   assert.equal(first.task.routing.outcome, "selected");
   assert.equal(first.task.routing.policyVersion, "soft-routing-v1");

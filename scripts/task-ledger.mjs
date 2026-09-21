@@ -19,7 +19,7 @@ import {
 import { listDelegations } from "./delegation-store.mjs";
 import { normalizeBug } from "./bug-workflow.mjs";
 import { configuredPreferredModel } from "./model-role-config.mjs";
-import { reviewSessionRecords, reviewTaskRecords, withReviewStatus } from "./routing-control.mjs";
+import { reviewSessionRecords, reviewTaskRecords, withReviewStatus, sanitizeJevDecision } from "./routing-control.mjs";
 
 import { switchCheckpoint, validateSessionSwitch } from "./session-switch.mjs";
 
@@ -618,7 +618,7 @@ const idempotentEventFields = [
   "due_at", "estimated_effort_ms", "estimate_reason",
   "tool_use_id", "routing_action", "orchestrator_model", "preferred_executor_model",
   "selected_executor_model", "dispatch_channel", "routing_reason", "routing_outcome", "policy_version",
-  "fallback_from", "fallback_reason", "retry_after_at", "review_artifacts",
+  "fallback_from", "fallback_reason", "retry_after_at", "review_artifacts", "jev_decision", "direct_reason",
   "preference_mode", "quota_limit_id", "quota_snapshot_observed_at", "quota_used_percent", "quota_reset_at",
   "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
   "execution_model_policy",
@@ -1039,6 +1039,8 @@ function normalizeEvent(input, current = null, legacyText = false) {
     selected_executor_model: cleanText(input.selected_executor_model, 120),
     dispatch_channel: cleanText(input.dispatch_channel, 40),
     routing_reason: cleanText(input.routing_reason, 1_000),
+    ...(input.jev_decision ? { jev_decision: sanitizeJevDecision(input.jev_decision) } : {}),
+    ...(input.direct_reason ? { direct_reason: cleanText(input.direct_reason, 1_000) } : {}),
     reasoning_effort: cleanText(input.reasoning_effort, 40),
     routing_outcome: cleanText(input.routing_outcome, 40),
     fallback_from: cleanText(input.fallback_from, 120),
@@ -1178,6 +1180,8 @@ function applyEvent(current, event) {
       reasoningEffort: event.reasoning_effort || undefined,
       dispatchChannel: event.dispatch_channel,
       reason: event.routing_reason,
+      jevDecision: event.jev_decision || undefined,
+      directReason: event.direct_reason || undefined,
       outcome: event.routing_outcome,
       policyVersion: event.policy_version,
       recordedAt: event.created_at,

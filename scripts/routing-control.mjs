@@ -123,7 +123,30 @@ export function reportReview(input, task, commit, canonical = (id) => id, now = 
 
 export function routeForId(id) { return readState().routes.find((route) => route.id === id); }
 
-export function routingSelect(input, now = new Date().toISOString()) {
+// 仅保留结构化决策与调用用量；签名单独排除 latency/usage，不存原文。
+export function sanitizeJevDecision(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    usage: value.usage && Number.isSafeInteger(value.usage.input_tokens) && value.usage.input_tokens >= 0 && Number.isSafeInteger(value.usage.output_tokens) && value.usage.output_tokens >= 0
+      ? { input_tokens: value.usage.input_tokens, output_tokens: value.usage.output_tokens } : null,
+    latency_ms: Number.isFinite(value.latency_ms) && value.latency_ms >= 0 ? value.latency_ms : null,
+    phase_id: clean(String(value.phase_id ?? ""), 120) || null,
+    input_hash: clean(String(value.input_hash ?? ""), 120) || null,
+    requested_task_class: clean(String(value.requested_task_class ?? ""), 80) || null,
+    requested_channel: clean(String(value.requested_channel ?? ""), 40) || null,
+    task_class_choice: clean(String(value.task_class_choice ?? ""), 80) || null,
+    task_class_confidence: Number.isFinite(value.task_class_confidence) ? value.task_class_confidence : null,
+    execution_choice: clean(String(value.execution_choice ?? ""), 40) || null,
+    execution_confidence: Number.isFinite(value.execution_confidence) ? value.execution_confidence : null,
+    model: clean(String(value.model ?? ""), 120) || null,
+    status: clean(String(value.status ?? ""), 40) || null,
+    error: clean(String(value.error ?? ""), 120) || null,
+  };
+}
+
+// jevDecision 是服务端生成的可信内部参数；HTTP body 的同名字段不会被消费。
+export function routingSelect(input, now = new Date().toISOString(), jevDecision = null) {
+  const jev = sanitizeJevDecision(jevDecision);
   let config;
   try { config = loadModelRoleConfig(); }
   catch (error) {
@@ -159,10 +182,17 @@ export function routingSelect(input, now = new Date().toISOString()) {
 
   const state = readState();
   expireRoutes(state, now);
+  const directReason = clean(input.direct_reason, 1000);
   const signatureInput = { taskId, orchestratorModel, requestedPreferredModel, executionModelPolicy, taskClass, channel };
   if (profile) signatureInput.cliProfile = input.cli_profile;
   if (input.review_context) signatureInput.reviewContext = input.review_context;
   if (reviewArtifacts) signatureInput.reviewArtifacts = reviewArtifacts;
+  if (directReason) signatureInput.directReason = directReason;
+  if (jev) signatureInput.jev = {
+    phase_id: jev.phase_id, input_hash: jev.input_hash,
+    requested_task_class: jev.requested_task_class, requested_channel: jev.requested_channel,
+    task_class_choice: jev.task_class_choice, execution_choice: jev.execution_choice,
+  };
   const signature = signatureOf(signatureInput);
   const replay = state.routes.find((route) => route.selectEventId === eventId);
   if (replay) {
@@ -219,7 +249,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
         reason: "quota_fallback_model_unavailable", fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
         configVersion: config.contentHash, policyVersion: config.schemaVersion,
         matchedRule: "task.execution_model_policy.quota_preferred",
-        preferenceMode: executionModelPolicy.mode, quota, selectedReasoningEffort,
+        preferenceMode: executionModelPolicy.mode, quota, selectedReasoningEffort, jevDecision: jev, directReason,
       });
       state.routes.push(route);
       route.selectAuditEvents = auditEventsFor(route, fallback, "selection_unavailable");
@@ -247,7 +277,7 @@ export function routingSelect(input, now = new Date().toISOString()) {
         configVersion: config.contentHash,
         policyVersion: config.schemaVersion,
         matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPreferred),
-        preferenceMode: executionModelPolicy.mode, quota, selectedReasoningEffort,
+        preferenceMode: executionModelPolicy.mode, quota, selectedReasoningEffort, jevDecision: jev, directReason,
       });
       state.routes.push(route);
       route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
@@ -297,6 +327,8 @@ export function routingSelect(input, now = new Date().toISOString()) {
     quotaSnapshotObservedAt: quota?.observedAt || "",
     quotaUsedPercent: quota?.usedPercent,
     quotaResetAt: quota?.retryAfterAt || "",
+    directReason,
+    jevDecision: jev,
     configVersion: config.contentHash,
     policyVersion: config.schemaVersion,
     matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPreferred),
@@ -471,7 +503,7 @@ function buildUnavailableRoute({
   eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now, reason,
   fallbackFrom = "", fallbackReason = "", retryAfterAt = "", reviewArtifacts = null,
   configVersion = "", policyVersion = "", matchedRule = "", preferenceMode = "auto", quota = null,
-  selectedReasoningEffort = "low",
+  selectedReasoningEffort = "low", jevDecision = null, directReason = "",
 }) {
   return {
     id: `route_${randomUUID()}`,
@@ -490,6 +522,8 @@ function buildUnavailableRoute({
     fallbackReason,
     retryAfterAt,
     reviewArtifacts,
+    jevDecision,
+    directReason,
     configVersion,
     policyVersion,
     matchedRule,
@@ -600,6 +634,8 @@ function publicRoute(route) {
     policy_version: route.policyVersion || null,
     matched_rule: route.matchedRule || null,
     preference_mode: route.preferenceMode || "auto",
+    direct_reason: route.directReason || null,
+    jev_decision: route.jevDecision || null,
     quota_limit_id: route.quotaLimitId || null,
     quota_snapshot_observed_at: route.quotaSnapshotObservedAt || null,
     quota_used_percent: Number.isFinite(route.quotaUsedPercent) ? route.quotaUsedPercent : null,
@@ -654,6 +690,8 @@ function auditEventsFor(route, health, transition, phase = "select") {
       ...(Number.isFinite(route.quotaUsedPercent) ? { quota_used_percent: route.quotaUsedPercent } : {}),
       quota_reset_at: route.quotaResetAt,
       review_artifacts: route.reviewArtifacts,
+      direct_reason: route.directReason || null,
+      jev_decision: route.jevDecision || null,
       routing_outcome: route.status === "succeeded" ? "succeeded" : ["failed", "overloaded", "unavailable"].includes(route.status) ? "failed" : "selected",
       policy_version: "routing-control-v5",
       route_id: route.id,

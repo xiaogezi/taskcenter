@@ -379,6 +379,9 @@ server.registerTool("taskcenter_routing_select", {
     event_id: z.string().max(200).optional(),
     route_id: z.string().max(200).optional(),
     review_artifacts: routingReviewArtifacts.optional().describe("OCR 路由必填；Subject、OCR Bundle 与规则各提供 ref 或 fingerprint"),
+    phase_id: z.string().max(200).optional().describe("Jev 路由阶段标识；未传入时由服务端派生"),
+    phase_summary: z.string().max(1000).optional().describe("当前阶段摘要，用于 Jev 路由分类；仅发送标题/目标/阶段摘要，不发送代码或日志"),
+    direct_reason: z.string().min(1).max(1000).optional().describe("Jev 启用模式下 channel=direct 时必填；记录 direct 执行理由并审计"),
     lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input, extra) => {

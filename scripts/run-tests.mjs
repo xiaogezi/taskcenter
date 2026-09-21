@@ -15,9 +15,12 @@ const files = integration
       .map((name) => `tests/${name}`);
 const env = {
   ...process.env,
+  TASKCENTER_JEV_ROUTING: "0",
   TASKCENTER_DASHBOARD_PATH: integration ? "data/dashboard.json" : ".local/test-dashboard.json",
   ...(integration ? { TASKCENTER_TEST_MODE: "integration" } : {}),
 };
+// Test subprocesses must never inherit the live Jev credential.
+delete env.TYPESAFE_API_KEY;
 const child = spawn(process.execPath, ["--test", ...files], {
   cwd: projectRoot,
   env,

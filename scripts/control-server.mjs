@@ -91,6 +91,7 @@ import {
   routingSelect,
   isReviewTaskClass, validateReviewRequest, claimReview, reportReview, reviewSessionRecords, reviewTaskRecords, routeForId,
 } from "./routing-control.mjs";
+import { prepareRoutingInput } from "./jev-routing.mjs";
 import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.mjs";
 import { readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
@@ -651,6 +652,7 @@ const server = createServer(async (request, response) => {
         ? validateReviewRequest(body, task, loadSessionRegistry(), canonicalSessionId) : null;
       if (reviewContext) verifyBoundMcpRequest(request);
       if (!reviewContext && (!task || !["planned", "in_progress", "blocked"].includes(task.status))) throw new RoutingControlError(409, "routing_select 要求存在活跃正式任务。");
+
       const sessionId = canonicalSessionId(task.sessionId);
       const sessionModel = loadSessionRegistry()[sessionId]?.model;
       const orchestratorModel = sessionModel && sessionModel !== "unknown"
@@ -661,10 +663,12 @@ const server = createServer(async (request, response) => {
       if (executionModelPolicy.mode === "quota_preferred" && body.preferred_model && body.preferred_model !== executionModelPolicy.preferred_model) {
         throw new RoutingControlError(409, "routing_select 的 preferred_model 与任务持久化策略不一致。");
       }
+      // 通过统一入口完成 direct_reason 门禁、Jev 评估与应用；伪造的 body.jev_decision 在此被剥离。
+      const prepared = await prepareRoutingInput(body, task, { executionModelPolicy });
       const quotaSnapshot = executionModelPolicy.quota_limit_id
         ? currentUsageReport().rate_limits?.by_limit_id?.[executionModelPolicy.quota_limit_id] || null
         : null;
-      const result = routingSelect({ ...body, review_context: reviewContext, orchestrator_model: orchestratorModel, execution_model_policy: executionModelPolicy, quota_snapshot: quotaSnapshot });
+      const result = routingSelect({ ...prepared.input, review_context: reviewContext, orchestrator_model: orchestratorModel, execution_model_policy: executionModelPolicy, quota_snapshot: quotaSnapshot }, undefined, prepared.jevDecision);
       recordRoutingAudit(result.auditEvents, task);
       sendJson(response, result.idempotent ? 200 : 201, { accepted: true, ...result, auditEvents: undefined });
       return;
