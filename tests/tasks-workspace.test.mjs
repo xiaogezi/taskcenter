@@ -34,8 +34,8 @@ test("任务状态列保持可读并提供受控处理入口", () => {
 
   assert.match(componentSource, /<th>操作<\/th>/);
   assert.match(componentSource, /X-TaskCenter-Action": "delegate"/);
-  assert.match(componentSource, /window\.confirm\(`确认取消任务/);
-  assert.match(componentSource, /window\.confirm\(`确认归档任务/);
+  assert.match(componentSource, /askConfirm\(`确认取消任务/);
+  assert.match(componentSource, /askConfirm\(`确认归档任务/);
   assert.match(componentSource, /taskActions\(task\)/);
   assert.match(styleSource, /\.status-chip \{[^}]*display: inline-flex;[^}]*white-space: nowrap;/);
   assert.match(styleSource, /\.task-table \{[^}]*min-width: 1040px;/);

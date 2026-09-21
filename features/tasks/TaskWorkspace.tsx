@@ -61,6 +61,9 @@ export function TaskWorkspace() {
   const [refreshing, setRefreshing] = useState(false);
   const actionInFlight = useRef(false);
   const [actingTaskId, setActingTaskId] = useState("");
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; resolve: (v: boolean) => void } | null>(null);
+  const askConfirm = (message: string) => new Promise<boolean>((resolve) => setConfirmDialog({ message, resolve }));
+  const closeConfirm = (v: boolean) => setConfirmDialog((cur) => { if (cur) cur.resolve(v); return null; });
   const [detailFetch, setDetailFetch] = useState<DetailFetch>(initialDetailFetch);
   const [eventsFetch, setEventsFetch] = useState<EventsFetch>(initialEventsFetch);
   const listInFlight = useRef(false);
@@ -139,9 +142,9 @@ export function TaskWorkspace() {
 
   const act = async (task: Task, action: TaskAction) => {
     if (actionInFlight.current) return;
-    if (action === "start" && !window.confirm(`将任务“${text(task.title)}”设为执行中？这里只更新任务状态，不会自动启动或唤醒 Agent；请在关联会话继续处理。`)) return;
-    if (action === "cancel" && !window.confirm(`确认取消任务“${text(task.title)}”？任务历史会保留，此操作不会停止正在运行的 Agent。`)) return;
-    if (action === "archive" && !window.confirm(`确认归档任务“${text(task.title)}”？任务将从列表隐藏，历史会保留；请保存详情链接以便取消归档。`)) return;
+    if (action === "start" && !(await askConfirm(`将任务“${text(task.title)}”设为执行中？这里只更新任务状态，不会自动启动或唤醒 Agent；请在关联会话继续处理。`))) return;
+    if (action === "cancel" && !(await askConfirm(`确认取消任务“${text(task.title)}”？任务历史会保留，此操作不会停止正在运行的 Agent。`))) return;
+    if (action === "archive" && !(await askConfirm(`确认归档任务“${text(task.title)}”？任务将从列表隐藏，历史会保留；请保存详情链接以便取消归档。`))) return;
     actionInFlight.current = true;
     setActingTaskId(task.id);
     setNotice("");
@@ -161,7 +164,19 @@ export function TaskWorkspace() {
     }
   };
 
-  return <main className={state.task ? "task-workspace with-open-detail" : "task-workspace"}>
+  return <>
+    {confirmDialog && (
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={() => closeConfirm(false)}>
+        <div style={{background:"#fff",borderRadius:12,padding:"24px 28px",maxWidth:440,boxShadow:"0 10px 40px rgba(0,0,0,0.2)",fontSize:14,lineHeight:1.6}} onClick={e => e.stopPropagation()}>
+          <p style={{margin:"0 0 20px",color:"#222"}}>{confirmDialog.message}</p>
+          <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+            <button onClick={() => closeConfirm(false)} style={{padding:"8px 18px",borderRadius:8,border:"1px solid #ddd",background:"#fff",cursor:"pointer"}}>取消</button>
+            <button onClick={() => closeConfirm(true)} style={{padding:"8px 18px",borderRadius:8,border:"none",background:"#1976d2",color:"#fff",cursor:"pointer",fontWeight:500}}>确认</button>
+          </div>
+        </div>
+      </div>
+    )}
+  <main className={state.task ? "task-workspace with-open-detail" : "task-workspace"}>
     <aside className="task-nav"><a className="task-logo" href="/tasks">TASK<span>CENTER</span></a><nav><a className="active" href="/tasks">任务工作区</a><a href="/sessions">会话</a><a href="/routing">模型调度</a><a href="/improvements">改进建议</a><a href="/settings">设置</a></nav></aside>
     <section className="task-main"><header className="task-header"><div><p>LOCAL CONTROL API</p><h1>任务工作区</h1><small>任务事实、证据与活动均来自本地 Control API。</small></div><button disabled={refreshing || loading} onClick={() => { setRefreshing(true); setPollTick(current => current + 1); }}>{refreshing ? "刷新中…" : "刷新"}</button></header>
       <section className="task-stats" aria-label="任务统计">{([['planned','新建'],['in_progress','执行中'],['completed','已完成'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
@@ -182,7 +197,8 @@ export function TaskWorkspace() {
       <footer className="task-pagination"><button disabled={state.page <= 1} onClick={() => update({ page: state.page - 1 })}>上一页</button><span>第 {state.page} / {payload.totalPages ?? "未知"} 页</span><button disabled={refreshing || !payload.totalPages || state.page >= Number(payload.totalPages)} onClick={() => update({ page: state.page + 1 })}>下一页</button></footer>
     </section>
     {state.task && <aside className="task-detail" aria-label="任务详情"><button className="detail-close" onClick={() => update({ task: "", tab: "overview" })}>关闭</button><h2>{text(detail?.value?.title || tasks.find((task) => task.id === state.task)?.title)}</h2><small>{state.task}</small>{detail?.value && <section aria-label="任务操作"><p>以下操作只更新任务记录，不会启动或停止 Agent。</p>{(taskActions(detail.value) as TaskRowAction[]).map(item => <button disabled={Boolean(actingTaskId)} key={item.action} onClick={() => void act(detail.value!, item.action)}>{actingTaskId === state.task ? "处理中…" : item.label}</button>)}{typeof detail.value.sessionId === "string" && <p><a href={`/sessions?session=${encodeURIComponent(detail.value.sessionId)}`}>查看关联会话</a></p>}</section>}<div className="detail-tabs">{([['overview','概览'],['bug','Bug 闭环'],['routing','调度'],['evidence','证据'],['activity','活动']] as const).map(([tab, label]) => <button className={state.tab === tab ? "selected" : ""} key={tab} onClick={() => update({ tab })}>{label}</button>)}</div>{state.tab !== "activity" && <FetchStatus fetch={detail} loading={detailLoading} label="详情" />}{state.tab === "bug" && detail?.value && <BugDetails key={state.task} task={detail.value} onChanged={() => setPollTick(current => current + 1)} />}{state.tab === "overview" && <DetailOverview fetch={detail} />}{state.tab === "routing" && <RoutingDetails fetch={detail} />}{state.tab === "evidence" && <Evidence fetch={detail} />}{state.tab === "activity" && <Activity fetch={events} loading={eventsLoading} />}</aside>}
-  </main>;
+  </main>
+</>;
 }
 
 function FetchStatus({ fetch, loading, label }: { fetch: { error: string; lastSuccessAt: number } | null; loading: boolean; label: string }) {
