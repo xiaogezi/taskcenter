@@ -134,26 +134,31 @@ function Routing() {
     </div>
     <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
       <thead><tr style={{textAlign:"left",color:"#888",borderBottom:"1px solid #eee"}}>
-        <th style={{padding:"6px 8px",width:22}}></th>
+        <th style={{padding:"6px 8px",width:80}}>状态</th>
+        <th style={{padding:"6px 8px",width:90}}>活跃度</th>
         <th style={{padding:"6px 8px"}}>模型</th>
-        <th style={{padding:"6px 8px",width:"30%"}}>工作量</th>
+        <th style={{padding:"6px 8px",width:"25%"}}>工作量</th>
         <th style={{padding:"6px 8px",width:50}}>次数</th>
-        <th style={{padding:"6px 8px",width:80}}>成功率</th>
+        <th style={{padding:"6px 8px",width:70}}>成功率</th>
         <th style={{padding:"6px 8px",width:60}}>平均</th>
-        <th style={{padding:"6px 8px",width:110}}>最后运行</th>
+        <th style={{padding:"6px 8px",width:120}}>最后执行</th>
       </tr></thead>
       <tbody>
         {rows.map(([model, row]) => {
           const r = pct(row.succeeded ?? 0, row.runs);
           const today = isToday(row.lastFinishedAt);
-          return <tr key={model} style={{borderBottom:"1px solid #f5f5f5",background: today ? "#f1f8e9" : "transparent"}}>
-            <td style={{padding:"8px"}}><span style={{display:"inline-block",width:10,height:10,borderRadius:5,background:activeDot(row.lastFinishedAt)}}/></td>
+          const activeNow = (row.active ?? 0) > 0;
+          const ageH = row.lastFinishedAt ? (now - row.lastFinishedAt) / 3600000 : null;
+          const ageLabel = !row.lastFinishedAt ? "从未" : ageH! < 24 ? "今天" : ageH! < 48 ? "昨天" : ageH! < 24*7 ? `${Math.floor(ageH!/24)}天前` : ageH! < 24*30 ? `${Math.floor(ageH!/24/7)}周前` : "更久";
+          return <tr key={model} style={{borderBottom:"1px solid #f5f5f5",background: activeNow ? "#e8f5e9" : today ? "#f1f8e9" : "transparent"}}>
+            <td style={{padding:"8px"}}>{activeNow ? <span style={{color:"#2e7d32",fontWeight:600}}>● 运行中</span> : <span style={{color:"#aaa"}}>空闲</span>}</td>
+            <td style={{padding:"8px"}}><span style={{display:"inline-block",width:8,height:8,borderRadius:4,background:activeDot(row.lastFinishedAt),marginRight:6,verticalAlign:"middle"}}/><span style={{color:"#666"}}>{ageLabel}</span></td>
             <td style={{padding:"8px",fontWeight:500}}>{model}</td>
             <td style={{padding:"8px"}}><div style={{height:8,background:"#e0e0e0",borderRadius:4,overflow:"hidden"}}><div style={{height:"100%",width:`${(row.runs / maxRuns * 100).toFixed(0)}%`,background:"#1976d2",borderRadius:4}}/></div></td>
             <td style={{padding:"8px"}}>{row.runs}</td>
             <td style={{padding:"8px"}}><span style={{color: bucket(r),fontWeight:600}}>{pctText(row.succeeded ?? 0, row.runs)}</span></td>
             <td style={{padding:"8px",color:"#666"}}>{fmtDur(row.durationCount ? (row.durationSum || 0) / row.durationCount : null)}</td>
-            <td style={{padding:"8px",color: today ? "#333" : "#aaa"}}>{fmtShortTs(row.lastFinishedAt)}</td>
+            <td style={{padding:"8px",color: today ? "#333" : "#aaa"}}>{fmtShortTs(row.lastFinishedAt)}{row.lastFinishedAt ? " " + new Date(row.lastFinishedAt).toLocaleTimeString("zh-CN",{hour12:false,hour:"2-digit",minute:"2-digit"}) : ""}</td>
           </tr>;
         })}
       </tbody>
