@@ -299,7 +299,10 @@ function delegationUsageTokens(delegation) {
 
 // CLI 执行器聚合：运行次数、状态分布、按执行器模型分组、回执 Token 累计。
 // 只统计 delegation 回执证据中可解析的用量，缺失不推断为 0。
-export function buildCliRunMetrics(delegations = []) {
+export function buildCliRunMetrics(delegations = [], now = Date.now()) {
+  const statusCounts = {};
+  const recentRuns = [];
+  let claimed = 0, excluded = 0;
   const byModel = {};
   let runs = 0, active = 0, succeeded = 0, failed = 0, cancelled = 0;
   const tokens = { input: 0, output: 0, total: 0, reported: 0 };
@@ -308,6 +311,10 @@ export function buildCliRunMetrics(delegations = []) {
   const activeRuns = [];
   for (const delegation of delegations) {
     if (!delegation || typeof delegation !== "object" || typeof delegation.id !== "string") continue;
+    if (delegation.channel !== "cli") { excluded += 1; continue; }
+    if (delegation.claimedAt) claimed += 1;
+    statusCounts[delegation.status || "unknown"] = (statusCounts[delegation.status || "unknown"] || 0) + 1;
+    recentRuns.push(Object.fromEntries(["id", "taskId", "workspace", "executorModel", "status", "runStatus", "createdAt", "claimedAt", "lastObservedAt", "completedAt", "expiresAt"].map((key) => [key, delegation[key] || null])));
     runs += 1;
     const status = delegation.status || "";
     if (status === "active") active += 1;
@@ -337,7 +344,7 @@ export function buildCliRunMetrics(delegations = []) {
       tokens.reported += 1;
     }
     // 运行时长：completedAt - claimedAt（兜底 createdAt）
-    const start = Date.parse(delegation.claimedAt || delegation.createdAt || "");
+    const start = Date.parse(delegation.claimedAt || "");
     const end = Date.parse(delegation.completedAt || "");
     if (Number.isFinite(end) && end > 0) {
       if (end > lastFinishedAt) lastFinishedAt = end;
@@ -356,7 +363,8 @@ export function buildCliRunMetrics(delegations = []) {
     }
   }
   return {
-    runs, active, succeeded, failed, cancelled, byModel, tokens,
+    runs, active, succeeded, failed, cancelled, byModel, tokens, claimed, excluded, statusCounts, observedAt: now,
+    recentRuns: recentRuns.sort((a, b) => Number(["active", "issued"].includes(b.status)) - Number(["active", "issued"].includes(a.status)) || Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0)).slice(0, 50),
     lastFinishedAt: lastFinishedAt || null,
     activeRuns,
     duration: {

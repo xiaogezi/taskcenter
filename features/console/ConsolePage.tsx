@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { cliRunStatusLabel } from "@/lib/task-detail.mjs";
 import { isExpiredRateWindow, rateLimitPools, recentRoutingRows, usageToday } from "@/lib/routing-console.mjs";
 
 type Section = "sessions" | "routing" | "improvements" | "settings";
@@ -15,7 +16,8 @@ type RoutingData = { models?: ModelHealth[]; roles?: { executor?: ModelRole; rev
 type RateWindow = { used_percent?: number | null; window_minutes?: number | null; resets_at?: number | null };
 type RatePool = { limit_id?: string; limit_name?: string | null; primary?: RateWindow | null; secondary?: RateWindow | null; observed_at?: string | null; provider?: string | null; source?: string; models?: string[]; notes?: string };
 type UsageData = { generatedAt?: string; rate_limits?: { primary?: RateWindow; by_limit_id?: Record<string, RatePool> }; windows?: { "24h"?: { totals?: unknown; byModel?: unknown; modelContinuations?: number } }; snapshotStatus?: { stale?: boolean; lastSuccessAt?: string; lastRefreshError?: string } };
-type CliRunMetrics = { runs: number; active: number; succeeded: number; failed: number; cancelled: number; byModel: Record<string, { runs: number; active?: number; succeeded: number; failed: number; cancelled: number; durationSum?: number; durationCount?: number; durationMax?: number; lastFinishedAt?: number }>; tokens: { input: number; output: number; total: number; reported: number }; lastFinishedAt?: number | null; activeRuns?: Array<{ model: string; startedAt: number | null; taskId: string }>; duration?: { count: number; avgMs: number | null; maxMs: number | null; totalMs: number | null } };
+type CliObservation = { id: string; taskId: string; workspace: string; executorModel: string; status: string; runStatus?: string; createdAt?: string; claimedAt?: string; lastObservedAt?: string; completedAt?: string; expiresAt?: string };
+type CliRunMetrics = { claimed?: number; excluded?: number; statusCounts?: Record<string, number>; recentRuns?: CliObservation[]; runs: number; active: number; succeeded: number; failed: number; cancelled: number; byModel: Record<string, { runs: number; active?: number; succeeded: number; failed: number; cancelled: number; durationSum?: number; durationCount?: number; durationMax?: number; lastFinishedAt?: number }>; tokens: { input: number; output: number; total: number; reported: number }; lastFinishedAt?: number | null; activeRuns?: Array<{ model: string; startedAt: number | null; taskId: string }>; duration?: { count: number; avgMs: number | null; maxMs: number | null; totalMs: number | null } };
 type GovernanceData = { cliRuns?: CliRunMetrics; completedTasks?: number; reworkRate?: number | null; snapshotStatus?: { stale?: boolean } };
 type RoutingTask = { id: string; title?: string; updatedAt?: string; routingHistory?: Array<{ routeId?: string; selectedExecutorModel?: string; reason?: string; outcome?: string; recordedAt?: string }>; routingResult?: { routeId?: string; outcome?: string }; routingResultHistory?: Array<{ routeId?: string; outcome?: string }> };
 type RoutingRow = { taskId: string; taskTitle: string; routeId: string; model: string; reason: string; outcome: string; recordedAt: string };
@@ -91,6 +93,20 @@ function Routing() {
   const [state, setState] = useState<RoutingData>(); const [usage, setUsage] = useState<UsageData>(); const [governance, setGovernance] = useState<GovernanceData>(); const [tasks, setTasks] = useState<RoutingTask[]>([]); const [preset, setPreset] = useState("saving"); const [threshold, setThreshold] = useState(0); const [notice, setNotice] = useState(""); const [refreshing, setRefreshing] = useState(false); const [loaded, setLoaded] = useState(false); const [now, setNow] = useState(() => Date.now());
   const load = useCallback(async () => { setRefreshing(true); setNotice(""); try { const [health, policy, nextUsage, taskData, governanceData] = await Promise.all([api<RoutingData>("/routing/health"), api<{ policy?: { preset?: string; threshold_percent?: number } }>("/routing/optional-astra-policy"), api<UsageData>("/usage-report"), api<{ tasks?: RoutingTask[] }>("/tasks?view=summary&page_size=100"), api<GovernanceData>("/governance-metrics")]); setState(health); setUsage(nextUsage); setTasks(taskData.tasks || []); setGovernance(governanceData); setPreset(policy.policy?.preset || "saving"); setThreshold(policy.policy?.threshold_percent || 0); setSavedPolicy({ preset: policy.policy?.preset || "saving", threshold: policy.policy?.threshold_percent || 0 }); setLoaded(true); setNow(Date.now()); const at = new Date().toLocaleTimeString("zh-CN", { hour12: false }); setNotice(nextUsage.snapshotStatus?.lastRefreshError ? `读取成功，但指标刷新异常：${nextUsage.snapshotStatus.lastRefreshError} · ${at}` : `刷新成功：${at}`); } catch (error) { setNotice(`刷新失败：${error instanceof Error ? error.message : "读取失败"}`); } finally { setRefreshing(false); } }, []);
   useEffect(() => { const timer = window.setTimeout(load, 0); return () => window.clearTimeout(timer); }, [load]);
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refreshRuns = async () => {
+      try {
+        const next = await api<GovernanceData>("/governance-metrics");
+        if (!stopped) { setGovernance(next); setNow(Date.now()); }
+      } catch {
+        if (!stopped) { setGovernance(current => current ? { ...current, snapshotStatus: { ...current.snapshotStatus, stale: true } } : current); setNow(Date.now()); }
+      } finally { if (!stopped) timer = setTimeout(refreshRuns, 5000); }
+    };
+    timer = setTimeout(refreshRuns, 5000);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, []);
   const save = () => run(async () => { try { await api("/routing/optional-astra-policy", { method: "POST", headers: actionHeaders, body: JSON.stringify({ preset, threshold_percent: Number(threshold) }) }); setNotice("策略已更新"); await load(); } catch (error) { setNotice(error instanceof Error ? error.message : "更新失败"); } });
   const roles = state?.roles || {};
   const pools = rateLimitPools(usage, (state?.roles as { quota_pools?: QuotaPool[] })?.quota_pools || []) as RatePool[]; const routes = recentRoutingRows(tasks) as RoutingRow[]; const today = usageToday(usage);
@@ -106,7 +122,8 @@ function Routing() {
   const reportRatio = cr.runs > 0 ? (cr.tokens.reported / cr.runs * 100).toFixed(1) : "0";
   const fmtDur = (ms: number | null | undefined) => { if (!ms || !Number.isFinite(ms)) return "—"; const m = Math.round(ms / 60000); if (m < 60) return `${m}m`; const h = Math.floor(m / 60); return `${h}h${m % 60}m`; };
   const fmtShortTs = (ms: number | null | undefined) => { if (!ms) return "—"; const d = new Date(ms); const now = new Date(); const sameYear = d.getFullYear() === now.getFullYear(); const md = `${d.getMonth()+1}/${d.getDate()}`; return sameYear ? md : `${d.getFullYear()}/${md}`; };
-  const running = cr.activeRuns || [];
+  const observations = cr.recentRuns || [];
+  const running = observations.filter((run) => run.status === "active");
   const rows = Object.entries(cr.byModel).sort((a, b) => (b[1].lastFinishedAt || 0) - (a[1].lastFinishedAt || 0));
   const maxRuns = rows[0]?.[1].runs || 1;
   const bucket = (p: number) => p >= 0.5 ? "#2e7d32" : p >= 0.3 ? "#f9a825" : "#c62828";
@@ -126,20 +143,24 @@ function Routing() {
     </div>
   );
   return <div className="console-list"><article className="console-card">
-    {running.length ? <p style={{background:"#e8f5e9",padding:"8px 12px",borderRadius:6,marginBottom:12,marginTop:0}}><strong>● 正在执行 {running.length} 个：</strong>{running.map((run, i) => { const elapsed = run.startedAt ? Math.max(0, Math.round((now - run.startedAt) / 60000)) : null; return <span key={i} style={{marginRight:12}}>{run.model}{elapsed !== null ? `（${elapsed}m）` : ""}</span>; })}</p> : <p style={{color:"#888",marginTop:0}}>当前无执行中任务</p>}
+    <p>已领取且未收尾：{running.length} 条。每 5 秒刷新。状态依据执行器回报与心跳；无记录不代表本机没有 CLI 进程。{governance?.snapshotStatus?.stale ? " 数据快照已过期，请刷新。" : ""}</p>
+    <p>状态分布：{Object.entries(cr.statusCounts || {}).map(([status, count]) => `${cliRunStatusLabel({ status }, now).label} ${count}`).join(" · ")}</p>
+    <table style={{width:"100%",fontSize:13,marginBottom:16}}><caption>最近 CLI 派发（最多 50 条，未收尾优先）</caption><thead><tr><th>模型 / 任务</th><th>回报状态</th><th>最后心跳</th><th>工作区</th></tr></thead><tbody>
+      {observations.map((run) => <tr key={run.id}><td>{run.executorModel}<br/><small>{run.taskId}</small></td><td>{cliRunStatusLabel(run, now).label}{run.status === "issued" && run.expiresAt && Date.parse(run.expiresAt) < now ? "（授权已到期）" : ""}</td><td>{run.lastObservedAt ? new Date(run.lastObservedAt).toLocaleString("zh-CN", {hour12:false}) : "无心跳证据"}</td><td style={{overflowWrap:"anywhere"}}>{run.workspace}</td></tr>)}
+    </tbody></table>
     <div style={{display:"flex",gap:12,marginBottom:16}}>
-      {statCard(String(cr.runs), "总运行", `成功 ${cr.succeeded} · 失败 ${cr.failed} · 取消 ${cr.cancelled}`)}
+      {statCard(String(cr.runs), "CLI 授权记录", `已领取 ${cr.claimed ?? 0} · 排除 native/未知通道 ${cr.excluded ?? 0}`)}
       {statCard(`${reportRatio}%`, "回执上报率", `仅 ${cr.tokens.reported}/${cr.runs} 次有 usage`)}
-      {statCard(fmtDur(cr.duration?.totalMs), "总耗时", `平均 ${fmtDur(cr.duration?.avgMs)} · 最长 ${fmtDur(cr.duration?.maxMs)}`)}
+      {statCard(fmtDur(cr.duration?.totalMs), "领取至结案时长", `平均 ${fmtDur(cr.duration?.avgMs)} · 最长 ${fmtDur(cr.duration?.maxMs)}`)}
     </div>
     <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
       <thead><tr style={{textAlign:"left",color:"#888",borderBottom:"1px solid #eee"}}>
         <th style={{padding:"6px 8px",width:80}}>状态</th>
         <th style={{padding:"6px 8px",width:90}}>活跃度</th>
         <th style={{padding:"6px 8px"}}>模型</th>
-        <th style={{padding:"6px 8px",width:"25%"}}>工作量</th>
+        <th style={{padding:"6px 8px",width:"25%"}}>授权占比</th>
         <th style={{padding:"6px 8px",width:50}}>次数</th>
-        <th style={{padding:"6px 8px",width:70}}>成功率</th>
+        <th style={{padding:"6px 8px",width:70}}>成功 / 授权</th>
         <th style={{padding:"6px 8px",width:60}}>平均</th>
         <th style={{padding:"6px 8px",width:120}}>最后执行</th>
       </tr></thead>
@@ -149,9 +170,9 @@ function Routing() {
           const today = isToday(row.lastFinishedAt);
           const activeNow = (row.active ?? 0) > 0;
           const ageH = row.lastFinishedAt ? (now - row.lastFinishedAt) / 3600000 : null;
-          const ageLabel = !row.lastFinishedAt ? "从未" : ageH! < 24 ? "今天" : ageH! < 48 ? "昨天" : ageH! < 24*7 ? `${Math.floor(ageH!/24)}天前` : ageH! < 24*30 ? `${Math.floor(ageH!/24/7)}周前` : "更久";
+          const ageLabel = !row.lastFinishedAt ? "从未" : ageH! < 24 ? "24小时内" : ageH! < 48 ? "昨天" : ageH! < 24*7 ? `${Math.floor(ageH!/24)}天前` : ageH! < 24*30 ? `${Math.floor(ageH!/24/7)}周前` : "更久";
           return <tr key={model} style={{borderBottom:"1px solid #f5f5f5",background: activeNow ? "#e8f5e9" : today ? "#f1f8e9" : "transparent"}}>
-            <td style={{padding:"8px"}}>{activeNow ? <span style={{color:"#2e7d32",fontWeight:600}}>● 运行中</span> : <span style={{color:"#aaa"}}>空闲</span>}</td>
+            <td style={{padding:"8px"}}>{activeNow ? <span style={{color:"#2e7d32",fontWeight:600}}>● 有 active 回报</span> : <span style={{color:"#aaa"}}>无 active 回报</span>}</td>
             <td style={{padding:"8px"}}><span style={{display:"inline-block",width:8,height:8,borderRadius:4,background:activeDot(row.lastFinishedAt),marginRight:6,verticalAlign:"middle"}}/><span style={{color:"#666"}}>{ageLabel}</span></td>
             <td style={{padding:"8px",fontWeight:500}}>{model}</td>
             <td style={{padding:"8px"}}><div style={{height:8,background:"#e0e0e0",borderRadius:4,overflow:"hidden"}}><div style={{height:"100%",width:`${(row.runs / maxRuns * 100).toFixed(0)}%`,background:"#1976d2",borderRadius:4}}/></div></td>

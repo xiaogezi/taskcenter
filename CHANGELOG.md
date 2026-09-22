@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- CLI 看板仅统计 CLI 通道，区分授权与已领取、补齐撤销/过期/未领取状态；新增逐次任务、工作区、最后心跳和等待/失联状态，不再把无 active 记录称为空闲，未领取等待时间不计运行耗时。
+
 - 部署健康切换后强制执行构建清理，仅保留当前与上一不同成功版本；提供 service:prune（支持 --dry-run），保护异常目录和用户改动，清理失败显式报错且不回滚健康实例。
 
 - MiMo 派发目录支持 mimo-v2.6-pro、mimo-v2.6-flash、mimo-v2.5-pro、mimo-v2.5，补齐 CLI 入口与额度池；保留旧入口和默认路由策略，新派发读取最新配置。

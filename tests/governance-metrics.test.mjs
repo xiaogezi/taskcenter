@@ -4,9 +4,9 @@ import { buildCliRunMetrics, buildGovernanceMetrics } from "../scripts/governanc
 
 test("治理看板按 profile、任务类别和模型输出稳健统计", () => {
   const tasks = [
-    { id: "a", status: "verified", workflowProfile: "fast", model: "luna", activeDurationMs: 600_000, createdAt: "2026-08-20T00:00:00Z", actualAt: "2026-08-20T00:10:00Z", requirementResults: [], diagnosticObservations: [{ case_id: "d1", observed_at: "2026-08-20T00:09:00Z", started_at: "2026-08-20T00:01:00Z", root_cause_at: "2026-08-20T00:06:00Z", outcome: "resolved", hypothesis_count: 2, failed_fix_count: 1, rollback_count: 1, fresh_verification: "passed" }] },
-    { id: "b", status: "verified", workflowProfile: "strict", model: "terra", activeDurationMs: 1_800_000, createdAt: "2026-08-20T00:00:00Z", actualAt: "2026-08-20T00:30:00Z", requirementResults: [{ status: "failed" }] },
-    { id: "c", status: "in_progress", workflowProfile: "fast", model: "luna" },
+    { id: "a", channel: "cli", status: "verified", workflowProfile: "fast", model: "luna", activeDurationMs: 600_000, createdAt: "2026-08-20T00:00:00Z", actualAt: "2026-08-20T00:10:00Z", requirementResults: [], diagnosticObservations: [{ case_id: "d1", observed_at: "2026-08-20T00:09:00Z", started_at: "2026-08-20T00:01:00Z", root_cause_at: "2026-08-20T00:06:00Z", outcome: "resolved", hypothesis_count: 2, failed_fix_count: 1, rollback_count: 1, fresh_verification: "passed" }] },
+    { id: "b", channel: "cli", status: "verified", workflowProfile: "strict", model: "terra", activeDurationMs: 1_800_000, createdAt: "2026-08-20T00:00:00Z", actualAt: "2026-08-20T00:30:00Z", requirementResults: [{ status: "failed" }] },
+    { id: "c", channel: "cli", status: "in_progress", workflowProfile: "fast", model: "luna" },
   ];
   const events = [{ task_id: "a" }, { task_id: "a" }, { task_id: "b" }, { task_id: "c" }];
   const report = buildGovernanceMetrics({
@@ -87,11 +87,11 @@ test("in-progress 与过夜 Review 不进入完成耗时占比，空样本明确
 
 test("CLI 执行器聚合统计运行状态分布与回执 Token", () => {
   const metrics = buildCliRunMetrics([
-    { id: "a", status: "succeeded", executorModel: "k3", evidence: [JSON.stringify({ delegation_id: "a", usage: { input_tokens: 100, output_tokens: 20 } })] },
-    { id: "b", status: "failed", executorModel: "k3", evidence: ["plain"] },
-    { id: "c", status: "active", executorModel: "mimo", evidence: [JSON.stringify({ delegation_id: "c", usage: { prompt_tokens: 50 } })] },
-    { id: "d", status: "cancelled", executorModel: "k3" },
-    { id: "e", status: "succeeded", executorModel: "k3", evidence: [JSON.stringify({ delegation_id: "wrong", usage: { input_tokens: 999 } })] },
+    { id: "a", channel: "cli", status: "succeeded", executorModel: "k3", evidence: [JSON.stringify({ delegation_id: "a", usage: { input_tokens: 100, output_tokens: 20 } })] },
+    { id: "b", channel: "cli", status: "failed", executorModel: "k3", evidence: ["plain"] },
+    { id: "c", channel: "cli", status: "active", executorModel: "mimo", evidence: [JSON.stringify({ delegation_id: "c", usage: { prompt_tokens: 50 } })] },
+    { id: "d", channel: "cli", status: "cancelled", executorModel: "k3" },
+    { id: "e", channel: "cli", status: "succeeded", executorModel: "k3", evidence: [JSON.stringify({ delegation_id: "wrong", usage: { input_tokens: 999 } })] },
   ]);
   assert.equal(metrics.runs, 5);
   assert.equal(metrics.succeeded, 2);
@@ -111,8 +111,27 @@ test("治理指标聚合携带 CLI 执行器数据", () => {
   const report = buildGovernanceMetrics({
     tasks: [],
     events: [],
-    delegations: [{ id: "a", status: "succeeded", executorModel: "k3", evidence: [JSON.stringify({ delegation_id: "a", usage: { input_tokens: 10 } })] }],
+    delegations: [{ id: "a", channel: "cli", status: "succeeded", executorModel: "k3", evidence: [JSON.stringify({ delegation_id: "a", usage: { input_tokens: 10 } })] }],
   });
   assert.equal(report.cliRuns.runs, 1);
   assert.equal(report.cliRuns.tokens.input, 10);
+});
+
+
+test("CLI 统计排除 native 和未知通道，保留未领取、过期与撤销证据", () => {
+  const rows = [
+    { id: "native", channel: "native", status: "active" },
+    { id: "legacy", status: "succeeded" },
+    { id: "issued", channel: "cli", status: "issued", createdAt: "2026-09-22T01:00:00Z" },
+    { id: "expired", channel: "cli", status: "expired", createdAt: "2026-09-21T01:00:00Z", completedAt: "2026-09-22T01:00:00Z" },
+    { id: "revoked", channel: "cli", status: "revoked", claimedAt: "2026-09-22T00:00:00Z", lastObservedAt: "2026-09-22T00:01:00Z" },
+  ];
+  const result = buildCliRunMetrics(rows);
+  assert.equal(result.runs, 3);
+  assert.equal(result.claimed, 1);
+  assert.equal(result.excluded, 2);
+  assert.deepEqual(result.statusCounts, { issued: 1, expired: 1, revoked: 1 });
+  assert.equal(result.duration.count, 0);
+  assert.equal(result.recentRuns[0].id, "issued");
+  assert.equal(result.recentRuns.find((row) => row.id === "revoked").lastObservedAt, "2026-09-22T00:01:00Z");
 });
