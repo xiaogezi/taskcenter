@@ -366,3 +366,7 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 保留任务核心、现有身份数据和 UUID 校验，无数据迁移；回滚代码提交即可撤回新增查询与配置。客户端能力声明不参与授权或绕过任务门禁。
 
 部署成功后在同一部署锁内强制清理旧构建，保留当前版本与上一不同的成功版本（重复部署同一 revision 不挤掉回滚版本）。`npm run service:prune` 可清理存量，`-- --dry-run` 仅预览。清理失败使命令非零退出并记录 cleanup 事件，但不停止或回滚已经健康的新实例；异常目录、符号链接和含用户改动的 worktree 不删除。更早版本需要从 Git 重新构建。
+
+部署先准备不可变候选构建，再执行 lint 和完整测试；npm 安装优先离线缓存（60 秒总时限），仅 ENOTCACHED 时联网一次（180 秒总时限、单请求 30 秒、最多一次请求重试）。缓存可被清理，不作为正确性前提；缺包按锁文件由 npm 下载与校验，失败在切换前终止并保留原服务。依赖安装不触发隐式 audit/fund 网络请求，独立依赖安全审计仍可按需执行。
+
+大依赖核查：`@openai/codex-sdk` 被 `scripts/harnesses/codex.mjs` 的新建会话入口使用，并传递依赖 Codex 原生 CLI；`@cloudflare/vite-plugin`、Wrangler/Workerd 被 `vite.config.ts` 构建链使用。它们不是无调用方的残留依赖；本次保留功能与依赖版本，不用删除依赖或共享可变 node_modules 来缩短部署。

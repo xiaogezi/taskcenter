@@ -18,6 +18,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendReleaseEvent, loadReleaseEvents, summarizeReleaseEvents } from "./release-history.mjs";
 import { pruneReleases } from "./release-retention.mjs";
+import { installReleaseDependencies, runDependencyInstall } from "./release-dependencies.mjs";
 import { buildReleaseEnvironment, resolveManagedProcessState, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.mjs";
@@ -177,24 +178,21 @@ async function deployService() {
   console.log(`TaskCenter 受控部署：保持现有 PID ${original.pid} 运行并验证 ${revision.slice(0, 12)}。`);
   record("deployment", "started", { originalPid: original.pid });
   try {
+  let release;
   await verifyBeforeServiceCutover({
     original,
     revision,
-    stages: ["lint", "test"],
+    stages: ["artifact", "lint", "test"],
     runStage: async (stage) => {
       const stageStartedAt = Date.now();
-      await runNpmScript(stage);
+      if (stage === "artifact") release = await prepareRelease(revision);
+      else await runNpmScript(stage);
       record(stage, "passed", { durationMs: Date.now() - stageStartedAt });
     },
     assertOriginalService: requireOriginalService,
     readRevision: () => gitOutput(["rev-parse", "HEAD"]),
     readStatus: () => gitOutput(["status", "--porcelain"]),
   });
-
-  const releaseStartedAt = Date.now();
-  const release = await prepareRelease(revision);
-  record("artifact", "passed", { durationMs: Date.now() - releaseStartedAt, sourceRoot: release.sourceRoot });
-  await requireOriginalService(original, "release artifact");
 
   const previousRelease = await resolvePreviousRelease(original, previousRevision);
   await requireOriginalService(original, "rollback artifact");
@@ -302,7 +300,11 @@ async function prepareRelease(revision) {
   if (existsSync(sourceRoot)) await runGit(["worktree", "remove", "--force", sourceRoot], projectRoot, "清理不完整 release");
   await runGit(["worktree", "add", "--detach", sourceRoot, revision], projectRoot, "创建不可变 release worktree");
   try {
-    await runNpmAt(["ci"], sourceRoot, "release npm ci");
+    const invocation = npmInvocation();
+    const installStartedAt = Date.now();
+    const installMode = await installReleaseDependencies((args, timeoutMs) =>
+      runDependencyInstall(invocation.command, [...invocation.argsPrefix, ...args], sourceRoot, timeoutMs));
+    console.log(`release dependencies: ${installMode}, ${Date.now() - installStartedAt} ms`);
     await runNpmAt(["run", "build"], sourceRoot, "release build");
     const builtAt = new Date().toISOString();
     writeJson(markerPath, { schemaVersion: "taskcenter-release/v1", revision, releaseId, builtAt });
