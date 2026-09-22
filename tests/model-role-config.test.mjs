@@ -8,7 +8,7 @@ const directory = await mkdtemp(join(tmpdir(), "taskcenter-model-roles-"));
 const configPath = join(directory, "model-roles.json");
 process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH = configPath;
 
-const { loadModelRoleConfig, ModelRoleConfigError, publicModelRoleConfig } = await import("../scripts/model-role-config.mjs");
+const { loadModelRoleConfig, ModelRoleConfigError, publicModelRoleConfig, isAutomaticEligible } = await import("../scripts/model-role-config.mjs");
 
 test.after(async () => rm(directory, { recursive: true, force: true }));
 
@@ -93,4 +93,81 @@ test("task_class_models 只允许 executor 的非 Reviewer 类别", async () => 
     retired_models: [],
   })}\n`, "utf8");
   assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /不支持 Reviewer\/OCR/.test(error.message));
+});
+
+test("model_catalog 归一化描述与 automatic_until，并在公共配置暴露", async () => {
+  await writeFile(configPath, `${JSON.stringify({
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "model-executor", reasoning_effort: "low", fallback_models: ["model-old"], concurrency_limit: 2, global_concurrency_limit: 4 },
+      reviewer: { model: "model-reviewer", reasoning_effort: "low", fallback_models: [], concurrency_limit: 1 },
+    },
+    retired_models: [],
+    model_catalog: {
+      "model-executor": { description: "默认执行模型；编码能力强，成本中高" },
+      "model-old": { description: "旧代模型；即将退役", automatic_until: "2026-10-21T10:00:00+08:00" },
+    },
+  })}\n`, "utf8");
+  const config = loadModelRoleConfig();
+  assert.equal(config.modelCatalog["model-executor"].description, "默认执行模型；编码能力强，成本中高");
+  assert.equal(config.modelCatalog["model-old"].automatic_until, "2026-10-21T02:00:00.000Z", "时区归一化为 UTC ISO");
+  assert.equal(config.roles.executor.globalConcurrencyLimit, 4);
+  const publicConfig = publicModelRoleConfig(config);
+  assert.deepEqual(publicConfig.model_catalog, config.modelCatalog);
+  assert.equal(publicConfig.executor.global_concurrency_limit, 4);
+});
+
+test("缺少 model_catalog 与新并发字段的旧配置保持兼容", async () => {
+  await writeFile(configPath, `${JSON.stringify({
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "model-executor", reasoning_effort: "low", fallback_models: [], concurrency_limit: 2 },
+      reviewer: { model: "model-reviewer", reasoning_effort: "low", fallback_models: [], concurrency_limit: 1 },
+    },
+    retired_models: [],
+  })}\n`, "utf8");
+  const config = loadModelRoleConfig();
+  assert.deepEqual(config.modelCatalog, {});
+  assert.equal(config.roles.executor.globalConcurrencyLimit, null);
+  const publicConfig = publicModelRoleConfig(config);
+  assert.deepEqual(publicConfig.model_catalog, {});
+  assert.equal(publicConfig.executor.global_concurrency_limit, null);
+});
+
+test("model_catalog 需要有效描述、时间与并发上限", async () => {
+  const base = {
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "model-executor", reasoning_effort: "low", fallback_models: [], concurrency_limit: 2 },
+      reviewer: { model: "model-reviewer", reasoning_effort: "low", fallback_models: [], concurrency_limit: 1 },
+    },
+    retired_models: [],
+  };
+  await writeFile(configPath, `${JSON.stringify({ ...base, model_catalog: { "model-executor": { description: "" } } })}\n`, "utf8");
+  assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /描述/.test(error.message));
+  await writeFile(configPath, `${JSON.stringify({ ...base, model_catalog: { "model-executor": { description: "x", automatic_until: "not-a-date" } } })}\n`, "utf8");
+  assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /automatic_until/.test(error.message));
+  await writeFile(configPath, `${JSON.stringify({ ...base, roles: { ...base.roles, executor: { ...base.roles.executor, global_concurrency_limit: 0 } } })}\n`, "utf8");
+  assert.throws(() => loadModelRoleConfig(), (error) => error instanceof ModelRoleConfigError && /global_concurrency_limit/.test(error.message));
+});
+
+test("isAutomaticEligible 在 automatic_until 边界停止自动资格", async () => {
+  await writeFile(configPath, `${JSON.stringify({
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "model-executor", reasoning_effort: "low", fallback_models: ["model-old"], concurrency_limit: 2 },
+      reviewer: { model: "model-reviewer", reasoning_effort: "low", fallback_models: [], concurrency_limit: 1 },
+    },
+    manual_only_models: ["model-manual"],
+    retired_models: ["model-retired"],
+    model_catalog: {
+      "model-old": { description: "旧代模型", automatic_until: "2026-10-21T10:00:00+08:00" },
+    },
+  })}\n`, "utf8");
+  const config = loadModelRoleConfig();
+  assert.equal(isAutomaticEligible(config, "model-executor", "2026-10-21T02:00:01.000Z"), true, "未配置截止时间的模型始终自动合格");
+  assert.equal(isAutomaticEligible(config, "model-old", "2026-10-21T01:59:59.000Z"), true);
+  assert.equal(isAutomaticEligible(config, "model-old", "2026-10-21T02:00:00.000Z"), false, "到达截止时间即停止自动资格");
+  assert.equal(isAutomaticEligible(config, "model-retired", "2026-01-01T00:00:00.000Z"), false);
+  assert.equal(isAutomaticEligible(config, "model-manual", "2026-01-01T00:00:00.000Z"), false);
 });

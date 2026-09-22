@@ -31,6 +31,7 @@ const {
   routingHealth,
   routingResult,
   routingSelect,
+  sanitizeJevDecision,
 } = await import("../scripts/routing-control.mjs");
 
 const spark = "gpt-5.3-codex-spark";
@@ -335,7 +336,8 @@ test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动�
   const current = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
   await writeFile(roleConfigPath, current);
   const kimi = "kimi-code/k3-256k";
-  const mimo = "mimo-v2.5-pro";
+  const mimo = "mimo-v2.6-flash";
+  const mimoPro = "mimo-v2.6-pro";
   try {
     await rm(statePath, { force: true });
     const general = routingSelect({ ...baseInput, event_id: "policy-general" });
@@ -343,6 +345,13 @@ test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动�
     assert.equal(general.route.harness, "kimi");
     assert.equal(general.route.cli_profile, "kimi-k3");
     assert.equal(general.route.reasoning_effort, "low");
+    assert.equal(Object.keys(general.roles.model_catalog).length, 8, "自动候选覆盖 4 Kimi + 4 MiMo 目录条目");
+    assert.ok(general.roles.model_catalog["mimo-v2.5-pro"].automatic_until, "MiMo 2.5 保留自动截止");
+    assert.equal(general.roles.executor.global_concurrency_limit, 4);
+    assert.deepEqual(general.roles.executor.fallback_models, [
+      "mimo-v2.6-flash", "mimo-v2.6-pro", "kimi-code/k3", "kimi-code/kimi-for-coding",
+      "kimi-code/kimi-for-coding-highspeed", "mimo-v2.5", "mimo-v2.5-pro",
+    ], "自动候选覆盖 4 Kimi + 4 MiMo，无 Codex 与未验证 UltraSpeed");
 
     const second = routingSelect({ ...baseInput, event_id: "policy-second" });
     assert.equal(second.route.selected_model, kimi, "第二个独立执行复用 K3 的第二个容量名额");
@@ -350,14 +359,14 @@ test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动�
     assert.equal(second.route.cli_profile, "kimi-k3");
 
     const third = routingSelect({ ...baseInput, event_id: "policy-third" });
-    assert.equal(third.route.selected_model, mimo, "K3 两个名额占满后回退 MiMo，而不是 Luna");
+    assert.equal(third.route.selected_model, mimo, "K3 两个名额占满后回退 MiMo 2.6 Flash，而不是 Luna");
     assert.equal(third.route.harness, "claude");
-    assert.equal(third.route.cli_profile, "claude-mimo");
+    assert.equal(third.route.cli_profile, "claude-mimo-v2.6-flash");
 
     const fourth = routingSelect({ ...baseInput, event_id: "policy-fourth" });
     assert.equal(fourth.route.selected_model, mimo, "Mimo 也使用 executor 角色的第二个容量名额");
     assert.equal(fourth.route.harness, "claude");
-    assert.equal(fourth.route.cli_profile, "claude-mimo");
+    assert.equal(fourth.route.cli_profile, "claude-mimo-v2.6-flash");
 
     const fifth = routingSelect({ ...baseInput, event_id: "policy-fifth" });
     assert.equal(fifth.route.available, false, "两端都占满时不可用，不会自动落到 Luna");
@@ -366,7 +375,7 @@ test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动�
     for (const taskClass of ["security", "data_migration", "complex_diagnosis", "high_risk"]) {
       await rm(statePath, { force: true });
       const selected = routingSelect({ ...baseInput, task_class: taskClass, event_id: `policy-${taskClass}` });
-      assert.equal(selected.route.selected_model, mimo, `${taskClass} 按能力选择 MiMo`);
+      assert.equal(selected.route.selected_model, mimoPro, `${taskClass} 按能力选择 MiMo 2.6 Pro`);
       assert.equal(selected.route.reasoning_effort, "medium");
       assert.equal(selected.route.harness, "claude");
     }
@@ -395,7 +404,7 @@ test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动�
       assert.equal(routingSelect({ ...baseInput, preferred_model: model }).route.selected_model, kimi, "退役或 manual_only 覆盖归一为非 Codex 默认");
     }
 
-    for (const [profile, model] of [["kimi-k3", kimi], ["kimi-k2.7-highspeed", "kimi-code/kimi-for-coding-highspeed"], ["claude-mimo", mimo]]) {
+    for (const [profile, model] of [["kimi-k3", kimi], ["kimi-k2.7-highspeed", "kimi-code/kimi-for-coding-highspeed"], ["claude-mimo", "mimo-v2.5-pro"], ["claude-mimo-v2.6-flash", mimo], ["claude-mimo-v2.6-pro", mimoPro]]) {
       await rm(statePath, { force: true });
       const selected = routingSelect({ ...baseInput, cli_profile: profile });
       assert.equal(selected.route.selected_model, model);
@@ -429,6 +438,145 @@ test("默认路由推理档位始终等于实际 profile 档位，不只在不�
     assert.equal(nativeSelected.route.channel, "cli");
     assert.equal(nativeSelected.route.cli_profile, "acme");
     assert.equal(nativeSelected.route.reasoning_effort, "low");
+  } finally {
+    await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
+    await rm(statePath, { force: true });
+  }
+});
+
+test("Jev 决策保留模型选择、置信度与候选列表并进入签名与审计", async () => {
+  const jev = {
+    phase_id: "phase-1",
+    input_hash: "sha256:input",
+    requested_task_class: "implementation",
+    requested_channel: "cli",
+    task_class_choice: "implementation",
+    task_class_confidence: 0.9,
+    execution_choice: "delegate",
+    execution_confidence: 0.8,
+    executor_model_choice: "gpt-5.6-terra",
+    executor_model_confidence: 0.87,
+    candidate_models: ["gpt-5.6-terra", "gpt-5.6-luna", "  ", 42],
+    usage: { input_tokens: 12, output_tokens: 3 },
+    latency_ms: 45,
+  };
+  const sanitized = sanitizeJevDecision(jev);
+  assert.equal(sanitized.executor_model_choice, "gpt-5.6-terra");
+  assert.equal(sanitized.executor_model_confidence, 0.87);
+  assert.deepEqual(sanitized.candidate_models, ["gpt-5.6-terra", "gpt-5.6-luna", "42"]);
+  assert.equal(sanitizeJevDecision(null), null);
+  assert.equal(sanitizeJevDecision({}).executor_model_choice, null);
+  assert.equal(sanitizeJevDecision({}).candidate_models, null);
+
+  await rm(statePath, { force: true });
+  const selected = routingSelect({ ...baseInput, event_id: "jev-model-select" }, "2026-08-18T08:00:00.000Z", jev);
+  assert.equal(selected.route.jev_decision.executor_model_choice, "gpt-5.6-terra");
+  assert.equal(selected.route.jev_decision.executor_model_confidence, 0.87);
+  assert.deepEqual(selected.route.jev_decision.candidate_models, ["gpt-5.6-terra", "gpt-5.6-luna", "42"]);
+  const decision = selected.auditEvents.find((event) => event.type === "routing.decision");
+  assert.equal(decision.jev_decision.executor_model_choice, "gpt-5.6-terra");
+  assert.deepEqual(decision.jev_decision.candidate_models, ["gpt-5.6-terra", "gpt-5.6-luna", "42"]);
+
+  const replay = routingSelect({ ...baseInput, event_id: "jev-model-select" }, "2026-08-18T08:00:01.000Z", jev);
+  assert.equal(replay.idempotent, true, "相同 Jev 模型字段的 event 可幂等重放");
+  assert.throws(
+    () => routingSelect({ ...baseInput, event_id: "jev-model-select" }, "2026-08-18T08:00:02.000Z", { ...jev, executor_model_choice: "gpt-5.6-luna" }),
+    (error) => error instanceof RoutingControlError && error.statusCode === 409,
+  );
+});
+
+test("automatic_until 到期后旧模型退出自动映射与回退，显式目录条目不受影响", async () => {
+  const expiring = {
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "exec-main", reasoning_effort: "low", fallback_models: ["exec-old"], task_class_models: { security: "exec-old" }, concurrency_limit: 1 },
+      reviewer: { model: "rev-main", reasoning_effort: "low", fallback_models: [], concurrency_limit: 1 },
+    },
+    retired_models: [],
+    model_catalog: {
+      "exec-main": { description: "默认执行模型" },
+      "exec-old": { description: "旧代回退模型", automatic_until: "2026-10-21T10:00:00+08:00" },
+    },
+  };
+  await writeFile(roleConfigPath, `${JSON.stringify(expiring)}\n`, "utf8");
+  try {
+    await rm(statePath, { force: true });
+    routingSelect({ ...baseInput, event_id: "expiry-occupy" }, "2026-10-20T08:00:00.000Z");
+    const before = routingSelect({ ...baseInput, event_id: "expiry-before" }, "2026-10-20T08:00:01.000Z");
+    assert.equal(before.route.selected_model, "exec-old", "截止前自动回退仍可使用旧模型");
+    routingResult({ route_id: before.route.route_id, outcome: "succeeded" }, "2026-10-20T08:00:02.000Z");
+
+    await rm(statePath, { force: true });
+    const mapped = routingSelect({ ...baseInput, task_class: "security", event_id: "expiry-mapped" }, "2026-10-21T02:00:01.000Z");
+    assert.equal(mapped.route.selected_model, "exec-main", "到期后 task_class 映射回落到角色默认模型");
+
+    routingSelect({ ...baseInput, event_id: "expiry-occupy-2" }, "2026-10-21T02:00:02.000Z");
+    const after = routingSelect({ ...baseInput, event_id: "expiry-after" }, "2026-10-21T02:00:03.000Z");
+    assert.equal(after.route.available, false, "到期后旧模型不再作为自动回退");
+    assert.equal(after.route.selected_model, null);
+  } finally {
+    await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
+    await rm(statePath, { force: true });
+  }
+});
+
+test("共享 quota pool 并发上限跨候选模型生效", async () => {
+  const pooled = {
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "exec-a", reasoning_effort: "low", fallback_models: ["exec-b"], concurrency_limit: 2 },
+      reviewer: { model: "rev-a", reasoning_effort: "low", fallback_models: [], concurrency_limit: 1 },
+    },
+    retired_models: [],
+    quota_pools: [{ id: "pool-x", provider: "test", models: ["exec-a", "exec-b"], concurrency_limit: 2 }],
+  };
+  await writeFile(roleConfigPath, `${JSON.stringify(pooled)}\n`, "utf8");
+  try {
+    await rm(statePath, { force: true });
+    const first = routingSelect({ ...baseInput, event_id: "pool-1" }, "2026-08-18T08:00:00.000Z");
+    const second = routingSelect({ ...baseInput, event_id: "pool-2" }, "2026-08-18T08:00:01.000Z");
+    assert.equal(first.route.selected_model, "exec-a");
+    assert.equal(second.route.selected_model, "exec-a", "模型级 2 个名额先用满");
+    const third = routingSelect({ ...baseInput, event_id: "pool-3" }, "2026-08-18T08:00:02.000Z");
+    assert.equal(third.route.available, false, "pool 上限 2 跨 exec-a/exec-b 共享，回退也被拒绝");
+
+    routingResult({ route_id: first.route.route_id, outcome: "succeeded" }, "2026-08-18T08:00:03.000Z");
+    const fourth = routingSelect({ ...baseInput, event_id: "pool-4" }, "2026-08-18T08:00:04.000Z");
+    assert.equal(fourth.route.selected_model, "exec-a", "租约释放后 pool 名额可复用");
+
+    routingResult({ route_id: second.route.route_id, outcome: "succeeded" }, "2026-08-18T08:00:04.500Z");
+
+    const expired = routingSelect({ ...baseInput, event_id: "pool-5", lease_ttl_ms: 60_000 }, "2026-08-18T08:00:05.000Z");
+    assert.equal(expired.route.available, true);
+    routingSelect({ ...baseInput, event_id: "pool-6" }, "2026-08-18T08:00:06.000Z");
+    const blocked = routingSelect({ ...baseInput, event_id: "pool-7" }, "2026-08-18T08:00:07.000Z");
+    assert.equal(blocked.route.available, false);
+    const afterExpiry = routingSelect({ ...baseInput, event_id: "pool-8" }, "2026-08-18T08:01:06.000Z");
+    assert.equal(afterExpiry.route.available, true, "pool-5 租约过期后正确释放 pool 名额");
+  } finally {
+    await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
+    await rm(statePath, { force: true });
+  }
+});
+
+test("executor 全局并发上限跨全部候选模型生效", async () => {
+  const globalLimited = {
+    schema_version: "taskcenter-model-roles-v1",
+    roles: {
+      executor: { model: "exec-a", reasoning_effort: "low", fallback_models: ["exec-b"], concurrency_limit: 2, global_concurrency_limit: 3 },
+      reviewer: { model: "rev-a", reasoning_effort: "low", fallback_models: [], concurrency_limit: 1 },
+    },
+    retired_models: [],
+    quota_pools: [{ id: "pool-x", provider: "test", models: ["exec-a", "exec-b"], concurrency_limit: 4 }],
+  };
+  await writeFile(roleConfigPath, `${JSON.stringify(globalLimited)}\n`, "utf8");
+  try {
+    await rm(statePath, { force: true });
+    assert.equal(routingSelect({ ...baseInput, event_id: "global-1" }, "2026-08-18T08:00:00.000Z").route.selected_model, "exec-a");
+    assert.equal(routingSelect({ ...baseInput, event_id: "global-2" }, "2026-08-18T08:00:01.000Z").route.selected_model, "exec-a");
+    assert.equal(routingSelect({ ...baseInput, event_id: "global-3" }, "2026-08-18T08:00:02.000Z").route.selected_model, "exec-b");
+    const fourth = routingSelect({ ...baseInput, event_id: "global-4" }, "2026-08-18T08:00:03.000Z");
+    assert.equal(fourth.route.available, false, "第 4 个 executor 租约超过全局上限 3，即使 exec-b 模型级仍有余量");
   } finally {
     await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
     await rm(statePath, { force: true });

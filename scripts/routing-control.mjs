@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { loadModelRoleConfig, publicModelRoleConfig } from "./model-role-config.mjs";
+import { isAutomaticEligible, loadModelRoleConfig, publicModelRoleConfig } from "./model-role-config.mjs";
 import { sameSubject } from "./completion-state.mjs";
 import { cliProfile, cliProfileForModel } from "./cli-profile.mjs";
 
@@ -138,6 +138,12 @@ export function sanitizeJevDecision(value) {
     task_class_confidence: Number.isFinite(value.task_class_confidence) ? value.task_class_confidence : null,
     execution_choice: clean(String(value.execution_choice ?? ""), 40) || null,
     execution_confidence: Number.isFinite(value.execution_confidence) ? value.execution_confidence : null,
+    executor_model_choice: clean(String(value.executor_model_choice ?? ""), 120) || null,
+    executor_model_confidence: Number.isFinite(value.executor_model_confidence) ? value.executor_model_confidence : null,
+    model_applied: value.model_applied === true,
+    candidate_models: Array.isArray(value.candidate_models)
+      ? value.candidate_models.map((model) => clean(String(model ?? ""), 120)).filter(Boolean).slice(0, 16)
+      : null,
     model: clean(String(value.model ?? ""), 120) || null,
     status: clean(String(value.status ?? ""), 40) || null,
     error: clean(String(value.error ?? ""), 120) || null,
@@ -164,7 +170,11 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
   const roleName = ocrTaskClasses.has(taskClass) ? "reviewer" : "executor";
   const role = config.roles[roleName];
   let selectedReasoningEffort = profile?.effort || role.taskClassReasoningEfforts?.[taskClass] || role.reasoningEffort;
-  const mappedModel = optionalAstraModel(taskClass, role, config) || role.taskClassModels?.[taskClass] || role.model;
+  const configuredModel = optionalAstraModel(taskClass, role, config) || role.taskClassModels?.[taskClass] || role.model;
+  // 自动路径上过期的 automatic_until 模型回落到角色默认模型；显式 preferred_model 语义不变。
+  const mappedModel = roleName === "executor" && !requestedPreferredModel && !isAutomaticEligible(config, configuredModel, now)
+    ? role.model
+    : configuredModel;
   const quotaPreferred = roleName === "executor" && executionModelPolicy.mode === "quota_preferred";
   if (quotaPreferred && !config.manualOnlyModels.includes(executionModelPolicy.preferredModel)) {
     throw new RoutingControlError(409, `额度优先模型未配置为 manual_only: ${executionModelPolicy.preferredModel}`);
@@ -192,6 +202,9 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     phase_id: jev.phase_id, input_hash: jev.input_hash,
     requested_task_class: jev.requested_task_class, requested_channel: jev.requested_channel,
     task_class_choice: jev.task_class_choice, execution_choice: jev.execution_choice,
+    executor_model_choice: jev.executor_model_choice, executor_model_confidence: jev.executor_model_confidence,
+    model_applied: jev.model_applied,
+    candidate_models: jev.candidate_models,
   };
   const signature = signatureOf(signatureInput);
   const replay = state.routes.find((route) => route.selectEventId === eventId);
@@ -243,7 +256,7 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     retryAfterAt = quota.retryAfterAt;
     const fallback = ensureHealth(state, mappedModel, now, config);
     advanceCircuit(fallback, now);
-    if (!canLease(state, fallback, now)) {
+    if (!canLease(state, fallback, now, config)) {
       const route = buildUnavailableRoute({
         eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred: fallback, now,
         reason: "quota_fallback_model_unavailable", fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
@@ -261,12 +274,12 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     probe = fallback.state === "half_open";
   }
 
-  if (quota?.status !== "exhausted" && !canLease(state, preferred, now)) {
+  if (quota?.status !== "exhausted" && !canLease(state, preferred, now, config)) {
     fallbackFrom = preferredModel;
     fallbackReason = fallbackReasonFor(preferred);
     retryAfterAt = preferred.retryAfterAt;
     const protectedTaskClass = roleName === "executor" && (
-      mappedModel !== role.model || Boolean(requestedPreferredModel)
+      mappedModel !== role.model || (Boolean(requestedPreferredModel) && !jev?.model_applied)
     );
     const fallback = protectedTaskClass ? null : chooseFallback(state, role, preferredModel, now, config);
     if (!fallback) {
@@ -450,23 +463,32 @@ export function routingRoles() {
 }
 
 function chooseFallback(state, role, preferredModel, now, config) {
-  // The first configured fallback is the sole automatic recovery path.
-  // Later entries require an explicit caller preference and recorded reason.
-  return role.fallbackModels
-    .filter((model) => model !== preferredModel)
-    .slice(0, 1)
+  return [...new Set([role.model, ...role.fallbackModels])]
+    .filter((model) => model !== preferredModel && isAutomaticEligible(config, model, now))
     .map((model) => ensureHealth(state, model, now, config))
     .find((health) => {
       advanceCircuit(health, now);
-      return canLease(state, health, now);
+      return canLease(state, health, now, config);
     }) || null;
 }
 
-function canLease(state, health, now) {
+function canLease(state, health, now, config = null) {
   advanceCircuit(health, now);
   if (health.state === "open") return false;
   if (health.state === "half_open" && health.halfOpenLease) return false;
-  return activeRoutes(state, health.model, now).length < health.concurrencyLimit;
+  if (activeRoutes(state, health.model, now).length >= health.concurrencyLimit) return false;
+  // Executor 候选模型的集中上限：角色全局并发与共享 quota pool 并发；Reviewer 与其他模型不受影响。
+  const executorRole = config?.roles?.executor;
+  if (!executorRole) return true;
+  const candidates = [executorRole.model, ...executorRole.fallbackModels];
+  if (!candidates.includes(health.model)) return true;
+  const activeExecutorLeases = state.routes.filter((route) =>
+    route.status === "leased" && candidates.includes(route.selectedModel) && Date.parse(route.expiresAt || "") > Date.parse(now));
+  if (executorRole.globalConcurrencyLimit && activeExecutorLeases.length >= executorRole.globalConcurrencyLimit) return false;
+  const pool = (config.quotaPools || []).find((item) => item.concurrency_limit && item.models.includes(health.model));
+  if (!pool) return true;
+  const poolActive = activeExecutorLeases.filter((route) => pool.models.includes(route.selectedModel)).length;
+  return poolActive < pool.concurrency_limit;
 }
 
 function advanceCircuit(health, now) {

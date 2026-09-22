@@ -41,6 +41,7 @@ export function loadModelRoleConfig() {
   const retiredModels = uniqueModels(input.retired_models, "retired_models");
   const optionalAstraPolicy = readOptionalAstraPolicy(input.optional_astra_policy);
   const quotaPools = normalizeQuotaPools(input.quota_pools);
+  const modelCatalog = normalizeModelCatalog(input.model_catalog);
   const activeModels = new Set([
     executor.model,
     reviewer.model,
@@ -57,8 +58,20 @@ export function loadModelRoleConfig() {
     schemaVersion: input.schema_version,
     contentHash: createHash("sha256").update(raw).digest("hex"),
     roles: { executor, reviewer },
-    manualOnlyModels, retiredModels, optionalAstraPolicy, quotaPools,
+    manualOnlyModels, retiredModels, optionalAstraPolicy, quotaPools, modelCatalog,
   };
+}
+
+// 自动选择资格：退役、manual_only 与超过 model_catalog.automatic_until 的模型都不得进入自动路由；
+// 显式 cli_profile / preferred_model 语义不受本函数影响。
+export function isAutomaticEligible(config, model, now = new Date().toISOString()) {
+  if (!model || config.retiredModels.includes(model) || config.manualOnlyModels.includes(model)) return false;
+  const until = config.modelCatalog?.[model]?.automatic_until;
+  if (!until) return true;
+  const untilMs = Date.parse(until);
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(untilMs) || !Number.isFinite(nowMs)) return true;
+  return untilMs > nowMs;
 }
 
 export function publicModelRoleConfig(config = loadModelRoleConfig()) {
@@ -70,6 +83,7 @@ export function publicModelRoleConfig(config = loadModelRoleConfig()) {
     manual_only_models: config.manualOnlyModels,
     optional_astra_policy: config.optionalAstraPolicy,
     quota_pools: config.quotaPools,
+    model_catalog: config.modelCatalog,
   };
 }
 
@@ -99,12 +113,16 @@ function normalizeRole(value, name, failClosed) {
   const model = cleanModel(value.model);
   const reasoningEffort = String(value.reasoning_effort || "").trim();
   const concurrencyLimit = Number(value.concurrency_limit);
+  const globalConcurrencyLimit = value.global_concurrency_limit === undefined ? null : Number(value.global_concurrency_limit);
   if (!model) throw new ModelRoleConfigError(`roles.${name}.model 无效。`);
   if (!allowedReasoningEfforts.has(reasoningEffort)) {
     throw new ModelRoleConfigError(`roles.${name}.reasoning_effort 无效。`);
   }
   if (!Number.isInteger(concurrencyLimit) || concurrencyLimit < 1 || concurrencyLimit > 64) {
     throw new ModelRoleConfigError(`roles.${name}.concurrency_limit 必须在 1 到 64 之间。`);
+  }
+  if (globalConcurrencyLimit !== null && (!Number.isInteger(globalConcurrencyLimit) || globalConcurrencyLimit < 1 || globalConcurrencyLimit > 64)) {
+    throw new ModelRoleConfigError(`roles.${name}.global_concurrency_limit 必须在 1 到 64 之间。`);
   }
   const fallbackModels = uniqueModels(value.fallback_models, `roles.${name}.fallback_models`)
     .filter((candidate) => candidate !== model);
@@ -113,7 +131,7 @@ function normalizeRole(value, name, failClosed) {
   }
   const taskClassModels = normalizeTaskClassModels(value.task_class_models, model, fallbackModels, name);
   const taskClassReasoningEfforts = normalizeTaskClassReasoningEfforts(value.task_class_reasoning_efforts, name);
-  return { model, reasoningEffort, fallbackModels, concurrencyLimit, failClosed, taskClassModels, taskClassReasoningEfforts };
+  return { model, reasoningEffort, fallbackModels, concurrencyLimit, globalConcurrencyLimit, failClosed, taskClassModels, taskClassReasoningEfforts };
 }
 
 function normalizeTaskClassReasoningEfforts(value, roleName) {
@@ -178,12 +196,32 @@ function readOptionalAstraPolicy(fallback) {
   try { return normalizeOptionalAstraPolicy(JSON.parse(readFileSync(optionalAstraPolicyPath, "utf8"))); } catch { return normalizeOptionalAstraPolicy(fallback); }
 }
 
+function normalizeModelCatalog(value) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ModelRoleConfigError("model_catalog 必须是按模型 id 键控的对象。");
+  const catalog = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const model = cleanModel(key);
+    const description = typeof entry?.description === "string" ? entry.description.trim().slice(0, 300) : "";
+    if (!model || !description) throw new ModelRoleConfigError(`model_catalog.${key || "?"} 需要有效模型 id 与能力与成本描述。`);
+    let automaticUntil = "";
+    if (entry.automatic_until !== undefined && entry.automatic_until !== null && entry.automatic_until !== "") {
+      const raw = String(entry.automatic_until).trim();
+      if (!Number.isFinite(Date.parse(raw))) throw new ModelRoleConfigError(`model_catalog.${model}.automatic_until 不是有效时间。`);
+      automaticUntil = new Date(raw).toISOString();
+    }
+    catalog[model] = automaticUntil ? { description, automatic_until: automaticUntil } : { description };
+  }
+  return catalog;
+}
+
 function publicRole(role) {
   return {
     model: role.model,
     reasoning_effort: role.reasoningEffort,
     fallback_models: role.fallbackModels,
     concurrency_limit: role.concurrencyLimit,
+    global_concurrency_limit: role.globalConcurrencyLimit,
     fail_closed: role.failClosed,
     task_class_models: role.taskClassModels,
     task_class_reasoning_efforts: role.taskClassReasoningEfforts,
@@ -198,12 +236,14 @@ function normalizeQuotaPools(value) {
     if (!pool || typeof pool !== "object" || typeof pool.id !== "string" || !pool.id.trim()) continue;
     const models = Array.isArray(pool.models) ? [...new Set(pool.models.filter((model) => typeof model === "string" && model.trim()).map((model) => model.trim()))] : [];
     if (!models.length) continue;
+    const poolConcurrency = Number(pool.concurrency_limit);
     pools.push({
       id: pool.id.trim(),
       provider: typeof pool.provider === "string" && pool.provider.trim() ? pool.provider.trim() : "unknown",
       models,
       source: allowedQuotaPoolSources.has(pool.source) ? pool.source : "unknown",
       notes: typeof pool.notes === "string" && pool.notes.trim() ? pool.notes.trim() : "",
+      ...(Number.isInteger(poolConcurrency) && poolConcurrency >= 1 && poolConcurrency <= 64 ? { concurrency_limit: poolConcurrency } : {}),
     });
   }
   return pools;

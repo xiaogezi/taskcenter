@@ -8,14 +8,20 @@ const directory = await mkdtemp(join(tmpdir(), "jev-routing-"));
 const statePath = join(directory, "routes.json");
 process.env.TASKCENTER_ROUTING_CONTROL_PATH = statePath;
 process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH = join(directory, "roles.json");
-await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, await readFile(new URL("../config/model-roles.json", import.meta.url)));
+const fixtureConfig = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8"));
+fixtureConfig.roles.executor.model = "kimi-code/k3-256k";
+fixtureConfig.roles.executor.fallback_models = ["mimo-v2.5-pro"];
+fixtureConfig.roles.executor.task_class_models = {};
+fixtureConfig.model_catalog = {};
+await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(fixtureConfig));
 const { routingSelect, routeForId } = await import("../scripts/routing-control.mjs");
 const { prepareRoutingInput, clearJevCache } = await import("../scripts/jev-routing.mjs");
 const task = { id: "task-jev", title: "修复路由审计", goal: "修改指定模块并测试", currentStep: "实现" };
 const input = { task_id: task.id, orchestrator_model: "current-main", task_class: "implementation", channel: "native", phase_id: "implement", phase_summary: "修改路由审计字段" };
-const result = (taskClass = "search", execution = "delegate") => ({ status: "succeeded", model: "jev-1.13.0", answers: {
+const result = (taskClass = "search", execution = "delegate", executorModel = undefined) => ({ status: "succeeded", model: "jev-1.13.0", answers: {
   task_class: { type: "choice", choice: taskClass, confidence: 0.9 },
   execution: { type: "choice", choice: execution, confidence: 0.9 },
+  ...(executorModel === undefined ? {} : { executor_model: { type: "choice", choice: executorModel, confidence: 0.8 } }),
 }, usage: { input_tokens: 80, output_tokens: 12 }, latency_ms: 10 });
 const prepare = (body = input, evaluator = async () => result(), options = {}) => prepareRoutingInput(body, task, { evaluator, ...options });
 
@@ -109,6 +115,102 @@ test("needs_context 返回可处理的 409，invalid_response 不改变类别", 
   const prepared = await prepare(input, async () => ({ status: "succeeded", answers: {} }));
   assert.equal(prepared.jevDecision.error, "invalid_response");
   assert.equal(prepared.input.task_class, "implementation");
+});
+
+test("Jev 型号候选来自白名单并可注入可信 preferred_model", async () => {
+  let request;
+  const prepared = await prepare(input, async req => { request = req; return result("implementation", "delegate", "mimo-v2.5-pro"); });
+  assert.equal(prepared.input.preferred_model, "mimo-v2.5-pro");
+  assert.equal(prepared.jevDecision.executor_model_choice, "mimo-v2.5-pro");
+  assert.equal(prepared.jevDecision.executor_model_confidence, 0.8);
+  assert.deepEqual(prepared.jevDecision.candidate_models, ["kimi-code/k3-256k", "mimo-v2.5-pro"]);
+  // 三问同一次请求；候选约束为白名单且含 no_match 哨兵。
+  assert.ok(Object.hasOwn(request.questions, "task_class") && Object.hasOwn(request.questions, "execution") && Object.hasOwn(request.questions, "executor_model"));
+  assert.ok(Object.hasOwn(request.questions.executor_model.criteria, "no_match"));
+  assert.ok(Object.hasOwn(request.questions.executor_model.criteria, "kimi-code/k3-256k"));
+  assert.ok(!Object.hasOwn(request.questions.executor_model.criteria, "gpt-5.6-luna"));
+});
+
+test("越界型号与 no_match 不注入 preferred_model", async () => {
+  const forged = await prepare({ ...input, phase_id: "forge" }, async () => result("implementation", "delegate", "gpt-evil-model"));
+  assert.equal(forged.input.preferred_model, undefined);
+  assert.equal(forged.jevDecision.executor_model_choice, null);
+  assert.equal(forged.jevDecision.status, "succeeded");
+  const none = await prepare({ ...input, phase_id: "nomatch" }, async () => result("implementation", "delegate", "no_match"));
+  assert.equal(none.input.preferred_model, undefined);
+  assert.equal(none.jevDecision.executor_model_choice, "no_match");
+});
+
+test("显式 preferred_model 与 direct 路由不被 Jev 型号覆盖", async () => {
+  const pinned = await prepare({ ...input, phase_id: "pinned", preferred_model: "explicit" }, async () => result("implementation", "delegate", "mimo-v2.5-pro"));
+  assert.equal(pinned.input.preferred_model, "explicit");
+  const direct = await prepare({ ...input, phase_id: "direct-model", channel: "direct", direct_reason: "整合验收" }, async () => result("implementation", "direct", "mimo-v2.5-pro"));
+  assert.equal(direct.input.channel, "direct");
+  assert.equal(direct.input.preferred_model, undefined);
+  assert.equal(direct.jevDecision.executor_model_choice, "mimo-v2.5-pro");
+});
+
+test("配置/目录变化使缓存失效，同阶段仍幂等", async () => {
+  let calls = 0;
+  const evaluator = async () => { calls++; return result("implementation", "delegate", "mimo-v2.5-pro"); };
+  await prepare({ ...input, phase_id: "cache-cfg" }, evaluator);
+  await prepare({ ...input, phase_id: "cache-cfg" }, evaluator);
+  assert.equal(calls, 1);
+  const original = await readFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, "utf8");
+  try {
+    const config = JSON.parse(original);
+    config.model_catalog = { "mimo-v2.5-pro": { description: "更强的诊断型号" } };
+    await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(config));
+    await prepare({ ...input, phase_id: "cache-cfg" }, evaluator);
+    assert.equal(calls, 2);
+  } finally {
+    await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, original);
+  }
+});
+
+test("并发不同 phase 各自评估一次", async () => {
+  let calls = 0;
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const evaluator = async () => { calls++; await pending; return result("implementation", "delegate", "kimi-code/k3-256k"); };
+  const requests = [
+    prepare({ ...input, phase_id: "phase-a" }, evaluator),
+    prepare({ ...input, phase_id: "phase-b" }, evaluator),
+  ];
+  assert.equal(calls, 2);
+  release();
+  const [a, b] = await Promise.all(requests);
+  assert.equal(a.input.preferred_model, "kimi-code/k3-256k");
+  assert.equal(b.input.preferred_model, "kimi-code/k3-256k");
+});
+
+test("自动候选到期后同阶段缓存不能恢复过期型号", async t => {
+  const original = await readFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, "utf8");
+  const config = JSON.parse(original);
+  config.model_catalog = { "mimo-v2.5-pro": { description: "旧型号", automatic_until: "2026-10-21T02:00:00Z" } };
+  await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(config));
+  t.mock.method(Date, "now", () => Date.parse("2026-10-21T01:59:59Z"));
+  try {
+    let calls = 0;
+    const evaluator = async () => { calls++; return result("implementation", "delegate", "mimo-v2.5-pro"); };
+    assert.equal((await prepare(input, evaluator)).input.preferred_model, "mimo-v2.5-pro");
+    Date.now.mock.mockImplementation(() => Date.parse("2026-10-21T02:00:00Z"));
+    assert.equal((await prepare(input, evaluator)).input.preferred_model, undefined);
+    assert.equal(calls, 2);
+  } finally { await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, original); }
+});
+
+test("Jev 型号推荐满额后可回退，但用户显式锁定保持不降级", async () => {
+  const prepared = await prepare(input, async () => result("implementation", "delegate", "kimi-code/k3-256k"));
+  assert.equal(prepared.jevDecision.model_applied, true);
+  for (let i = 0; i < 2; i++) {
+    assert.equal(routingSelect({ ...prepared.input, event_id: `capacity-${i}` }, undefined, prepared.jevDecision).route.selected_model, "kimi-code/k3-256k");
+  }
+  const fallback = routingSelect({ ...prepared.input, event_id: "capacity-fallback" }, undefined, prepared.jevDecision);
+  assert.equal(fallback.route.selected_model, "mimo-v2.5-pro");
+  const pinned = await prepare({ ...input, preferred_model: "kimi-code/k3-256k" }, async () => result("implementation", "delegate", "kimi-code/k3-256k"));
+  assert.notEqual(pinned.jevDecision.model_applied, true);
+  assert.equal(routingSelect({ ...pinned.input, event_id: "capacity-pinned" }, undefined, pinned.jevDecision).route.available, false);
 });
 
 test("真实集中路由原子保存决策、用量与审计，语义进入幂等键", async () => {
