@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- MiMo 派发目录支持 mimo-v2.6-pro、mimo-v2.6-flash、mimo-v2.5-pro、mimo-v2.5，补齐 CLI 入口与额度池；保留旧入口和默认路由策略，新派发读取最新配置。
+
 - 普通 CLI 执行器并发容量调整为每个模型两个租约：K3 两个名额用尽后回退 MiMo 的两个名额，仍不自动使用 Luna；Reviewer 容量不变。
 
 - 修复 Codex 同一输出块内 turn/start 回执与命令审批紧邻到达时的身份绑定竞态：先绑定匹配回执，再执行既有 claim、thread、turn 与 Hook 校验，避免合法请求偶发被拒绝。

@@ -29,7 +29,12 @@
 | `kimi-k3-standard` | K3 |
 | `kimi-k2.8-preview` | K2.8 Preview |
 | `kimi-k2.7-highspeed` | K2.7 Code Highspeed |
-| `claude-mimo` | MiMo |
+| `claude-mimo` | MiMo v2.5 Pro（兼容入口） |
+| `claude-mimo-v2.6-pro` | MiMo v2.6 Pro |
+| `claude-mimo-v2.6-flash` | MiMo v2.6 Flash |
+| `claude-mimo-v2.5` | MiMo v2.5 |
+
+MiMo 型号按用户提供的 ID 纳入目录，共用现有 Claude Harness 和额度池；新增入口不改变默认 executor 或自动回退顺序。目录注册不表示已完成上游调用可用性验证。
 
 路由和 manifest 继续传 `cli_profile` / `profile`，无需新增协议字段。受管编排通过 `requireHarnessOperation(harness, "runDelegatedCli")` 取得静态注册的执行函数。Claude 的启动参数与 JSONL 回执、Kimi 的 ACP 参数与一次授权选项由各自模块转换；核心只提供 claim、工具授权和事件记录回调，并统一检查最终身份、型号与回报。Codex 的原生派发保持原通道，不能用历史 Dashboard 的 `createSession` 冒充受管 delegation。
 

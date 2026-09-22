@@ -32,6 +32,21 @@
       "harness": "kimi",
       "model_key": "k3",
       "reasoning_effort": "low"
+    },
+    "claude-mimo-v2.6-pro": {
+      "harness": "claude",
+      "model_key": "mimo-v2.6-pro",
+      "reasoning_effort": "medium"
+    },
+    "claude-mimo-v2.6-flash": {
+      "harness": "claude",
+      "model_key": "mimo-v2.6-flash",
+      "reasoning_effort": "medium"
+    },
+    "claude-mimo-v2.5": {
+      "harness": "claude",
+      "model_key": "mimo-v2.5",
+      "reasoning_effort": "medium"
     }
   },
   "cli_clients": {
@@ -62,7 +77,10 @@
     "claude": {
       "provider": "xiaomi",
       "models": {
-        "mimo-v2.5-pro": "mimo-v2.5-pro"
+        "mimo-v2.6-pro": "mimo-v2.6-pro",
+        "mimo-v2.6-flash": "mimo-v2.6-flash",
+        "mimo-v2.5-pro": "mimo-v2.5-pro",
+        "mimo-v2.5": "mimo-v2.5"
       },
       "reasoning_efforts": [
         "low",
@@ -149,7 +167,10 @@
       "id": "claude",
       "provider": "xiaomi",
       "models": [
-        "mimo-v2.5-pro"
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
+        "mimo-v2.5-pro",
+        "mimo-v2.5"
       ],
       "source": "runtime-signal",
       "notes": "无官方余额查询接口；余额未知，仅限流信号与本地累计"

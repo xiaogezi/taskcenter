@@ -50,6 +50,14 @@ test("按型号反解默认路由实际使用的客户端 profile", async () => 
   save(original);
   assert.deepEqual({ name: cliProfileForModel("kimi-code/k3-256k").name, harness: cliProfileForModel("kimi-code/k3-256k").harness }, { name: "kimi-k3", harness: "kimi" });
   assert.equal(cliProfileForModel("mimo-v2.5-pro").name, "claude-mimo");
+  for (const model of ["mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.5-pro", "mimo-v2.5"]) {
+    const profile = cliProfileForModel(model);
+    assert.equal(profile.model, model);
+    assert.equal(profile.harness, "claude");
+    assert.equal(profile.provider, "xiaomi");
+    assert.equal(cliProfile(profile.name).model, model);
+    assert.ok(original.quota_pools.find(pool => pool.id === "claude").models.includes(model));
+  }
   assert.equal(cliProfileForModel("unknown-model"), null);
   assert.equal(cliProfileForModel(""), null);
   const manualOnly = structuredClone(original);
