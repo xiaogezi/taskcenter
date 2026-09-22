@@ -17,6 +17,7 @@ import { connect, createServer } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendReleaseEvent, loadReleaseEvents, summarizeReleaseEvents } from "./release-history.mjs";
+import { pruneReleases } from "./release-retention.mjs";
 import { buildReleaseEnvironment, resolveManagedProcessState, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.mjs";
@@ -54,6 +55,7 @@ try {
       await sleep(500);
       await startService();
     } else if (action === "deploy") await deployService();
+    else if (action === "prune") await cleanupReleases({ dryRun: process.argv.includes("--dry-run") });
     else if (action === "history") await showReleaseHistory();
     else if (action === "status") await statusService();
     else throw usageError();
@@ -229,6 +231,29 @@ async function deployService() {
       durationMs: Date.now() - startedAtMs,
       error: error.message,
     });
+    throw error;
+  }
+  // Cleanup failure must not relabel or roll back a successful, healthy cutover.
+  await cleanupReleases();
+}
+
+async function cleanupReleases({ dryRun = false } = {}) {
+  const original = readManagedProcess();
+  const active = readJson(activeReleasePath);
+  if (!original || !active || original.revision !== active.revision || original.sourceRoot !== active.sourceRoot) {
+    throw new Error("清理已阻止：运行实例与激活版本不一致");
+  }
+  await requireOriginalService(original, "release cleanup");
+  try {
+    const result = await pruneReleases({
+      projectRoot, active, events: loadReleaseEvents(releaseHistoryPath), dryRun,
+      assertHealthy: () => requireOriginalService(original, "release cleanup"),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    if (!dryRun) appendReleaseEvent(releaseHistoryPath, { stage: "cleanup", outcome: result.skipped.length ? "partial" : "passed", revision: active.revision, ...result });
+    if (result.skipped.length) throw new Error("旧构建清理未完成：受保护异常目录已跳过，请查看清理报告");
+  } catch (error) {
+    if (!dryRun) appendReleaseEvent(releaseHistoryPath, { stage: "cleanup", outcome: "error", revision: active.revision, error: error.message });
     throw error;
   }
 }
@@ -673,7 +698,7 @@ function childResult(child, label) {
 }
 
 function usageError() {
-  const error = new Error("用法：node scripts/taskcenter-control.mjs {start|stop|restart|deploy|status|history}");
+  const error = new Error("用法：node scripts/taskcenter-control.mjs {start|stop|restart|deploy|prune [--dry-run]|status|history}");
   error.exitCode = 2;
   return error;
 }

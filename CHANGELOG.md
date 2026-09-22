@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 部署健康切换后强制执行构建清理，仅保留当前与上一不同成功版本；提供 service:prune（支持 --dry-run），保护异常目录和用户改动，清理失败显式报错且不回滚健康实例。
+
 - MiMo 派发目录支持 mimo-v2.6-pro、mimo-v2.6-flash、mimo-v2.5-pro、mimo-v2.5，补齐 CLI 入口与额度池；保留旧入口和默认路由策略，新派发读取最新配置。
 
 - 普通 CLI 执行器并发容量调整为每个模型两个租约：K3 两个名额用尽后回退 MiMo 的两个名额，仍不自动使用 Luna；Reviewer 容量不变。

@@ -89,6 +89,7 @@ npm run service:status
 npm run service:stop
 npm run service:deploy
 npm run service:history
+npm run service:prune -- --dry-run
 ```
 
 运行中的健康实例默认受到保护，直接执行 `service:stop` 或 `service:restart` 会被拒绝。开发和修复期间保持原实例运行；代码完成、验证通过并提交后，使用 `npm run service:deploy`。
@@ -363,3 +364,5 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 - [Kimi Code CLI 接入与验收](integrations/kimi/README.md)：提供 Hook + ACP 受管入口、PCA 生命周期、真实身份绑定与上下文用量快照；原生 Hook 需用户配置，费用缺失保持 unknown。
 
 保留任务核心、现有身份数据和 UUID 校验，无数据迁移；回滚代码提交即可撤回新增查询与配置。客户端能力声明不参与授权或绕过任务门禁。
+
+部署成功后在同一部署锁内强制清理旧构建，保留当前版本与上一不同的成功版本（重复部署同一 revision 不挤掉回滚版本）。`npm run service:prune` 可清理存量，`-- --dry-run` 仅预览。清理失败使命令非零退出并记录 cleanup 事件，但不停止或回滚已经健康的新实例；异常目录、符号链接和含用户改动的 worktree 不删除。更早版本需要从 Git 重新构建。
