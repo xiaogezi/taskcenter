@@ -27,7 +27,7 @@ try {
   await page.goto(`${process.env.TASKCENTER_PREVIEW_URL || 'http://127.0.0.1:4318'}/routing`);
   await eventually(async () => (await page.locator('body').innerText()).includes('调度版本1'));
   const headings = await page.locator('h2').allTextContents();
-  assert.deepEqual(headings.slice(0, 2), ['当前执行器与最近派发', '最近真实调度']);
+  assert.deepEqual(headings.slice(0, 3), ['CLI 执行器消耗', '当前执行器与最近派发', '最近真实调度']);
   const catalog = page.locator('details').filter({ hasText: '可选执行器目录' });
   assert.equal(await catalog.getAttribute('open'), null);
   await catalog.locator('summary').click();
