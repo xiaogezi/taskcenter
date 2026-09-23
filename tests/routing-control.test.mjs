@@ -381,8 +381,8 @@ test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动�
     }
 
     await rm(statePath, { force: true });
-    const explicitLuna = routingSelect({ ...baseInput, preferred_model: luna, event_id: "policy-explicit-luna" });
-    assert.equal(explicitLuna.route.selected_model, luna, "用户显式授权仍可选择 Luna");
+    const explicitLuna = routingSelect({ ...baseInput, preferred_model: "gpt-6-luna", event_id: "policy-explicit-luna" });
+    assert.equal(explicitLuna.route.selected_model, "gpt-6-luna", "用户显式授权仍可选择 Luna");
 
     await rm(statePath, { force: true });
     const nativeDefault = routingSelect({ ...baseInput, channel: "native", event_id: "policy-native-default" });
@@ -395,11 +395,11 @@ test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动�
     assert.equal(directMain.route.cli_profile, undefined);
 
     await rm(statePath, { force: true });
-    const nativeExplicit = routingSelect({ ...baseInput, channel: "native", preferred_model: luna, event_id: "policy-native-explicit" });
-    assert.equal(nativeExplicit.route.selected_model, luna);
+    const nativeExplicit = routingSelect({ ...baseInput, channel: "native", preferred_model: "gpt-6-luna", event_id: "policy-native-explicit" });
+    assert.equal(nativeExplicit.route.selected_model, "gpt-6-luna");
     assert.equal(nativeExplicit.route.channel, "native", "显式 Codex native 既有路径保持原生语义");
 
-    for (const model of [terra, "gpt-6-astra", "gpt-5.6-sol", spark]) {
+    for (const model of [luna, terra, "gpt-5.6-sol", spark]) {
       await rm(statePath, { force: true });
       assert.equal(routingSelect({ ...baseInput, preferred_model: model }).route.selected_model, kimi, "退役或 manual_only 覆盖归一为非 Codex 默认");
     }

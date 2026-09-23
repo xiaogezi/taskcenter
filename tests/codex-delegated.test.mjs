@@ -64,7 +64,7 @@ async function runWithFake(workspace, { profile, prompt = "hello", signal, onSes
 
 test("Codex app-server invocation strips identity and carries no approval overrides or bypass", () => {
   const profile = cliProfile("codex-luna");
-  assert.equal(profile.model, "gpt-5.6-luna");
+  assert.equal(profile.model, "gpt-6-luna");
   assert.equal(harnessCapabilities("codex").operations.runDelegatedCli.supported, true);
   const invocation = codexAppServerInvocation({
     CODEX_SESSION_ID: "parent",
@@ -267,4 +267,3 @@ for (const c of approvalCases) {
     } finally { restore(); }
   });
 }
-
