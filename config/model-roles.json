@@ -28,6 +28,16 @@
       "model_key": "luna",
       "reasoning_effort": "low"
     },
+    "codex-sol": {
+      "harness": "codex",
+      "model_key": "sol",
+      "reasoning_effort": "low"
+    },
+    "codex-astra": {
+      "harness": "codex",
+      "model_key": "astra",
+      "reasoning_effort": "low"
+    },
     "kimi-k3-standard": {
       "harness": "kimi",
       "model_key": "k3",
@@ -53,7 +63,9 @@
     "codex": {
       "provider": "openai",
       "models": {
-        "luna": "gpt-5.6-luna"
+        "luna": "gpt-6-luna",
+        "sol": "gpt-6-sol",
+        "astra": "gpt-6-astra"
       },
       "reasoning_efforts": [
         "low",
@@ -123,7 +135,7 @@
       "global_concurrency_limit": 4
     },
     "reviewer": {
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "reasoning_effort": "low",
       "fallback_models": [],
       "concurrency_limit": 2
@@ -160,31 +172,21 @@
   },
   "retired_models": [
     "gpt-5.3-codex-spark",
+    "gpt-5.6-luna",
     "gpt-5.6-terra",
-    "gpt-5.6-sol",
-    "gpt-6-astra"
+    "gpt-5.6-sol"
   ],
   "quota_pools": [
     {
       "id": "codex",
       "provider": "codex",
       "models": [
-        "gpt-5.6-luna",
-        "gpt-5.6-terra",
-        "gpt-6-astra",
-        "gpt-5.3-codex-spark"
+        "gpt-6-luna",
+        "gpt-6-sol",
+        "gpt-6-astra"
       ],
       "source": "official-api",
       "notes": "Codex 主额度，来自本机会话 rate_limits；按 limit_id 匹配，用于 quota_preferred 准入"
-    },
-    {
-      "id": "codex_bengalfox",
-      "provider": "codex",
-      "models": [
-        "gpt-5.3-codex-spark"
-      ],
-      "source": "official-api",
-      "notes": "GPT-5.3-Codex-Spark 独立额度窗口，manual_only"
     },
     {
       "id": "kimi",
