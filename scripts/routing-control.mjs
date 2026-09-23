@@ -152,6 +152,8 @@ export function sanitizeJevDecision(value) {
     execution_confidence: Number.isFinite(value.execution_confidence) ? value.execution_confidence : null,
     execution_applied: value.execution_applied === true,
     execution_override_reason: clean(String(value.execution_override_reason ?? ""), 1000) || null,
+    direct_exception_kind: clean(String(value.direct_exception_kind ?? ""), 80) || null,
+    direct_exception_evidence: clean(String(value.direct_exception_evidence ?? ""), 500) || null,
     executor_model_choice: clean(String(value.executor_model_choice ?? ""), 120) || null,
     executor_model_confidence: Number.isFinite(value.executor_model_confidence) ? value.executor_model_confidence : null,
     model_applied: value.model_applied === true,
@@ -212,6 +214,8 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
   if (input.review_context) signatureInput.reviewContext = input.review_context;
   if (reviewArtifacts) signatureInput.reviewArtifacts = reviewArtifacts;
   if (directReason) signatureInput.directReason = directReason;
+  if (input.direct_exception_kind) signatureInput.directExceptionKind = clean(input.direct_exception_kind, 80);
+  if (input.direct_exception_evidence) signatureInput.directExceptionEvidence = clean(input.direct_exception_evidence, 500);
   if (jev) signatureInput.jev = {
     phase_id: jev.phase_id, input_hash: jev.input_hash,
     requested_task_class: jev.requested_task_class, requested_channel: jev.requested_channel,

@@ -231,7 +231,7 @@ TaskCenter 是执行合同、运行状态、验证、Review、验收与路由审
 
 服务进程设置 `TASKCENTER_JEV_ROUTING=1` 并通过环境提供 `TYPESAFE_API_KEY` 后，普通 `/routing/select` 请求先让 Jev 判断任务类别与 `delegate/direct/needs_context`，再消费集中模型配置。请求可提供稳定的 `phase_id` 和简短 `phase_summary`；不发送代码、日志或完整会话。相同任务与阶段语义输入在进程内复用结果（包含失败与并发中的请求）；服务重启后可重新判断。
 
-普通自动路由使用 `channel=other`，由 Jev 的 `delegate/direct/needs_context` 判断决定 CLI 或主模型通道；显式 `direct/cli/native` 保留为可审计覆盖。显式 `direct` 请求必须携带 `direct_reason`，在远程调用与租约之前校验。Jev 选中 direct 时路由记录真实主模型，不占用执行器容量，也不会自动启动主模型执行；`needs_context` 返回可处理的拒绝，要求补足目标或范围。超时、缺失密钥、敏感输入或无效响应沿用原任务类别和非 Codex 执行策略，不循环重试；显式型号、配额策略与 Reviewer 边界继续生效。结果中的 `jev_decision` 保留阶段摘要、输入哈希、判断及置信度、应用或覆盖原因、候选型号、用量、延迟与降级原因供审计。Codex Hook 在新服务上要求执行前有匹配的活动路由；旧健康服务尚未提供路由状态接口时沿用原任务门禁，避免部署前锁死。
+普通自动路由使用 `channel=other`，由 Jev 的 `delegate/direct/needs_context` 判断决定 CLI 或主模型通道。显式 `direct` 必须携带 `direct_reason`；若 Jev 建议 `delegate`，还须提供 `direct_exception_kind`（`device_interaction`、`atomic_git` 或 `shared_dirty_workspace`）和以 `device:`、`git:` 或 `git-status:` 开头的对应 `direct_exception_evidence`，否则返回 `JEV_DELEGATE_OVERRIDE_DENIED`。尚未刷新 MCP 工具 schema 的客户端可在旧字段中使用 `[atomic_git] git:commit ...` 等同格式。这是可审计的例外声明，证据真实性仍需主会话核对；泛化的速度理由不能直接覆盖 Jev。Jev 选中 direct 时路由记录真实主模型，不占用执行器容量；`needs_context` 要求补足目标或范围。超时、缺失密钥、敏感输入或无效响应沿用非 Codex 执行策略，不循环重试。`jev_decision` 保存有界摘要、判断、例外和用量；模型调度页另列最近 24 小时 Jev 建议、实际路由与 CLI 授权的独立计数。Codex Hook 仍要求项目执行前有匹配的活动路由。
 
 这项能力只作用于实际提交的路由请求，不会替主代理启动进程，也不能拦截绕开路由的主模型操作。主代理须按项目规则在新执行阶段先请求判断。关闭环境开关可恢复旧路由行为；后续服务启动仍需提供开关和密钥环境，密钥不写入仓库。已连接的 MCP 客户端需要重新连接才能看到新增可选字段。
 

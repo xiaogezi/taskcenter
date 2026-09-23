@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- Jev 建议派发时收紧显式 direct：仅真机、原子 Git、共享脏工作区的结构化例外与证据引用可覆盖，并留存审计；模型调度页新增最近 24 小时建议、实际路由、覆盖与 CLI 授权／运行的独立计数。
+
 - 普通阶段路由改由 Jev 完整选择执行通道；显式通道覆盖保留原因，决策账本保存有界阶段摘要、输入哈希、置信度及实际应用信息。Codex 项目执行增加活动路由门禁，兼容受控部署期间的旧服务接口。
 
 - Codex 调度目录迁至 GPT-6 系列：Reviewer 使用 `gpt-6-luna`，显式 CLI 入口提供 `gpt-6-sol`、`gpt-6-astra`；活动额度池移除 5.6/5.3 型号与 Spark 专用旧池，旧型号留在退役列表用于拒绝历史误选。

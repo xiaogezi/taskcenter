@@ -382,6 +382,8 @@ server.registerTool("taskcenter_routing_select", {
     phase_id: z.string().max(200).optional().describe("Jev 路由阶段标识；未传入时由服务端派生"),
     phase_summary: z.string().max(1000).optional().describe("当前阶段摘要，用于 Jev 路由分类；仅发送标题/目标/阶段摘要，不发送代码或日志"),
     direct_reason: z.string().min(1).max(1000).optional().describe("Jev 启用模式下 channel=direct 时必填；记录 direct 执行理由并审计"),
+    direct_exception_kind: z.enum(["device_interaction", "atomic_git", "shared_dirty_workspace"]).optional().describe("Jev 建议 delegate 时允许 direct 的限定例外类别"),
+    direct_exception_evidence: z.string().min(12).max(500).optional().describe("例外的可核查证据；仅在 Jev 建议 delegate 而选择 direct 时必填"),
     lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input, extra) => {

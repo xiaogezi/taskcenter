@@ -7,6 +7,8 @@ const PROTECTED_CLASSES = new Set(["security", "high_risk", "data_migration"]);
 const REVIEW_CLASSES = new Set(["ocr", "ocr_review", "independent_review"]);
 const EXECUTION_CHOICES = ["delegate", "direct", "needs_context"];
 const EXPLICIT_CHANNELS = new Set(["direct", "cli", "native"]);
+const DIRECT_EXCEPTIONS = new Set(["device_interaction", "atomic_git", "shared_dirty_workspace"]);
+const DIRECT_EVIDENCE_PREFIX = { device_interaction: "device:", atomic_git: "git:", shared_dirty_workspace: "git-status:" };
 const NO_MATCH = "no_match";
 const CACHE_MAX = 100;
 const cache = new Map();
@@ -176,7 +178,10 @@ export function applyJevRouting(input, _task, decision) {
   const pinned = Boolean(input.preferred_model)
     || Boolean(input.cli_profile)
     || input.execution_model_policy?.mode === "quota_preferred";
-  if (!valid) return { input: { ...input, channel: !pinned && input.channel !== "direct" ? "cli" : input.channel }, jev_decision: meta };
+  if (!valid) {
+    if (input.channel === "direct") requireDirectException(input, meta);
+    return { input: { ...input, channel: input.channel === "direct" ? "direct" : "cli" }, jev_decision: meta };
+  }
   let taskClass = input.task_class;
   let channel = input.channel;
   let reason = "";
@@ -209,8 +214,11 @@ export function applyJevRouting(input, _task, decision) {
     }
   }
   if (decision.execution_choice === "delegate") {
-    if (explicitChannel || pinned) {
-      executionOverrideReason = explicitChannel ? "explicit_channel" : "pinned";
+    if (channel === "direct") {
+      requireDirectException(input, meta);
+      executionOverrideReason = `direct_exception:${meta.direct_exception_kind}`;
+    } else if (explicitChannel) {
+      executionOverrideReason = "explicit_channel";
     } else if (!REVIEW_CLASSES.has(taskClass)) {
       channel = "cli";
       executionApplied = true;
@@ -228,6 +236,20 @@ export function applyJevRouting(input, _task, decision) {
   }
   if (reason) newInput.reason_override = reason;
   return { input: newInput, jev_decision: meta };
+}
+
+function requireDirectException(input, meta) {
+  // 旧 MCP 进程在 Codex 重启前仍只暴露 direct_reason；兼容其结构化前缀。
+  const legacy = /^\[(device_interaction|atomic_git|shared_dirty_workspace)\]\s+(.+)$/.exec(String(input.direct_reason || "").trim());
+  const kind = String(input.direct_exception_kind || legacy?.[1] || "").trim();
+  const evidence = String(input.direct_exception_evidence || legacy?.[2] || "").trim();
+  if (!DIRECT_EXCEPTIONS.has(kind) || evidence.length < 12 || evidence.length > 500
+    || !evidence.startsWith(DIRECT_EVIDENCE_PREFIX[kind]) || /[\r\n]/.test(evidence) || hasSuspectedSecret(evidence)) {
+    throw new RoutingControlError(409, "Jev 建议派发时，direct 仅允许真机操作、原子 Git 操作或共享脏工作区，且必须提供可核查的例外证据。", "JEV_DELEGATE_OVERRIDE_DENIED");
+  }
+  meta.direct_exception_kind = kind;
+  meta.direct_exception_evidence = evidence;
+  meta.execution_override_reason = `direct_exception:${kind}`;
 }
 
 /**

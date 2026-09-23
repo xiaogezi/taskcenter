@@ -8,7 +8,7 @@ export function readTaskEvents(path) {
   });
 }
 
-export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = null, delegations = [] } = {}) {
+export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = null, delegations = [], routes = [] } = {}) {
   const visible = tasks.filter((task) => task.status !== "removed");
   const groups = {
     workflow_profile: groupMetrics(visible, events, (task) => task.workflowProfile || "legacy"),
@@ -50,6 +50,49 @@ export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = 
     groups,
     comparisons: buildMatchedComparisons(groups, usageReport?.windows || []),
     cliRuns: buildCliRunMetrics(delegations),
+    routingFunnel24h: buildRoutingFunnel(routes, delegations, Number.isFinite(generatedAt) ? generatedAt : Date.now()),
+  };
+}
+
+// 最近 24h 路由漏斗：Jev 评估、Jev delegate 建议、实际 CLI 路由、Jev delegate 的 direct 覆盖、
+// CLI 授权与领取/启动回报。各阶段来自不同存储且缺少共享 route_id，是独立计数，不表示一对一转化。
+// 只输出聚合计数，不携带 phase_summary、directReason 原文等敏感内容。
+export function buildRoutingFunnel(routes = [], delegations = [], now = Date.now()) {
+  const end = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const start = end - 86_400_000;
+  const inWindow = (value) => {
+    const ts = Date.parse(value || "");
+    return Number.isFinite(ts) && ts >= start && ts <= end;
+  };
+  const windowRoutes = (Array.isArray(routes) ? routes : []).filter((route) => route && typeof route === "object" && inWindow(route.createdAt));
+  const jevEvaluated = windowRoutes.filter((route) => route.jevDecision && typeof route.jevDecision === "object");
+  const jevDelegate = jevEvaluated.filter((route) => route.jevDecision.execution_choice === "delegate");
+  const cliRoutes = windowRoutes.filter((route) => route.channel === "cli");
+  const overrides = jevDelegate.filter((route) => route.channel === "direct");
+  const overrideByKind = {};
+  const legacyGenericReasons = {};
+  for (const route of overrides) {
+    const kind = ["device_interaction", "atomic_git", "shared_dirty_workspace"].includes(route.jevDecision?.direct_exception_kind)
+      ? route.jevDecision.direct_exception_kind : "legacy_generic";
+    overrideByKind[kind] = (overrideByKind[kind] || 0) + 1;
+    if (kind === "legacy_generic") {
+      const reason = route.reason || "unknown";
+      legacyGenericReasons[reason] = (legacyGenericReasons[reason] || 0) + 1;
+    }
+  }
+  const cliGrants = (Array.isArray(delegations) ? delegations : []).filter((item) => item && item.channel === "cli" && inWindow(item.createdAt));
+  return {
+    window: "24h",
+    windowStart: new Date(start).toISOString(),
+    windowEnd: new Date(end).toISOString(),
+    jevEvaluatedDecisions: jevEvaluated.length,
+    jevDelegateRecommendations: jevDelegate.length,
+    actualCliRoutes: cliRoutes.length,
+    jevDelegateDirectOverrides: { total: overrides.length, byKind: overrideByKind, legacyGenericReasons },
+    cliGrants: cliGrants.length,
+    cliClaimedRuns: cliGrants.filter((item) => Boolean(item.claimedAt)).length,
+    cliStartedRuns: cliGrants.filter((item) => Boolean(item.runStatus)).length,
+    note: "24h 窗口内各阶段独立计数，来源不同且缺少共享 route_id，不表示一对一转化。legacy_generic 为早期无结构化例外的 direct 覆盖。",
   };
 }
 

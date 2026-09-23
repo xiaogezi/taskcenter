@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildCliRunMetrics, buildGovernanceMetrics } from "../scripts/governance-metrics.mjs";
+import { buildCliRunMetrics, buildGovernanceMetrics, buildRoutingFunnel } from "../scripts/governance-metrics.mjs";
 
 test("治理看板按 profile、任务类别和模型输出稳健统计", () => {
   const tasks = [
@@ -134,4 +134,51 @@ test("CLI 统计排除 native 和未知通道，保留未领取、过期与撤�
   assert.equal(result.duration.count, 0);
   assert.equal(result.recentRuns[0].id, "issued");
   assert.equal(result.recentRuns.find((row) => row.id === "revoked").lastObservedAt, "2026-09-22T00:01:00Z");
+});
+
+test("24h 路由漏斗区分 Jev 评估、delegate 建议、CLI 路由与 direct 覆盖类型", () => {
+  const now = Date.parse("2026-09-23T12:00:00Z");
+  const recent = "2026-09-23T06:00:00Z";
+  const stale = "2026-09-21T06:00:00Z";
+  const routes = [
+    { id: "r1", channel: "cli", createdAt: recent, jevDecision: { execution_choice: "delegate", execution_applied: true } },
+    { id: "r2", channel: "direct", createdAt: recent, reason: "direct_reasoned_override", directReason: "真机安装", jevDecision: { execution_choice: "delegate", execution_applied: false, direct_exception_kind: "device_interaction" } },
+    { id: "r3", channel: "direct", createdAt: recent, reason: "direct_reasoned_override", jevDecision: { execution_choice: "delegate", execution_applied: false } },
+    { id: "r4", channel: "direct", createdAt: recent, reason: "jev_direct", jevDecision: { execution_choice: "direct", execution_applied: true } },
+    { id: "r5", channel: "cli", createdAt: recent },
+    { id: "r6", channel: "cli", createdAt: stale, jevDecision: { execution_choice: "delegate", execution_applied: true } },
+  ];
+  const delegations = [
+    { id: "d1", channel: "cli", createdAt: recent, claimedAt: recent, runStatus: "started" },
+    { id: "d2", channel: "cli", createdAt: recent },
+    { id: "d3", channel: "native", createdAt: recent },
+    { id: "d4", channel: "cli", createdAt: stale, claimedAt: stale },
+  ];
+  const funnel = buildRoutingFunnel(routes, delegations, now);
+  assert.equal(funnel.window, "24h");
+  assert.equal(funnel.jevEvaluatedDecisions, 4);
+  assert.equal(funnel.jevDelegateRecommendations, 3);
+  assert.equal(funnel.actualCliRoutes, 2);
+  assert.equal(funnel.jevDelegateDirectOverrides.total, 2);
+  assert.deepEqual(funnel.jevDelegateDirectOverrides.byKind, { device_interaction: 1, legacy_generic: 1 });
+  assert.deepEqual(funnel.jevDelegateDirectOverrides.legacyGenericReasons, { direct_reasoned_override: 1 });
+  assert.equal(funnel.cliGrants, 2);
+  assert.equal(funnel.cliClaimedRuns, 1);
+  assert.equal(funnel.cliStartedRuns, 1);
+});
+
+test("治理指标聚合携带 24h 路由漏斗，且不暴露 phase summary", () => {
+  const now = Date.parse("2026-09-23T12:00:00Z");
+  const report = buildGovernanceMetrics({
+    tasks: [], events: [],
+    usageReport: { generatedAt: "2026-09-23T12:00:00Z" },
+    routes: [{ id: "r1", channel: "cli", createdAt: "2026-09-23T06:00:00Z", jevDecision: { execution_choice: "delegate", phase_summary_excerpt: "secret-ish summary" } }],
+    delegations: [{ id: "d1", channel: "cli", createdAt: "2026-09-23T06:00:00Z" }],
+  });
+  assert.equal(now, Date.parse(report.routingFunnel24h.windowEnd));
+  assert.equal(report.routingFunnel24h.jevEvaluatedDecisions, 1);
+  assert.equal(report.routingFunnel24h.jevDelegateRecommendations, 1);
+  assert.equal(report.routingFunnel24h.actualCliRoutes, 1);
+  assert.equal(report.routingFunnel24h.cliGrants, 1);
+  assert.ok(!JSON.stringify(report.routingFunnel24h).includes("secret-ish summary"));
 });

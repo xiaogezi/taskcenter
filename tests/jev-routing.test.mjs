@@ -85,7 +85,7 @@ test("显式型号、profile、配额与主模型 direct 覆盖保留", async ()
     const prepared = await prepare({ ...input, ...extra });
     assert.equal(prepared.input.channel, "native");
   }
-  const direct = await prepare({ ...input, channel: "direct", direct_reason: "整合执行器产物" });
+  const direct = await prepare({ ...input, channel: "direct", direct_reason: "整合执行器产物", direct_exception_kind: "shared_dirty_workspace", direct_exception_evidence: "git-status:执行器文件仍有未提交修改" });
   assert.equal(direct.input.channel, "direct");
   assert.equal(direct.input.direct_reason, "整合执行器产物");
 });
@@ -215,7 +215,7 @@ test("Jev 型号推荐满额后可回退，但用户显式锁定保持不降级"
 });
 
 test("真实集中路由原子保存决策、用量与审计，语义进入幂等键", async () => {
-  const prepared = await prepare({ ...input, channel: "direct", direct_reason: "部署后集成验收" });
+  const prepared = await prepare({ ...input, channel: "direct", direct_reason: "部署后集成验收", direct_exception_kind: "atomic_git", direct_exception_evidence: "git:commit 78daa26 的受控部署和版本核对" });
   const body = { ...prepared.input, event_id: "jev-persist" };
   const first = routingSelect(body, undefined, prepared.jevDecision);
   assert.equal(first.route.selected_model, "current-main");
@@ -225,6 +225,8 @@ test("真实集中路由原子保存决策、用量与审计，语义进入幂�
   assert.deepEqual(audit.jev_decision, first.route.jev_decision);
   assert.deepEqual(audit.jev_decision.usage, { input_tokens: 80, output_tokens: 12 });
   assert.equal(audit.direct_reason, "部署后集成验收");
+  assert.equal(audit.jev_decision.direct_exception_kind, "atomic_git");
+  assert.equal(audit.jev_decision.direct_exception_evidence, "git:commit 78daa26 的受控部署和版本核对");
   assert.equal(routingSelect(body, undefined, { ...prepared.jevDecision, latency_ms: 200 }).idempotent, true);
   assert.throws(() => routingSelect(body, undefined, { ...prepared.jevDecision, phase_id: "different" }), e => e.statusCode === 409);
   assert.throws(() => routingSelect({ ...body, direct_reason: "different" }, undefined, prepared.jevDecision), e => e.statusCode === 409);
@@ -263,6 +265,19 @@ test("默认请求采用 Jev delegate 选择，needs_context 仍为 409", async 
   await assert.rejects(
     prepare({ ...input, channel: "other", phase_id: "jev-needs" }, async () => result("general", "needs_context")),
     e => e.statusCode === 409 && e.code === "JEV_NEEDS_CONTEXT");
+});
+
+test("Jev 建议 delegate 时拒绝泛化 direct 理由，仅保留有证据的限定例外", async () => {
+  const base = { ...input, channel: "direct", direct_reason: "主模型做更快", phase_id: "reject-generic" };
+  await assert.rejects(prepare(base), e => e.statusCode === 409 && e.code === "JEV_DELEGATE_OVERRIDE_DENIED");
+  await assert.rejects(prepare({ ...base, direct_exception_kind: "shared_dirty_workspace", direct_exception_evidence: "主模型做更快" }), e => e.statusCode === 409 && e.code === "JEV_DELEGATE_OVERRIDE_DENIED");
+  await assert.rejects(prepare({ ...base, direct_exception_kind: "device_interaction", direct_exception_evidence: "任意十二字以上但无设备引用" }), e => e.statusCode === 409 && e.code === "JEV_DELEGATE_OVERRIDE_DENIED");
+  const allowed = await prepare({ ...base, direct_exception_kind: "device_interaction", direct_exception_evidence: "device:SM_S9210 真机安装与启动" });
+  assert.equal(allowed.input.channel, "direct");
+  assert.equal(allowed.jevDecision.execution_override_reason, "direct_exception:device_interaction");
+  assert.equal(allowed.jevDecision.direct_exception_evidence, "device:SM_S9210 真机安装与启动");
+  const oldMcp = await prepare({ ...base, direct_reason: "[atomic_git] git:commit 78daa26 提交与版本核对", phase_id: "old-mcp" });
+  assert.equal(oldMcp.jevDecision.direct_exception_kind, "atomic_git");
 });
 
 test("显式 channel 覆盖 Jev execution，审计记录覆盖原因", async () => {

@@ -114,6 +114,19 @@ test("模型调度页展示额度、真实调度和刷新反馈", () => {
   assert.match(source, /按最近更新的 100 个任务聚合，最多展示 20 条/);
 });
 
+test("模型调度页展示 24h 路由漏斗且与旧版全量 CLI 表区分", () => {
+  const source = readFileSync("features/console/ConsolePage.tsx", "utf8");
+  assert.match(source, /路由漏斗（最近 24 小时）/);
+  assert.match(source, /governance\?\.routingFunnel24h/);
+  assert.match(source, /Jev 评估决策/);
+  assert.match(source, /Jev delegate 的 direct 覆盖/);
+  assert.match(source, /legacy_generic: "旧式通用覆盖"/);
+  assert.match(source, /CLI 授权 \{funnel\.cliGrants/);
+  assert.match(source, /不表示一对一转化/);
+  assert.match(source, /暂无 24 小时路由漏斗数据/);
+  assert.doesNotMatch(source, /phase_summary_excerpt/);
+});
+
 test("会话与试点页面持续刷新标题并在卸载时清理轮询", () => {
   const source = readFileSync("features/console/ConsolePage.tsx", "utf8");
   assert.equal(source.match(/window\.setInterval\(load, 5000\)/g)?.length, 1);

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 
 import { buildGovernanceMetrics } from "./governance-metrics.mjs";
 import { delegationsPath, listDelegations } from "./delegation-store.mjs";
+import { routingControlPath } from "./routing-control.mjs";
 import { loadVisibleTasks, taskEventsPath, taskLedgerPath } from "./task-ledger.mjs";
 import { updateTaskEventIndex } from "./task-event-index.mjs";
 import { updateUsageIndex, writeJsonAtomic } from "./usage-index.mjs";
@@ -70,8 +71,10 @@ async function refreshGovernance() {
     const delegationEvents = listDelegations().flatMap((delegation) =>
       (delegation.events || []).map((event) => ({ ...event, task_id: delegation.taskId })));
     const usageReport = readJson(usageReportPath, emptyUsageReport());
+    const routingState = readJson(routingControlPath, { routes: [] });
+    const routes = Array.isArray(routingState.routes) ? routingState.routes : [];
     await writeJsonAtomic(governanceMetricsPath, {
-      ...buildGovernanceMetrics({ tasks, events: [...(events || []), ...delegationEvents], usageReport, delegations: listDelegations() }),
+      ...buildGovernanceMetrics({ tasks, events: [...(events || []), ...delegationEvents], usageReport, delegations: listDelegations(), routes }),
       generatedAt: new Date().toISOString(),
       source: { mode: "incremental_snapshot", taskEventOffset: offset, delegationStore: delegationsPath },
     });
@@ -150,7 +153,7 @@ function runRefreshChild(mode) {
 }
 
 function sourceSignature() {
-  return [taskEventsPath, taskLedgerPath, delegationsPath, usageReportPath].map((path) => {
+  return [taskEventsPath, taskLedgerPath, delegationsPath, usageReportPath, routingControlPath].map((path) => {
     try { const info = statSync(path); return `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`; } catch { return "missing"; }
   }).join("|");
 }
