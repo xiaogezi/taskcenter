@@ -27,7 +27,7 @@ const base = `http://127.0.0.1:${port}`;
 const hook = join(rootPath, "scripts", "taskcenter-hook.mjs");
 const server = spawn(process.execPath, ["scripts/control-server.mjs"], {
   cwd: root,
-  env: { ...process.env, ...paths, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" },
+  env: { ...process.env, ...paths, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1", TASKCENTER_JEV_ROUTING: "0" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 
@@ -228,6 +228,7 @@ test("预算到限仍允许实现验证提交及任务更新，prepare 返回绑
   const post = (body) => fetch(`${base}/task-events`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
   const created = await (await post({ type: "task.create", session_id: sessionId, workspace: "/work", title: "budget", goal: "budget", plan: ["implement"], acceptance_criteria: ["pass"], contract_version: "v2", scope: ["budget"], non_goals: [], review_policy: "not_required", workflow_profile: "fast" })).json();
   assert.equal(created.accepted, true, JSON.stringify(created));
+  await writeFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify({ version: 3, models: {}, routes: [{ id: "budget-direct", taskId: created.task.id, channel: "direct", status: "leased", available: true, expiresAt: new Date(Date.now() + 120_000).toISOString() }] }));
   await mkdir(paths.TASKCENTER_SESSIONS_ROOT, { recursive: true });
   const lines = [{ type: "session_meta", payload: { id: sessionId } }, ...Array.from({ length: 8 }, (_, i) => ({ type: "event_msg", timestamp: new Date(Date.now() + i).toISOString(), payload: { type: "token_count", info: { last_token_usage: { input_tokens: 1 }, total_token_usage: { input_tokens: i + 1 } } } }))];
   await writeFile(join(paths.TASKCENTER_SESSIONS_ROOT, `${sessionId}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
@@ -330,6 +331,31 @@ test("Claude 写入门禁仅接受真实 Session 的任务，前缀身份不能�
   const allowed = await probe();
   assert.equal(allowed.code, 0, allowed.stderr);
   assert.match(allowed.stdout, /任务门禁通过/);
+});
+
+test("Codex 执行须有相符路由，CLI 路由不能授权主模型写入", async () => {
+  const sessionId = "codex-route-gate";
+  await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
+  const response = await fetch(`${base}/task-events`, {
+    method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" },
+    body: JSON.stringify({ type: "task.create", session_id: sessionId, workspace: "/work", agent: "codex", title: "route gate", goal: "test routing", plan: ["verify"], scope: ["probe"], non_goals: [], acceptance_criteria: [{ id: "route", description: "route selected", required: true }], contract_version: "v2", workflow_profile: "fast", review_policy: "recommended" }),
+  });
+  const created = await response.json();
+  assert.equal(created.accepted, true, JSON.stringify(created));
+  const taskId = created.task.id;
+  const payload = { session_id: sessionId, cwd: "/work", tool_name: "apply_patch", tool_input: {} };
+  const route = (channel) => ({ id: `route-${channel}`, taskId, channel, status: "leased", available: true, expiresAt: new Date(Date.now() + 60_000).toISOString() });
+  const save = async (routes) => writeFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify({ version: 3, models: {}, routes }));
+  try {
+    assert.match((await runHook("pre-tool-use", "codex", payload)).stderr, /缺少有效路由/);
+    await save([route("cli")]);
+    assert.match((await runHook("pre-tool-use", "codex", payload)).stderr, /缺少有效路由/);
+    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs /tmp/manifest.json" } })).code, 0);
+    await save([route("direct")]);
+    assert.equal((await runHook("pre-tool-use", "codex", payload)).code, 0);
+    await save([{ ...route("direct"), expiresAt: new Date(Date.now() - 1_000).toISOString() }]);
+    assert.match((await runHook("pre-tool-use", "codex", payload)).stderr, /缺少有效路由/);
+  } finally { await rm(paths.TASKCENTER_ROUTING_CONTROL_PATH, { force: true }); }
 });
 
 test("L0 路径探测跨客户端放行，但不能借 command 包装执行", async () => {
@@ -800,6 +826,7 @@ test("跨客户端共享任务保留创建者和证据，接手后旧 Session �
     assert.equal(task.handoffs.length, 1);
     assert.equal(task.handoffs[0].fromSessionId, source);
     assert.equal(task.handoffs[0].toSessionId, target);
+    if (to === "codex") await writeFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify({ version: 3, models: {}, routes: [{ id: `handoff-${target}`, taskId: task_id, channel: "direct", status: "leased", available: true, expiresAt: new Date(Date.now() + 120_000).toISOString() }] }));
     for (const field of ["goal", "scope", "acceptanceCriteria", "currentSubject", "evidence"]) assert.deepEqual(task[field], created.task[field], field);
     for (const event_id of [`stale-${source}`, `manual-stale-${source}`]) assert.equal((await post("/task-events", { type: "task.update", event_id, session_id: source, task_id, goal: "非法覆盖" })).status, 403);
     for (const [session_id, agent, expected] of [[source, from, 2], [target, to, 0]]) assert.equal((await runHook("pre-tool-use", agent, { session_id, cwd: "/work", tool_name: "Write", tool_input: { file_path: "/work/probe", content: "test" } })).code, expected);
@@ -1064,6 +1091,7 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     }),
   });
   assert.equal(created.status, 201);
+  await writeFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify({ version: 3, models: {}, routes: [{ id: "legacy-direct", taskId: "hook-gate-task", channel: "direct", status: "leased", available: true, expiresAt: new Date(Date.now() + 120_000).toISOString() }] }));
   for (const command of [
     "zsh",
     "bash -s",

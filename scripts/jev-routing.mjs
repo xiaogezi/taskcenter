@@ -6,6 +6,7 @@ import { loadModelRoleConfig } from "./model-role-config.mjs";
 const PROTECTED_CLASSES = new Set(["security", "high_risk", "data_migration"]);
 const REVIEW_CLASSES = new Set(["ocr", "ocr_review", "independent_review"]);
 const EXECUTION_CHOICES = ["delegate", "direct", "needs_context"];
+const EXPLICIT_CHANNELS = new Set(["direct", "cli", "native"]);
 const NO_MATCH = "no_match";
 const CACHE_MAX = 100;
 const cache = new Map();
@@ -86,7 +87,8 @@ export function jevRoutingPrepare(task, { phaseId = "", phaseSummary = "", evalu
   const raw = { title: String(task?.title || ""), goal: String(task?.goal || ""), phase_summary: String(phaseSummary || "") };
   // 先在完整原文上筛查密钥，再截断；任何情况下不输出原文。
   const state = { title: truncateText(raw.title, 200), goal: truncateText(raw.goal, 1000), phase_summary: truncateText(raw.phase_summary, 500) };
-  const base = { phase_id: phaseId, input_hash: hashState(state) };
+  // 受限安全摘要：原文已筛查密钥并截断，供决策元数据复盘，不回传完整原文。
+  const base = { phase_id: phaseId, input_hash: hashState(state), phase_summary_hash: hashState(state.phase_summary), phase_summary_excerpt: state.phase_summary };
   if (hasSuspectedSecret(raw)) {
     return Promise.resolve({ decision: { ...base, status: "suspected_secret", error: "suspected_secret" }, status: "suspected_secret" });
   }
@@ -142,6 +144,8 @@ function stableDecisionMeta(decision, input) {
     latency_ms: decision.latency_ms ?? null,
     phase_id: decision.phase_id ?? null,
     input_hash: decision.input_hash ?? null,
+    phase_summary_hash: decision.phase_summary_hash ?? null,
+    phase_summary_excerpt: decision.phase_summary_excerpt ?? null,
     requested_task_class: input.task_class ?? null,
     requested_channel: input.channel ?? null,
     task_class_choice: decision.task_class_choice ?? null,
@@ -181,17 +185,39 @@ export function applyJevRouting(input, _task, decision) {
   if (!PROTECTED_CLASSES.has(input.task_class) && !REVIEW_CLASSES.has(decision.task_class_choice)) {
     taskClass = decision.task_class_choice;
   }
+  // 显式 channel（direct/cli/native）是调用方覆盖；默认请求（other/未指定）完整采用 Jev execution 选择。
+  const explicitChannel = EXPLICIT_CHANNELS.has(input.channel);
   if (decision.execution_choice === "needs_context") {
     throw new RoutingControlError(409, "Jev 建议 needs_context：任务缺少明确目标或范围，请补充后重试。", "JEV_NEEDS_CONTEXT");
   }
-  if (decision.execution_choice === "direct" && channel === "direct") {
-    const directReason = String(input.direct_reason || "").trim();
-    if (!directReason) throw new RoutingControlError(400, "Jev 启用模式下 channel=direct 必须提供 direct_reason。", "DIRECT_REASON_REQUIRED");
-    reason = `jev_direct:${directReason}`;
+  let executionApplied = false;
+  let executionOverrideReason = null;
+  if (decision.execution_choice === "direct") {
+    if (explicitChannel) {
+      if (channel === "direct") {
+        const directReason = String(input.direct_reason || "").trim();
+        if (!directReason) throw new RoutingControlError(400, "Jev 启用模式下 channel=direct 必须提供 direct_reason。", "DIRECT_REASON_REQUIRED");
+        reason = `jev_direct:${directReason}`;
+        executionOverrideReason = directReason;
+      } else {
+        executionOverrideReason = "explicit_channel";
+      }
+    } else {
+      channel = "direct";
+      reason = "jev_direct";
+      executionApplied = true;
+    }
   }
-  if (decision.execution_choice === "delegate" && !pinned && !REVIEW_CLASSES.has(taskClass) && channel !== "direct") {
-    channel = "cli";
+  if (decision.execution_choice === "delegate") {
+    if (explicitChannel || pinned) {
+      executionOverrideReason = explicitChannel ? "explicit_channel" : "pinned";
+    } else if (!REVIEW_CLASSES.has(taskClass)) {
+      channel = "cli";
+      executionApplied = true;
+    }
   }
+  meta.execution_applied = executionApplied;
+  meta.execution_override_reason = executionOverrideReason;
   const newInput = { ...input, task_class: taskClass, channel };
   // 只有白名单内的型号、非 direct 路由且无显式覆盖时，才注入可信 preferred_model。
   if (!pinned && channel !== "direct"

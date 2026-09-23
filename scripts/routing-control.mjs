@@ -123,6 +123,16 @@ export function reportReview(input, task, commit, canonical = (id) => id, now = 
 
 export function routeForId(id) { return readState().routes.find((route) => route.id === id); }
 
+export function activeExecutionRoute(taskId, now = new Date().toISOString()) {
+  const routes = readState().routes.filter((route) => route.taskId === taskId
+    && !route.reviewRecord && route.status === "leased" && route.available
+    && Date.parse(route.expiresAt) > Date.parse(now));
+  return {
+    direct: routes.some((route) => route.channel === "direct"),
+    cli: routes.some((route) => route.channel === "cli"),
+  };
+}
+
 // 仅保留结构化决策与调用用量；签名单独排除 latency/usage，不存原文。
 export function sanitizeJevDecision(value) {
   if (!value || typeof value !== "object") return null;
@@ -132,12 +142,16 @@ export function sanitizeJevDecision(value) {
     latency_ms: Number.isFinite(value.latency_ms) && value.latency_ms >= 0 ? value.latency_ms : null,
     phase_id: clean(String(value.phase_id ?? ""), 120) || null,
     input_hash: clean(String(value.input_hash ?? ""), 120) || null,
+    phase_summary_hash: clean(String(value.phase_summary_hash ?? ""), 120) || null,
+    phase_summary_excerpt: clean(String(value.phase_summary_excerpt ?? ""), 500) || null,
     requested_task_class: clean(String(value.requested_task_class ?? ""), 80) || null,
     requested_channel: clean(String(value.requested_channel ?? ""), 40) || null,
     task_class_choice: clean(String(value.task_class_choice ?? ""), 80) || null,
     task_class_confidence: Number.isFinite(value.task_class_confidence) ? value.task_class_confidence : null,
     execution_choice: clean(String(value.execution_choice ?? ""), 40) || null,
     execution_confidence: Number.isFinite(value.execution_confidence) ? value.execution_confidence : null,
+    execution_applied: value.execution_applied === true,
+    execution_override_reason: clean(String(value.execution_override_reason ?? ""), 1000) || null,
     executor_model_choice: clean(String(value.executor_model_choice ?? ""), 120) || null,
     executor_model_confidence: Number.isFinite(value.executor_model_confidence) ? value.executor_model_confidence : null,
     model_applied: value.model_applied === true,
@@ -224,6 +238,30 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     const auditEvents = replayAuditEvents(state, replay, "select", now, config);
     persistState(state, now);
     return { route: publicRoute(replay), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: true, auditEvents };
+  }
+
+  if (channel === "direct" && roleName === "executor") {
+    const health = ensureHealth(state, orchestratorModel, now, config);
+    const route = {
+      id: clean(input.route_id, 200) || `route_${randomUUID()}`,
+      selectEventId: eventId, selectSignature: signature, taskId, orchestratorModel,
+      preferredModel: orchestratorModel, selectedModel: orchestratorModel,
+      selectedReasoningEffort: "unknown", taskClass, channel,
+      circuitState: health.state, reason: jev?.execution_applied ? "jev_direct" : "direct_reasoned_override",
+      fallbackFrom: "", fallbackReason: "", retryAfterAt: "", reviewArtifacts: null,
+      preferenceMode: executionModelPolicy.mode, quotaLimitId: "", quotaSnapshotObservedAt: "",
+      quotaUsedPercent: undefined, quotaResetAt: "", directReason, jevDecision: jev,
+      configVersion: config.contentHash, policyVersion: config.schemaVersion,
+      matchedRule: "direct_main_model", requiresNewSession: false,
+      available: true, probe: false, status: "leased", createdAt: now,
+      expiresAt: new Date(Date.parse(now) + normalizeTtlMs(input.lease_ttl_ms)).toISOString(),
+      completedAt: "", resultEventId: "", resultSignature: "", result: null,
+    };
+    if (state.routes.some((item) => item.id === route.id)) throw new RoutingControlError(409, "route_id 已存在。");
+    state.routes.push(route);
+    route.selectAuditEvents = auditEventsFor(route, health, "direct_selected", "select");
+    persistState(state, now);
+    return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
   }
 
   const preferred = ensureHealth(state, preferredModel, now, config);
@@ -421,7 +459,9 @@ export function routingResult(input, now = new Date().toISOString()) {
   }
   if (health.halfOpenLease === route.id) health.halfOpenLease = "";
 
-  if (outcome === "succeeded") {
+  if (route.channel === "direct") {
+    // Direct work uses the already-running main Session; its task result is not executor-model health.
+  } else if (outcome === "succeeded") {
     health.state = "closed";
     health.consecutiveFailures = 0;
     health.openedAt = "";

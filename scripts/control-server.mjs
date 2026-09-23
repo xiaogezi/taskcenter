@@ -88,7 +88,7 @@ import {
   routingHealth,
   routingResult,
   routingRoles,
-  routingSelect,
+  routingSelect, activeExecutionRoute,
   isReviewTaskClass, validateReviewRequest, claimReview, reportReview, reviewSessionRecords, reviewTaskRecords, routeForId,
 } from "./routing-control.mjs";
 import { prepareRoutingInput } from "./jev-routing.mjs";
@@ -629,6 +629,15 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/routing/health") {
       sendJson(response, 200, { models: routingHealth(), roles: routingRoles() });
+      return;
+    }
+    if (request.method === "GET" && request.url?.startsWith("/routing/active?")) {
+      const query = new URL(request.url, "http://localhost").searchParams;
+      const task = loadTasks().find((item) => item.id === query.get("task_id"));
+      if (!task || canonicalSessionId(task.sessionId) !== canonicalSessionId(query.get("session_id") || "")) {
+        throw new RoutingControlError(403, "当前 Session 无权查询该任务路由。");
+      }
+      sendJson(response, 200, activeExecutionRoute(task.id));
       return;
     }
     if (request.method === "GET" && request.url === "/routing/optional-astra-policy") {

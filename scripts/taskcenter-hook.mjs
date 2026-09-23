@@ -129,6 +129,18 @@ try {
       process.exit(0);
     }
     const task = await requireTask();
+    if (agent === "codex" && !task.delegation && isProjectExecution(event)) {
+      let active;
+      try {
+        active = await request("GET", `/routing/active?task_id=${encodeURIComponent(task.id)}&session_id=${encodeURIComponent(sessionId)}`);
+      } catch (error) {
+        // The healthy pre-deploy service does not expose this endpoint. Keep its existing task gate during rollout.
+        if (error.statusCode !== 404) throw error;
+      }
+      if (active && !(isDelegatedCliLaunch(event) ? active.cli : active.direct)) {
+        throw new Error("执行阶段缺少有效路由：先调用 taskcenter_routing_select；主模型直接执行须提供 direct_reason，CLI 启动须持有 CLI 路由。");
+      }
+    }
     await remindOverdueTask(task);
     await recordToolCall(task);
     console.log(task.delegation ? `TaskCenter delegation 放行：${task.delegation.id} → ${task.id}` : "TaskCenter 任务门禁通过");
@@ -739,6 +751,18 @@ function isReadOnlyInspection(payload) {
   if (!command) return false;
   const batch = inspectionBatch(command);
   return Boolean(batch?.every(({ words, heredoc }) => isReadOnlyCommand(words, heredoc)));
+}
+
+function isProjectExecution(payload) {
+  const name = String(payload.tool_name || payload.tool || payload.name || "");
+  if (["apply_patch", "Write", "Edit"].includes(name)) return true;
+  return ["Bash", "exec_command"].includes(name) && !isReadOnlyInspection(payload);
+}
+
+function isDelegatedCliLaunch(payload) {
+  const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
+  const command = String(input.cmd || input.command || payload.command || "").trim();
+  return /^node\s+scripts\/delegated-cli\.mjs\s+\/[^\s;&|`$]+\.json$/.test(command);
 }
 
 function isReadOnlyCommand(words, heredoc) {

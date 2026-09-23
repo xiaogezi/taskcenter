@@ -14,7 +14,7 @@ fixtureConfig.roles.executor.fallback_models = ["mimo-v2.5-pro"];
 fixtureConfig.roles.executor.task_class_models = {};
 fixtureConfig.model_catalog = {};
 await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(fixtureConfig));
-const { routingSelect, routeForId } = await import("../scripts/routing-control.mjs");
+const { routingSelect, routingResult, routeForId } = await import("../scripts/routing-control.mjs");
 const { prepareRoutingInput, clearJevCache } = await import("../scripts/jev-routing.mjs");
 const task = { id: "task-jev", title: "修复路由审计", goal: "修改指定模块并测试", currentStep: "实现" };
 const input = { task_id: task.id, orchestrator_model: "current-main", task_class: "implementation", channel: "native", phase_id: "implement", phase_summary: "修改路由审计字段" };
@@ -40,7 +40,8 @@ test("同阶段并发去重，下一阶段重新判断，并消费真实类别�
   assert.equal(calls, 1);
   assert.deepEqual(first, second);
   assert.equal(first.input.task_class, "search");
-  assert.equal(first.input.channel, "cli");
+  assert.equal(first.input.channel, "native");
+  assert.equal(first.jevDecision.execution_override_reason, "explicit_channel");
   assert.deepEqual(first.jevDecision.usage, { input_tokens: 80, output_tokens: 12 });
   await prepare({ ...input, phase_id: "next" }, evaluator);
   assert.equal(calls, 2);
@@ -217,7 +218,7 @@ test("真实集中路由原子保存决策、用量与审计，语义进入幂�
   const prepared = await prepare({ ...input, channel: "direct", direct_reason: "部署后集成验收" });
   const body = { ...prepared.input, event_id: "jev-persist" };
   const first = routingSelect(body, undefined, prepared.jevDecision);
-  assert.match(first.route.selected_model, /^(kimi-code\/|mimo-)/);
+  assert.equal(first.route.selected_model, "current-main");
   assert.equal(first.route.direct_reason, "部署后集成验收");
   assert.deepEqual(routeForId(first.route.route_id).jevDecision, first.route.jev_decision);
   const audit = first.auditEvents.find(e => e.type === "routing.decision");
@@ -229,4 +230,63 @@ test("真实集中路由原子保存决策、用量与审计，语义进入幂�
   assert.throws(() => routingSelect({ ...body, direct_reason: "different" }, undefined, prepared.jevDecision), e => e.statusCode === 409);
   const persisted = JSON.parse(await readFile(statePath, "utf8"));
   assert.equal(persisted.routes.length, 1);
+});
+
+test("默认请求完整采用 Jev direct 选择并记录执行审计", async () => {
+  const prepared = await prepare({ ...input, channel: "other", phase_id: "jev-direct" }, async () => result("implementation", "direct"));
+  assert.equal(prepared.input.channel, "direct");
+  assert.equal(prepared.input.reason_override, "jev_direct");
+  assert.equal(prepared.jevDecision.execution_applied, true);
+  assert.equal(prepared.jevDecision.execution_override_reason, null);
+  assert.equal(prepared.jevDecision.execution_choice, "direct");
+  assert.equal(prepared.jevDecision.execution_confidence, 0.9);
+  const routed = routingSelect({ ...prepared.input, event_id: "jev-direct-persist" }, undefined, prepared.jevDecision);
+  assert.equal(routed.route.channel, "direct");
+  assert.equal(routed.route.selected_model, "current-main");
+  assert.equal(routed.route.jev_decision.execution_applied, true);
+  assert.equal(routed.route.jev_decision.execution_override_reason, null);
+  assert.equal(routingResult({ route_id: routed.route.route_id, outcome: "succeeded" }).route.status, "succeeded");
+});
+
+test("执行器容量用尽不阻断 Jev 选择主模型直接处理", async () => {
+  for (let i = 0; i < 2; i++) routingSelect({ ...input, channel: "cli", event_id: `busy-${i}` });
+  const prepared = await prepare({ ...input, channel: "other", phase_id: "direct-while-busy" }, async () => result("implementation", "direct"));
+  const routed = routingSelect({ ...prepared.input, event_id: "direct-while-busy" }, undefined, prepared.jevDecision);
+  assert.equal(routed.route.available, true);
+  assert.equal(routed.route.selected_model, "current-main");
+});
+
+test("默认请求采用 Jev delegate 选择，needs_context 仍为 409", async () => {
+  const prepared = await prepare({ ...input, channel: "other", phase_id: "jev-delegate" }, async () => result("implementation", "delegate"));
+  assert.equal(prepared.input.channel, "cli");
+  assert.equal(prepared.jevDecision.execution_applied, true);
+  await assert.rejects(
+    prepare({ ...input, channel: "other", phase_id: "jev-needs" }, async () => result("general", "needs_context")),
+    e => e.statusCode === 409 && e.code === "JEV_NEEDS_CONTEXT");
+});
+
+test("显式 channel 覆盖 Jev execution，审计记录覆盖原因", async () => {
+  const native = await prepare({ ...input, channel: "native", phase_id: "ov-native" }, async () => result("implementation", "delegate"));
+  assert.equal(native.input.channel, "native");
+  assert.equal(native.jevDecision.execution_applied, false);
+  assert.equal(native.jevDecision.execution_override_reason, "explicit_channel");
+  const cliDirect = await prepare({ ...input, channel: "cli", phase_id: "ov-cli" }, async () => result("implementation", "direct"));
+  assert.equal(cliDirect.input.channel, "cli");
+  assert.equal(cliDirect.jevDecision.execution_applied, false);
+  assert.equal(cliDirect.jevDecision.execution_override_reason, "explicit_channel");
+  const direct = await prepare({ ...input, channel: "direct", direct_reason: "整合验收", phase_id: "ov-direct" }, async () => result("implementation", "direct"));
+  assert.equal(direct.input.channel, "direct");
+  assert.equal(direct.input.direct_reason, "整合验收");
+  assert.equal(direct.jevDecision.execution_applied, false);
+  assert.equal(direct.jevDecision.execution_override_reason, "整合验收");
+});
+
+test("决策元数据保留 phase_summary 受限摘要与 hash 且不泄露原文", async () => {
+  const summary = "实现路由执行应用 " + "细节".repeat(200);
+  const prepared = await prepare({ ...input, phase_id: "summary-meta", phase_summary: summary }, async () => result("implementation", "delegate"));
+  assert.ok(/^[a-f0-9]{16}$/.test(prepared.jevDecision.phase_summary_hash));
+  assert.ok(Buffer.byteLength(prepared.jevDecision.phase_summary_excerpt, "utf8") <= 500);
+  assert.equal(prepared.jevDecision.phase_summary_excerpt.includes("细节".repeat(100)), false);
+  assert.equal(prepared.jevDecision.task_class_choice, "implementation");
+  assert.deepEqual(prepared.jevDecision.usage, { input_tokens: 80, output_tokens: 12 });
 });
