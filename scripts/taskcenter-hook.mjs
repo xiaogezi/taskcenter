@@ -762,7 +762,7 @@ function isProjectExecution(payload) {
 function isDelegatedCliLaunch(payload) {
   const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
   const command = String(input.cmd || input.command || payload.command || "").trim();
-  return /^node\s+scripts\/delegated-cli\.mjs\s+\/[^\s;&|`$]+\.json$/.test(command);
+  return /^node\s+scripts\/delegated-cli\.mjs\s+(?:--stdin|\/[^\s;&|`$]+\.json)$/.test(command);
 }
 
 function isReadOnlyCommand(words, heredoc) {

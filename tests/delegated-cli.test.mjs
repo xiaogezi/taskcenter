@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import test from "node:test";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { cliProfile } from "../scripts/cli-profile.mjs";
 import { claimCli } from "../scripts/delegated-cli-hook.mjs";
-import { cliFailureKind, claudeInvocation, claudeReceipt, runDelegatedCli } from "../scripts/delegated-cli.mjs";
+import { cliFailureKind, claudeInvocation, claudeReceipt, runDelegatedCli, runDelegatedCliFromStdin } from "../scripts/delegated-cli.mjs";
 import { harnessCapabilities, requireHarnessOperation } from "../scripts/harnesses/index.mjs";
 
 test("Claude 入口保留权限门禁、移除父身份且不把退出码当完成", () => {
@@ -25,6 +26,41 @@ test("Claude 入口保留权限门禁、移除父身份且不把退出码当完�
 test("CLAIM 校验父任务、真实执行身份及模型，拒绝伪成功", async () => {
   const manifest = { profile: "kimi-k3", task_id: "task", parent_session_id: "parent", workspace: "/work", delegation_id: "grant", route_id: "route", claim_token: "secret" };
   await assert.rejects(claimCli(manifest, "child", async () => ({ accepted: true, delegation: { taskId: "other" } })), /MISMATCH/);
+});
+
+test("stdin 入口在领取前托管 prompt，执行后清除 prompt 并保留回执", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cli-stdin-test-"));
+  const manifest = { profile: "kimi-k3", task_id: "task", parent_session_id: "parent", workspace: dir, delegation_id: "grant", route_id: "route", claim_token: "secret", mode: "read-only" };
+  const profile = cliProfile(manifest.profile);
+  let outputPath;
+  try {
+    const { output_path } = await runDelegatedCliFromStdin({ manifest, prompt: "bounded task" }, {
+      control: async () => ({ accepted: true, delegation: { taskId: "task", parentSessionId: "parent", executorModel: profile.model, delegateSessionId: "child", workspace: dir, status: "active" } }),
+      runKimi: async input => {
+        await input.onSessionReady({ taskcenterSessionId: "child" });
+        return { stopReason: "end_turn", reportedModel: profile.model, reportedThinking: profile.effort, finalText: "done" };
+      },
+    });
+    outputPath = output_path;
+    assert.equal(JSON.parse(readFileSync(output_path, "utf8")).status, "completed");
+    assert.equal(readFileSync(output_path, "utf8").includes("secret"), false);
+    assert.throws(() => readFileSync(join(dirname(output_path), "prompt.txt")), /ENOENT/);
+  } finally {
+    if (outputPath) rmSync(dirname(outputPath), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("stdin 启动命令读取单行 JSON，不等待调用方关闭输入流", async () => {
+  const child = spawn(process.execPath, [join(import.meta.dirname, "../scripts/delegated-cli.mjs"), "--stdin"], { stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const timer = setTimeout(() => child.kill(), 2_000);
+  child.stdin.write('{"manifest":{},"prompt":"bounded"}\n');
+  const code = await new Promise((resolve) => child.on("close", resolve));
+  clearTimeout(timer);
+  assert.equal(code, 1);
+  assert.match(stderr, /Missing profile/);
 });
 
 test("CLI 成功和初始化失败都回写并释放原租约，未知型号不能报成功", async () => {

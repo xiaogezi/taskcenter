@@ -132,7 +132,8 @@
         "high_risk": "medium"
       },
       "concurrency_limit": 2,
-      "global_concurrency_limit": 4
+      "global_concurrency_limit": 4,
+      "capacity_fallback_model": "gpt-6-luna"
     },
     "reviewer": {
       "model": "gpt-6-luna",

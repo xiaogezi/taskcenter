@@ -46,6 +46,7 @@ export function loadModelRoleConfig() {
     executor.model,
     reviewer.model,
     ...executor.fallbackModels,
+    executor.capacityFallbackModel,
     ...reviewer.fallbackModels,
   ]);
   const conflict = retiredModels.find((model) => activeModels.has(model));
@@ -126,12 +127,13 @@ function normalizeRole(value, name, failClosed) {
   }
   const fallbackModels = uniqueModels(value.fallback_models, `roles.${name}.fallback_models`)
     .filter((candidate) => candidate !== model);
+  const capacityFallbackModel = name === "executor" ? cleanModel(value.capacity_fallback_model) : "";
   if (failClosed && fallbackModels.length > 0) {
     throw new ModelRoleConfigError("Reviewer 必须 fail closed，不能配置 fallback_models。");
   }
   const taskClassModels = normalizeTaskClassModels(value.task_class_models, model, fallbackModels, name);
   const taskClassReasoningEfforts = normalizeTaskClassReasoningEfforts(value.task_class_reasoning_efforts, name);
-  return { model, reasoningEffort, fallbackModels, concurrencyLimit, globalConcurrencyLimit, failClosed, taskClassModels, taskClassReasoningEfforts };
+  return { model, reasoningEffort, fallbackModels, capacityFallbackModel, concurrencyLimit, globalConcurrencyLimit, failClosed, taskClassModels, taskClassReasoningEfforts };
 }
 
 function normalizeTaskClassReasoningEfforts(value, roleName) {
@@ -220,6 +222,7 @@ function publicRole(role) {
     model: role.model,
     reasoning_effort: role.reasoningEffort,
     fallback_models: role.fallbackModels,
+    capacity_fallback_model: role.capacityFallbackModel || null,
     concurrency_limit: role.concurrencyLimit,
     global_concurrency_limit: role.globalConcurrencyLimit,
     fail_closed: role.failClosed,

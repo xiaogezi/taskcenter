@@ -332,7 +332,7 @@ test("manual_only Spark 健康状态可观察，退役后隐藏", async () => {
   await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 });
 
-test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动首选或回退", async () => {
+test("当前项目策略先派发非 Codex 客户端，总容量满后才使用 Luna", async () => {
   const current = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
   await writeFile(roleConfigPath, current);
   const kimi = "kimi-code/k3-256k";
@@ -369,8 +369,28 @@ test("当前项目策略默认派发非 Codex 客户端，Luna 不进入自动�
     assert.equal(fourth.route.cli_profile, "claude-mimo-v2.6-flash");
 
     const fifth = routingSelect({ ...baseInput, event_id: "policy-fifth" });
-    assert.equal(fifth.route.available, false, "两端都占满时不可用，不会自动落到 Luna");
-    assert.equal(fifth.route.selected_model, null);
+    assert.equal(fifth.route.selected_model, "gpt-6-luna", "普通 CLI 总并发满时才使用 Luna 末级兜底");
+    assert.equal(fifth.route.cli_profile, "codex-luna");
+    assert.equal(fifth.route.channel, "cli");
+    assert.equal(fifth.route.fallback_reason, "ordinary_executor_capacity_exhausted");
+    const sixth = routingSelect({ ...baseInput, event_id: "policy-sixth" });
+    assert.equal(sixth.route.selected_model, "gpt-6-luna");
+    assert.equal(routingSelect({ ...baseInput, event_id: "policy-seventh" }).route.available, false, "末级兜底也满时保持不可用");
+    routingResult({ route_id: general.route.route_id, event_id: "policy-permission-result", outcome: "failed", error_type: "task_permission" });
+    assert.equal(routingSelect({ ...baseInput, event_id: "policy-after-permission" }).route.selected_model, kimi, "权限失败释放名额后不继续使用 Luna");
+
+    await rm(statePath, { force: true });
+    const capacityConfig = JSON.parse(current);
+    capacityConfig.roles.executor.fallback_models = [mimo];
+    capacityConfig.roles.executor.task_class_models = {};
+    await writeFile(roleConfigPath, JSON.stringify(capacityConfig));
+    const kimiRoute = routingSelect({ ...baseInput, event_id: "policy-kimi-overload" });
+    routingResult({ route_id: kimiRoute.route.route_id, event_id: "policy-kimi-overload-result", outcome: "overloaded", error_type: "server_overloaded" });
+    const mimoRoute = routingSelect({ ...baseInput, event_id: "policy-mimo-overload" });
+    assert.equal(mimoRoute.route.selected_model, mimo);
+    routingResult({ route_id: mimoRoute.route.route_id, event_id: "policy-mimo-overload-result", outcome: "overloaded", error_type: "server_overloaded" });
+    assert.equal(routingSelect({ ...baseInput, event_id: "policy-capacity-last-resort" }).route.selected_model, "gpt-6-luna", "上游容量熔断也使用 Luna 兜底");
+    await writeFile(roleConfigPath, current);
 
     for (const taskClass of ["security", "data_migration", "complex_diagnosis", "high_risk"]) {
       await rm(statePath, { force: true });

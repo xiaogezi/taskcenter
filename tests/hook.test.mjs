@@ -351,6 +351,8 @@ test("Codex 执行须有相符路由，CLI 路由不能授权主模型写入", a
     await save([route("cli")]);
     assert.match((await runHook("pre-tool-use", "codex", payload)).stderr, /缺少有效路由/);
     assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs /tmp/manifest.json" } })).code, 0);
+    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs --stdin" } })).code, 0);
+    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs --stdin > /tmp/output" } })).stderr, /缺少有效路由/);
     await save([route("direct")]);
     assert.equal((await runHook("pre-tool-use", "codex", payload)).code, 0);
     await save([{ ...route("direct"), expiresAt: new Date(Date.now() - 1_000).toISOString() }]);

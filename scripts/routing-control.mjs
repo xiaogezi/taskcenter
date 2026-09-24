@@ -323,7 +323,20 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     const protectedTaskClass = roleName === "executor" && (
       mappedModel !== role.model || (Boolean(requestedPreferredModel) && !jev?.model_applied)
     );
-    const fallback = protectedTaskClass ? null : chooseFallback(state, role, preferredModel, now, config);
+    let fallback = protectedTaskClass ? null : chooseFallback(state, role, preferredModel, now, config);
+    const ordinaryModels = [role.model, ...role.fallbackModels];
+    if (!fallback && roleName === "executor" && role.capacityFallbackModel
+      && ordinaryModels.every((model) => {
+        const health = ensureHealth(state, model, now, config);
+        if (canLease(state, health, now, config)) return false;
+        return health.state === "closed" || /server_overloaded|capacity|rate.?limit|quota|429/i.test(health.lastErrorCode);
+      })) {
+      const lastResort = ensureHealth(state, role.capacityFallbackModel, now, config);
+      if (canLease(state, lastResort, now, config)) {
+        fallback = lastResort;
+        fallbackReason = "ordinary_executor_capacity_exhausted";
+      }
+    }
     if (!fallback) {
       const route = buildUnavailableRoute({
         eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now,
@@ -340,7 +353,9 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
       return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
     }
     selectedModel = fallback.model;
-    reason = detailedFallbackReason(preferredModel, preferred);
+    reason = fallbackReason === "ordinary_executor_capacity_exhausted"
+      ? "executor_capacity_fallback_to_last_resort"
+      : detailedFallbackReason(preferredModel, preferred);
     probe = fallback.state === "half_open";
   }
 

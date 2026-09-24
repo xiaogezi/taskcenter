@@ -24,6 +24,62 @@ export function cliFailureKind(message) {
   return "cli_execution";
 }
 
+// The parent supplies the grant and bounded prompt over stdin, so a CLI route
+// does not require a separate parent-side file write before the launcher runs.
+export async function runDelegatedCliFromStdin(input, dependencies = {}) {
+  const prompt = input?.prompt;
+  if (typeof prompt !== "string" || !prompt.trim() || Buffer.byteLength(prompt) > 32 * 1024) throw new Error("Invalid bounded CLI prompt");
+  const directory = mkdtempSync(join(tmpdir(), "taskcenter-cli-input-"));
+  const promptPath = join(directory, "prompt.txt");
+  const outputPath = join(directory, "result.json");
+  const manifest = { ...input.manifest, prompt_path: promptPath, output_path: outputPath };
+  try {
+    validateCliManifest(manifest);
+    writeFileSync(promptPath, prompt, { mode: 0o600, flag: "wx" });
+    try {
+      const result = await runDelegatedCli(manifest, dependencies);
+      return { result, output_path: outputPath };
+    } catch (error) {
+      error.message = `${error.message}; output_path=${outputPath}`;
+      throw error;
+    }
+  } finally {
+    rmSync(promptPath, { force: true });
+    if (!existsSync(outputPath)) rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function readStdinRequest() {
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw === true;
+    if (stdin.isTTY && !wasRaw) stdin.setRawMode(true);
+    let bytes = Buffer.alloc(0);
+    const finish = (error, value) => {
+      stdin.off("data", onData);
+      stdin.off("end", onEnd);
+      stdin.pause();
+      if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
+      stdin.destroy();
+      if (error) reject(error); else resolve(value);
+    };
+    const parse = (value) => {
+      try { finish(null, JSON.parse(value.toString("utf8"))); }
+      catch { finish(new Error("Invalid CLI stdin JSON")); }
+    };
+    const onData = (chunk) => {
+      bytes = Buffer.concat([bytes, chunk]);
+      if (bytes.length > 64 * 1024) return finish(new Error("CLI stdin exceeds 64 KiB"));
+      const newline = bytes.indexOf(10);
+      if (newline !== -1) parse(bytes.subarray(0, newline));
+    };
+    const onEnd = () => parse(bytes);
+    stdin.on("data", onData);
+    stdin.once("end", onEnd);
+    stdin.resume();
+  });
+}
+
 const quotaLikePattern = /rate.?limit|quota|429|retry.?after/i;
 function isQuotaLike(value) { return quotaLikePattern.test(String(value || "")); }
 
@@ -115,6 +171,13 @@ export async function runDelegatedCli(input, dependencies = {}) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try { if (process.argv.length !== 3) throw new Error("Usage: node scripts/delegated-cli.mjs MANIFEST.json"); await runDelegatedCli(JSON.parse(readFileSync(process.argv[2], "utf8"))); }
+  try {
+    if (process.argv.length !== 3) throw new Error("Usage: node scripts/delegated-cli.mjs MANIFEST.json|--stdin");
+    if (process.argv[2] === "--stdin") {
+      const request = await readStdinRequest();
+      const result = await runDelegatedCliFromStdin(request);
+      console.log(JSON.stringify({ status: result.result.status, output_path: result.output_path }));
+    } else await runDelegatedCli(JSON.parse(readFileSync(process.argv[2], "utf8")));
+  }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }
