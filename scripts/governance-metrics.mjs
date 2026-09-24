@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 export function readTaskEvents(path) {
   if (!path || !existsSync(path)) return [];
@@ -6,6 +7,214 @@ export function readTaskEvents(path) {
     if (!line.trim()) return [];
     try { return [JSON.parse(line)]; } catch { return []; }
   });
+}
+
+// ── 门禁重复拒绝即时检测 ──────────────────────────────────────────────
+// 拒绝发生时由 Hook/CLI 上报安全字段（分类/时间/Session/task/run），服务端
+// 同步评估短窗口去重后的批量与重复拒绝；不持久化原始命令、错误正文或敏感文本。
+
+export const GATE_DENIAL_WINDOW_MS = 3_600_000;
+export const GATE_DENIAL_DEDUPE_MS = 60_000;
+export const GATE_DENIAL_BATCH_TASKS = 3;
+export const GATE_DENIAL_BATCH_RUNS = 5;
+export const GATE_DENIAL_CONSECUTIVE = 3;
+const GATE_DENIAL_LOG_MAX_BYTES = 1_000_000;
+const GATE_DENIAL_LOG_RETAINED = 2_000;
+
+const KNOWN_FAILURE_KINDS = new Set(["tool_approval", "filesystem_permission", "task_permission"]);
+
+const GATE_DENIAL_GUIDANCE = {
+  no_active_task: {
+    reason: "PreToolUse 未识别为 L0 确定性只读，且 Session 没有活跃任务或有效 delegation；这不等于检测到写入。",
+    recovery: "若确为只读，先拆开复合命令、去掉包装后重试；实际执行则同一交付用 taskcenter_task_resume 接续，独立目标用 taskcenter_task_begin，CLI 执行器领取原任务的 delegation。",
+    verification: "只读调用应返回“L0 确定性只读检查放行”；实际执行应返回“任务门禁通过”或“delegation 放行”。",
+  },
+  session_unregistered: {
+    reason: "门禁拒绝：当前 Session 尚未完成 SessionStart 登记。",
+    recovery: "先用真实 session_id 调用 taskcenter_session_register（或由 Hook session-start 自动登记），不要改用 local_ 前缀或自拟 ID。",
+    verification: "GET /session-status 中该 session 状态为 registered 后重试原操作。",
+  },
+  interactive_command: {
+    reason: "门禁拒绝：检测到可由 write_stdin 续写的交互式命令。",
+    recovery: "改为一次性非交互命令；受管 CLI 派发使用 --stdin 单次输入，不启动可续写会话。",
+    verification: "以非交互形式重试，Hook 应 exit 0；若仍拒绝，检查是否混入 -i/--interactive 或管道等待输入。",
+  },
+  missing_route: {
+    reason: "执行门禁：缺少与当前动作匹配的有效 direct 或 CLI 路由。",
+    recovery: "先 taskcenter_routing_select 取得路由；主模型直接执行须提供 direct_reason，CLI 启动须持有 CLI 路由后再重试。",
+    verification: "GET /routing/active?task_id=…&session_id=… 中对应 direct/cli 为 true 后重试原操作。",
+  },
+  task_permission: {
+    reason: "CLI/任务权限拒绝：grant、scope、claim 或工具授权与当前执行不匹配。",
+    recovery: "在同 executor 角色内做一次有界修正：核对 delegation scope/allowed_tools、claim 状态与 route 绑定；仍失败则报告失败，不静默改主模型直接执行。",
+    verification: "修正后重跑该 CLI Run，evidence.failure_kind 不再是 task_permission，delegation report 进入 succeeded 或明确失败原因。",
+  },
+  tool_approval: {
+    reason: "Harness 工具审批拒绝：执行器未获得该工具的一次性授权。",
+    recovery: "在同一 Run 内按 Harness 语义重新发起一次工具授权（allow-once），或缩小任务改用已授权工具；不绕过审批策略。",
+    verification: "重试后该工具调用成功完成，Run 不再出现 permission_denials。",
+  },
+  filesystem_permission: {
+    reason: "文件系统权限拒绝：路径不可写、只读挂载或沙箱越界。",
+    recovery: "改用 workspace 内可写路径，或在 manifest 中收紧/纠正 mode 与目标目录；不提升沙箱权限。",
+    verification: "对修正后的路径重试写入成功，failure_kind 不再是 filesystem_permission。",
+  },
+  scheduled_readonly_scope: {
+    reason: "scheduled_readonly 拒绝：操作超出绑定报告的确定性读取/托管写入范围。",
+    recovery: "只保留绑定项目内只读与绑定报告的托管区块写入；需要任务写入时退出 scheduled_readonly 配置。",
+    verification: "重试限定操作返回放行；越权操作仍被拒绝且不影响已写入报告的 sha256 校验。",
+  },
+  reviewer_readonly: {
+    reason: "独立 Reviewer 拒绝：该 Session 只允许确定性只读与 Review 报告。",
+    recovery: "Reviewer 不写业务代码、不建任务、不派执行器；实现修改回到任务所属 Session。",
+    verification: "Reviewer 重试只读检查 exit 0；业务写入仍被拒绝。",
+  },
+  gate_other: {
+    reason: "门禁拒绝：未归入更具体分类的 Hook/CLI 拒绝。",
+    recovery: "按 Hook 返回的原始提示修复前置条件（任务、登记、路由或授权），再重试；不要绕过 Hook 或关闭门禁。",
+    verification: "同一工具调用重试后 Hook exit 0，且 /gate-denials 不再新增同类记录。",
+  },
+};
+
+// 从 Hook 错误提示或 CLI failure_kind 推导稳定分类码；不返回原始消息。
+export function classifyGateDenial(input) {
+  const kind = String(input?.failure_kind || "");
+  if (KNOWN_FAILURE_KINDS.has(kind)) return kind;
+  const message = String(input?.message || input?.error || "");
+  if (/CLI_(?:PERMISSION_DENIED|READ_ONLY|TOOL_UNSUPPORTED|NOT_CLAIMED|GRANT_MISMATCH|GRANT_REPLAY)|claim rejected|TaskCenter.*门禁/i.test(message)) return "task_permission";
+  if (/MCP tool call requires approval|approval policy is never/i.test(message)) return "tool_approval";
+  if (/EACCES|EPERM|sandbox|read.only file system/i.test(message)) return "filesystem_permission";
+  if (/无活跃任务|L0_COMMAND_NOT_RECOGNIZED/.test(message)) return "no_active_task";
+  if (/尚未登记/.test(message)) return "session_unregistered";
+  if (/交互式命令/.test(message)) return "interactive_command";
+  if (/缺少有效路由/.test(message)) return "missing_route";
+  if (/scheduled_readonly/.test(message)) return "scheduled_readonly_scope";
+  if (/Reviewer Session/.test(message)) return "reviewer_readonly";
+  if (/CLI_|TaskCenter/i.test(message)) return "gate_other";
+  return "gate_other";
+}
+
+export function sanitizeGateDenialId(value) {
+  const text = String(value || "").trim();
+  return /^[A-Za-z0-9._:-]{1,200}$/.test(text) ? text : "";
+}
+
+export function sanitizeGateDenialFailureKind(value) {
+  const text = String(value || "").trim();
+  return KNOWN_FAILURE_KINDS.has(text) ? text : "";
+}
+
+export function readGateDenials(path) {
+  if (!path || !existsSync(path)) return [];
+  return readFileSync(path, "utf8").split("\n").flatMap((line) => {
+    if (!line.trim()) return [];
+    try {
+      const value = JSON.parse(line);
+      return value && typeof value === "object" ? [value] : [];
+    } catch { return []; }
+  });
+}
+
+// 短窗口去重：同一 分类+Session+task/run 在 dedupeMs 内的连续上报只计一次，
+// 避免 tight retry 把单次根因放大成批量异常；窗口内事件按时间排序后评估。
+export function evaluateGateDenials(events, options = {}) {
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+  const windowMs = Number.isFinite(options.windowMs) ? options.windowMs : GATE_DENIAL_WINDOW_MS;
+  const dedupeMs = Number.isFinite(options.dedupeMs) ? options.dedupeMs : GATE_DENIAL_DEDUPE_MS;
+  const sorted = (Array.isArray(events) ? events : [])
+    .map((event) => ({ event, at: Date.parse(event?.at || "") }))
+    .filter((row) => Number.isFinite(row.at) && row.at <= now + 5_000 && row.at > now - windowMs)
+    .sort((left, right) => left.at - right.at);
+  const category = String(options.category || sorted.at(-1)?.event?.category || "gate_other");
+  const sameCategory = [];
+  const keptIdentities = [];
+  for (const { event, at } of sorted) {
+    if (String(event.category || "") !== category) continue;
+    const identity = `${category}|${event.session_id || ""}|${event.run_id || event.task_id || ""}`;
+    const lastKept = keptIdentities.find((row) => row.identity === identity && at - row.at < dedupeMs);
+    if (lastKept) continue;
+    keptIdentities.push({ identity, at });
+    sameCategory.push({ ...event, at });
+  }
+  const taskIds = [...new Set(sameCategory.map((event) => event.task_id).filter(Boolean))];
+  const runIds = [...new Set(sameCategory.map((event) => event.run_id).filter(Boolean))];
+  const sessionIds = [...new Set(sameCategory.map((event) => event.session_id).filter(Boolean))];
+  const unitCounts = new Map();
+  for (const event of sameCategory) {
+    const unit = event.task_id || event.session_id || "";
+    if (!unit) continue;
+    unitCounts.set(unit, (unitCounts.get(unit) || 0) + 1);
+  }
+  const repeated = Math.max(0, ...unitCounts.values());
+  const repeatedUnit = [...unitCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || "";
+  const noStructuredId = taskIds.length === 0 && runIds.length === 0;
+  let level = "single";
+  if (taskIds.length >= GATE_DENIAL_BATCH_TASKS || runIds.length >= GATE_DENIAL_BATCH_RUNS || (noStructuredId && sessionIds.length >= GATE_DENIAL_BATCH_TASKS)) {
+    level = "batch";
+  } else if (repeated >= GATE_DENIAL_CONSECUTIVE) {
+    level = "repeated";
+  }
+  const base = GATE_DENIAL_GUIDANCE[category] || GATE_DENIAL_GUIDANCE.gate_other;
+  let reason = base.reason;
+  let recovery = base.recovery;
+  if (level === "batch") {
+    reason = `批量异常：1 小时窗口去重后同类拒绝涉及 ${taskIds.length} 个任务、${runIds.length} 个 Run${noStructuredId ? `、${sessionIds.length} 个 Session` : ""}。${base.reason}`;
+    recovery = `先修复共性根因（任务状态、路由或授权范围），再按单次恢复步骤重试；不要并发重复撞击同一门禁。${base.recovery}`;
+  } else if (level === "repeated") {
+    const unitLabel = taskIds.includes(repeatedUnit) ? "任务" : "Session";
+    reason = `重复异常：同一${unitLabel}在 1 小时内同类拒绝去重后已达 ${repeated} 次。${base.reason}`;
+    recovery = `停止对同一路径的重复重试，先完成恢复步骤并验证通过后再执行。${base.recovery}`;
+  }
+  return {
+    level,
+    category,
+    window_ms: windowMs,
+    dedupe_ms: dedupeMs,
+    counts: {
+      events: sameCategory.length,
+      tasks: taskIds.length,
+      runs: runIds.length,
+      sessions: sessionIds.length,
+      repeated,
+      repeated_unit: repeatedUnit,
+    },
+    reason,
+    recovery,
+    verification: base.verification,
+  };
+}
+
+export function formatGateDenialAssessment(assessment) {
+  if (!assessment || !assessment.level) return "";
+  return [
+    `TaskCenter 拒绝评估：${assessment.level}（${assessment.category}）— ${assessment.reason}`,
+    `恢复：${assessment.recovery}`,
+    `验证：${assessment.verification}`,
+  ].join("\n");
+}
+
+// 落盘一条安全拒绝记录并立即评估；只接受分类码与 ID 字段，不写原始命令或错误正文。
+export function recordGateDenial(path, input, now = Date.now()) {
+  if (!path) throw new Error("gate denial path required");
+  const at = new Date(Number.isFinite(now) ? now : Date.now()).toISOString();
+  const record = {
+    at,
+    category: classifyGateDenial(input),
+    source: ["hook", "cli"].includes(String(input?.source || "")) ? String(input.source) : "hook",
+    session_id: sanitizeGateDenialId(input?.session_id),
+    task_id: sanitizeGateDenialId(input?.task_id),
+    run_id: sanitizeGateDenialId(input?.run_id),
+    failure_kind: sanitizeGateDenialFailureKind(input?.failure_kind),
+  };
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  let events = readGateDenials(path);
+  if (statSync(path).size > GATE_DENIAL_LOG_MAX_BYTES) {
+    events = events.filter((item) => Date.parse(item.at || "") > now - GATE_DENIAL_WINDOW_MS).slice(-GATE_DENIAL_LOG_RETAINED);
+    writeFileSync(path, `${events.map((item) => JSON.stringify(item)).join("\n")}\n`, { mode: 0o600 });
+  }
+  const assessment = evaluateGateDenials(events, { now: Number.isFinite(now) ? now : Date.now(), category: record.category });
+  return { record, assessment };
 }
 
 export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = null, delegations = [], routes = [] } = {}) {

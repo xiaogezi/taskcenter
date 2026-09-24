@@ -97,7 +97,7 @@ import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.m
 import { readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
 import { queryUsageReport } from "./usage-query.mjs";
-import { buildGovernanceMetrics } from "./governance-metrics.mjs";
+import { buildGovernanceMetrics, recordGateDenial } from "./governance-metrics.mjs";
 import { taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
 import { enrichTaskWorkspaceEvent } from "../lib/git-workspace.mjs";
 import {
@@ -127,6 +127,7 @@ const acceptanceToken = String(process.env.TASKCENTER_ACCEPTANCE_TOKEN || "");
 const watcherHeartbeatPath = resolve(process.env.TASKCENTER_WATCHER_HEARTBEAT_PATH || join(projectRoot, ".local", "runtime", "watcher-heartbeat.json"));
 const usageReportPath = resolve(process.env.TASKCENTER_USAGE_REPORT_PATH || join(projectRoot, ".local", "runtime", "usage-report.json"));
 const governanceMetricsPath = resolve(process.env.TASKCENTER_GOVERNANCE_METRICS_PATH || join(projectRoot, ".local", "runtime", "governance-metrics.json"));
+const gateDenialsPath = resolve(process.env.TASKCENTER_GATE_DENIALS_PATH || join(projectRoot, ".local", "runtime", "gate-denials.jsonl"));
 const taskEventIndexPath = resolve(process.env.TASKCENTER_TASK_EVENT_INDEX_PATH || join(projectRoot, ".local", "runtime", "task-event-index.json"));
 const usageHealthPath = resolve(process.env.TASKCENTER_USAGE_HEALTH_PATH || join(projectRoot, ".local", "runtime", "usage-worker-health.json"));
 const governanceHealthPath = resolve(process.env.TASKCENTER_GOVERNANCE_HEALTH_PATH || join(projectRoot, ".local", "runtime", "governance-worker-health.json"));
@@ -398,6 +399,14 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody(request);
       const audit = recordSessionL0Audit(String(body.session_id || ""), String(body.workspace || ""));
       sendJson(response, 200, { accepted: true, l0Audit: audit });
+      return;
+    }
+    // Hook/CLI 拒绝即时检测：落盘安全分类并同步返回短窗口去重后的批量/连续评估与恢复步骤。
+    if (request.method === "POST" && request.url === "/gate-denials") {
+      verifyTaskRequest(request);
+      const body = await readJsonBody(request);
+      const { record, assessment } = recordGateDenial(gateDenialsPath, body);
+      sendJson(response, 200, { accepted: true, denial: record, assessment });
       return;
     }
     if (request.method === "POST" && request.url === "/session-selection") {

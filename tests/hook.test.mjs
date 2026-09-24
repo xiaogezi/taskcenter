@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -21,6 +21,7 @@ const paths = {
   TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(tempDir, "gate-session-allowlist.json"),
   TASKCENTER_DELEGATIONS_PATH: join(tempDir, "delegations.json"),
   TASKCENTER_ROUTING_CONTROL_PATH: join(tempDir, "routing-control.json"),
+  TASKCENTER_GATE_DENIALS_PATH: join(tempDir, "gate-denials.jsonl"),
 };
 const port = 39_000 + (process.pid % 1_000);
 const base = `http://127.0.0.1:${port}`;
@@ -382,6 +383,18 @@ test("L0 路径探测跨客户端放行，但不能借 command 包装执行", as
       assert.match(result.stderr, /L0_COMMAND_NOT_RECOGNIZED/);
     }
   }
+});
+
+test("Hook 拒绝即时记录安全分类并给出可执行恢复步骤", async () => {
+  const session_id = "lookup-denial-guidance";
+  await runHook("session-start", "codex", { session_id, cwd: "/work" });
+  const denied = await runHook("pre-tool-use", "codex", { session_id, cwd: "/work", tool_name: "Bash", tool_input: { command: "which kimi && touch secret-sentinel" } });
+  assert.equal(denied.code, 2);
+  assert.match(denied.stderr, /只读.*拆开复合命令/);
+  assert.match(denied.stderr, /验证：.*L0/);
+  const records = (await readFile(paths.TASKCENTER_GATE_DENIALS_PATH, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.ok(records.some((record) => record.session_id === session_id && record.category === "no_active_task"));
+  assert.doesNotMatch(JSON.stringify(records), /secret-sentinel/);
 });
 
 test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async () => {

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { taskTimeState } from "../app/task-time-state.mjs";
+import { formatGateDenialAssessment } from "./governance-metrics.mjs";
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
@@ -156,6 +157,7 @@ try {
   if (agent === "claude" && sessionId && !scheduledReadonly) {
     console.error(`真实 Hook 身份：${JSON.stringify({ session_id: sessionId, workspace })}。不要添加 local_ 或自拟测试身份。通过 MCP 查询该 Session 的任务；同一交付接续使用 taskcenter_task_resume，新目标使用 taskcenter_task_begin（必填 plan、scope）。身份一致不代表其他门禁条件已满足。`);
   }
+  if (["pre-tool-use", "scheduled-pre-tool-use", "post-tool-use"].includes(action)) await reportGateDenial(error);
   process.exitCode = ["pre-tool-use", "post-tool-use"].includes(action) ? 2 : 1;
 }
 
@@ -873,6 +875,25 @@ function isReadOnlyGit(args) {
 
 async function recordL0Audit() {
   await request("POST", "/sessions/l0-audit", { session_id: sessionId, workspace, command: "read_only" });
+}
+
+// 拒绝即时上报：只发送安全分类输入（消息供服务端分类，不落盘原文），失败不改变拒绝结果。
+// 服务端按短窗口去重评估批量/连续拒绝，返回恢复与验证步骤后打印到 stderr。
+async function reportGateDenial(error) {
+  if (!sessionId) return;
+  try {
+    const result = await requestOnce("POST", "/gate-denials", {
+      source: "hook",
+      message: String(error.message || "").slice(0, 500),
+      session_id: sessionId,
+      task_id: preparedTask?.active_task?.id || event.task_id || "",
+      run_id: "",
+      failure_kind: "",
+    });
+    if (result?.assessment) console.error(formatGateDenialAssessment(result.assessment));
+  } catch (reportError) {
+    console.error(`TaskCenter Hook 警告：拒绝记录失败，门禁结果不变（${reportError.message}）`);
+  }
 }
 
 function isInteractiveExec(payload) {

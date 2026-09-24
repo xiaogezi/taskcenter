@@ -84,6 +84,7 @@ test("CLI 成功与确定的启动前失败释放租约，claim 未确认保留�
       else await assert.rejects(runDelegatedCli(manifest, dependencies));
       assert.equal(prompted, mode !== "claim-failure");
       assert.equal(calls.filter(c => c.path === "/routing/result").length, mode === "claim-failure" ? 0 : 1);
+      assert.equal(calls.filter(c => c.path === "/gate-denials").length, mode === "claim-failure" ? 1 : 0);
       if (mode !== "claim-failure") assert.equal(calls.find(c => c.path === "/routing/result").body.outcome, ["success", "report-failure"].includes(mode) ? "succeeded" : mode === "cancelled" ? "cancelled" : "failed");
       if (mode === "claim-failure") assert.equal(calls.some(c => c.path === "/delegations/revoke"), false);
       const output = JSON.parse(readFileSync(manifest.output_path, "utf8"));

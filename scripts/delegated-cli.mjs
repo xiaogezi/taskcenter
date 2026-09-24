@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { cliProfile } from "./cli-profile.mjs";
 import { claimCli, checkCliTool, control } from "./delegated-cli-hook.mjs";
 import { requireHarnessOperation } from "./harnesses/index.mjs";
+import { formatGateDenialAssessment } from "./governance-metrics.mjs";
 export { claudeInvocation, claudeReceipt } from "./harnesses/claude-delegated.mjs";
 
 export function validateCliManifest(input) {
@@ -167,10 +168,27 @@ export async function runDelegatedCli(input, dependencies = {}) {
     const outcome = result?.status === "completed" ? "succeeded" : result?.status === "cancelled" ? "cancelled" : "failed";
     const failureKind = failure ? cliFailureKind(failure) : null;
     const evidence = { ...result, error: failure || null, failure_kind: failureKind, task_id: manifest.task_id, route_id: manifest.route_id, delegation_id: manifest.delegation_id, role: profile.role, harness: profile.harness, requested_model: profile.model, requested_effort: profile.effort, effective_effort: result?.reportedThinking || null, observed_at: new Date().toISOString(), log_path: logPath };
+    // 权限/门禁类失败即时上报：保留 failure_kind，短窗口去重后返回恢复与验证步骤。
+    if (outcome === "failed" && ["tool_approval", "filesystem_permission", "task_permission"].includes(failureKind)) {
+      try {
+        const denial = await request("/gate-denials", {
+          source: "cli",
+          message: String(failure || "").slice(0, 500),
+          session_id: sessionId || "",
+          task_id: manifest.task_id,
+          run_id: manifest.delegation_id,
+          failure_kind: failureKind,
+        });
+        const guidance = formatGateDenialAssessment(denial?.assessment);
+        if (guidance) console.error(guidance);
+      } catch (denialError) {
+        reportError = [reportError, `gate-denial: ${denialError.message}`].filter(Boolean).join("; ");
+      }
+    }
     try {
       if (!claimUnconfirmed && sessionId) await request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: outcome, summary: String(result?.summary || outcome).slice(-1000), evidence: [JSON.stringify(evidence).slice(0, 1000)], error: failure || (outcome === "failed" ? result?.rawStatus || "CLI_OUTCOME_UNKNOWN" : "") });
       else if (!claimUnconfirmed) await request("/delegations/revoke", { delegation_id: manifest.delegation_id, parent_session_id: manifest.parent_session_id });
-    } catch (error) { reportError = error.message; }
+    } catch (error) { reportError = [reportError, error.message].filter(Boolean).join("; "); }
     // A failed claim cannot prove ownership of the original run or its route lease.
     if (!claimUnconfirmed) {
       try { await request("/routing/result", { route_id: manifest.route_id, session_id: manifest.parent_session_id, outcome, ...(outcome === "failed" ? { error_type: failureKind || "cli_execution", error_code: failure || "CLI_OUTCOME_UNKNOWN" } : {}) }); } catch (error) { reportError = [reportError, error.message].filter(Boolean).join("; "); }

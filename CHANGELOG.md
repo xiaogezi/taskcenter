@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- Hook/CLI 拒绝即时检测：PreToolUse 与 CLI Run 权限类失败在拒绝发生时上报安全分类（分类码/时间/Session/task/run，不含原始命令与错误正文）到 `/gate-denials`；服务端按 1 小时窗口、60 秒短窗口去重后同步评估 ≥3 独立任务、≥5 独立 Run 或同任务重复 3 次的异常，并对单次与异常拒绝都返回具体恢复与验证步骤。无活跃任务的 L0 拒绝与 CLI `failure_kind` 均保留可见；记录文件按大小截断保留最近数据。
+
 - 修复 CLI 派发重放缺口：同一 Session 对同一 delegation 的幂等重复 claim 此前会被启动器视为成功并再次向 Harness 提交 prompt；现启动器在提交前以 `CLI_GRANT_REPLAY` 拒绝。claim 失败或结果未确认时不撤销可能属于另一执行的授权，也不释放其路由租约；显式新 attempt 使用新 delegation 的首次 claim，路径不变。
 
 - 主模型直接执行除既有限定例外外，可由任务所属 Codex Session 在任务创建后发出的明确用户指令授权；授权绑定任务与 Session，两小时内仅可成功路由一次。
