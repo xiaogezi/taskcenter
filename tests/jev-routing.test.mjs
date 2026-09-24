@@ -16,6 +16,7 @@ fixtureConfig.model_catalog = {};
 await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(fixtureConfig));
 const { routingSelect, routingResult, routeForId } = await import("../scripts/routing-control.mjs");
 const { prepareRoutingInput, clearJevCache } = await import("../scripts/jev-routing.mjs");
+const { directUserAuthorization } = await import("../scripts/harnesses/codex-session.mjs");
 const task = { id: "task-jev", title: "修复路由审计", goal: "修改指定模块并测试", currentStep: "实现" };
 const input = { task_id: task.id, orchestrator_model: "current-main", task_class: "implementation", channel: "native", phase_id: "implement", phase_summary: "修改路由审计字段" };
 const result = (taskClass = "search", execution = "delegate", executorModel = undefined) => ({ status: "succeeded", model: "jev-1.13.0", answers: {
@@ -278,6 +279,32 @@ test("Jev 建议 delegate 时拒绝泛化 direct 理由，仅保留有证据的�
   assert.equal(allowed.jevDecision.direct_exception_evidence, "device:SM_S9210 真机安装与启动");
   const oldMcp = await prepare({ ...base, direct_reason: "[atomic_git] git:commit 78daa26 提交与版本核对", phase_id: "old-mcp" });
   assert.equal(oldMcp.jevDecision.direct_exception_kind, "atomic_git");
+});
+
+test("真实用户消息只授权当前任务一次 direct 路由", async () => {
+  const sessionPath = join(directory, "user-auth.jsonl");
+  const createdAt = "2026-09-24T09:00:00.000Z";
+  const userAt = "2026-09-24T09:05:00.000Z";
+  const now = "2026-09-24T09:06:00.000Z";
+  const untrusted = [
+    { timestamp: "2026-09-24T09:04:00.000Z", type: "response_item", payload: { type: "message", role: "assistant", content: [{ text: "主模型直接执行吧" }] } },
+    { timestamp: "2026-09-24T09:04:30.000Z", type: "event_msg", payload: { type: "user_message", message: "不要主模型直接执行吧" } },
+  ];
+  await writeFile(sessionPath, untrusted.map(JSON.stringify).join("\n"));
+  assert.equal(directUserAuthorization(sessionPath, task.id, "session-user", createdAt, now), null);
+  await writeFile(sessionPath, [...untrusted,
+    { timestamp: userAt, type: "event_msg", payload: { type: "user_message", message: "主模型直接执行吧，不能阻塞任务" } },
+  ].map(JSON.stringify).join("\n"));
+  const authorization = directUserAuthorization(sessionPath, task.id, "session-user", createdAt, now);
+  assert.equal(authorization.expiresAt, "2026-09-24T11:05:00.000Z");
+  assert.equal(directUserAuthorization(sessionPath, task.id, "session-user", createdAt, "2026-09-24T11:05:00.000Z"), null);
+  const request = { ...input, channel: "direct", task_id: task.id, session_id: "session-user", direct_reason: "维护者明确要求直接执行", direct_authorization_fingerprint: authorization.fingerprint, direct_authorization_expires_at: authorization.expiresAt };
+  await assert.rejects(prepare({ ...request, direct_reason: "", phase_id: "user-auth-no-reason" }), error => error.code === "DIRECT_REASON_REQUIRED");
+  const prepared = await prepare({ ...request, phase_id: "user-auth" }, async () => result("implementation", "delegate"));
+  assert.equal(prepared.jevDecision.execution_override_reason, "direct_user_authorization");
+  const selected = routingSelect({ ...prepared.input, event_id: "user-auth-once", orchestrator_model: "current-main" }, now, prepared.jevDecision);
+  assert.equal(selected.route.available, true);
+  assert.throws(() => routingSelect({ ...prepared.input, event_id: "user-auth-twice", orchestrator_model: "current-main" }, now, prepared.jevDecision), error => error.code === "DIRECT_AUTHORIZATION_INVALID");
 });
 
 test("显式 channel 覆盖 Jev execution，审计记录覆盖原因", async () => {

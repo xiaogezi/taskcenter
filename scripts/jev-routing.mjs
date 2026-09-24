@@ -179,7 +179,7 @@ export function applyJevRouting(input, _task, decision) {
     || Boolean(input.cli_profile)
     || input.execution_model_policy?.mode === "quota_preferred";
   if (!valid) {
-    if (input.channel === "direct") requireDirectException(input, meta);
+    if (input.channel === "direct" && !input.direct_authorization_fingerprint) requireDirectException(input, meta);
     return { input: { ...input, channel: input.channel === "direct" ? "direct" : "cli" }, jev_decision: meta };
   }
   let taskClass = input.task_class;
@@ -215,8 +215,11 @@ export function applyJevRouting(input, _task, decision) {
   }
   if (decision.execution_choice === "delegate") {
     if (channel === "direct") {
-      requireDirectException(input, meta);
-      executionOverrideReason = `direct_exception:${meta.direct_exception_kind}`;
+      if (input.direct_authorization_fingerprint) executionOverrideReason = "direct_user_authorization";
+      else {
+        requireDirectException(input, meta);
+        executionOverrideReason = `direct_exception:${meta.direct_exception_kind}`;
+      }
     } else if (explicitChannel) {
       executionOverrideReason = "explicit_channel";
     } else if (!REVIEW_CLASSES.has(taskClass)) {
@@ -236,6 +239,10 @@ export function applyJevRouting(input, _task, decision) {
   }
   if (reason) newInput.reason_override = reason;
   return { input: newInput, jev_decision: meta };
+}
+
+function requireDirectReason(reason) {
+  if (!reason) throw new RoutingControlError(400, "Jev 启用模式下 channel=direct 必须提供 direct_reason。", "DIRECT_REASON_REQUIRED");
 }
 
 function requireDirectException(input, meta) {
@@ -261,9 +268,7 @@ export async function prepareRoutingInput(input, task, { evaluator, executionMod
   delete cleanInput.jev_decision;
   if (!jevRoutingEnabled()) return { input: cleanInput, jevDecision: null };
   if (isReviewTaskClass(cleanInput.task_class)) return { input: cleanInput, jevDecision: null };
-  if (cleanInput.channel === "direct" && !String(cleanInput.direct_reason || "").trim()) {
-    throw new RoutingControlError(400, "Jev 启用模式下 channel=direct 必须提供 direct_reason。", "DIRECT_REASON_REQUIRED");
-  }
+  if (cleanInput.channel === "direct") requireDirectReason(String(cleanInput.direct_reason || "").trim());
   const phaseSummary = cleanInput.phase_summary || task?.currentStep || task?.goal || "";
   const phaseId = cleanInput.phase_id || hashState({ phase_summary: phaseSummary });
   const { decision } = await jevRoutingPrepare(task, { phaseId, phaseSummary, evaluator });

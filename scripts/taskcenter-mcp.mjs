@@ -387,7 +387,11 @@ server.registerTool("taskcenter_routing_select", {
     lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input, extra) => {
-  if (!["ocr", "ocr_review", "independent_review"].includes(input.task_class)) return postLocal("/routing/select", input);
+  if (!["ocr", "ocr_review", "independent_review"].includes(input.task_class)) {
+    if (input.channel !== "direct" || input.direct_exception_kind || /^\[(?:device_interaction|atomic_git|shared_dirty_workspace)\]/.test(input.direct_reason || "")) return postLocal("/routing/select", input);
+    const context = resolveTrustedMcpSession(extra);
+    return context.sessionId ? postLocal("/routing/select", { ...input, session_id: context.sessionId }) : result({ ...context, code: "SESSION_NOT_REGISTERED" });
+  }
   const context = resolveTrustedMcpSession(extra);
   return context.sessionId ? postLocal("/routing/select", { ...input, session_id: context.sessionId }) : result({ ...context, code: "SESSION_NOT_REGISTERED" });
 });

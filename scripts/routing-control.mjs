@@ -210,6 +210,7 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
   expireRoutes(state, now);
   const directReason = clean(input.direct_reason, 1000);
   const signatureInput = { taskId, orchestratorModel, requestedPreferredModel, executionModelPolicy, taskClass, channel };
+  if (input.direct_authorization_fingerprint) signatureInput.directAuthorizationFingerprint = input.direct_authorization_fingerprint;
   if (profile) signatureInput.cliProfile = input.cli_profile;
   if (input.review_context) signatureInput.reviewContext = input.review_context;
   if (reviewArtifacts) signatureInput.reviewArtifacts = reviewArtifacts;
@@ -245,6 +246,15 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
   }
 
   if (channel === "direct" && roleName === "executor") {
+    if (input.direct_authorization_fingerprint) {
+      if (!/^[a-f0-9]{64}$/.test(input.direct_authorization_fingerprint)) throw new RoutingControlError(403, "一次性主模型直接执行授权指纹无效。", "DIRECT_AUTHORIZATION_INVALID");
+      const expiresAt = Date.parse(input.direct_authorization_expires_at);
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.parse(now) || expiresAt > Date.parse(now) + 7_200_000) throw new RoutingControlError(403, "一次性主模型直接执行授权已过期。", "DIRECT_AUTHORIZATION_INVALID");
+      state.directAuthorizations ||= {};
+      const record = state.directAuthorizations[input.direct_authorization_fingerprint];
+      if (record) throw new RoutingControlError(403, "一次性主模型直接执行授权已使用。", "DIRECT_AUTHORIZATION_INVALID");
+      state.directAuthorizations[input.direct_authorization_fingerprint] = { taskId, sessionId: clean(input.session_id, 200), expiresAt: input.direct_authorization_expires_at, consumedAt: now };
+    }
     const health = ensureHealth(state, orchestratorModel, now, config);
     const route = {
       id: clean(input.route_id, 200) || `route_${randomUUID()}`,
@@ -812,11 +822,11 @@ function replayAuditEvents(state, route, phase, now, config) {
 }
 
 function readState() {
-  if (!existsSync(routingControlPath)) return { version: 3, models: {}, routes: [], updatedAt: "" };
+  if (!existsSync(routingControlPath)) return { version: 3, models: {}, routes: [], directAuthorizations: {}, updatedAt: "" };
   try {
     const value = JSON.parse(readFileSync(routingControlPath, "utf8"));
     if (!value?.models || typeof value.models !== "object" || Array.isArray(value.models) || !Array.isArray(value.routes)) throw new Error("invalid state");
-    const state = { version: Number(value.version) || 1, models: value.models, routes: value.routes, updatedAt: clean(value.updatedAt, 80) };
+    const state = { version: Number(value.version) || 1, models: value.models, routes: value.routes, directAuthorizations: value.directAuthorizations || {}, updatedAt: clean(value.updatedAt, 80) };
     migrateState(state);
     return state;
   } catch {
@@ -826,6 +836,7 @@ function readState() {
 
 function persistState(state, now) {
   state.version = 3;
+  state.directAuthorizations ||= {};
   state.updatedAt = now;
   // Review identity remains read-only after its lease ends; do not evict it with routing telemetry.
   const retained = new Set(state.routes.slice(-5_000));
@@ -851,6 +862,7 @@ function migrateState(state) {
     }
   }
   state.version = 3;
+  state.directAuthorizations ||= {};
 }
 
 function concurrencyLimit(model, config) {
