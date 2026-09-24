@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { cliProfile } from "../scripts/cli-profile.mjs";
 import { claimCli } from "../scripts/delegated-cli-hook.mjs";
-import { cliFailureKind, claudeInvocation, claudeReceipt, runDelegatedCli, runDelegatedCliFromStdin } from "../scripts/delegated-cli.mjs";
+import { cliFailureKind, claudeInvocation, claudeReceipt, runDelegatedCli, runDelegatedCliFromStdin, validateCliManifest } from "../scripts/delegated-cli.mjs";
 import { harnessCapabilities, requireHarnessOperation } from "../scripts/harnesses/index.mjs";
 
 test("Claude 入口保留权限门禁、移除父身份且不把退出码当完成", () => {
@@ -131,6 +131,15 @@ test("Claude 受管适配经统一编排验证领取回执", async () => {
   assert.equal(cliFailureKind("CLI_PERMISSION_DENIED: EACCES"), "filesystem_permission");
   assert.equal(cliFailureKind("CLI_PERMISSION_DENIED: CLI_READ_ONLY"), "task_permission");
  });
+
+test("默认超时按 mode 区分，显式 timeout_ms 与 1800000 上限保持", () => {
+  const base = { profile: "kimi-k3", task_id: "task", parent_session_id: "parent", route_id: "route", delegation_id: "grant", claim_token: "secret", workspace: "/work", prompt_path: "/tmp/prompt", output_path: "/tmp/result" };
+  assert.equal(validateCliManifest({ ...base, mode: "read-only" }).timeout_ms, 300000);
+  assert.equal(validateCliManifest({ ...base, mode: "workspace-write" }).timeout_ms, 1200000);
+  assert.equal(validateCliManifest({ ...base, mode: "workspace-write", timeout_ms: 60000 }).timeout_ms, 60000);
+  assert.equal(validateCliManifest({ ...base, mode: "read-only", timeout_ms: 1800000 }).timeout_ms, 1800000);
+  assert.throws(() => validateCliManifest({ ...base, mode: "read-only", timeout_ms: 1800001 }), /Invalid timeout_ms/);
+});
 
 test("启动前检查失败仍撤销授权并释放路由", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cli-preflight-")), calls = [];

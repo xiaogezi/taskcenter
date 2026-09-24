@@ -132,6 +132,21 @@ test("scope 拒绝绝对路径和上级目录", async () => {
   }
 });
 
+test("申请时拒绝窄 scope 配 Shell 工具，文件工具窄 scope 仍合法", async () => {
+  await reset();
+  for (const allowed_tools of [["Bash"], ["exec_command"], ["apply_patch", "Bash"]]) {
+    assert.throws(
+      () => grantDelegation(grantInput({ allowed_tools }), parent, start),
+      (error) => error instanceof DelegationError && error.statusCode === 400,
+    );
+  }
+  assert.equal(listDelegations(parent.id).length, 0);
+  const issued = grantDelegation(grantInput({ scope: ["."], allowed_tools: ["Bash"] }), parent, start);
+  assert.equal(issued.delegation.status, "issued");
+  const fileOnly = grantDelegation(grantInput({ event_id: "grant-file", delegation_id: "delegation-file", scope: ["scripts/"], allowed_tools: ["apply_patch"] }), parent, start);
+  assert.equal(fileOnly.delegation.status, "issued");
+});
+
 test("CLI Run 中间态保持 active 并记录运行状态，终态落定", async () => {
   await reset();
   const issued = grantDelegation(grantInput({ scope: ["."], allowed_tools: ["exec_command"] }), parent, start);

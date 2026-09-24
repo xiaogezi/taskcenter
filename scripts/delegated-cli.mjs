@@ -11,7 +11,7 @@ export function validateCliManifest(input) {
   for (const key of ["profile", "task_id", "parent_session_id", "route_id", "delegation_id", "claim_token", "workspace", "prompt_path", "output_path"]) if (typeof input[key] !== "string" || !input[key].trim()) throw new Error(`Missing ${key}`);
   for (const key of ["workspace", "prompt_path", "output_path"]) if (!isAbsolute(input[key])) throw new Error(`${key} must be absolute`);
   if (!['read-only', 'workspace-write'].includes(input.mode)) throw new Error("Explicit mode required");
-  const timeout_ms = input.timeout_ms ?? 300000;
+  const timeout_ms = input.timeout_ms ?? (input.mode === 'workspace-write' ? 1200000 : 300000);
   if (!Number.isInteger(timeout_ms) || timeout_ms < 1000 || timeout_ms > 1800000) throw new Error("Invalid timeout_ms");
   cliProfile(input.profile);
   return { ...input, workspace: resolve(input.workspace), timeout_ms };

@@ -25,6 +25,10 @@ export function grantDelegation(input, task, now = new Date().toISOString()) {
   const state = readState();
   const existing = state.grants.find((item) => item.grantEventId === eventId);
   const allowedTools = normalizeList(input.allowed_tools, 40, 120);
+  // Shell 工具无法静态证明写入路径，申请时就要求 scope 显式为整个 workspace，不把矛盾留给 touch 阶段。
+  if (!scope.includes(".") && allowedTools.some((tool) => sameToolFamily("Bash", tool))) {
+    throw new DelegationError(400, "allowed_tools 含 Shell 工具时 delegation scope 必须显式包含 '.'，或改用可识别路径的文件工具。");
+  }
   const purpose = clean(input.purpose, 1_000);
   const signature = signatureOf({ taskId: task.id, parentSessionId: input.parent_session_id, workspace, scope, allowedTools, executorModel: input.executor_model, channel: input.channel, purpose, ttlSeconds });
   if (existing) {

@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- delegation 申请时即拒绝窄 scope 配 Shell 工具（`Bash`/`exec_command`）：此前只在 touch 阶段 403，现申请即返回 400；仅文件工具的窄 scope 继续合法。CLI manifest 默认超时按 mode 区分：read-only 保持 300000ms，workspace-write 放宽至 1200000ms，显式 `timeout_ms` 与 1800000ms 上限不变。
+
 - 跨项目 CLI 启动改为校验受信任启动器的真实路径；Codex 仅对持有 CLI 路由的 `--stdin` 启动允许一次交互输入，避免非交互命令关闭 stdin 后派发失败。
 
 - 修复 CLI 派发启动前的路由自举死锁：受管启动器可从 stdin 接收授权与有界任务输入，自行创建 0600 临时文件；Hook 仅对持有 CLI 路由的精确启动命令放行，主模型写入仍需 direct 路由。
