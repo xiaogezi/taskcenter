@@ -11,7 +11,7 @@
 1. 主会话建立任务与合同。写入执行时先在隔离 worktree 中登记主任务；现有 delegation 要求 workspace 与主任务完全相同，不会自动搬移任务或创建 worktree。
 2. 主会话调用 `taskcenter_routing_select`，指定 `channel: "cli"`、普通 `task_class` 和 `cli_profile: "kimi-k3"` 或 `"claude-mimo"`。检查 `available`，保留返回的 `route_id`、`selected_model` 和 `reasoning_effort`。无可用路由时不启动。
 3. 主会话调用 `taskcenter_delegation_grant`，以返回型号作为 `executor_model`，显式填写 scope、workspace、TTL 和 allowed_tools；保留 delegation ID 与一次性 claim token。不要放入 Git、prompt 或日志。
-4. 默认使用 `node scripts/delegated-cli.mjs --stdin`，通过进程 stdin 发送一行以换行结束的 `{"manifest":{...},"prompt":"有界任务输入"}`（prompt 最多 32 KiB）；manifest 包含以下字段，但省略 `prompt_path` 和 `output_path`，由启动器创建权限 0600 的临时文件。只有取得有效 CLI 路由时 Hook 才放行这条精确命令，启动前无需主会话写文件。旧入口 `node scripts/delegated-cli.mjs /绝对路径/manifest.json` 仍兼容。manifest 字段如下：
+4. 在 ReqRadar 工作目录使用 `node scripts/delegated-cli.mjs --stdin`；从其他项目工作目录启动时，使用 `node /Users/gezi/Documents/project/ReqRadar/scripts/delegated-cli.mjs --stdin`，并保持命令的 `workdir` 为被授权项目。Hook 校验脚本解析后的真实路径，CLI 路由不能授权同名的其他脚本。Codex `exec_command` 须对这条精确命令使用 `tty: true`，取得 session 后通过 `write_stdin` 发送一行以换行结束的 `{"manifest":{...},"prompt":"有界任务输入"}`；非交互执行会关闭 stdin。交互式豁免只覆盖受信任启动器的 `--stdin` 命令，仍要求有效 CLI 路由。prompt 最多 32 KiB；manifest 包含以下字段，但省略 `prompt_path` 和 `output_path`，由启动器创建权限 0600 的临时文件。启动前无需主会话写文件。旧 manifest 文件入口仍兼容。manifest 字段如下：
 
 ```json
 {

@@ -762,7 +762,10 @@ function isProjectExecution(payload) {
 function isDelegatedCliLaunch(payload) {
   const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
   const command = String(input.cmd || input.command || payload.command || "").trim();
-  return /^node\s+scripts\/delegated-cli\.mjs\s+(?:--stdin|\/[^\s;&|`$]+\.json)$/.test(command);
+  const match = /^node[ \t]+([A-Za-z0-9_./-]+)[ \t]+(?:--stdin|\/[^\s;&|`$]+\.json)$/.exec(command);
+  if (!match) return false;
+  const cwd = input.workdir || input.cwd || payload.cwd || workspace;
+  return canonicalExistingPath(resolveInputPath(match[1], cwd)) === canonicalExistingPath(resolve(projectRoot, "scripts/delegated-cli.mjs"));
 }
 
 function isReadOnlyCommand(words, heredoc) {
@@ -880,7 +883,7 @@ function isInteractiveExec(payload) {
     : {};
   const command = String(input.command || input.cmd || payload.command || "").trim();
   // tty 不是 Codex Bash Hook 的 canonical 字段，只把它作为其他客户端的附加信号。
-  if (input.tty === true) return true;
+  if (input.tty === true) return !(isDelegatedCliLaunch(payload) && /[ \t]--stdin$/.test(command));
   const batch = inspectionBatch(command);
   if (batch?.length === 1 && batch[0].heredoc) {
     const invocation = interpreterInvocation(batch[0].words.join(" "));

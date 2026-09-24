@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 跨项目 CLI 启动改为校验受信任启动器的真实路径；Codex 仅对持有 CLI 路由的 `--stdin` 启动允许一次交互输入，避免非交互命令关闭 stdin 后派发失败。
+
 - 修复 CLI 派发启动前的路由自举死锁：受管启动器可从 stdin 接收授权与有界任务输入，自行创建 0600 临时文件；Hook 仅对持有 CLI 路由的精确启动命令放行，主模型写入仍需 direct 路由。
 - 非 Codex CLI 执行器并发占满或明确容量／限流熔断时，按明确授权以 `gpt-6-luna` 作为末级容量兜底；权限或门禁失败不触发该回退。
 

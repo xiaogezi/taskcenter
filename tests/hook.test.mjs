@@ -350,8 +350,15 @@ test("Codex 执行须有相符路由，CLI 路由不能授权主模型写入", a
     assert.match((await runHook("pre-tool-use", "codex", payload)).stderr, /缺少有效路由/);
     await save([route("cli")]);
     assert.match((await runHook("pre-tool-use", "codex", payload)).stderr, /缺少有效路由/);
-    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs /tmp/manifest.json" } })).code, 0);
-    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs --stdin" } })).code, 0);
+    const launcher = join(rootPath, "scripts/delegated-cli.mjs");
+    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: `node ${launcher} /tmp/manifest.json` } })).code, 0);
+    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: `node ${launcher} --stdin` } })).code, 0);
+    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: `node ${launcher} --stdin`, tty: true } })).code, 0);
+    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs --stdin", workdir: rootPath } })).code, 0);
+    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs --stdin" } })).stderr, /缺少有效路由/);
+    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node /tmp/delegated-cli.mjs --stdin" } })).stderr, /缺少有效路由/);
+    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node /tmp/delegated-cli.mjs --stdin", tty: true } })).stderr, /交互式命令/);
+    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: `node ${launcher} /tmp/manifest.json`, tty: true } })).stderr, /交互式命令/);
     assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs --stdin > /tmp/output" } })).stderr, /缺少有效路由/);
     await save([route("direct")]);
     assert.equal((await runHook("pre-tool-use", "codex", payload)).code, 0);
