@@ -21,6 +21,9 @@ export async function claimCli(manifest, sessionId, request = control) {
   const claimed = await request("/delegations/claim", { delegation_id: manifest.delegation_id, claim_token: manifest.claim_token, session_id: sessionId, workspace: manifest.workspace, route_id: manifest.route_id, executor_model: profile.model });
   const grant = claimed.delegation;
   if (!claimed.accepted || grant?.taskId !== manifest.task_id || grant.parentSessionId !== manifest.parent_session_id || grant.executorModel !== profile.model || grant.delegateSessionId !== sessionId || grant.workspace !== manifest.workspace || grant.status !== "active") throw new Error("CLI_GRANT_MISMATCH");
+  // 幂等 claim 表示该 delegation 已被本 Session 领取过：这是重放，必须在提交 prompt 前拒绝。
+  // 显式新 attempt 使用新 delegation，其首次 claim 返回 idempotent=false，不受影响。
+  if (claimed.idempotent === true) throw new Error("CLI_GRANT_REPLAY");
   return grant;
 }
 
@@ -40,7 +43,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const event = JSON.parse(text);
     if (!event.session_id || resolve(event.cwd || "") !== manifest.workspace) throw new Error("CLI_IDENTITY_MISMATCH");
     if (event.hook_event_name === "SessionStart") {
-      await claimCli(manifest, event.session_id);
+      try { await claimCli(manifest, event.session_id); }
+      catch (error) {
+        writeFileSync(manifest.receipt_path, JSON.stringify({ claimUnconfirmed: true }), { mode: 0o600 });
+        throw error;
+      }
       writeFileSync(manifest.receipt_path, JSON.stringify({ sessionId: event.session_id }), { mode: 0o600 });
     } else {
       const receipt = JSON.parse(readFileSync(manifest.receipt_path, "utf8"));

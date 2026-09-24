@@ -20,7 +20,7 @@ export function validateCliManifest(input) {
 export function cliFailureKind(message) {
   if (/MCP tool call requires approval|approval policy is never/i.test(message)) return "tool_approval";
   if (/EACCES|EPERM|sandbox|read.only file system/i.test(message)) return "filesystem_permission";
-  if (/CLI_(?:PERMISSION_DENIED|READ_ONLY|TOOL_UNSUPPORTED|NOT_CLAIMED|GRANT_MISMATCH)|claim rejected|TaskCenter.*门禁/i.test(message)) return "task_permission";
+  if (/CLI_(?:PERMISSION_DENIED|READ_ONLY|TOOL_UNSUPPORTED|NOT_CLAIMED|GRANT_MISMATCH|GRANT_REPLAY)|claim rejected|TaskCenter.*门禁/i.test(message)) return "task_permission";
   return "cli_execution";
 }
 
@@ -91,7 +91,7 @@ export async function runDelegatedCli(input, dependencies = {}) {
   manifest.receipt_path = join(temporary, "claimed.json");
   writeFileSync(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
   const logPath = `${manifest.output_path}.log`;
-  let sessionId, result, failure, reportError, permissionFailure;
+  let sessionId, result, failure, reportError, permissionFailure, claimUnconfirmed = false;
   let lastPermissionReportAt = 0;
   const controller = new AbortController(), signal = controller.signal;
   const abort = () => controller.abort();
@@ -122,7 +122,8 @@ export async function runDelegatedCli(input, dependencies = {}) {
     let logBytes = 0;
     result = await requireHarnessOperation(profile.harness, "runDelegatedCli")({ manifest, manifestPath, profile, prompt, signal, logPath, dependencies,
       onSessionReady: async value => {
-        await claimCli(manifest, value.taskcenterSessionId, request);
+        try { await claimCli(manifest, value.taskcenterSessionId, request); }
+        catch (error) { claimUnconfirmed = true; throw error; }
         sessionId = value.taskcenterSessionId;
         await request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: "running", summary: "CLI 会话已领取，开始执行" }).catch(() => {});
         await request("/delegations/touch", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace }).catch(() => {});
@@ -141,7 +142,11 @@ export async function runDelegatedCli(input, dependencies = {}) {
       },
       update: value => { const text = JSON.stringify(value) + "\n"; logBytes += Buffer.byteLength(text); if (logBytes <= 16 * 1024 * 1024) appendFileSync(logPath, text); },
     });
-    if (existsSync(manifest.receipt_path)) sessionId = JSON.parse(readFileSync(manifest.receipt_path, "utf8")).sessionId;
+    if (existsSync(manifest.receipt_path)) {
+      const receipt = JSON.parse(readFileSync(manifest.receipt_path, "utf8"));
+      claimUnconfirmed ||= receipt.claimUnconfirmed === true;
+      sessionId ||= receipt.sessionId;
+    }
     if (!sessionId || result.sessionId !== sessionId) throw new Error("CLI_NOT_CLAIMED");
     if (permissionFailure || result.permissionDenied) throw new Error(`CLI_PERMISSION_DENIED: ${permissionFailure || "客户端拒绝工具授权"}`);
     if (result.status === "completed" && (!result.reportedModels.length || !result.reportedModels.includes(profile.model))) result.status = "unknown";
@@ -154,15 +159,22 @@ export async function runDelegatedCli(input, dependencies = {}) {
   }
   finally {
     clearTimeout(timeout); clearInterval(heartbeat); process.off("SIGINT", abort); process.off("SIGTERM", abort);
-    if (!sessionId && existsSync(manifest.receipt_path)) sessionId = JSON.parse(readFileSync(manifest.receipt_path, "utf8")).sessionId;
+    if (existsSync(manifest.receipt_path)) {
+      const receipt = JSON.parse(readFileSync(manifest.receipt_path, "utf8"));
+      claimUnconfirmed ||= receipt.claimUnconfirmed === true;
+      sessionId ||= receipt.sessionId;
+    }
     const outcome = result?.status === "completed" ? "succeeded" : result?.status === "cancelled" ? "cancelled" : "failed";
     const failureKind = failure ? cliFailureKind(failure) : null;
     const evidence = { ...result, error: failure || null, failure_kind: failureKind, task_id: manifest.task_id, route_id: manifest.route_id, delegation_id: manifest.delegation_id, role: profile.role, harness: profile.harness, requested_model: profile.model, requested_effort: profile.effort, effective_effort: result?.reportedThinking || null, observed_at: new Date().toISOString(), log_path: logPath };
     try {
-      if (sessionId) await request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: outcome, summary: String(result?.summary || outcome).slice(-1000), evidence: [JSON.stringify(evidence).slice(0, 1000)], error: failure || (outcome === "failed" ? result?.rawStatus || "CLI_OUTCOME_UNKNOWN" : "") });
-      else await request("/delegations/revoke", { delegation_id: manifest.delegation_id, parent_session_id: manifest.parent_session_id });
+      if (!claimUnconfirmed && sessionId) await request("/delegations/report", { delegation_id: manifest.delegation_id, session_id: sessionId, workspace: manifest.workspace, status: outcome, summary: String(result?.summary || outcome).slice(-1000), evidence: [JSON.stringify(evidence).slice(0, 1000)], error: failure || (outcome === "failed" ? result?.rawStatus || "CLI_OUTCOME_UNKNOWN" : "") });
+      else if (!claimUnconfirmed) await request("/delegations/revoke", { delegation_id: manifest.delegation_id, parent_session_id: manifest.parent_session_id });
     } catch (error) { reportError = error.message; }
-    try { await request("/routing/result", { route_id: manifest.route_id, session_id: manifest.parent_session_id, outcome, ...(outcome === "failed" ? { error_type: failureKind || "cli_execution", error_code: failure || "CLI_OUTCOME_UNKNOWN" } : {}) }); } catch (error) { reportError = [reportError, error.message].filter(Boolean).join("; "); }
+    // A failed claim cannot prove ownership of the original run or its route lease.
+    if (!claimUnconfirmed) {
+      try { await request("/routing/result", { route_id: manifest.route_id, session_id: manifest.parent_session_id, outcome, ...(outcome === "failed" ? { error_type: failureKind || "cli_execution", error_code: failure || "CLI_OUTCOME_UNKNOWN" } : {}) }); } catch (error) { reportError = [reportError, error.message].filter(Boolean).join("; "); }
+    }
     try { writeFileSync(manifest.output_path, JSON.stringify({ ...evidence, report_error: reportError || null }, null, 2) + "\n", { mode: 0o600, flag: "wx" }); }
     finally { rmSync(temporary, { recursive: true, force: true }); }
   }

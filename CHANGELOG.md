@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复 CLI 派发重放缺口：同一 Session 对同一 delegation 的幂等重复 claim 此前会被启动器视为成功并再次向 Harness 提交 prompt；现启动器在提交前以 `CLI_GRANT_REPLAY` 拒绝。claim 失败或结果未确认时不撤销可能属于另一执行的授权，也不释放其路由租约；显式新 attempt 使用新 delegation 的首次 claim，路径不变。
+
 - 主模型直接执行除既有限定例外外，可由任务所属 Codex Session 在任务创建后发出的明确用户指令授权；授权绑定任务与 Session，两小时内仅可成功路由一次。
 
 - delegation 申请时即拒绝窄 scope 配 Shell 工具（`Bash`/`exec_command`）：此前只在 touch 阶段 403，现申请即返回 400；仅文件工具的窄 scope 继续合法。CLI manifest 默认超时按 mode 区分：read-only 保持 300000ms，workspace-write 放宽至 1200000ms，显式 `timeout_ms` 与 1800000ms 上限不变。

@@ -31,7 +31,7 @@
 
 `mode` 必填，可选 `read-only` 或 `workspace-write`。输出路径及 `.log` 必须尚不存在，防止误覆盖或无意重放。日志上限 16 MiB；输出只包含有界摘要、身份、请求型号、报告型号、请求/确认推理档位、原始终止类型与回写错误。主会话负责核对产物和测试；CLI exit 0 或模型自称完成不构成验收。
 
-5. 启动器等待真实身份：Kimi 在提交 prompt 前登记并 claim；Claude 用注入的 SessionStart 登记/claim，PreToolUse 要求相同身份的领取凭据。claim 校验有效路由、任务、型号与 delegation 一致。未领取不能执行项目工具。
+5. 启动器等待真实身份：Kimi 在提交 prompt 前登记并 claim；Claude 用注入的 SessionStart 登记/claim，PreToolUse 要求相同身份的领取凭据。claim 校验有效路由、任务、型号与 delegation 一致。未领取不能执行项目工具。同一 Session 对同一 delegation 的幂等重复 claim 视为重放，启动器在提交 prompt 前拒绝（`CLI_GRANT_REPLAY`）；claim 失败或结果未确认时，启动器不撤销可能属于另一执行的授权，也不释放其路由租约，租约按既有 TTL 收口。显式新 attempt 必须使用新 delegation 的首次 claim。
 6. 启动器按原 delegation 回写，再回报 `routing_result` 释放租约。失败不重试、不换客户端；报告失败返回非零并保留结果文件，主会话据此补报。操作完成后删除自己创建的 manifest；内部包含 token 的临时副本会自动清理。
 
 ## 权限与限制
