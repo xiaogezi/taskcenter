@@ -368,7 +368,7 @@ test("当前项目策略先派发非 Codex 客户端，总容量满后才使用 
     assert.equal(fourth.route.harness, "claude");
     assert.equal(fourth.route.cli_profile, "claude-mimo-v2.6-flash");
 
-    const fifth = routingSelect({ ...baseInput, event_id: "policy-fifth" });
+    const fifth = routingSelect({ ...baseInput, cli_profile: "kimi-k3", event_id: "policy-fifth" });
     assert.equal(fifth.route.selected_model, "gpt-6-luna", "普通 CLI 总并发满时才使用 Luna 末级兜底");
     assert.equal(fifth.route.cli_profile, "codex-luna");
     assert.equal(fifth.route.channel, "cli");

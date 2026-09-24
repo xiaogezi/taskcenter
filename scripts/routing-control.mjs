@@ -365,12 +365,12 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
   // non-Codex selection cannot run over `native`, so it is recommended as the resolved
   // CLI channel; `direct` main-model execution and explicit Codex `native` stay unchanged.
   let effectiveChannel = channel;
-  let resolvedProfile = profile ? { name: input.cli_profile, harness: profile.harness } : null;
-  if (!profile && roleName === "executor" && (channel === "cli" || (channel === "native" && !requestedPreferredModel))) {
+  let resolvedProfile = profile?.model === selectedModel ? { name: input.cli_profile, harness: profile.harness, effort: profile.effort } : null;
+  if (!resolvedProfile && roleName === "executor" && (channel === "cli" || (channel === "native" && !requestedPreferredModel))) {
     resolvedProfile = cliProfileForModel(selectedModel);
     if (resolvedProfile && channel === "native") effectiveChannel = "cli";
   }
-  if (!profile && resolvedProfile) {
+  if (resolvedProfile) {
     // 路由报告档位必须与 runDelegatedCli 实际使用的 profile 档位一致。
     selectedReasoningEffort = resolvedProfile.effort;
   }
