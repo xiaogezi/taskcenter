@@ -353,7 +353,7 @@ test("native-only Jev 只选择宿主可用候选，支持 Luna 和 Kimi high，
       candidateKeys = Object.keys(request.questions.executor_model.criteria);
       return result("implementation", "delegate", "kimi-code/kimi-for-coding");
     });
-    assert.deepEqual(candidateKeys, ["mimo-v2.6-flash", "kimi-code/kimi-for-coding", "gpt-6-luna", "no_match"]);
+    assert.deepEqual(candidateKeys, ["kimi-code/kimi-for-coding", "gpt-6-luna", "no_match"]);
     assert.equal(selected.input.channel, "native");
     const route = routingSelect({ ...selected.input, event_id: "jev-native-kimi" }, undefined, selected.jevDecision).route;
     assert.equal(route.native_model, "kimi-oauth/kimi-for-coding");
@@ -373,7 +373,7 @@ test("native-only Jev 只选择宿主可用候选，支持 Luna 和 Kimi high，
     clearJevCache();
     const failed = await prepare(nativeInput, async () => ({ status: "failed", error: "timeout" }));
     assert.equal(failed.input.channel, "native");
-    assert.equal(routingSelect({ ...failed.input, event_id: "jev-failed" }, undefined, failed.jevDecision).route.native_model, capabilities[0]);
+    assert.equal(routingSelect({ ...failed.input, event_id: "jev-failed" }, undefined, failed.jevDecision).route.native_model, "kimi-oauth/kimi-for-coding");
     delete process.env.TYPESAFE_API_KEY;
     const noKey = await prepare(nativeInput);
     assert.equal(noKey.input.channel, "native");

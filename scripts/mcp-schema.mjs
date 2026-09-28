@@ -45,12 +45,12 @@ export function compactSchema(schema) {
         ids.set(key, id);
         definitions[id] = mapChildren(node, replace);
       }
-      return { $ref: `#/definitions/${id}` };
+      return { $ref: `#/$defs/${id}` };
     }
     return mapChildren(node, replace);
   }
   const result = mapChildren(schema, replace);
-  if (ids.size) result.definitions = definitions;
+  if (ids.size) result.$defs = definitions;
   return JSON.stringify(result).length < JSON.stringify(schema).length ? result : schema;
 }
 

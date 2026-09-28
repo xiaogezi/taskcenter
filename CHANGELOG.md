@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复 MCP 压缩引用被 Kimi Router 再次展开导致 token 反增：使用纯 `#/$defs/` 引用，保留工具契约与原预算；增加引用形状回归检查并记录真实 Router 离线转换对照。
+
 - MCP 工具目录保留全部工具与参数校验，使用工具内部 JSON Schema 引用去重；支持 `TASKCENTER_MCP_SCHEMA_MODE=inline` 回退。新增 `npm run mcp:budget` 和测试内置体积门禁，固定 o200k_base tokenizer，基线增长 2% 预警、5% 失败并列出超标来源与处理建议。
 
 - 按用户授权将 MiMo 2.6 Flash / Pro 原生执行档位设为 high，与宿主实际支持能力一致；其他模型档位不变。

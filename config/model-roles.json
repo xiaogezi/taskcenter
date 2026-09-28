@@ -108,13 +108,11 @@
   },
   "roles": {
     "executor": {
-      "model": "mimo-v2.6-flash",
+      "model": "kimi-code/kimi-for-coding",
       "reasoning_effort": "low",
       "fallback_models": [
-        "mimo-v2.6-pro",
-        "kimi-code/k3",
-        "kimi-code/kimi-for-coding",
         "kimi-code/kimi-for-coding-highspeed",
+        "kimi-code/k3",
         "gpt-6-luna"
       ],
       "task_class_models": {},
@@ -129,9 +127,7 @@
       "dispatch_channel": "native",
       "model_reasoning_efforts": {
         "kimi-code/kimi-for-coding": "high",
-        "kimi-code/kimi-for-coding-highspeed": "high",
-        "mimo-v2.6-flash": "high",
-        "mimo-v2.6-pro": "high"
+        "kimi-code/kimi-for-coding-highspeed": "high"
       },
       "native_models": {
         "kimi-code/k3": {
@@ -180,10 +176,10 @@
       "description": "Kimi Coding Highspeed；简单明确任务的速度候选，用户明确允许 high 档位"
     },
     "mimo-v2.6-pro": {
-      "description": "MiMo 2.6 Pro；推理与高风险任务能力强，成本较高"
+      "description": "MiMo 2.6 Pro；暂退出自动执行候选，保留映射供后续修复验证"
     },
     "mimo-v2.6-flash": {
-      "description": "MiMo 2.6 Flash；普通执行默认首选，满足任务能力时优先节省成本"
+      "description": "MiMo 2.6 Flash；暂退出自动执行候选，保留映射供后续修复验证"
     },
     "gpt-6-luna": {
       "description": "GPT-6 Luna；低成本 Codex 会话执行候选，由 Jev 按任务选择"

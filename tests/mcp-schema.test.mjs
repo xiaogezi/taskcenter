@@ -11,14 +11,17 @@ function expand(value, root = value) {
   if (Array.isArray(value)) return value.map(item => expand(item, root));
   if (!value || typeof value !== "object") return value;
   if (value.$ref) {
-    assert.match(value.$ref, /^#\/definitions\//);
-    const target = root.definitions[value.$ref.split("/").at(-1)];
+    // Kimi's router preserves only pure #/$defs/ refs; other forms expand
+    // before reaching the model and can cost more than the inline schema.
+    assert.match(value.$ref, /^#\/\$defs\//);
+    assert.deepEqual(Object.keys(value), ["$ref"]);
+    const target = root.$defs[value.$ref.split("/").at(-1)];
     assert.ok(target);
     const siblings = { ...value };
     delete siblings.$ref;
     return { ...expand(target, root), ...expand(siblings, root) };
   }
-  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "definitions")
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "$defs")
     .map(([key, item]) => [key, expand(item, root)]));
 }
 

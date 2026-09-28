@@ -347,7 +347,7 @@ test("manual_only Spark 健康状态可观察，退役后隐藏", async () => {
   await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 });
 
-test("当前项目策略仅会话派发：MiMo 优先、六款候选、实际能力和档位筛选", async () => {
+test("当前项目策略仅会话派发：Kimi 优先、MiMo 暂停、四款候选、实际能力和档位筛选", async () => {
   const current = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
   const config = JSON.parse(current);
   await writeFile(roleConfigPath, current);
@@ -356,29 +356,29 @@ test("当前项目策略仅会话派发：MiMo 优先、六款候选、实际能
   const capable = Object.values(native).map(entry => entry.runtime_model);
   const request = { ...baseInput, channel: "other", available_native_models: capable };
   try {
-    assert.equal(pool.length, 6);
+    assert.equal(pool.length, 4);
     assert.equal(pool.some(model => model.startsWith("mimo-v2.5")), false);
     assert.equal(Object.keys(native).some(model => model.startsWith("mimo-v2.5")), false);
-    assert.equal(pool.filter(model => model.startsWith("mimo-")).length, 2);
+    assert.equal(pool.filter(model => model.startsWith("mimo-")).length, 0);
     assert.equal(pool.filter(model => model.startsWith("kimi-")).length, 3);
     assert.ok(pool.includes("gpt-6-luna"));
     const main = routingSelect({ ...baseInput, orchestrator_model: "gpt-6-luna", channel: "direct", event_id: "pool-main-direct" });
     assert.equal(main.health.find(item => item.model === "gpt-6-luna").active_executors, 0, "主模型即使属于候选池也不占执行器配额");
     const first = routingSelect({ ...request, event_id: "policy-first" });
-    assert.equal(first.route.selected_model, "mimo-v2.6-flash");
+    assert.equal(first.route.selected_model, "kimi-code/kimi-for-coding");
     assert.equal(first.route.channel, "native");
     assert.equal(first.route.native_model, native[first.route.selected_model].runtime_model);
     assert.equal(first.route.cli_profile, undefined);
     assert.equal(first.route.reasoning_effort, "high");
     routingSelect({ ...request, event_id: "policy-second" });
     const fallback = routingSelect({ ...request, event_id: "policy-third" });
-    assert.equal(fallback.route.selected_model, "kimi-code/k3", "MiMo 共享池满后选可用会话候选");
+    assert.equal(fallback.route.selected_model, "gpt-6-luna", "Kimi 共享池满后选可用会话候选");
     assert.equal(fallback.route.reasoning_effort, "low");
     routingSelect({ ...request, event_id: "policy-fourth" });
     assert.equal(routingSelect({ ...request, event_id: "policy-fifth" }).route.channel, "direct", "全局派发容量满时由主模型接管");
     const review = routingSelect({ ...baseInput, task_class: "ocr_review", review_artifacts: reviewArtifacts, event_id: "native-pool-review" });
-    assert.equal(review.route.available, true, "普通执行全局并发占满不占用 Reviewer 全局额度");
-    assert.equal(review.route.selected_model, "gpt-6-luna");
+    assert.equal(review.route.available, false, "Luna 执行器占满共享型号容量时 Reviewer 也必须遵守型号上限");
+    assert.equal(review.route.selected_model, null);
     for (const model of pool) {
       await rm(statePath, { force: true });
       const selected = routingSelect({ ...request, preferred_model: model, event_id: `policy-model-${model}` });

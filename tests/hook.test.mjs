@@ -1446,7 +1446,7 @@ test("当前 native-only 策略拒绝新 CLI 授权，保留 native grant/claim"
     const parent = "native-only-parent", child = "native-only-child";
     await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
     const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "native-only", goal: "native-only" })).json();
-    const baseGrant = { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: "mimo-v2.6-flash", ttl_seconds: 600 };
+    const baseGrant = { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: "kimi-code/kimi-for-coding", ttl_seconds: 600 };
     for (const channel of ["cli", "other", undefined]) {
       const rejected = await post("/delegations/grant", { ...baseGrant, channel });
       assert.equal(rejected.status, 409);
@@ -1454,12 +1454,12 @@ test("当前 native-only 策略拒绝新 CLI 授权，保留 native grant/claim"
     }
     const rejectedRoute = await post("/routing/select", { task_id: created.task.id, task_class: "implementation", channel: "cli" });
     assert.equal(rejectedRoute.status, 409);
-    const selected = await (await post("/routing/select", { task_id: created.task.id, task_class: "implementation", channel: "other", available_native_models: ["xiaomi-tokenplan/mimo-v2.6-flash"] })).json();
-    assert.equal(selected.route.native_model, "xiaomi-tokenplan/mimo-v2.6-flash");
+    const selected = await (await post("/routing/select", { task_id: created.task.id, task_class: "implementation", channel: "other", available_native_models: ["kimi-oauth/kimi-for-coding"] })).json();
+    assert.equal(selected.route.native_model, "kimi-oauth/kimi-for-coding");
     const granted = await post("/delegations/grant", { ...baseGrant, channel: "native", route_id: selected.route.route_id });
     const grant = await granted.json();
     assert.equal(granted.status, 201, JSON.stringify(grant));
-    await runHook("session-start", "codex", { session_id: child, cwd: "/work", model: "xiaomi-tokenplan/mimo-v2.6-flash" });
+    await runHook("session-start", "codex", { session_id: child, cwd: "/work", model: "kimi-oauth/kimi-for-coding" });
     const claimed = await post("/delegations/claim", { workspace: "/work", session_id: child, delegation_id: grant.delegation.id, claim_token: grant.claimToken, executor_model: baseGrant.executor_model, route_id: selected.route.route_id });
     assert.equal(claimed.status, 200, await claimed.text());
     await post("/routing/result", { route_id: selected.route.route_id, outcome: "succeeded" });
