@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { schemaToolRegistry } from "./mcp-schema.mjs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { readFileSync } from "node:fs";
@@ -15,6 +16,7 @@ const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1
 const acceptanceToken = process.env.TASKCENTER_ACCEPTANCE_TOKEN || "";
 const localMcpTokenPath = resolve(process.env.TASKCENTER_MCP_TOKEN_PATH || join(import.meta.dirname, "..", ".local", "runtime", "mcp-token"));
 const server = new McpServer({ name: "taskcenter-task-server", version: TASKCENTER_VERSION });
+const toolRegistry = schemaToolRegistry(server, process.env.TASKCENTER_MCP_SCHEMA_MODE || "compact");
 let managedReviewContext;
 const verificationKind = z.enum(["test", "build", "lint", "static_check", "device", "manual", "security", "performance", "other"]);
 const taskReuseDecision = z.enum(["reuse", "create_new", "uncertain"]);
@@ -118,23 +120,23 @@ const taskFields = {
   workspace_policy: z.object({ version: z.string().max(80).optional(), require_independent_review: z.boolean().optional(), allowed_acceptance_sources: z.array(z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"])).optional(), allowed_acceptance_actors: z.array(z.string().max(200)).optional() }).strict().optional(),
 };
 
-server.registerTool("taskcenter_agent_capabilities", {
+toolRegistry.register("taskcenter_agent_capabilities", {
   description: "查询 TaskCenter 已实现的客户端适配能力；不代表客户端已连接，也不授予权限。",
   inputSchema: z.object({ agent: z.enum(AGENT_IDS).optional() }).strict(),
 }, async ({ agent }) => result({ clients: (agent ? [agent] : AGENT_IDS).map(agentCapabilities) }));
 
-server.registerTool("taskcenter_client_context", {
+toolRegistry.register("taskcenter_client_context", {
   description: "读取宿主注入的可信 Session 身份；缺失或冲突时返回错误，不生成或猜测 ID。",
   inputSchema: z.object({}).strict(),
 }, async (_input, extra) => result(resolveTrustedMcpSession(extra)));
 
-server.registerTool("taskcenter_session_register", {
+toolRegistry.register("taskcenter_session_register", {
   title: "注册 TaskCenter Session",
   description: "开始任务前登记当前 Session、工作目录和任务协议。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200), agent: z.enum(AGENT_IDS).optional(), provider: z.string().max(80).optional(), model: z.string().max(120).optional(), workspace: z.string().min(1).max(4_096), project_id: z.string().max(200).optional(), event_id: z.string().max(200).optional(), rationale: z.string().max(1_000).optional(), response_mode: responseMode }).strict(),
 }, async (input) => report("session.register", input));
 
-server.registerTool("taskcenter_task_begin", {
+toolRegistry.register("taskcenter_task_begin", {
   title: "开始 TaskCenter 任务",
   description: "一次完成 Session 登记和 v2 任务创建；同一 Session 可在上一任务关闭后继续创建下一任务。默认返回紧凑状态。",
   inputSchema: z.object({
@@ -181,25 +183,25 @@ server.registerTool("taskcenter_task_begin", {
   }
 });
 
-server.registerTool("taskcenter_task_create", {
+toolRegistry.register("taskcenter_task_create", {
   title: "创建 TaskCenter 任务",
   description: "在修改代码前创建正式任务。新客户端应使用 contract_version=v2 并填写 scope、non_goals、workflow_profile；standard/strict 还必须提供 verification_plan。旧调用保持 legacy 兼容。",
   inputSchema: z.object({ ...taskFields, title: z.string().min(1).max(200), goal: z.string().min(1).max(1_000), acceptance_criteria: z.array(acceptanceCriterion).min(1).max(50), plan: z.array(z.string().min(1).max(500)).min(1).max(20) }).strict(),
 }, async (input) => report("task.create", input));
 
-server.registerTool("taskcenter_task_update", {
+toolRegistry.register("taskcenter_task_update", {
   title: "更新 TaskCenter 任务",
   description: "更新当前步骤、下一步、假设、风险、取舍和阻塞信息。",
   inputSchema: z.object(taskFields).extend({ task_id: z.string().min(1).max(200) }).strict(),
 }, async (input) => report("task.update", input));
 
-server.registerTool("taskcenter_task_report", {
+toolRegistry.register("taskcenter_task_report", {
   title: "上报 TaskCenter 任务结果",
   description: "上报任务过程结果、变更文件、测试、证据和复盘；v2 正式完成必须使用 taskcenter_task_close。",
   inputSchema: z.object(taskFields).extend({ task_id: z.string().min(1).max(200), status: z.enum(["in_progress", "blocked", "done_claimed"]).optional() }).strict(),
 }, async (input) => reportTaskProgress(input));
 
-server.registerTool("taskcenter_task_close", {
+toolRegistry.register("taskcenter_task_close", {
   title: "原子关闭 TaskCenter 任务",
   description: "一次提交最终报告、验收条件结果与验证证据，并返回完成就绪度；同一 event_id 重试不会产生重复记录。completion_claim_allowed=false 时只能报告执行已声明完成，不得向用户宣称任务真正完成。",
   inputSchema: z.object(taskFields).extend({
@@ -222,7 +224,7 @@ server.registerTool("taskcenter_task_close", {
   }).strict(),
 }, async ({ continuation, ...input }) => report("task.close", { ...input, status: "done_claimed" }, recommendTaskClose(continuation)));
 
-server.registerTool("taskcenter_task_requirement_report", {
+toolRegistry.register("taskcenter_task_requirement_report", {
   title: "上报 TaskCenter 验收条件结果",
   description: "追加一条验收条件结果；passed/failed 必须引用证据，not_applicable 必须说明原因。",
   inputSchema: z.object({
@@ -233,7 +235,7 @@ server.registerTool("taskcenter_task_requirement_report", {
   }).strict(),
 }, async ({ session_id, task_id, event_id, response_mode, ...requirement_result }) => report("requirement.reported", { session_id, task_id, event_id, response_mode, requirement_result }));
 
-server.registerTool("taskcenter_task_verification_report", {
+toolRegistry.register("taskcenter_task_verification_report", {
   title: "上报 TaskCenter 验证证据",
   description: "追加 Verification Claim；TaskCenter 保存证据并计算新鲜度，但不会执行命令。",
   inputSchema: z.object({
@@ -246,7 +248,7 @@ server.registerTool("taskcenter_task_verification_report", {
   }).strict(),
 }, async ({ session_id, task_id, event_id, response_mode, ...verification_claim }) => report("verification.reported", { session_id, task_id, event_id, response_mode, revision: verification_claim.revision, verification_claim }));
 
-server.registerTool("taskcenter_task_review_report", {
+toolRegistry.register("taskcenter_task_review_report", {
   title: "上报 TaskCenter 独立审查",
   description: "追加 Review Attestation；同一 reviewer 先给出规格符合性、再给出代码质量结论，总体 verdict 必须与两个分项及未决项一致。是否要求 reviewer 与实现者独立由版本化 Workspace Policy 决定。",
   inputSchema: z.object({
@@ -271,13 +273,13 @@ server.registerTool("taskcenter_task_review_report", {
   return report("review.reported", { session_id, task_id, event_id, response_mode, revision: review_attestation.revision, review_attestation });
 });
 
-server.registerTool("taskcenter_review_cycle_report", {
+toolRegistry.register("taskcenter_review_cycle_report", {
   title: "上报 TaskCenter Review Cycle",
   description: "按 cycle_id 增量记录 Review 阶段、墙钟时间与调用方提供的 active time；仅用于流程诊断，不替 reviewer 作技术判断。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), response_mode: responseMode, ...reviewCycleFields }).strict(),
 }, async ({ session_id, task_id, event_id, response_mode, occurred_at, ...review_cycle }) => report("review_cycle.reported", { session_id, task_id, event_id, response_mode, occurred_at, review_cycle }));
 
-server.registerTool("taskcenter_task_phase_report", {
+toolRegistry.register("taskcenter_task_phase_report", {
   title: "上报 TaskCenter 任务阶段事件",
   description: "追加可审计的阶段边界事件并返回更新后的任务；仅用于流程归因，不参与绩效、任务门禁或验收。跨 Session 续接需提供稳定 activity_id，delegated_executor 与 Review Cycle 必须引用已有授权记录。",
   inputSchema: z.object({
@@ -297,7 +299,7 @@ server.registerTool("taskcenter_task_phase_report", {
   }).strict(),
 }, async (input) => report("phase.reported", input));
 
-server.registerTool("taskcenter_task_diagnostic_report", {
+toolRegistry.register("taskcenter_task_diagnostic_report", {
   title: "上报 TaskCenter 调试案例观察",
   description: "追加观察性 Diagnostic Observation，用于复盘根因定位过程；不参与绩效、门禁或任务验收。",
   inputSchema: z.object({
@@ -308,43 +310,43 @@ server.registerTool("taskcenter_task_diagnostic_report", {
   }).strict(),
 }, async ({ session_id, task_id, event_id, response_mode, ...diagnostic_observation }) => report("diagnostic.reported", { session_id, task_id, event_id, response_mode, diagnostic_observation }));
 
-server.registerTool("taskcenter_task_completion_readiness", {
+toolRegistry.register("taskcenter_task_completion_readiness", {
   title: "查询 TaskCenter 完成就绪度",
   description: "返回任务是否 ready、completionClaim.allowed，以及缺失、失败或过期的证据；allowed=false 时不得宣称任务真正完成。",
   inputSchema: z.object({ task_id: z.string().min(1).max(200), revision: z.string().max(200).optional() }).strict(),
 }, async ({ task_id, revision }) => queryEndpoint(`/tasks/${encodeURIComponent(task_id)}/completion-readiness${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`));
 
-server.registerTool("taskcenter_task_completion_packet", {
+toolRegistry.register("taskcenter_task_completion_packet", {
   title: "获取 TaskCenter Completion Packet",
   description: "汇总任务契约、验收结果、验证证据、独立审查与完成就绪度，供可信 Context 完成流程使用。",
   inputSchema: z.object({ task_id: z.string().min(1).max(200) }).strict(),
 }, async ({ task_id }) => queryEndpoint(`/tasks/${encodeURIComponent(task_id)}/completion-packet`));
 
-server.registerTool("taskcenter_task_subject_update", {
+toolRegistry.register("taskcenter_task_subject_update", {
   title: "更新 TaskCenter 工作对象",
   description: "把任务当前工作对象更新为通用 SubjectReference；新对象会使旧验证、审查和验收自动过期。",
   inputSchema: z.object({ task_id: z.string().min(1).max(200), session_id: z.string().min(1).max(200).optional(), event_id: z.string().max(200).optional(), subject_ref: subjectReference, actor: actorIdentity.optional(), occurred_at: z.string().datetime({ offset: true }).optional(), response_mode: responseMode }).strict(),
 }, async (input) => report("subject.updated", input));
 
-server.registerTool("taskcenter_task_export", {
+toolRegistry.register("taskcenter_task_export", {
   title: "导出 TaskCenter 完成包",
   description: "以 JSON 或可读 Markdown 导出任务契约、证据、审查、验收和就绪度。",
   inputSchema: z.object({ task_id: z.string().min(1).max(200), format: z.enum(["json", "markdown"]).default("json") }).strict(),
 }, async ({ task_id, format }) => format === "markdown" ? queryText(`/tasks/${encodeURIComponent(task_id)}/export?format=markdown`) : queryEndpoint(`/tasks/${encodeURIComponent(task_id)}/export?format=json`));
 
-server.registerTool("taskcenter_task_import_evidence", {
+toolRegistry.register("taskcenter_task_import_evidence", {
   title: "导入 TaskCenter 外部证据",
   description: "导入 PR、CI、人工或其他平台产生的 Subject、Requirement、Verification、Review 事件；保留 occurred_at 与 recorded_at。",
   inputSchema: z.object({ task_id: z.string().min(1).max(200), events: z.array(z.record(z.string(), z.unknown())).min(1).max(100), response_mode: responseMode }).strict(),
 }, async (input) => postCore("/tasks/import-evidence", input));
 
-server.registerTool("taskcenter_task_acceptance_report", {
+toolRegistry.register("taskcenter_task_acceptance_report", {
   title: "独立上报 TaskCenter 验收",
   description: "供已配置独立验收凭据的人工、CI、PR 或任务平台适配器上报 AcceptanceRecord；普通执行 Agent 不应配置该凭据。",
   inputSchema: z.object({ task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), outcome: z.enum(["accepted", "rejected"]), occurred_at: z.string().datetime({ offset: true }).optional(), acceptance_record: z.object({ id: z.string().min(1).max(120), source: z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"]), actor: actorIdentity, subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(), evidence_refs: z.array(z.string().max(500)).max(30).optional(), reason: z.string().max(1_000).optional() }).strict(), response_mode: responseMode }).strict(),
 }, async (input) => postAcceptance(input));
 
-server.registerTool("taskcenter_routing_record", {
+toolRegistry.register("taskcenter_routing_record", {
   title: "记录 TaskCenter 模型路由",
   description: "记录直接执行、原生派发、CLI 兜底或有理由偏离的模型路由决定。该记录仅用于审计，不改变任务状态，也不作为执行门禁。",
   inputSchema: z.object({
@@ -367,7 +369,7 @@ server.registerTool("taskcenter_routing_record", {
   }).strict(),
 }, async (input) => report("routing.decision", input));
 
-server.registerTool("taskcenter_routing_select", {
+toolRegistry.register("taskcenter_routing_select", {
   title: "选择 TaskCenter 执行模型",
   description: "优先按 executor 配置派发；普通执行无可用模型或容量时返回当前主模型 direct 租约，继续同一任务。派发失败可携实际原因申请 direct 接管，无需重复用户授权；任务权限不变。TaskCenter 不启动进程，Reviewer 仍 fail closed。",
   inputSchema: z.object({
@@ -397,7 +399,7 @@ server.registerTool("taskcenter_routing_select", {
   return context.sessionId ? postLocal("/routing/select", { ...input, session_id: context.sessionId }) : result({ ...context, code: "SESSION_NOT_REGISTERED" });
 });
 
-server.registerTool("taskcenter_routing_result", {
+toolRegistry.register("taskcenter_routing_result", {
   title: "上报 TaskCenter 路由结果",
   description: "释放模型并发租约并更新健康状态；普通派发失败后停止原执行器、撤销 delegation，并按返回的 next_action 申请 direct 由当前主模型继续，不结束任务。只记录执行事实，不授予验收权。",
   inputSchema: z.object({
@@ -416,7 +418,7 @@ server.registerTool("taskcenter_routing_result", {
   return postLocal("/routing/result", { ...input, ...(context.sessionId ? { session_id: context.sessionId } : {}) });
 });
 
-server.registerTool("taskcenter_review_start", {
+toolRegistry.register("taskcenter_review_start", {
   description: "统一只读 Reviewer 入口：由宿主绑定真实身份与路由，登记、领取并准备报告周期；无需填写 Session UUID。",
   inputSchema: z.object({}).strict(),
 }, async (_input, extra) => {
@@ -432,7 +434,7 @@ server.registerTool("taskcenter_review_start", {
   } catch (error) { return result({ error: "REVIEW_START_FAILED", message: error.message }); }
 });
 
-server.registerTool("taskcenter_review_finish", {
+toolRegistry.register("taskcenter_review_finish", {
   description: "提交实际逐文件覆盖与规格/质量结论；程序绑定身份、Subject、OCR证据及cycle，成功落账后释放租约。未覆盖全部文件不能批准。",
   inputSchema: z.object({
     reviewed_files: z.array(z.string().min(1)).max(500), findings: z.array(reviewFinding).max(500),
@@ -452,7 +454,7 @@ server.registerTool("taskcenter_review_finish", {
   } catch (error) { return result({ error: "REVIEW_FINISH_FAILED", message: error.message }); }
 });
 
-server.registerTool("taskcenter_review_claim", {
+toolRegistry.register("taskcenter_review_claim", {
   title: "领取独立只读 Review",
   description: "已登记的独立 Reviewer 领取已有业务任务的 Review lease，不创建 Task。执行宿主必须使用 read-only 沙箱。",
   inputSchema: z.object({ route_id: z.string().min(1), claim_token: z.string().min(1), sandbox: z.literal("read-only"), response_mode: operationalResponseMode }).strict(),
@@ -461,7 +463,7 @@ server.registerTool("taskcenter_review_claim", {
   return context.sessionId ? postLocal("/reviews/claim", { ...input, session_id: context.sessionId }) : result({ ...context, code: "SESSION_NOT_REGISTERED" });
 });
 
-server.registerTool("taskcenter_delegation_grant", {
+toolRegistry.register("taskcenter_delegation_grant", {
   title: "创建执行委派授权",
   description: "由主任务 Session 创建受 TTL、workspace 和 scope 限制的执行授权；当前策略仅接受 native，必须绑定 route_id，不另建正式任务。",
   inputSchema: z.object({
@@ -473,7 +475,7 @@ server.registerTool("taskcenter_delegation_grant", {
   }).strict(),
 }, async (input) => postLocal("/delegations/grant", input));
 
-server.registerTool("taskcenter_delegation_claim", {
+toolRegistry.register("taskcenter_delegation_claim", {
   title: "领取执行委派授权",
   description: "执行器使用自身已登记 Session 和一次性 claim token 附着主任务；原生 Session 校验授权已绑定的 route 与 runtime model，不创建正式子任务。",
   inputSchema: z.object({ delegation_id: z.string().min(1).max(200), claim_token: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096),
@@ -481,7 +483,7 @@ server.registerTool("taskcenter_delegation_claim", {
     event_id: z.string().max(200).optional(), response_mode: operationalResponseMode }).strict(),
 }, async (input) => postLocal("/delegations/claim", input));
 
-server.registerTool("taskcenter_cli_run_report", {
+toolRegistry.register("taskcenter_cli_run_report", {
   title: "上报委派执行结果",
   description: "上报附着主任务的原生或 CLI 执行状态和证据；不会改变主任务状态或形成独立验收。",
   inputSchema: z.object({
@@ -491,13 +493,13 @@ server.registerTool("taskcenter_cli_run_report", {
   }).strict(),
 }, async (input) => postLocal("/delegations/report", input));
 
-server.registerTool("taskcenter_delegation_revoke", {
+toolRegistry.register("taskcenter_delegation_revoke", {
   title: "撤销执行器 Delegation",
   description: "由主任务 Session 撤销尚未结束的原生或历史 CLI delegation。",
   inputSchema: z.object({ delegation_id: z.string().min(1).max(200), parent_session_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), response_mode: operationalResponseMode }).strict(),
 }, async (input) => postLocal("/delegations/revoke", input));
 
-server.registerTool("taskcenter_task_query", {
+toolRegistry.register("taskcenter_task_query", {
   title: "查询 TaskCenter 任务",
   description: "查询任务账本；Codex 适配器可按 Session 过滤，通用客户端可省略 Session。task_id 走服务端精准查询并与 session_id 求交集；默认 view=full，显式 view=summary 只返回裁剪摘要。",
   inputSchema: z.object({
@@ -513,7 +515,7 @@ server.registerTool("taskcenter_task_query", {
   }
 });
 
-server.registerTool("taskcenter_task_reuse_check", {
+toolRegistry.register("taskcenter_task_reuse_check", {
   title: "检查 TaskCenter 活跃任务复用候选",
   description: "在创建正式任务前只读查询同一业务目标的活跃候选，返回可解释的 reuse/create_new/uncertain 建议；不会创建、合并、阻断或修改任务。",
   inputSchema: z.object({
@@ -528,7 +530,7 @@ server.registerTool("taskcenter_task_reuse_check", {
   }).strict(),
 }, async (input) => postCore("/task-reuse/check", input));
 
-server.registerTool("taskcenter_task_reuse_decision_report", {
+toolRegistry.register("taskcenter_task_reuse_decision_report", {
   title: "记录 TaskCenter 任务复用最终选择",
   description: "把 Advisor 建议、最终选择和 force_new_reason 写入独立 append-only 审计账本；不会修改任何任务状态或合同。",
   inputSchema: z.object({
@@ -552,7 +554,7 @@ server.registerTool("taskcenter_task_reuse_decision_report", {
   }).strict(),
 }, async (input) => postCore("/task-reuse/decisions", input));
 
-server.registerTool("taskcenter_task_reuse_decision_query", {
+toolRegistry.register("taskcenter_task_reuse_decision_query", {
   title: "查询 TaskCenter 任务复用决策审计",
   description: "只读查询独立的任务复用决策记录，用于 advisory 试点评估。",
   inputSchema: z.object({
@@ -568,7 +570,7 @@ server.registerTool("taskcenter_task_reuse_decision_query", {
   return queryLocalEndpoint(`/task-reuse/decisions${params.size ? `?${params}` : ""}`);
 });
 
-server.registerTool("taskcenter_usage_report", {
+toolRegistry.register("taskcenter_usage_report", {
   title: "查询 TaskCenter 用量报告",
   description: "读取有界用量摘要；支持 project(路径或项目 ID)、session、task、window 组合过滤。默认 summary_only=true、top_n=10、4KB 上限；fields 选择顶层字段，超限按 cursor 显式续读。",
   inputSchema: z.object({
@@ -578,7 +580,7 @@ server.registerTool("taskcenter_usage_report", {
   }).strict(),
 }, async (input) => queryEndpoint(`/usage-report?${new URLSearchParams(Object.entries(input).map(([key, value]) => [key, Array.isArray(value) ? value.join(",") : String(value)]))}`));
 
-server.registerTool("taskcenter_response_continue", {
+toolRegistry.register("taskcenter_response_continue", {
   title: "显式续读有界响应",
   description: "读取 MCP 响应 continuation_cursor 的下一片 JSON 文本；usage_report 的 cursor 应通过 usage_report 续读。游标五分钟过期。",
   inputSchema: z.object({ cursor: z.string().min(1).max(200) }).strict(),
@@ -587,14 +589,14 @@ server.registerTool("taskcenter_response_continue", {
   return page.error === "CURSOR_EXPIRED" ? queryEndpoint(`/response-continue?cursor=${encodeURIComponent(cursor)}`) : result(page);
 });
 
-server.registerTool("taskcenter_task_prepare", {
+toolRegistry.register("taskcenter_task_prepare", {
   title: "准备或恢复当前目标",
   description: "一次返回当前合同、Session/task 绑定、实时请求预算、压缩次数、handoff 和允许操作；不创建新目标。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200) }).strict(),
 }, async ({ session_id }) => queryEndpoint(`/task-prepare?session_id=${encodeURIComponent(session_id)}`));
 
 for (const operation of ["prepare", "confirm"]) {
-  server.registerTool(`taskcenter_session_switch_${operation}`, {
+  toolRegistry.register(`taskcenter_session_switch_${operation}`, {
     description: operation === "prepare"
       ? "关闭且证据闭环、Git 干净后持久化完整恢复检查点并读回校验；准备不执行压缩或授权重绑。"
       : "由已配置的本机 App Server 适配器异步执行恢复预检、真实压缩和压缩后恢复。pending 不授权重绑；结束当前 Turn 后宿主才执行，后续调用可查询结果。无宿主或恢复失败则拒绝。",
@@ -608,25 +610,25 @@ for (const operation of ["prepare", "confirm"]) {
   });
 }
 
-server.registerTool("taskcenter_task_resume", {
+toolRegistry.register("taskcenter_task_resume", {
   title: "接手或接续共享任务",
   description: "任意客户端可用已登记的真实 Session 接手同一 workspace 的任务，不限创建客户端。先查询任务，expected_session_id 必须等于当前 sessionId；接手后旧 Session 失去主执行权，保留创建者、合同、Subject、证据和交接记录。未结束/撤销的有效委派阻止跨 Session 接手；目标 Session 不能已有其他活跃任务。跨 Session 接手或恢复已完成任务进入 in_progress，取消/移除任务拒绝。重复请求不重复交接。仅转移逻辑执行权，不停止已运行进程，不启动客户端；原执行者应先停止操作。返回 prepare 结果。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), expected_session_id: z.string().min(1).max(200), event_id: z.string().max(200).optional() }).strict(),
 }, async (input) => postCore("/task-resume", { ...input, response_mode: "full" }));
 
-server.registerTool("taskcenter_session_lifecycle", {
+toolRegistry.register("taskcenter_session_lifecycle", {
   title: "查询 Codex Session 生命周期建议",
   description: "返回继续、建议换 Session 或要求先交接；建议不会强行中断，且新建 Codex Session 不等于新建 TaskCenter task。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200).optional() }).strict(),
 }, async ({ session_id }) => queryEndpoint(`/session-lifecycle${session_id ? `?session_id=${encodeURIComponent(session_id)}` : ""}`));
 
-server.registerTool("taskcenter_governance_metrics", {
+toolRegistry.register("taskcenter_governance_metrics", {
   title: "查询 TaskCenter 治理试点指标",
   description: "返回 Credits 等价值、续调、输入分位数、归属覆盖率、往返、返工率、耗时和观察性调试指标，并按 profile、任务类别与模型分组。指标不用于绩效或门禁。",
   inputSchema: z.object({}).strict(),
 }, async () => queryEndpoint("/governance-metrics"));
 
-server.registerTool("taskcenter_session_status", {
+toolRegistry.register("taskcenter_session_status", {
   title: "查询 TaskCenter Session 状态",
   description: "查询当前 Session 是否已登记、执行器身份和任务数量。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200) }).strict(),
@@ -640,7 +642,7 @@ server.registerTool("taskcenter_session_status", {
   }
 });
 
-server.registerTool("taskcenter_bug_dispatch_host", {
+toolRegistry.register("taskcenter_bug_dispatch_host", {
   title: "领取可见 Bug 派发并上报真实宿主回执",
   description: "事件驱动宿主协议。snapshot 读取队列；claim 原子占用两路之一，resumed=true 时不得重复创建；receipt 必须基于真实桌面工具与已登记独立 worktree。控制回执 sent 仅表示发送，不能证明停止。merge_lease 仅串行化外部合入，不授权或执行合并。身份取当前运行时 Session。",
   inputSchema: z.object({
@@ -655,7 +657,7 @@ server.registerTool("taskcenter_bug_dispatch_host", {
   return context.sessionId ? postLocal("/bug-dispatches/host", { ...input, session_id: context.sessionId, response_mode: "full" }) : result(context);
 });
 
-server.registerTool("taskcenter_session_gate_exemption_status", {
+toolRegistry.register("taskcenter_session_gate_exemption_status", {
   title: "查询当前 Session 门禁豁免",
   description: "查询运行时绑定的当前 Codex Session 是否免除 active task 前置条件；不接受目标 Session 参数，也不修改白名单。",
   inputSchema: z.object({}).strict(),
@@ -666,7 +668,7 @@ server.registerTool("taskcenter_session_gate_exemption_status", {
     : result(context);
 });
 
-server.registerTool("taskcenter_session_gate_exemption_set", {
+toolRegistry.register("taskcenter_session_gate_exemption_set", {
   title: "切换当前 Session 门禁豁免",
   description: "仅为运行时绑定的当前已登记 Codex Session 加入或退出 active task 门禁豁免；不接受目标 Session 参数，不创建任务、不批量修改，命令安全检查仍然有效。",
   inputSchema: z.object({ enabled: z.boolean() }).strict(),
@@ -677,13 +679,13 @@ server.registerTool("taskcenter_session_gate_exemption_set", {
     : result(context);
 });
 
-server.registerTool("taskcenter_scheduled_readonly_scan_exemption_status", {
+toolRegistry.register("taskcenter_scheduled_readonly_scan_exemption_status", {
   title: "查询 scheduled_readonly 扫描豁免",
   description: "查询当前 scheduled_readonly Session 是否已扩大到确定性项目只读扫描。session_id 必须是当前 Hook payload 中的真实 Session，Hook 会拒绝跨 Session 调用。",
   inputSchema: z.object({ session_id: z.string().uuid() }).strict(),
 }, async ({ session_id: sessionId }) => postLocal("/scheduled-readonly-scan-exemption/status", { session_id: sessionId, response_mode: "full" }));
 
-server.registerTool("taskcenter_scheduled_readonly_scan_exemption_set", {
+toolRegistry.register("taskcenter_scheduled_readonly_scan_exemption_set", {
   title: "切换 scheduled_readonly 扫描豁免",
   description: "仅为当前 Hook payload 绑定的 scheduled_readonly Session 开启或关闭确定性项目只读扫描；Hook 会拒绝跨 Session 调用，且不授予写入、网络、脚本、管道、复合命令或跨项目能力。",
   inputSchema: z.object({ session_id: z.string().uuid(), enabled: z.boolean() }).strict(),
@@ -880,4 +882,5 @@ function result(payload) {
   return { content: [{ type: "text", text: JSON.stringify(boundedResponse(payload)) }] };
 }
 
+toolRegistry.install();
 await server.connect(new StdioServerTransport());

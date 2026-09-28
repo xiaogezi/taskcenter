@@ -66,7 +66,8 @@
     "test": "npm run sync:test && npm run build && node scripts/run-tests.mjs",
     "test:integration": "npm run sync && npm run build && node scripts/run-tests.mjs --integration",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .vinext --ignore-pattern .wrangler --ignore-pattern .local --ignore-pattern .delegate --ignore-pattern .planning --ignore-pattern .runs --ignore-pattern project-context/.obsidian --ignore-pattern project-context/.claudian",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "mcp:budget": "node scripts/mcp-schema-budget.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -88,6 +89,7 @@
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
+    "js-tiktoken": "1.0.21",
     "react-server-dom-webpack": "^19.2.8",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
