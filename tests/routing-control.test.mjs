@@ -347,7 +347,7 @@ test("manual_only Spark 健康状态可观察，退役后隐藏", async () => {
   await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 });
 
-test("当前项目策略仅会话派发：MiMo 优先、八款候选、实际能力和档位筛选", async () => {
+test("当前项目策略仅会话派发：MiMo 优先、六款候选、实际能力和档位筛选", async () => {
   const current = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
   const config = JSON.parse(current);
   await writeFile(roleConfigPath, current);
@@ -356,8 +356,10 @@ test("当前项目策略仅会话派发：MiMo 优先、八款候选、实际能
   const capable = Object.values(native).map(entry => entry.runtime_model);
   const request = { ...baseInput, channel: "other", available_native_models: capable };
   try {
-    assert.equal(pool.length, 8);
-    assert.equal(pool.filter(model => model.startsWith("mimo-")).length, 4);
+    assert.equal(pool.length, 6);
+    assert.equal(pool.some(model => model.startsWith("mimo-v2.5")), false);
+    assert.equal(Object.keys(native).some(model => model.startsWith("mimo-v2.5")), false);
+    assert.equal(pool.filter(model => model.startsWith("mimo-")).length, 2);
     assert.equal(pool.filter(model => model.startsWith("kimi-")).length, 3);
     assert.ok(pool.includes("gpt-6-luna"));
     const main = routingSelect({ ...baseInput, orchestrator_model: "gpt-6-luna", channel: "direct", event_id: "pool-main-direct" });

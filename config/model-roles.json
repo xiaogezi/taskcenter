@@ -112,8 +112,6 @@
       "reasoning_effort": "low",
       "fallback_models": [
         "mimo-v2.6-pro",
-        "mimo-v2.5",
-        "mimo-v2.5-pro",
         "kimi-code/k3",
         "kimi-code/kimi-for-coding",
         "kimi-code/kimi-for-coding-highspeed",
@@ -185,14 +183,6 @@
     "mimo-v2.6-flash": {
       "description": "MiMo 2.6 Flash；普通执行默认首选，满足任务能力时优先节省成本"
     },
-    "mimo-v2.5-pro": {
-      "description": "MiMo 2.5 Pro；旧代高能力模型，2026-10-21 10:00 (Asia/Shanghai) 起停止自动选择",
-      "automatic_until": "2026-10-21T10:00:00+08:00"
-    },
-    "mimo-v2.5": {
-      "description": "MiMo 2.5 标准版；旧代模型，2026-10-21 10:00 (Asia/Shanghai) 起停止自动选择",
-      "automatic_until": "2026-10-21T10:00:00+08:00"
-    },
     "gpt-6-luna": {
       "description": "GPT-6 Luna；低成本 Codex 会话执行候选，由 Jev 按任务选择"
     }
@@ -252,20 +242,6 @@
     },
     "mimo-v2.6-flash": {
       "runtime_model": "xiaomi-tokenplan/mimo-v2.6-flash",
-      "reasoning_efforts": [
-        "low",
-        "medium"
-      ]
-    },
-    "mimo-v2.5-pro": {
-      "runtime_model": "xiaomi-tokenplan/mimo-v2.5-pro",
-      "reasoning_efforts": [
-        "low",
-        "medium"
-      ]
-    },
-    "mimo-v2.5": {
-      "runtime_model": "xiaomi-tokenplan/mimo-v2.5",
       "reasoning_efforts": [
         "low",
         "medium"

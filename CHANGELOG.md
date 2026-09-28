@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 移除不可用的 MiMo 2.5 / 2.5 Pro 执行候选、原生映射与候选目录；保留 MiMo 2.6 Flash / Pro 优先，随后 Kimi 三款及 Luna。集中配置热加载立即作用于新路由，历史记录不清除。
+
 - 普通路由无可用执行器、能力或容量时自动返回当前主模型 direct 租约；派发失败回执携带停止执行器、撤销授权和主模型接管步骤。Jev 的 needs_context 交回主模型处理，direct 不再受一次性口令或限定例外阻断；保留失败审计、任务权限和 Reviewer 独立边界。
 
 - 普通执行改为 Codex 原生会话派发，停用新 CLI 路由和授权；MiMo 四款优先，Kimi 三款与 GPT-6 Luna 共八款由 Jev 按任务和宿主实际能力选择。能力缺失、容量不足或 Jev 失败不回退 CLI。两款 Kimi Coding 按用户授权使用 high，其余保持 low/medium；保留历史 CLI 回执和撤销。
