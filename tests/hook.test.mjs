@@ -33,6 +33,7 @@ legacyRoles.roles.executor.dispatch_channel = "cli";
 legacyRoles.roles.executor.model = "kimi-code/k3-256k";
 legacyRoles.roles.executor.fallback_models = ["mimo-v2.6-flash", "mimo-v2.6-pro"];
 legacyRoles.roles.executor.model_reasoning_efforts = {};
+legacyRoles.native_models["mimo-v2.6-flash"].reasoning_efforts = ["low", "medium"];
 await writeFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(legacyRoles));
 const port = 39_000 + (process.pid % 1_000);
 const base = `http://127.0.0.1:${port}`;

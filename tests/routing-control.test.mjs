@@ -369,7 +369,7 @@ test("当前项目策略仅会话派发：MiMo 优先、六款候选、实际能
     assert.equal(first.route.channel, "native");
     assert.equal(first.route.native_model, native[first.route.selected_model].runtime_model);
     assert.equal(first.route.cli_profile, undefined);
-    assert.equal(first.route.reasoning_effort, "low");
+    assert.equal(first.route.reasoning_effort, "high");
     routingSelect({ ...request, event_id: "policy-second" });
     const fallback = routingSelect({ ...request, event_id: "policy-third" });
     assert.equal(fallback.route.selected_model, "kimi-code/k3", "MiMo 共享池满后选可用会话候选");

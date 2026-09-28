@@ -129,7 +129,9 @@
       "dispatch_channel": "native",
       "model_reasoning_efforts": {
         "kimi-code/kimi-for-coding": "high",
-        "kimi-code/kimi-for-coding-highspeed": "high"
+        "kimi-code/kimi-for-coding-highspeed": "high",
+        "mimo-v2.6-flash": "high",
+        "mimo-v2.6-pro": "high"
       },
       "native_models": {
         "kimi-code/k3": {
@@ -236,15 +238,13 @@
     "mimo-v2.6-pro": {
       "runtime_model": "xiaomi-tokenplan/mimo-v2.6-pro",
       "reasoning_efforts": [
-        "low",
-        "medium"
+        "high"
       ]
     },
     "mimo-v2.6-flash": {
       "runtime_model": "xiaomi-tokenplan/mimo-v2.6-flash",
       "reasoning_efforts": [
-        "low",
-        "medium"
+        "high"
       ]
     }
   }
