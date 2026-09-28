@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 接入 Codex 原生其他模型执行：`config/model-roles.json` 新增可选 `native_models`（canonical 模型 → Codex 原生 runtime model ID 与 low/medium 上限内的 reasoning_efforts），`routing_select` 接受 `available_native_models`（本轮 spawn 工具实际能力）。auto 路径在能力交集内优先原生路由并同时返回 canonical `selected_model` 与实际 `native_model`，健康与 quota 按 canonical 记账；显式 native 能力缺失返回可操作不可用原因且不消费容量，不再静默转换 CLI，显式 cli 与显式 Codex native 语义不变。native delegation grant 必须绑定有效 `route_id`，claim 要求独立已登记 Codex Session 的 model 等于路由 `native_model`，错配或已结束租约一律拒绝；CLI 旧协议与 report/revoke/routing_result 收尾不变。
+
 - Hook/CLI 拒绝即时检测：PreToolUse 与 CLI Run 权限类失败在拒绝发生时上报安全分类（分类码/时间/Session/task/run，不含原始命令与错误正文）到 `/gate-denials`；服务端按 1 小时窗口、60 秒短窗口去重后同步评估 ≥3 独立任务、≥5 独立 Run 或同任务重复 3 次的异常，并对单次与异常拒绝都返回具体恢复与验证步骤。无活跃任务的 L0 拒绝与 CLI `failure_kind` 均保留可见；记录文件按大小截断保留最近数据。
 
 - 修复 CLI 派发重放缺口：同一 Session 对同一 delegation 的幂等重复 claim 此前会被启动器视为成功并再次向 Harness 提交 prompt；现启动器在提交前以 `CLI_GRANT_REPLAY` 拒绝。claim 失败或结果未确认时不撤销可能属于另一执行的授权，也不释放其路由租约；显式新 attempt 使用新 delegation 的首次 claim，路径不变。

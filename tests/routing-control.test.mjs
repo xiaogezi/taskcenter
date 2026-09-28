@@ -406,9 +406,10 @@ test("当前项目策略先派发非 Codex 客户端，总容量满后才使用 
 
     await rm(statePath, { force: true });
     const nativeDefault = routingSelect({ ...baseInput, channel: "native", event_id: "policy-native-default" });
-    assert.equal(nativeDefault.route.channel, "cli", "默认非 Codex 选择无法走 native，推荐转换为实际 CLI 通道");
-    assert.equal(nativeDefault.route.cli_profile, "kimi-k3");
-    assert.equal(nativeDefault.route.harness, "kimi");
+    assert.equal(nativeDefault.route.available, false, "显式 native 的非 Codex 模型能力缺失时返回不可用，绝不静默转 CLI");
+    assert.equal(nativeDefault.route.channel, "native");
+    assert.match(nativeDefault.route.reason, /^native_model_not_configured:/);
+    assert.equal(nativeDefault.route.cli_profile, undefined);
 
     const directMain = routingSelect({ ...baseInput, channel: "direct", event_id: "policy-direct" });
     assert.equal(directMain.route.channel, "direct", "direct 主模型语义不被强制改 CLI");
@@ -455,9 +456,9 @@ test("默认路由推理档位始终等于实际 profile 档位，不只在不�
 
     await rm(statePath, { force: true });
     const nativeSelected = routingSelect({ ...baseInput, channel: "native", event_id: "effort-profile-native" });
-    assert.equal(nativeSelected.route.channel, "cli");
-    assert.equal(nativeSelected.route.cli_profile, "acme");
-    assert.equal(nativeSelected.route.reasoning_effort, "low");
+    assert.equal(nativeSelected.route.available, false, "显式 native 无能力时不可用，不再转换为 CLI profile");
+    assert.equal(nativeSelected.route.channel, "native");
+    assert.match(nativeSelected.route.reason, /^native_model_not_configured:/);
   } finally {
     await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
     await rm(statePath, { force: true });

@@ -143,6 +143,24 @@
     }
   },
   "manual_only_models": [],
+  "native_models": {
+    "mimo-v2.6-pro": {
+      "runtime_model": "xiaomi-tokenplan/mimo-v2.6-pro",
+      "reasoning_efforts": ["low", "medium"]
+    },
+    "mimo-v2.6-flash": {
+      "runtime_model": "xiaomi-tokenplan/mimo-v2.6-flash",
+      "reasoning_efforts": ["low", "medium"]
+    },
+    "mimo-v2.5-pro": {
+      "runtime_model": "xiaomi-tokenplan/mimo-v2.5-pro",
+      "reasoning_efforts": ["low", "medium"]
+    },
+    "mimo-v2.5": {
+      "runtime_model": "xiaomi-tokenplan/mimo-v2.5",
+      "reasoning_efforts": ["low", "medium"]
+    }
+  },
   "model_catalog": {
     "kimi-code/k3-256k": {
       "description": "K3 256K 上下文，日常编码默认；相较 1M K3 更节省 Kimi 配额"

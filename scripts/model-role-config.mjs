@@ -42,6 +42,7 @@ export function loadModelRoleConfig() {
   const optionalAstraPolicy = readOptionalAstraPolicy(input.optional_astra_policy);
   const quotaPools = normalizeQuotaPools(input.quota_pools);
   const modelCatalog = normalizeModelCatalog(input.model_catalog);
+  const nativeModels = normalizeNativeModels(input.native_models);
   const activeModels = new Set([
     executor.model,
     reviewer.model,
@@ -55,11 +56,13 @@ export function loadModelRoleConfig() {
   if (manualRetiredConflict) throw new ModelRoleConfigError(`手动模型不能同时标记为已退役: ${manualRetiredConflict}`);
   const manualActiveConflict = manualOnlyModels.find((model) => activeModels.has(model));
   if (manualActiveConflict) throw new ModelRoleConfigError(`手动模型不能进入自动角色池: ${manualActiveConflict}`);
+  const nativeConflict = Object.keys(nativeModels).find((model) => retiredModels.includes(model) || manualOnlyModels.includes(model));
+  if (nativeConflict) throw new ModelRoleConfigError(`退役或手动模型不能配置 native 映射: ${nativeConflict}`);
   return {
     schemaVersion: input.schema_version,
     contentHash: createHash("sha256").update(raw).digest("hex"),
     roles: { executor, reviewer },
-    manualOnlyModels, retiredModels, optionalAstraPolicy, quotaPools, modelCatalog,
+    manualOnlyModels, retiredModels, optionalAstraPolicy, quotaPools, modelCatalog, nativeModels,
   };
 }
 
@@ -85,7 +88,16 @@ export function publicModelRoleConfig(config = loadModelRoleConfig()) {
     optional_astra_policy: config.optionalAstraPolicy,
     quota_pools: config.quotaPools,
     model_catalog: config.modelCatalog,
+    native_models: publicNativeModels(config.nativeModels),
   };
+}
+
+// Codex 原生派发能力：canonical 模型有映射、本轮工具能力列表包含 runtime_model，
+// 且请求档位在映射声明的 low/medium 上限内时，返回实际 spawn 用的 runtime model id；否则返回空串。
+export function nativeRuntimeModel(config, canonicalModel, availableNativeModels = [], effort = "low") {
+  const entry = config?.nativeModels?.[canonicalModel];
+  if (!entry || !entry.reasoningEfforts.includes(effort)) return "";
+  return availableNativeModels.includes(entry.runtimeModel) ? entry.runtimeModel : "";
 }
 
 export function configuredPreferredModel(taskClass, config = loadModelRoleConfig()) {
@@ -215,6 +227,31 @@ function normalizeModelCatalog(value) {
     catalog[model] = automaticUntil ? { description, automatic_until: automaticUntil } : { description };
   }
   return catalog;
+}
+
+const nativeReasoningEfforts = new Set(["low", "medium"]);
+function normalizeNativeModels(value) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ModelRoleConfigError("native_models 必须是按 canonical 模型键控的对象。");
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const model = cleanModel(key);
+    const runtimeModel = cleanModel(entry?.runtime_model);
+    if (!model || !runtimeModel) throw new ModelRoleConfigError(`native_models.${key || "?"} 需要有效 canonical 模型与 runtime_model。`);
+    const efforts = uniqueModels(entry?.reasoning_efforts, `native_models.${model}.reasoning_efforts`);
+    if (!efforts.length || efforts.some((effort) => !nativeReasoningEfforts.has(effort))) {
+      throw new ModelRoleConfigError(`native_models.${model}.reasoning_efforts 只允许 low/medium 上限内已声明的值。`);
+    }
+    result[model] = { runtimeModel, reasoningEfforts: efforts };
+  }
+  return result;
+}
+
+function publicNativeModels(nativeModels = {}) {
+  return Object.fromEntries(Object.entries(nativeModels).map(([model, entry]) => [model, {
+    runtime_model: entry.runtimeModel,
+    reasoning_efforts: entry.reasoningEfforts,
+  }]));
 }
 
 function publicRole(role) {

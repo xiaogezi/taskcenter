@@ -30,10 +30,14 @@ export function grantDelegation(input, task, now = new Date().toISOString()) {
     throw new DelegationError(400, "allowed_tools 含 Shell 工具时 delegation scope 必须显式包含 '.'，或改用可识别路径的文件工具。");
   }
   const purpose = clean(input.purpose, 1_000);
-  const signature = signatureOf({ taskId: task.id, parentSessionId: input.parent_session_id, workspace, scope, allowedTools, executorModel: input.executor_model, channel: input.channel, purpose, ttlSeconds });
+  const routeId = clean(input.route_id, 200);
+  const signature = signatureOf({ taskId: task.id, parentSessionId: input.parent_session_id, workspace, scope, allowedTools, executorModel: input.executor_model, channel: input.channel, ...(routeId ? { routeId } : {}), purpose, ttlSeconds });
   if (existing) {
     if (existing.signature !== signature) throw new DelegationError(409, "event_id 已被不同 delegation 使用。");
     return { delegation: publicGrant(existing, now), claimToken: existing.claimToken || "", idempotent: true };
+  }
+  if (input.channel === "native" && (!routeId || state.grants.some((grant) => grant.channel === "native" && grant.routeId === routeId))) {
+    throw new DelegationError(409, "NATIVE_ROUTE_MISMATCH：native 路由必须存在且只能绑定一个 delegation；重试请复用同一 event_id。");
   }
   const claimToken = randomBytes(24).toString("base64url");
   const grant = {
@@ -48,6 +52,7 @@ export function grantDelegation(input, task, now = new Date().toISOString()) {
     allowedTools,
     executorModel: clean(input.executor_model, 120) || "unknown",
     channel: clean(input.channel, 40) || "cli",
+    routeId,
     purpose,
     status: "issued",
     createdAt: now,

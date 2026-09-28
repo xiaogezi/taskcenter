@@ -180,7 +180,8 @@ export function applyJevRouting(input, _task, decision) {
     || input.execution_model_policy?.mode === "quota_preferred";
   if (!valid) {
     if (input.channel === "direct" && !input.direct_authorization_fingerprint) requireDirectException(input, meta);
-    return { input: { ...input, channel: input.channel === "direct" ? "direct" : "cli" }, jev_decision: meta };
+    // Jev 失败/降级不得丢弃显式 native；available_native_models 随 input 透传到路由层。
+    return { input: { ...input, channel: ["direct", "native"].includes(input.channel) ? input.channel : "cli" }, jev_decision: meta };
   }
   let taskClass = input.task_class;
   let channel = input.channel;

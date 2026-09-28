@@ -775,6 +775,15 @@ const server = createServer(async (request, response) => {
       const task = loadTasks().find((item) => item.id === body.task_id);
       const parentSession = getSessionStatuses(availableSessionIds(), loadVisibleTasks()).find((item) => item.sessionId === body.parent_session_id);
       if (!parentSession || parentSession.status !== "registered") throw new DelegationError(409, "主任务 Session 必须已登记。");
+      if (body.channel === "native") {
+        // 原生委派必须绑定一条有效的 native 路由：canonical 模型、任务与租约全部来自该路由。
+        const route = routeForId(body.route_id || "");
+        if (!route || route.status !== "leased" || Date.parse(route.expiresAt) <= Date.now()
+          || route.channel !== "native" || !route.nativeModel || route.taskId !== body.task_id
+          || route.selectedModel !== body.executor_model) {
+          throw new DelegationError(409, "NATIVE_ROUTE_MISMATCH：native delegation 需要与授权一致且有效的 native 路由。");
+        }
+      }
       const result = grantDelegation(body, task ? { ...task, workspace: task.workspace || parentSession.workspace } : task);
       sendJson(response, result.idempotent ? 200 : 201, { accepted: true, ...result });
       return;
@@ -783,10 +792,25 @@ const server = createServer(async (request, response) => {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
       const session = getSessionStatuses(availableSessionIds(), loadVisibleTasks()).find((item) => item.sessionId === body.session_id);
-      if (body.route_id) {
+      const grant = listDelegations().find(item => item.id === body.delegation_id);
+      if (grant?.channel === "native") {
+        const route = routeForId(grant.routeId);
+        const parentTask = loadTasks().find((item) => item.id === grant.taskId);
+        if (!route || route.status !== "leased" || !route.available || Date.parse(route.expiresAt) <= Date.now()
+          || route.channel !== "native" || !route.nativeModel || route.taskId !== grant.taskId || route.selectedModel !== grant.executorModel
+          || (body.route_id && body.route_id !== grant.routeId) || (body.executor_model && body.executor_model !== grant.executorModel)
+          || session?.model !== route.nativeModel || session?.agent !== "codex"
+          || canonicalSessionId(body.session_id) === canonicalSessionId(grant.parentSessionId)
+          || !parentTask || !["planned", "in_progress", "blocked"].includes(parentTask.status)) {
+          throw new DelegationError(409, "NATIVE_ROUTE_MISMATCH：领取者必须是与有效绑定路由型号一致的独立 Codex Session。");
+        }
+      } else if (body.route_id) {
         const route = routeForId(body.route_id);
-        const grant = listDelegations().find(item => item.id === body.delegation_id);
-        if (!route || route.status !== "leased" || Date.parse(route.expiresAt) <= Date.now() || route.channel !== "cli" || route.taskId !== grant?.taskId || route.selectedModel !== grant.executorModel || route.selectedModel !== body.executor_model || session?.model !== route.selectedModel || (route.harness && route.harness !== session?.agent)) throw new DelegationError(409, "CLI_ROUTE_MISMATCH：需要与授权一致且有效的 CLI 路由。");
+        const leaseInvalid = !route || route.status !== "leased" || Date.parse(route.expiresAt) <= Date.now()
+          || route.taskId !== grant?.taskId || route.selectedModel !== grant?.executorModel || route.selectedModel !== body.executor_model;
+        if (leaseInvalid || route?.channel !== "cli" || session?.model !== route?.selectedModel || (route?.harness && route?.harness !== session?.agent)) {
+          throw new DelegationError(409, "CLI_ROUTE_MISMATCH：需要与授权一致且有效的 CLI 路由。");
+        }
       }
       const result = claimDelegation(body, session);
       sendJson(response, 200, { accepted: true, ...result });
@@ -802,6 +826,14 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/delegations/touch") {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
+      const grant = listDelegations().find((item) => item.id === body.delegation_id);
+      if (grant?.channel === "native") {
+        const route = routeForId(grant.routeId);
+        if (!route || route.channel !== "native" || route.status !== "leased" || !route.available || Date.parse(route.expiresAt) <= Date.now()
+          || route.taskId !== grant.taskId || route.selectedModel !== grant.executorModel) {
+          throw new DelegationError(409, "NATIVE_ROUTE_MISMATCH：原生执行路由已结束或过期，不能继续使用授权。");
+        }
+      }
       sendJson(response, 200, { accepted: true, ...touchDelegation(body) });
       return;
     }

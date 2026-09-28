@@ -53,3 +53,18 @@
 定向验证：`node --test tests/delegated-cli.test.mjs tests/kimi.test.mjs tests/routing-control.test.mjs`。真实 CLI 探测与隔离单元测试分别记录，不混用。
 
 无新依赖、无独立调度服务。停止新派发即可停用；回滚上一已验证 release 前先结束或撤销在途授权。默认角色未改动，现有 Codex 执行和正式 Reviewer 无需迁移。
+
+## Codex 原生其他模型委派（2026-09-28）
+
+复用同一 delegation 与路由架构，不新建服务；TaskCenter 只治理不启动进程。
+
+1. 调用方在 `routing_select` 传入 `available_native_models`：本轮实际 spawn 工具（如 `spawn_agent`）真实支持的 runtime model ID 列表。只声明实际能力，不推断其他模型可 spawn。
+2. 集中配置 `config/model-roles.json` 的 `native_models` 声明 canonical 模型到 Codex 原生 runtime model ID 的映射及支持的 reasoning_efforts（low/medium 上限，只声明实现实际请求的值）。auto 路径（channel=other）在能力列表与 executor 模型池有交集时优先原生路由；响应同时给出 canonical `selected_model`、实际 `native_model`、effort 与 channel，健康与 quota 按 canonical 记账。能力缺失时显式 native 返回可操作不可用原因且不消费容量，绝不静默转 CLI；显式 cli 保持 CLI，显式 Codex native 兼容不变。
+3. native grant 必须绑定有效 `route_id`（native 路由、未过期、任务与 canonical 模型一致）；同一租约只能绑定一个 delegation，重试复用相同 event_id。
+4. 用返回的 `native_model` 指定 spawn 工具启动子 Agent；子 Agent 以独立已登记 Codex Session claim，Session model 必须等于路由的 `native_model`（canonical 对应关系只来自该 route）。claim 可省略重复的 route_id/executor_model，服务端始终读取 grant 已保存的绑定；提供时必须一致。模型/客户端/任务/工作区错配或已结束租约一律拒绝，路由结束后 touch 不再授权工具。CLI 旧协议不变。
+5. 执行与回报复用现有 `cli_run_report` / `delegation_revoke`；父编排在 finally 中调用 `routing_result`（成功/失败/取消）释放 canonical 租约，必要时撤销 delegation。
+6. 宿主不支持目标型号时：说明可在主对话切换模型，或走既有 CLI 兼容路径；不得调用 create_thread 冒充子 Agent，不假造原生宿主能力。
+
+普通自动选择会先在角色模型池中按原优先级寻找有原生能力且有容量的候选，再回到 CLI 兼容；显式型号、任务类别要求和 quota_preferred 不会被这个通道偏好替换。推理档位是配置请求值，调用方仍须核对宿主工具支持该档位，不能把注册映射当成实测证明。MCP 响应裁剪仍保留实际通道和 native_model，无需翻页猜测启动参数。
+
+回滚：清空 `native_models` 可停止新原生派发，显式 CLI 继续可用；已签发路由保持原绑定，完成或取消后由父会话上报结果并撤销授权，不热切换执行中的子 Agent。

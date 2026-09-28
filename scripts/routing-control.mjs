@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { isAutomaticEligible, loadModelRoleConfig, publicModelRoleConfig } from "./model-role-config.mjs";
+import { isAutomaticEligible, loadModelRoleConfig, nativeRuntimeModel, publicModelRoleConfig } from "./model-role-config.mjs";
 import { sameSubject } from "./completion-state.mjs";
 import { cliProfile, cliProfileForModel } from "./cli-profile.mjs";
 
@@ -195,12 +195,13 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
   if (quotaPreferred && !config.manualOnlyModels.includes(executionModelPolicy.preferredModel)) {
     throw new RoutingControlError(409, `额度优先模型未配置为 manual_only: ${executionModelPolicy.preferredModel}`);
   }
-  const preferredModel = roleName === "reviewer"
+  let preferredModel = roleName === "reviewer"
     ? role.model
     : quotaPreferred
       ? executionModelPolicy.preferredModel
       : normalizePreferredModel(requestedPreferredModel || mappedModel, config);
   const channel = clean(input.channel, 40) || "cli";
+  const availableNativeModels = normalizeAvailableNativeModels(input.available_native_models);
   const eventId = clean(input.event_id, 200) || `routing-select-${randomUUID()}`;
   if (!taskId || !orchestratorModel) throw new RoutingControlError(400, "routing_select 缺少 task_id 或 orchestrator_model。");
   if (!["direct", "native", "cli", "other"].includes(channel)) throw new RoutingControlError(400, "routing_select channel 无效。");
@@ -210,6 +211,7 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
   expireRoutes(state, now);
   const directReason = clean(input.direct_reason, 1000);
   const signatureInput = { taskId, orchestratorModel, requestedPreferredModel, executionModelPolicy, taskClass, channel };
+  if (availableNativeModels.length) signatureInput.availableNativeModels = availableNativeModels;
   if (input.direct_authorization_fingerprint) signatureInput.directAuthorizationFingerprint = input.direct_authorization_fingerprint;
   if (profile) signatureInput.cliProfile = input.cli_profile;
   if (input.review_context) signatureInput.reviewContext = input.review_context;
@@ -278,6 +280,21 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
   }
 
+  const automaticChannel = channel === "other" || (channel === "cli" && !profile && jev?.requested_channel === "other");
+  const configuredPreferredModel = preferredModel;
+  const protectedModel = mappedModel !== role.model || (requestedPreferredModel && !jev?.model_applied);
+  // Prefer a runnable native candidate before leasing. A CLI-only default must not
+  // hide a configured native fallback; explicit model and task-class choices stay pinned.
+  if (roleName === "executor" && !quotaPreferred && (automaticChannel || channel === "native") && availableNativeModels.length) {
+    const candidates = protectedModel ? [preferredModel] : [...new Set([preferredModel, role.model, ...role.fallbackModels])];
+    const nativePreferred = candidates.find((model) => {
+      if (!isAutomaticEligible(config, model, now) || !nativeRuntimeModel(config, model, availableNativeModels, selectedReasoningEffort)) return false;
+      const health = ensureHealth(state, model, now, config);
+      advanceCircuit(health, now);
+      return canLease(state, health, now, config);
+    });
+    if (nativePreferred) preferredModel = nativePreferred;
+  }
   const preferred = ensureHealth(state, preferredModel, now, config);
   advanceCircuit(preferred, now);
   const quota = quotaPreferred
@@ -297,8 +314,9 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
         : config.manualOnlyModels.includes(requestedPreferredModel)
           ? "manual_only_preference_requires_task_policy"
           : "retired_preference_normalized_to_executor";
-  let fallbackFrom = "";
-  let fallbackReason = "";
+  let fallbackFrom = preferredModel !== configuredPreferredModel ? configuredPreferredModel : "";
+  let fallbackReason = fallbackFrom ? "native_capability_preferred" : "";
+  if (fallbackFrom) reason = "native_capability_preferred";
   let retryAfterAt = "";
   let probe = preferred.state === "half_open" || quota?.status === "unknown";
 
@@ -371,14 +389,43 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
 
   const selected = ensureHealth(state, selectedModel, now, config);
   // A default route must report the client that will actually run the selection, so a
-  // later delegation claim cannot bind the leased model to a different harness. A default
-  // non-Codex selection cannot run over `native`, so it is recommended as the resolved
-  // CLI channel; `direct` main-model execution and explicit Codex `native` stay unchanged.
+  // later delegation claim cannot bind the leased model to a different harness. When the
+  // caller's spawn tool can natively run a configured non-Codex model (auto path or explicit
+  // native), the route stays native and reports the runtime model id; explicit native without
+  // that capability is an actionable unavailable, never a silent CLI conversion. Explicit
+  // Codex native and explicit cli keep their existing semantics.
   let effectiveChannel = channel;
   let resolvedProfile = profile?.model === selectedModel ? { name: input.cli_profile, harness: profile.harness, effort: profile.effort } : null;
-  if (!resolvedProfile && roleName === "executor" && (channel === "cli" || (channel === "native" && !requestedPreferredModel))) {
+  let nativeModel = "";
+  if (roleName === "executor" && !resolvedProfile) {
+    const codexModels = new Set((config.quotaPools || []).filter((pool) => pool.provider === "codex").flatMap((pool) => pool.models));
+    const runtime = nativeRuntimeModel(config, selectedModel, availableNativeModels, selectedReasoningEffort);
+    if (runtime && (automaticChannel || channel === "native")) {
+      effectiveChannel = "native";
+      nativeModel = runtime;
+    } else if (channel === "native" && !codexModels.has(selectedModel)) {
+      const mapping = config.nativeModels?.[selectedModel];
+      const unavailableReason = !mapping
+        ? `native_model_not_configured:${selectedModel}`
+        : !mapping.reasoningEfforts.includes(selectedReasoningEffort)
+          ? `native_effort_not_supported:${selectedReasoningEffort}`
+          : `native_model_not_available:${mapping.runtimeModel}`;
+      const route = buildUnavailableRoute({
+        eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred: selected, now,
+        reason: unavailableReason, reviewArtifacts,
+        configVersion: config.contentHash, policyVersion: config.schemaVersion,
+        matchedRule: "explicit_native_capability", preferenceMode: executionModelPolicy.mode,
+        selectedReasoningEffort, jevDecision: jev, directReason,
+      });
+      state.routes.push(route);
+      route.selectAuditEvents = auditEventsFor(route, selected, "selection_unavailable");
+      persistState(state, now);
+      return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
+    }
+  }
+  if (!resolvedProfile && !nativeModel && roleName === "executor" && (channel === "cli" || channel === "other")) {
     resolvedProfile = cliProfileForModel(selectedModel);
-    if (resolvedProfile && channel === "native") effectiveChannel = "cli";
+    if (resolvedProfile && channel !== "cli") effectiveChannel = "cli";
   }
   if (resolvedProfile) {
     // 路由报告档位必须与 runDelegatedCli 实际使用的 profile 档位一致。
@@ -395,6 +442,7 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     selectedReasoningEffort,
     taskClass,
     channel: effectiveChannel,
+    ...(nativeModel ? { nativeModel } : {}),
     ...(resolvedProfile ? { cliProfile: resolvedProfile.name, harness: resolvedProfile.harness } : {}),
     circuitState: selected.state,
     reason,
@@ -412,7 +460,7 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     configVersion: config.contentHash,
     policyVersion: config.schemaVersion,
     matchedRule: matchedRule(roleName, requestedPreferredModel, role, taskClass, quotaPreferred),
-    requiresNewSession: roleName === "reviewer" ? false : selectedModel !== preferredModel || effectiveChannel === "cli",
+    requiresNewSession: roleName === "reviewer" ? false : selectedModel !== preferredModel || effectiveChannel === "cli" || effectiveChannel === "native",
     available: true,
     probe,
     status: "leased",
@@ -708,12 +756,16 @@ function publicRoute(route) {
     orchestrator_model: route.orchestratorModel || "unknown",
     preferred_model: route.preferredModel,
     selected_model: route.selectedModel || null,
+    native_model: route.nativeModel || null,
     ...(route.cliProfile ? { cli_profile: route.cliProfile, harness: route.harness, role: "executor" } : {}),
     reasoning_effort: route.selectedReasoningEffort || "low",
     task_class: route.taskClass,
     channel: route.channel,
     circuit_state: route.circuitState,
     reason: route.reason,
+    ...(!route.available && route.reason?.startsWith("native_") ? {
+      next_action: "核对当前原生派发工具支持的型号与档位，传入真实 available_native_models；宿主不支持时可在主对话切换模型，或显式选择 channel=cli。",
+    } : {}),
     fallback_from: route.fallbackFrom || null,
     fallback_reason: route.fallbackReason || null,
     retry_after_at: route.retryAfterAt || null,
@@ -891,6 +943,14 @@ function integerEnv(name, fallback, min, max) {
 
 function clean(value, limit) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, limit) : "";
+}
+
+function normalizeAvailableNativeModels(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 32 || value.some((item) => typeof item !== "string" || item.length > 120)) throw new RoutingControlError(400, "available_native_models 必须是不超过 32 项的模型 ID 字符串数组。");
+  const models = value.map((item) => clean(item, 120)).filter(Boolean);
+  if (models.length !== value.length) throw new RoutingControlError(400, "available_native_models 含无效模型 ID。");
+  return [...new Set(models)].sort();
 }
 
 function normalizePreferredModel(model, config) {

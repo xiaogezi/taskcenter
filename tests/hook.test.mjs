@@ -893,6 +893,54 @@ test("可选 CLI 领取绑定路由与型号，错误路由不消耗授权", asy
   assert.equal(response.status, 200, await response.text());
 });
 
+test("原生委派绑定 native 路由，错配模型/路由/任务与已结束租约均拒绝", async () => {
+  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
+  const parent = "native-parent", child = "native-child", wrongChild = "native-child-wrong";
+  await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
+  const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "native delegation", goal: "native delegation" })).json();
+  const selected = await (await post("/routing/select", { task_id: created.task.id, task_class: "implementation", channel: "other", preferred_model: "mimo-v2.6-flash", available_native_models: ["xiaomi-tokenplan/mimo-v2.6-flash"] })).json();
+  assert.equal(selected.accepted, true, JSON.stringify(selected));
+  const route = selected.route;
+  assert.equal(route.channel, "native");
+  assert.equal(route.selected_model, "mimo-v2.6-flash");
+  assert.equal(route.native_model, "xiaomi-tokenplan/mimo-v2.6-flash");
+
+  const grantBody = { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: route.selected_model, channel: "native", ttl_seconds: 600 };
+  assert.equal((await post("/delegations/grant", grantBody)).status, 409, "native grant 缺 route_id 拒绝");
+  assert.equal((await post("/delegations/grant", { ...grantBody, route_id: route.route_id, executor_model: "mimo-v2.6-pro" })).status, 409, "canonical 模型与路由不一致拒绝");
+  const grantResponse = await post("/delegations/grant", { ...grantBody, route_id: route.route_id });
+  const grant = await grantResponse.json();
+  assert.equal(grantResponse.status, 201, JSON.stringify(grant));
+  assert.equal(grant.delegation.routeId, route.route_id);
+  assert.equal((await post("/delegations/grant", { ...grantBody, route_id: route.route_id })).status, 409, "同一租约不能再授予第二执行器");
+
+  await runHook("session-start", "codex", { session_id: wrongChild, cwd: "/work", model: "mimo-v2.6-flash" });
+  await runHook("session-start", "codex", { session_id: child, cwd: "/work", model: "xiaomi-tokenplan/mimo-v2.6-flash" });
+  const claim = { workspace: "/work", delegation_id: grant.delegation.id, claim_token: grant.claimToken, route_id: route.route_id, executor_model: route.selected_model };
+  assert.equal((await post("/delegations/claim", { ...claim, session_id: wrongChild })).status, 409, "Session 模型不是路由 native_model 拒绝");
+  assert.equal((await post("/delegations/claim", { ...claim, session_id: wrongChild, route_id: undefined, executor_model: undefined })).status, 409, "省略参数不能绕过已绑定路由校验");
+  assert.equal((await post("/delegations/claim", { ...claim, session_id: parent })).status, 409, "父会话不能领取原生子会话授权");
+  await runHook("session-start", "claude", { session_id: "native-wrong-client", cwd: "/work", model: route.native_model });
+  assert.equal((await post("/delegations/claim", { ...claim, session_id: "native-wrong-client" })).status, 409, "相同模型的非 Codex 客户端不能领取原生授权");
+  await runHook("session-start", "codex", { session_id: "native-wrong-workspace", cwd: "/other", model: route.native_model });
+  assert.equal((await post("/delegations/claim", { ...claim, session_id: "native-wrong-workspace" })).status, 403, "工作区不一致拒绝");
+  assert.equal((await post("/delegations/claim", { ...claim, session_id: child, route_id: "missing-route" })).status, 409);
+  const claimed = await post("/delegations/claim", { ...claim, session_id: child, route_id: undefined, executor_model: undefined });
+  const claimedPayload = await claimed.json();
+  assert.equal(claimed.status, 200, JSON.stringify(claimedPayload));
+  const touch = { delegation_id: grant.delegation.id, session_id: child, workspace: "/work", tool_name: "Read", paths: ["/work/a.txt"] };
+  assert.equal((await post("/delegations/touch", touch)).status, 200);
+  assert.equal((await post("/delegations/touch", { ...touch, paths: ["/outside/a.txt"] })).status, 403);
+
+  const released = await post("/routing/result", { route_id: route.route_id, outcome: "succeeded" });
+  assert.equal(released.status, 200);
+  const health = await (await fetch(`${base}/routing/health`)).json();
+  assert.equal(health.models.find((item) => item.model === "mimo-v2.6-flash").active_executors, 0, "原生终态释放 canonical 租约");
+  assert.equal((await post("/delegations/claim", { ...claim, session_id: child, route_id: undefined })).status, 409, "已结束路由不能重新 claim");
+  assert.equal((await post("/delegations/touch", touch)).status, 409, "已结束路由不能继续执行工具");
+});
+
+
 test("CLI Session 领取 delegation 后通过主任务门禁且不创建子任务", async () => {
   const parentSessionId = "019f0000-0000-7000-8000-000000000092";
   const cliSessionId = "019f0000-0000-7000-8000-000000000093";

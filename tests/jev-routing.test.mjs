@@ -67,7 +67,7 @@ test("缺 key 与截断区外密钥均不调用评估，仍留下可审计降级
   delete process.env.TYPESAFE_API_KEY;
   let prepared = await prepare(input, forbidden);
   assert.equal(prepared.jevDecision.status, "no_api_key");
-  assert.equal(prepared.input.channel, "cli");
+  assert.equal(prepared.input.channel, "native", "Jev 降级不得强制覆盖显式 native");
   process.env.TYPESAFE_API_KEY = "offline-test-only";
   prepared = await prepareRoutingInput(input, { ...task, title: "x".repeat(1000) + " api_key=" + "s".repeat(40) }, { evaluator: forbidden });
   assert.equal(prepared.jevDecision.status, "suspected_secret");
@@ -206,13 +206,13 @@ test("Jev 型号推荐满额后可回退，但用户显式锁定保持不降级"
   const prepared = await prepare(input, async () => result("implementation", "delegate", "kimi-code/k3-256k"));
   assert.equal(prepared.jevDecision.model_applied, true);
   for (let i = 0; i < 2; i++) {
-    assert.equal(routingSelect({ ...prepared.input, event_id: `capacity-${i}` }, undefined, prepared.jevDecision).route.selected_model, "kimi-code/k3-256k");
+    assert.equal(routingSelect({ ...prepared.input, channel: "cli", event_id: `capacity-${i}` }, undefined, prepared.jevDecision).route.selected_model, "kimi-code/k3-256k");
   }
-  const fallback = routingSelect({ ...prepared.input, event_id: "capacity-fallback" }, undefined, prepared.jevDecision);
+  const fallback = routingSelect({ ...prepared.input, channel: "cli", event_id: "capacity-fallback" }, undefined, prepared.jevDecision);
   assert.equal(fallback.route.selected_model, "mimo-v2.5-pro");
   const pinned = await prepare({ ...input, preferred_model: "kimi-code/k3-256k" }, async () => result("implementation", "delegate", "kimi-code/k3-256k"));
   assert.notEqual(pinned.jevDecision.model_applied, true);
-  assert.equal(routingSelect({ ...pinned.input, event_id: "capacity-pinned" }, undefined, pinned.jevDecision).route.available, false);
+  assert.equal(routingSelect({ ...pinned.input, channel: "cli", event_id: "capacity-pinned" }, undefined, pinned.jevDecision).route.available, false);
 });
 
 test("真实集中路由原子保存决策、用量与审计，语义进入幂等键", async () => {

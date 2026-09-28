@@ -384,6 +384,7 @@ server.registerTool("taskcenter_routing_select", {
     direct_reason: z.string().min(1).max(1000).optional().describe("Jev 启用模式下 channel=direct 时必填；记录 direct 执行理由并审计"),
     direct_exception_kind: z.enum(["device_interaction", "atomic_git", "shared_dirty_workspace"]).optional().describe("Jev 建议 delegate 时允许 direct 的限定例外类别"),
     direct_exception_evidence: z.string().min(12).max(500).optional().describe("例外的可核查证据；仅在 Jev 建议 delegate 而选择 direct 时必填"),
+    available_native_models: z.array(z.string().min(1).max(120)).max(32).optional().describe("本轮原生派发工具实际支持的 runtime model ID 列表；调用方只声明实际能力，不推断其他模型可 spawn"),
     lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input, extra) => {
@@ -461,24 +462,28 @@ server.registerTool("taskcenter_review_claim", {
 });
 
 server.registerTool("taskcenter_delegation_grant", {
-  title: "创建 CLI Delegation",
-  description: "由主任务 Session 创建一次受 TTL、workspace 和 scope 限制的 CLI 执行授权；普通 CLI Run 不需要另建正式任务。",
+  title: "创建执行委派授权",
+  description: "由主任务 Session 创建受 TTL、workspace 和 scope 限制的原生或 CLI 执行授权；native 必须绑定 route_id，不另建正式任务。",
   inputSchema: z.object({
     parent_session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), delegation_id: z.string().max(200).optional(),
     workspace: z.string().min(1).max(4_096), scope: z.array(z.string().min(1).max(500)).min(1).max(50), allowed_tools: z.array(z.string().min(1).max(120)).max(40).optional(),
-    executor_model: z.string().min(1).max(120), channel: z.enum(["cli", "native", "other"]).default("cli"), purpose: z.string().max(1_000).optional(), ttl_seconds: z.number().int().min(60).max(28_800).default(3_600), response_mode: operationalResponseMode,
+    executor_model: z.string().min(1).max(120), channel: z.enum(["cli", "native", "other"]).default("cli"),
+    route_id: z.string().max(200).optional().describe("native 委派必填：绑定一条有效 native 路由；canonical 模型、任务与租约均来自该路由"),
+    purpose: z.string().max(1_000).optional(), ttl_seconds: z.number().int().min(60).max(28_800).default(3_600), response_mode: operationalResponseMode,
   }).strict(),
 }, async (input) => postLocal("/delegations/grant", input));
 
 server.registerTool("taskcenter_delegation_claim", {
-  title: "领取 CLI Delegation",
-  description: "CLI 使用自身已登记 Session 和一次性 claim token 附着主任务，不创建正式子任务。",
-  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), claim_token: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional(), response_mode: operationalResponseMode }).strict(),
+  title: "领取执行委派授权",
+  description: "执行器使用自身已登记 Session 和一次性 claim token 附着主任务；原生 Session 校验授权已绑定的 route 与 runtime model，不创建正式子任务。",
+  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), claim_token: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096),
+    route_id: z.string().max(200).optional(), executor_model: z.string().max(120).optional(),
+    event_id: z.string().max(200).optional(), response_mode: operationalResponseMode }).strict(),
 }, async (input) => postLocal("/delegations/claim", input));
 
 server.registerTool("taskcenter_cli_run_report", {
-  title: "上报 CLI Run",
-  description: "上报附着主任务的 CLI 执行状态和证据；不会改变主任务状态或形成独立验收。",
+  title: "上报委派执行结果",
+  description: "上报附着主任务的原生或 CLI 执行状态和证据；不会改变主任务状态或形成独立验收。",
   inputSchema: z.object({
     delegation_id: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional(),
     status: z.enum(["started", "running", "succeeded", "failed", "cancelled"]), summary: z.string().max(1_000).optional(), changed_files: z.array(z.string().max(500)).max(100).optional(),
