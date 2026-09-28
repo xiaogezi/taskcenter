@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 普通执行改为 Codex 原生会话派发，停用新 CLI 路由和授权；MiMo 四款优先，Kimi 三款与 GPT-6 Luna 共八款由 Jev 按任务和宿主实际能力选择。能力缺失、容量不足或 Jev 失败不回退 CLI。两款 Kimi Coding 按用户授权使用 high，其余保持 low/medium；保留历史 CLI 回执和撤销。
+
 - 修复显式 Codex native 路由未携带 runtime 模型 ID，导致原生 delegation grant/claim 拒绝的问题；仅当调用方声明本轮可用的 Codex 模型能力时路由成功。
 
 - 接入 Codex 原生其他模型执行：`config/model-roles.json` 新增可选 `native_models`（canonical 模型 → Codex 原生 runtime model ID 与 low/medium 上限内的 reasoning_efforts），`routing_select` 接受 `available_native_models`（本轮 spawn 工具实际能力）。auto 路径在能力交集内优先原生路由并同时返回 canonical `selected_model` 与实际 `native_model`，健康与 quota 按 canonical 记账；显式 native 能力缺失返回可操作不可用原因且不消费容量，不再静默转换 CLI，显式 cli 与显式 Codex native 语义不变。native delegation grant 必须绑定有效 `route_id`，claim 要求独立已登记 Codex Session 的 model 等于路由 `native_model`，错配或已结束租约一律拒绝；CLI 旧协议与 report/revoke/routing_result 收尾不变。

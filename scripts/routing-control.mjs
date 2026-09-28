@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { isAutomaticEligible, loadModelRoleConfig, nativeRuntimeModel, publicModelRoleConfig } from "./model-role-config.mjs";
+import { executorReasoningEffort, isAutomaticEligible, loadModelRoleConfig, nativeRuntimeModel, publicModelRoleConfig } from "./model-role-config.mjs";
 import { sameSubject } from "./completion-state.mjs";
 import { cliProfile, cliProfileForModel } from "./cli-profile.mjs";
 
@@ -200,11 +200,14 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     : quotaPreferred
       ? executionModelPolicy.preferredModel
       : normalizePreferredModel(requestedPreferredModel || mappedModel, config);
-  const channel = clean(input.channel, 40) || "cli";
+  const nativeOnly = roleName === "executor" && role.dispatchChannel === "native";
+  const requestedChannel = clean(input.channel, 40) || (nativeOnly ? "other" : "cli");
+  if (!["direct", "native", "cli", "other"].includes(requestedChannel)) throw new RoutingControlError(400, "routing_select channel 无效。");
+  if (nativeOnly && (requestedChannel === "cli" || input.cli_profile)) throw new RoutingControlError(409, "CLI_DISPATCH_DISABLED：普通执行仅允许原生会话派发。", "CLI_DISPATCH_DISABLED");
+  const channel = nativeOnly && requestedChannel !== "direct" ? "native" : requestedChannel;
   const availableNativeModels = normalizeAvailableNativeModels(input.available_native_models);
   const eventId = clean(input.event_id, 200) || `routing-select-${randomUUID()}`;
   if (!taskId || !orchestratorModel) throw new RoutingControlError(400, "routing_select 缺少 task_id 或 orchestrator_model。");
-  if (!["direct", "native", "cli", "other"].includes(channel)) throw new RoutingControlError(400, "routing_select channel 无效。");
   const reviewArtifacts = normalizeReviewArtifacts(input.review_artifacts, ocrTaskClasses.has(taskClass));
 
   const state = readState();
@@ -280,6 +283,8 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
   }
 
+  if (nativeOnly && !quotaPreferred && ![role.model, ...role.fallbackModels].includes(preferredModel)) throw new RoutingControlError(400, "原生执行型号不在 executor 候选池中。", "NATIVE_MODEL_NOT_ALLOWED");
+  const nativeCapable = (model) => Boolean(nativeRuntimeModel(config, model, availableNativeModels, executorReasoningEffort(config, model, taskClass)));
   const automaticChannel = channel === "other" || (channel === "cli" && !profile && jev?.requested_channel === "other");
   const configuredPreferredModel = preferredModel;
   const protectedModel = mappedModel !== role.model || (requestedPreferredModel && !jev?.model_applied);
@@ -288,10 +293,10 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
   if (roleName === "executor" && !quotaPreferred && (automaticChannel || channel === "native") && availableNativeModels.length) {
     const candidates = protectedModel ? [preferredModel] : [...new Set([preferredModel, role.model, ...role.fallbackModels])];
     const nativePreferred = candidates.find((model) => {
-      if (!isAutomaticEligible(config, model, now) || !nativeRuntimeModel(config, model, availableNativeModels, selectedReasoningEffort)) return false;
+      if (!isAutomaticEligible(config, model, now) || !(nativeOnly ? nativeCapable(model) : nativeRuntimeModel(config, model, availableNativeModels, selectedReasoningEffort))) return false;
       const health = ensureHealth(state, model, now, config);
       advanceCircuit(health, now);
-      return canLease(state, health, now, config);
+      return canLease(state, health, now, config, roleName);
     });
     if (nativePreferred) preferredModel = nativePreferred;
   }
@@ -326,7 +331,7 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     retryAfterAt = quota.retryAfterAt;
     const fallback = ensureHealth(state, mappedModel, now, config);
     advanceCircuit(fallback, now);
-    if (!canLease(state, fallback, now, config)) {
+    if (!canLease(state, fallback, now, config, roleName)) {
       const route = buildUnavailableRoute({
         eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred: fallback, now,
         reason: "quota_fallback_model_unavailable", fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
@@ -344,23 +349,23 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     probe = fallback.state === "half_open";
   }
 
-  if (quota?.status !== "exhausted" && !canLease(state, preferred, now, config)) {
+  if (quota?.status !== "exhausted" && !canLease(state, preferred, now, config, roleName)) {
     fallbackFrom = preferredModel;
     fallbackReason = fallbackReasonFor(preferred);
     retryAfterAt = preferred.retryAfterAt;
     const protectedTaskClass = roleName === "executor" && (
       mappedModel !== role.model || (Boolean(requestedPreferredModel) && !jev?.model_applied)
     );
-    let fallback = protectedTaskClass ? null : chooseFallback(state, role, preferredModel, now, config);
+    let fallback = protectedTaskClass ? null : chooseFallback(state, role, preferredModel, now, config, nativeOnly ? nativeCapable : undefined);
     const ordinaryModels = [role.model, ...role.fallbackModels];
     if (!fallback && roleName === "executor" && role.capacityFallbackModel
       && ordinaryModels.every((model) => {
         const health = ensureHealth(state, model, now, config);
-        if (canLease(state, health, now, config)) return false;
+        if (canLease(state, health, now, config, roleName)) return false;
         return health.state === "closed" || /server_overloaded|capacity|rate.?limit|quota|429/i.test(health.lastErrorCode);
       })) {
       const lastResort = ensureHealth(state, role.capacityFallbackModel, now, config);
-      if (canLease(state, lastResort, now, config)) {
+      if (canLease(state, lastResort, now, config, roleName)) {
         fallback = lastResort;
         fallbackReason = "ordinary_executor_capacity_exhausted";
       }
@@ -387,6 +392,7 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     probe = fallback.state === "half_open";
   }
 
+  if (nativeOnly) selectedReasoningEffort = executorReasoningEffort(config, selectedModel, taskClass);
   const selected = ensureHealth(state, selectedModel, now, config);
   // A default route must report the client that will actually run the selection, so a
   // later delegation claim cannot bind the leased model to a different harness. When the
@@ -401,7 +407,7 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     const codexModels = new Set((config.quotaPools || []).filter((pool) => pool.provider === "codex").flatMap((pool) => pool.models));
     // 显式 Codex native：canonical 模型 id 即 runtime id，能力列表声明即可原生派发。
     const isCodexModel = codexModels.has(selectedModel);
-    const runtime = isCodexModel
+    const runtime = isCodexModel && !nativeOnly
       ? (availableNativeModels.includes(selectedModel) ? selectedModel : "")
       : nativeRuntimeModel(config, selectedModel, availableNativeModels, selectedReasoningEffort);
     if (runtime && (automaticChannel || channel === "native")) {
@@ -585,9 +591,9 @@ export function routingRoles() {
   return publicModelRoleConfig(loadModelRoleConfig());
 }
 
-function chooseFallback(state, role, preferredModel, now, config) {
+function chooseFallback(state, role, preferredModel, now, config, eligible = () => true) {
   return [...new Set([role.model, ...role.fallbackModels])]
-    .filter((model) => model !== preferredModel && isAutomaticEligible(config, model, now))
+    .filter((model) => model !== preferredModel && isAutomaticEligible(config, model, now) && eligible(model))
     .map((model) => ensureHealth(state, model, now, config))
     .find((health) => {
       advanceCircuit(health, now);
@@ -595,18 +601,18 @@ function chooseFallback(state, role, preferredModel, now, config) {
     }) || null;
 }
 
-function canLease(state, health, now, config = null) {
+function canLease(state, health, now, config = null, roleName = "executor") {
   advanceCircuit(health, now);
   if (health.state === "open") return false;
   if (health.state === "half_open" && health.halfOpenLease) return false;
   if (activeRoutes(state, health.model, now).length >= health.concurrencyLimit) return false;
   // Executor 候选模型的集中上限：角色全局并发与共享 quota pool 并发；Reviewer 与其他模型不受影响。
   const executorRole = config?.roles?.executor;
-  if (!executorRole) return true;
+  if (!executorRole || roleName === "reviewer") return true;
   const candidates = [executorRole.model, ...executorRole.fallbackModels];
   if (!candidates.includes(health.model)) return true;
   const activeExecutorLeases = state.routes.filter((route) =>
-    route.status === "leased" && candidates.includes(route.selectedModel) && Date.parse(route.expiresAt || "") > Date.parse(now));
+    route.status === "leased" && route.channel !== "direct" && !isReviewTaskClass(route.taskClass) && candidates.includes(route.selectedModel) && Date.parse(route.expiresAt || "") > Date.parse(now));
   if (executorRole.globalConcurrencyLimit && activeExecutorLeases.length >= executorRole.globalConcurrencyLimit) return false;
   const pool = (config.quotaPools || []).find((item) => item.concurrency_limit && item.models.includes(health.model));
   if (!pool) return true;
@@ -732,7 +738,7 @@ function refreshActiveExecutors(state, now) {
 }
 
 function activeRoutes(state, model, now) {
-  return state.routes.filter((route) => route.selectedModel === model && route.status === "leased" && Date.parse(route.expiresAt || "") > Date.parse(now));
+  return state.routes.filter((route) => route.selectedModel === model && route.channel !== "direct" && route.status === "leased" && Date.parse(route.expiresAt || "") > Date.parse(now));
 }
 
 function healthSnapshot(state, now, config) {
@@ -770,7 +776,7 @@ function publicRoute(route) {
     circuit_state: route.circuitState,
     reason: route.reason,
     ...(!route.available && route.reason?.startsWith("native_") ? {
-      next_action: "核对当前原生派发工具支持的型号与档位，传入真实 available_native_models；宿主不支持时可在主对话切换模型，或显式选择 channel=cli。",
+      next_action: "核对当前原生派发工具支持的型号与档位，传入真实 available_native_models；能力缺失时刷新宿主会话，不能用模型选择器代替派发能力声明。",
     } : {}),
     fallback_from: route.fallbackFrom || null,
     fallback_reason: route.fallbackReason || null,
@@ -1004,6 +1010,7 @@ function validFutureTime(value, now) {
 }
 
 function optionalAstraModel(taskClass, role, config) {
+  if (role.dispatchChannel === "native") return "";
   if (!["architecture", "migration", "complex_diagnosis"].includes(taskClass)) return "";
   const candidate = role.fallbackModels.at(-1);
   if (!candidate) return "";

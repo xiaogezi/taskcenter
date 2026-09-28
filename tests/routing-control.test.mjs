@@ -332,106 +332,57 @@ test("manual_only Spark 健康状态可观察，退役后隐藏", async () => {
   await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 });
 
-test("当前项目策略先派发非 Codex 客户端，总容量满后才使用 Luna", async () => {
+test("当前项目策略仅会话派发：MiMo 优先、八款候选、实际能力和档位筛选", async () => {
   const current = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
+  const config = JSON.parse(current);
   await writeFile(roleConfigPath, current);
-  const kimi = "kimi-code/k3-256k";
-  const mimo = "mimo-v2.6-flash";
-  const mimoPro = "mimo-v2.6-pro";
+  const native = { ...config.native_models, ...config.roles.executor.native_models };
+  const pool = [config.roles.executor.model, ...config.roles.executor.fallback_models];
+  const capable = Object.values(native).map(entry => entry.runtime_model);
+  const request = { ...baseInput, channel: "other", available_native_models: capable };
   try {
-    await rm(statePath, { force: true });
-    const general = routingSelect({ ...baseInput, event_id: "policy-general" });
-    assert.equal(general.route.selected_model, kimi);
-    assert.equal(general.route.harness, "kimi");
-    assert.equal(general.route.cli_profile, "kimi-k3");
-    assert.equal(general.route.reasoning_effort, "low");
-    assert.equal(Object.keys(general.roles.model_catalog).length, 8, "自动候选覆盖 4 Kimi + 4 MiMo 目录条目");
-    assert.ok(general.roles.model_catalog["mimo-v2.5-pro"].automatic_until, "MiMo 2.5 保留自动截止");
-    assert.equal(general.roles.executor.global_concurrency_limit, 4);
-    assert.deepEqual(general.roles.executor.fallback_models, [
-      "mimo-v2.6-flash", "mimo-v2.6-pro", "kimi-code/k3", "kimi-code/kimi-for-coding",
-      "kimi-code/kimi-for-coding-highspeed", "mimo-v2.5", "mimo-v2.5-pro",
-    ], "自动候选覆盖 4 Kimi + 4 MiMo，无 Codex 与未验证 UltraSpeed");
-
-    const second = routingSelect({ ...baseInput, event_id: "policy-second" });
-    assert.equal(second.route.selected_model, kimi, "第二个独立执行复用 K3 的第二个容量名额");
-    assert.equal(second.route.harness, "kimi");
-    assert.equal(second.route.cli_profile, "kimi-k3");
-
-    const third = routingSelect({ ...baseInput, event_id: "policy-third" });
-    assert.equal(third.route.selected_model, mimo, "K3 两个名额占满后回退 MiMo 2.6 Flash，而不是 Luna");
-    assert.equal(third.route.harness, "claude");
-    assert.equal(third.route.cli_profile, "claude-mimo-v2.6-flash");
-
-    const fourth = routingSelect({ ...baseInput, event_id: "policy-fourth" });
-    assert.equal(fourth.route.selected_model, mimo, "Mimo 也使用 executor 角色的第二个容量名额");
-    assert.equal(fourth.route.harness, "claude");
-    assert.equal(fourth.route.cli_profile, "claude-mimo-v2.6-flash");
-
-    const fifth = routingSelect({ ...baseInput, cli_profile: "kimi-k3", event_id: "policy-fifth" });
-    assert.equal(fifth.route.selected_model, "gpt-6-luna", "普通 CLI 总并发满时才使用 Luna 末级兜底");
-    assert.equal(fifth.route.cli_profile, "codex-luna");
-    assert.equal(fifth.route.channel, "cli");
-    assert.equal(fifth.route.fallback_reason, "ordinary_executor_capacity_exhausted");
-    const sixth = routingSelect({ ...baseInput, event_id: "policy-sixth" });
-    assert.equal(sixth.route.selected_model, "gpt-6-luna");
-    assert.equal(routingSelect({ ...baseInput, event_id: "policy-seventh" }).route.available, false, "末级兜底也满时保持不可用");
-    routingResult({ route_id: general.route.route_id, event_id: "policy-permission-result", outcome: "failed", error_type: "task_permission" });
-    assert.equal(routingSelect({ ...baseInput, event_id: "policy-after-permission" }).route.selected_model, kimi, "权限失败释放名额后不继续使用 Luna");
-
-    await rm(statePath, { force: true });
-    const capacityConfig = JSON.parse(current);
-    capacityConfig.roles.executor.fallback_models = [mimo];
-    capacityConfig.roles.executor.task_class_models = {};
-    await writeFile(roleConfigPath, JSON.stringify(capacityConfig));
-    const kimiRoute = routingSelect({ ...baseInput, event_id: "policy-kimi-overload" });
-    routingResult({ route_id: kimiRoute.route.route_id, event_id: "policy-kimi-overload-result", outcome: "overloaded", error_type: "server_overloaded" });
-    const mimoRoute = routingSelect({ ...baseInput, event_id: "policy-mimo-overload" });
-    assert.equal(mimoRoute.route.selected_model, mimo);
-    routingResult({ route_id: mimoRoute.route.route_id, event_id: "policy-mimo-overload-result", outcome: "overloaded", error_type: "server_overloaded" });
-    assert.equal(routingSelect({ ...baseInput, event_id: "policy-capacity-last-resort" }).route.selected_model, "gpt-6-luna", "上游容量熔断也使用 Luna 兜底");
-    await writeFile(roleConfigPath, current);
-
-    for (const taskClass of ["security", "data_migration", "complex_diagnosis", "high_risk"]) {
+    assert.equal(pool.length, 8);
+    assert.equal(pool.filter(model => model.startsWith("mimo-")).length, 4);
+    assert.equal(pool.filter(model => model.startsWith("kimi-")).length, 3);
+    assert.ok(pool.includes("gpt-6-luna"));
+    const main = routingSelect({ ...baseInput, orchestrator_model: "gpt-6-luna", channel: "direct", event_id: "pool-main-direct" });
+    assert.equal(main.health.find(item => item.model === "gpt-6-luna").active_executors, 0, "主模型即使属于候选池也不占执行器配额");
+    const first = routingSelect({ ...request, event_id: "policy-first" });
+    assert.equal(first.route.selected_model, "mimo-v2.6-flash");
+    assert.equal(first.route.channel, "native");
+    assert.equal(first.route.native_model, native[first.route.selected_model].runtime_model);
+    assert.equal(first.route.cli_profile, undefined);
+    assert.equal(first.route.reasoning_effort, "low");
+    routingSelect({ ...request, event_id: "policy-second" });
+    const fallback = routingSelect({ ...request, event_id: "policy-third" });
+    assert.equal(fallback.route.selected_model, "kimi-code/k3", "MiMo 共享池满后选可用会话候选");
+    assert.equal(fallback.route.reasoning_effort, "low");
+    routingSelect({ ...request, event_id: "policy-fourth" });
+    assert.equal(routingSelect({ ...request, event_id: "policy-fifth" }).route.available, false, "Luna 也受全局并发限制");
+    const review = routingSelect({ ...baseInput, task_class: "ocr_review", review_artifacts: reviewArtifacts, event_id: "native-pool-review" });
+    assert.equal(review.route.available, true, "普通执行全局并发占满不占用 Reviewer 全局额度");
+    assert.equal(review.route.selected_model, "gpt-6-luna");
+    for (const model of pool) {
       await rm(statePath, { force: true });
-      const selected = routingSelect({ ...baseInput, task_class: taskClass, event_id: `policy-${taskClass}` });
-      assert.equal(selected.route.selected_model, mimoPro, `${taskClass} 按能力选择 MiMo 2.6 Pro`);
-      assert.equal(selected.route.reasoning_effort, "medium");
-      assert.equal(selected.route.harness, "claude");
-    }
-
-    await rm(statePath, { force: true });
-    const explicitLuna = routingSelect({ ...baseInput, preferred_model: "gpt-6-luna", event_id: "policy-explicit-luna" });
-    assert.equal(explicitLuna.route.selected_model, "gpt-6-luna", "用户显式授权仍可选择 Luna");
-
-    await rm(statePath, { force: true });
-    const nativeDefault = routingSelect({ ...baseInput, channel: "native", event_id: "policy-native-default" });
-    assert.equal(nativeDefault.route.available, false, "显式 native 的非 Codex 模型能力缺失时返回不可用，绝不静默转 CLI");
-    assert.equal(nativeDefault.route.channel, "native");
-    assert.match(nativeDefault.route.reason, /^native_model_not_configured:/);
-    assert.equal(nativeDefault.route.cli_profile, undefined);
-
-    const directMain = routingSelect({ ...baseInput, channel: "direct", event_id: "policy-direct" });
-    assert.equal(directMain.route.channel, "direct", "direct 主模型语义不被强制改 CLI");
-    assert.equal(directMain.route.cli_profile, undefined);
-
-    await rm(statePath, { force: true });
-    const nativeExplicit = routingSelect({ ...baseInput, channel: "native", preferred_model: "gpt-6-luna", available_native_models: ["gpt-6-luna"], event_id: "policy-native-explicit" });
-    assert.equal(nativeExplicit.route.selected_model, "gpt-6-luna");
-    assert.equal(nativeExplicit.route.channel, "native", "显式 Codex native 既有路径保持原生语义");
-    assert.equal(nativeExplicit.route.native_model, "gpt-6-luna", "显式能力声明绑定实际 runtime model");
-
-    for (const model of [luna, terra, "gpt-5.6-sol", spark]) {
-      await rm(statePath, { force: true });
-      assert.equal(routingSelect({ ...baseInput, preferred_model: model }).route.selected_model, kimi, "退役或 manual_only 覆盖归一为非 Codex 默认");
-    }
-
-    for (const [profile, model] of [["kimi-k3", kimi], ["kimi-k2.7-highspeed", "kimi-code/kimi-for-coding-highspeed"], ["claude-mimo", "mimo-v2.5-pro"], ["claude-mimo-v2.6-flash", mimo], ["claude-mimo-v2.6-pro", mimoPro]]) {
-      await rm(statePath, { force: true });
-      const selected = routingSelect({ ...baseInput, cli_profile: profile });
+      const selected = routingSelect({ ...request, preferred_model: model, event_id: `policy-model-${model}` });
+      assert.equal(selected.route.available, true);
       assert.equal(selected.route.selected_model, model);
-      assert.equal(selected.route.cli_profile, profile);
+      assert.equal(selected.route.native_model, native[model].runtime_model);
+      assert.equal(selected.route.reasoning_effort, config.roles.executor.model_reasoning_efforts[model] || "low");
     }
+    await rm(statePath, { force: true });
+    const luna = routingSelect({ ...request, available_native_models: ["gpt-6-luna"], event_id: "only-luna" });
+    assert.equal(luna.route.selected_model, "gpt-6-luna");
+    const missing = routingSelect({ ...request, available_native_models: [], event_id: "no-native" });
+    assert.equal(missing.route.available, false);
+    assert.equal(missing.route.channel, "native");
+    assert.equal(missing.route.cli_profile, undefined);
+    assert.throws(() => routingSelect({ ...request, channel: "cli" }), /CLI_DISPATCH_DISABLED/);
+    assert.throws(() => routingSelect({ ...request, channel: "invalid" }), /channel 无效/);
+    assert.throws(() => routingSelect({ ...request, cli_profile: "codex-luna", channel: "cli" }), /CLI_DISPATCH_DISABLED/);
+    assert.throws(() => routingSelect({ ...request, preferred_model: "gpt-6-sol" }), /候选池/);
+    const direct = routingSelect({ ...baseInput, channel: "direct", event_id: "direct" });
+    assert.equal(direct.route.channel, "direct");
   } finally {
     await writeFile(roleConfigPath, JSON.stringify(roleConfig));
     await rm(statePath, { force: true });

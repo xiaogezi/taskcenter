@@ -8,6 +8,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const root = new URL("../", import.meta.url);
+const currentRoleConfig = JSON.parse(await readFile(new URL("config/model-roles.json", root), "utf8"));
+const nativeRuntimeModels = Object.values({ ...currentRoleConfig.native_models, ...currentRoleConfig.roles.executor.native_models }).map(entry => entry.runtime_model);
 const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-ledger-"));
 process.env.TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION = "1";
 
@@ -311,6 +313,7 @@ async function startControlServer(options = {}) {
     env: {
       ...process.env,
       TASKCENTER_CONTROL_PORT: String(port),
+      TASKCENTER_JEV_ROUTING: "0",
       TASKCENTER_SESSIONS_ROOT: join(tempDir, "sessions"),
       TASKCENTER_MODEL_RATES_PATH: join(tempDir, "model-rates.json"),
       ...envPaths,
@@ -1558,7 +1561,11 @@ test("控制服务任务闸门 HTTP 协议：register→create→update→report
 
 test("CLI delegation 附着单个正式主任务并独立记录 Run", async (context) => {
   await resetLedger();
-  const { base, child } = await startControlServer();
+  const legacyConfigPath = join(tempDir, "legacy-cli-roles.json");
+  const legacyConfig = structuredClone(currentRoleConfig);
+  legacyConfig.roles.executor.dispatch_channel = "cli";
+  await writeFile(legacyConfigPath, JSON.stringify(legacyConfig));
+  const { base, child } = await startControlServer({ TASKCENTER_MODEL_ROLE_CONFIG_PATH: legacyConfigPath });
   context.after(() => child.kill("SIGTERM"));
   await registerHttpSession(base, "session-main");
   await registerHttpSession(base, "session-cli", { model: "gpt-5.3-codex-spark" });
@@ -1924,7 +1931,7 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   const selectedResponse = await fetch(`${base}/routing/select`, {
     method: "POST",
     headers: taskHeaders(),
-    body: JSON.stringify({ task_id: "task-routing-control", task_class: "implementation", channel: "cli", event_id: "routing-control-select" }),
+    body: JSON.stringify({ task_id: "task-routing-control", task_class: "implementation", channel: "native", available_native_models: nativeRuntimeModels, event_id: "routing-control-select" }),
   });
   const selected = await selectedResponse.json();
   assert.equal(selectedResponse.status, 201, selected.error);
@@ -1969,7 +1976,7 @@ test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计",
   });
   assert.equal(policyResponse.status, 200);
   const sparkResponse = await fetch(`${base}/routing/select`, {
-    method: "POST", headers: taskHeaders(), body: JSON.stringify({ task_id: "task-routing-control", task_class: "implementation", channel: "cli", event_id: "routing-control-spark" }),
+    method: "POST", headers: taskHeaders(), body: JSON.stringify({ task_id: "task-routing-control", task_class: "implementation", channel: "native", available_native_models: nativeRuntimeModels, event_id: "routing-control-spark" }),
   });
   const sparkRoute = await sparkResponse.json();
   assert.equal(sparkResponse.status, 409);
@@ -1991,7 +1998,7 @@ test("路由状态已持久化但审计首次失败时，同 event_id 可补偿�
   });
   assert.equal(created.status, 201);
 
-  const selectBody = { task_id: "task-routing-audit-retry", task_class: "implementation", channel: "cli", event_id: "routing-audit-select", route_id: "route-audit-retry" };
+  const selectBody = { task_id: "task-routing-audit-retry", task_class: "implementation", channel: "native", available_native_models: nativeRuntimeModels, event_id: "routing-audit-select", route_id: "route-audit-retry" };
   await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o400);
   const failedSelect = await fetch(`${base}/routing/select`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(selectBody) });
   assert.equal(failedSelect.status, 500);
@@ -2724,7 +2731,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
 
   const selectedRoute = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_routing_select",
-    arguments: { task_id: "task-mcp", preferred_model: "gpt-5.3-codex-spark", task_class: "test", channel: "cli", route_id: "route-mcp-compat" },
+    arguments: { task_id: "task-mcp", preferred_model: "gpt-5.3-codex-spark", task_class: "test", channel: "native", available_native_models: nativeRuntimeModels, route_id: "route-mcp-compat" },
   })));
   assert.equal(selectedRoute.route.route_id, "route-mcp-compat", "旧客户端不传 response_mode 时仍需取得路由租约");
   assert.equal(selectedRoute.route.preferred_model, executorModel);
@@ -2733,7 +2740,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
 
   const query = await client.callTool({ name: "taskcenter_task_query", arguments: { session_id: "sess-mcp" } });
   const queryPayload = JSON.parse(textOf(query));
-  assert.equal(queryPayload.tasks.find((task) => task.id === "task-mcp").routing.dispatchChannel, "cli");
+  assert.equal(queryPayload.tasks.find((task) => task.id === "task-mcp").routing.dispatchChannel, "native");
 
   const update = await client.callTool({ name: "taskcenter_task_update", arguments: { session_id: "sess-mcp", task_id: "task-mcp", current_step: "已更新" } });
   assert.equal(JSON.parse(textOf(update)).accepted, true);

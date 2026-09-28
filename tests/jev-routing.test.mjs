@@ -12,6 +12,8 @@ const fixtureConfig = JSON.parse(await readFile(new URL("../config/model-roles.j
 fixtureConfig.roles.executor.model = "kimi-code/k3-256k";
 fixtureConfig.roles.executor.fallback_models = ["mimo-v2.5-pro"];
 fixtureConfig.roles.executor.task_class_models = {};
+fixtureConfig.roles.executor.dispatch_channel = "cli";
+fixtureConfig.roles.executor.model_reasoning_efforts = {};
 fixtureConfig.model_catalog = {};
 await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(fixtureConfig));
 const { routingSelect, routingResult, routeForId } = await import("../scripts/routing-control.mjs");
@@ -331,4 +333,48 @@ test("决策元数据保留 phase_summary 受限摘要与 hash 且不泄露原�
   assert.equal(prepared.jevDecision.phase_summary_excerpt.includes("细节".repeat(100)), false);
   assert.equal(prepared.jevDecision.task_class_choice, "implementation");
   assert.deepEqual(prepared.jevDecision.usage, { input_tokens: 80, output_tokens: 12 });
+});
+
+
+test("native-only Jev 只选择宿主可用候选，支持 Luna 和 Kimi high，失败不回退 CLI", async () => {
+  const original = await readFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, "utf8");
+  const current = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8"));
+  await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(current));
+  const capabilities = ["xiaomi-tokenplan/mimo-v2.6-flash", "kimi-oauth/kimi-for-coding", "gpt-6-luna"];
+  const nativeInput = { ...input, channel: "other", available_native_models: capabilities };
+  try {
+    let candidateKeys;
+    const selected = await prepare(nativeInput, async request => {
+      candidateKeys = Object.keys(request.questions.executor_model.criteria);
+      return result("implementation", "delegate", "kimi-code/kimi-for-coding");
+    });
+    assert.deepEqual(candidateKeys, ["mimo-v2.6-flash", "kimi-code/kimi-for-coding", "gpt-6-luna", "no_match"]);
+    assert.equal(selected.input.channel, "native");
+    const route = routingSelect({ ...selected.input, event_id: "jev-native-kimi" }, undefined, selected.jevDecision).route;
+    assert.equal(route.native_model, "kimi-oauth/kimi-for-coding");
+    assert.equal(route.reasoning_effort, "high");
+    routingResult({ route_id: route.route_id, outcome: "succeeded" });
+    clearJevCache();
+    await prepare({ ...nativeInput, available_native_models: ["gpt-6-luna"] }, async request => {
+      assert.deepEqual(Object.keys(request.questions.executor_model.criteria), ["gpt-6-luna", "no_match"]);
+      return result("implementation", "delegate", "gpt-6-luna");
+    });
+    // 同 phase 能力变化必须重新评估，不能沿用刚才的 Kimi 决策。
+    const empty = await prepare({ ...nativeInput, available_native_models: [] }, async request => {
+      assert.equal(request.questions.executor_model, undefined);
+      return result("implementation", "delegate");
+    });
+    assert.equal(routingSelect({ ...empty.input, event_id: "jev-empty" }, undefined, empty.jevDecision).route.available, false);
+    clearJevCache();
+    const failed = await prepare(nativeInput, async () => ({ status: "failed", error: "timeout" }));
+    assert.equal(failed.input.channel, "native");
+    assert.equal(routingSelect({ ...failed.input, event_id: "jev-failed" }, undefined, failed.jevDecision).route.native_model, capabilities[0]);
+    delete process.env.TYPESAFE_API_KEY;
+    const noKey = await prepare(nativeInput);
+    assert.equal(noKey.input.channel, "native");
+    const explicitCli = await prepare({ ...nativeInput, channel: "cli" });
+    assert.throws(() => routingSelect(explicitCli.input), /CLI_DISPATCH_DISABLED/);
+  } finally {
+    await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, original);
+  }
 });

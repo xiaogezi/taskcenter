@@ -775,6 +775,9 @@ const server = createServer(async (request, response) => {
       const task = loadTasks().find((item) => item.id === body.task_id);
       const parentSession = getSessionStatuses(availableSessionIds(), loadVisibleTasks()).find((item) => item.sessionId === body.parent_session_id);
       if (!parentSession || parentSession.status !== "registered") throw new DelegationError(409, "主任务 Session 必须已登记。");
+      if (routingRoles().executor.dispatch_channel === "native" && body.channel !== "native") {
+        throw new DelegationError(409, "CLI_DISPATCH_DISABLED：普通执行仅允许原生会话授权。");
+      }
       if (body.channel === "native") {
         // 原生委派必须绑定一条有效的 native 路由：canonical 模型、任务与租约全部来自该路由。
         const route = routeForId(body.route_id || "");

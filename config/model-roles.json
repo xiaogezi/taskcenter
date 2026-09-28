@@ -108,23 +108,18 @@
   },
   "roles": {
     "executor": {
-      "model": "kimi-code/k3-256k",
+      "model": "mimo-v2.6-flash",
       "reasoning_effort": "low",
       "fallback_models": [
-        "mimo-v2.6-flash",
         "mimo-v2.6-pro",
+        "mimo-v2.5",
+        "mimo-v2.5-pro",
         "kimi-code/k3",
         "kimi-code/kimi-for-coding",
         "kimi-code/kimi-for-coding-highspeed",
-        "mimo-v2.5",
-        "mimo-v2.5-pro"
+        "gpt-6-luna"
       ],
-      "task_class_models": {
-        "security": "mimo-v2.6-pro",
-        "data_migration": "mimo-v2.6-pro",
-        "complex_diagnosis": "mimo-v2.6-pro",
-        "high_risk": "mimo-v2.6-pro"
-      },
+      "task_class_models": {},
       "task_class_reasoning_efforts": {
         "security": "medium",
         "data_migration": "medium",
@@ -133,7 +128,38 @@
       },
       "concurrency_limit": 2,
       "global_concurrency_limit": 4,
-      "capacity_fallback_model": "gpt-6-luna"
+      "dispatch_channel": "native",
+      "model_reasoning_efforts": {
+        "kimi-code/kimi-for-coding": "high",
+        "kimi-code/kimi-for-coding-highspeed": "high"
+      },
+      "native_models": {
+        "kimi-code/k3": {
+          "runtime_model": "kimi-oauth/k3",
+          "reasoning_efforts": [
+            "low"
+          ]
+        },
+        "kimi-code/kimi-for-coding": {
+          "runtime_model": "kimi-oauth/kimi-for-coding",
+          "reasoning_efforts": [
+            "high"
+          ]
+        },
+        "kimi-code/kimi-for-coding-highspeed": {
+          "runtime_model": "kimi-oauth/kimi-for-coding-highspeed",
+          "reasoning_efforts": [
+            "high"
+          ]
+        },
+        "gpt-6-luna": {
+          "runtime_model": "gpt-6-luna",
+          "reasoning_efforts": [
+            "low",
+            "medium"
+          ]
+        }
+      }
     },
     "reviewer": {
       "model": "gpt-6-luna",
@@ -143,42 +169,21 @@
     }
   },
   "manual_only_models": [],
-  "native_models": {
-    "mimo-v2.6-pro": {
-      "runtime_model": "xiaomi-tokenplan/mimo-v2.6-pro",
-      "reasoning_efforts": ["low", "medium"]
-    },
-    "mimo-v2.6-flash": {
-      "runtime_model": "xiaomi-tokenplan/mimo-v2.6-flash",
-      "reasoning_efforts": ["low", "medium"]
-    },
-    "mimo-v2.5-pro": {
-      "runtime_model": "xiaomi-tokenplan/mimo-v2.5-pro",
-      "reasoning_efforts": ["low", "medium"]
-    },
-    "mimo-v2.5": {
-      "runtime_model": "xiaomi-tokenplan/mimo-v2.5",
-      "reasoning_efforts": ["low", "medium"]
-    }
-  },
   "model_catalog": {
-    "kimi-code/k3-256k": {
-      "description": "K3 256K 上下文，日常编码默认；相较 1M K3 更节省 Kimi 配额"
-    },
     "kimi-code/k3": {
       "description": "K3 1M 上下文；需要超长上下文的代码任务，配额消耗高于 K3-256K"
     },
     "kimi-code/kimi-for-coding": {
-      "description": "K2.8 Preview 编码模型；可用于兼容性比较，未建立本项目质量和成本基线"
+      "description": "Kimi Coding；原生会话候选，用户明确允许 high 档位"
     },
     "kimi-code/kimi-for-coding-highspeed": {
-      "description": "K2.7 Code Highspeed；速度优先，适合范围明确的简单修改与检索"
+      "description": "Kimi Coding Highspeed；简单明确任务的速度候选，用户明确允许 high 档位"
     },
     "mimo-v2.6-pro": {
       "description": "MiMo 2.6 Pro；推理与高风险任务能力强，成本较高"
     },
     "mimo-v2.6-flash": {
-      "description": "MiMo 2.6 Flash；速度快、成本低，普通回退首选"
+      "description": "MiMo 2.6 Flash；普通执行默认首选，满足任务能力时优先节省成本"
     },
     "mimo-v2.5-pro": {
       "description": "MiMo 2.5 Pro；旧代高能力模型，2026-10-21 10:00 (Asia/Shanghai) 起停止自动选择",
@@ -187,6 +192,9 @@
     "mimo-v2.5": {
       "description": "MiMo 2.5 标准版；旧代模型，2026-10-21 10:00 (Asia/Shanghai) 起停止自动选择",
       "automatic_until": "2026-10-21T10:00:00+08:00"
+    },
+    "gpt-6-luna": {
+      "description": "GPT-6 Luna；低成本 Codex 会话执行候选，由 Jev 按任务选择"
     }
   },
   "retired_models": [
@@ -233,5 +241,35 @@
       "concurrency_limit": 2,
       "notes": "无官方余额查询接口；余额未知，仅限流信号与本地累计"
     }
-  ]
+  ],
+  "native_models": {
+    "mimo-v2.6-pro": {
+      "runtime_model": "xiaomi-tokenplan/mimo-v2.6-pro",
+      "reasoning_efforts": [
+        "low",
+        "medium"
+      ]
+    },
+    "mimo-v2.6-flash": {
+      "runtime_model": "xiaomi-tokenplan/mimo-v2.6-flash",
+      "reasoning_efforts": [
+        "low",
+        "medium"
+      ]
+    },
+    "mimo-v2.5-pro": {
+      "runtime_model": "xiaomi-tokenplan/mimo-v2.5-pro",
+      "reasoning_efforts": [
+        "low",
+        "medium"
+      ]
+    },
+    "mimo-v2.5": {
+      "runtime_model": "xiaomi-tokenplan/mimo-v2.5",
+      "reasoning_efforts": [
+        "low",
+        "medium"
+      ]
+    }
+  }
 }

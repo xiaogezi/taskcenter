@@ -42,7 +42,7 @@ export function loadModelRoleConfig() {
   const optionalAstraPolicy = readOptionalAstraPolicy(input.optional_astra_policy);
   const quotaPools = normalizeQuotaPools(input.quota_pools);
   const modelCatalog = normalizeModelCatalog(input.model_catalog);
-  const nativeModels = normalizeNativeModels(input.native_models);
+  const nativeModels = { ...normalizeNativeModels(input.native_models), ...normalizeNativeModels(input.roles?.executor?.native_models) };
   const activeModels = new Set([
     executor.model,
     reviewer.model,
@@ -93,11 +93,16 @@ export function publicModelRoleConfig(config = loadModelRoleConfig()) {
 }
 
 // Codex 原生派发能力：canonical 模型有映射、本轮工具能力列表包含 runtime_model，
-// 且请求档位在映射声明的 low/medium 上限内时，返回实际 spawn 用的 runtime model id；否则返回空串。
+// 且请求档位在映射声明的范围内时，返回实际 spawn 用的 runtime model id；否则返回空串。
 export function nativeRuntimeModel(config, canonicalModel, availableNativeModels = [], effort = "low") {
   const entry = config?.nativeModels?.[canonicalModel];
   if (!entry || !entry.reasoningEfforts.includes(effort)) return "";
   return availableNativeModels.includes(entry.runtimeModel) ? entry.runtimeModel : "";
+}
+
+export function executorReasoningEffort(config, model, taskClass) {
+  const role = config.roles.executor;
+  return role.modelReasoningEfforts[model] || role.taskClassReasoningEfforts[taskClass] || role.reasoningEffort;
 }
 
 export function configuredPreferredModel(taskClass, config = loadModelRoleConfig()) {
@@ -145,7 +150,14 @@ function normalizeRole(value, name, failClosed) {
   }
   const taskClassModels = normalizeTaskClassModels(value.task_class_models, model, fallbackModels, name);
   const taskClassReasoningEfforts = normalizeTaskClassReasoningEfforts(value.task_class_reasoning_efforts, name);
-  return { model, reasoningEffort, fallbackModels, capacityFallbackModel, concurrencyLimit, globalConcurrencyLimit, failClosed, taskClassModels, taskClassReasoningEfforts };
+  const dispatchChannel = value.dispatch_channel || "cli";
+  if (!["cli", "native"].includes(dispatchChannel)) throw new ModelRoleConfigError(`roles.${name}.dispatch_channel 无效。`);
+  const modelReasoningEfforts = value.model_reasoning_efforts || {};
+  if (typeof modelReasoningEfforts !== "object" || Array.isArray(modelReasoningEfforts)) throw new ModelRoleConfigError(`roles.${name}.model_reasoning_efforts 必须是对象。`);
+  for (const [candidate, effort] of Object.entries(modelReasoningEfforts)) {
+    if (![model, ...fallbackModels].includes(candidate) || !allowedReasoningEfforts.has(effort)) throw new ModelRoleConfigError(`roles.${name}.model_reasoning_efforts 含无效模型或档位。`);
+  }
+  return { model, reasoningEffort, fallbackModels, capacityFallbackModel, concurrencyLimit, globalConcurrencyLimit, failClosed, taskClassModels, taskClassReasoningEfforts, dispatchChannel, modelReasoningEfforts };
 }
 
 function normalizeTaskClassReasoningEfforts(value, roleName) {
@@ -229,7 +241,7 @@ function normalizeModelCatalog(value) {
   return catalog;
 }
 
-const nativeReasoningEfforts = new Set(["low", "medium"]);
+const nativeReasoningEfforts = new Set(["low", "medium", "high"]);
 function normalizeNativeModels(value) {
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ModelRoleConfigError("native_models 必须是按 canonical 模型键控的对象。");
@@ -240,7 +252,7 @@ function normalizeNativeModels(value) {
     if (!model || !runtimeModel) throw new ModelRoleConfigError(`native_models.${key || "?"} 需要有效 canonical 模型与 runtime_model。`);
     const efforts = uniqueModels(entry?.reasoning_efforts, `native_models.${model}.reasoning_efforts`);
     if (!efforts.length || efforts.some((effort) => !nativeReasoningEfforts.has(effort))) {
-      throw new ModelRoleConfigError(`native_models.${model}.reasoning_efforts 只允许 low/medium 上限内已声明的值。`);
+      throw new ModelRoleConfigError(`native_models.${model}.reasoning_efforts 只允许已声明的 low/medium/high 值。`);
     }
     result[model] = { runtimeModel, reasoningEfforts: efforts };
   }
@@ -257,6 +269,8 @@ function publicNativeModels(nativeModels = {}) {
 function publicRole(role) {
   return {
     model: role.model,
+    dispatch_channel: role.dispatchChannel,
+    model_reasoning_efforts: role.modelReasoningEfforts,
     reasoning_effort: role.reasoningEffort,
     fallback_models: role.fallbackModels,
     capacity_fallback_model: role.capacityFallbackModel || null,

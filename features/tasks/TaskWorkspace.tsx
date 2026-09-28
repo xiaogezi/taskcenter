@@ -225,8 +225,8 @@ function RoutingDetails({ fetch }: { fetch: DetailFetch | null }) {
   if (noRouting && !runs.length) {
     return <div className="detail-content">
       <h3>调度信息</h3>
-      <p>这个任务由主代理直接完成，没有走 CLI 子模型委托，所以没有路由选择、模型选择和 CLI 运行记录。</p>
-      <p className="attention">如果你期望它走 CLI 委托但这里是空的，说明这次执行没有上报 delegation 记录，需要查上报链路。</p>
+      <p>尚无路由或执行器回执，无法据此确认执行方式或完成状态。</p>
+      <p className="attention">如已派发执行器，请检查 delegation 登记和回报链路。</p>
     </div>;
   }
   const rows: Array<[string, string]> = [
@@ -247,7 +247,7 @@ function RoutingDetails({ fetch }: { fetch: DetailFetch | null }) {
   ];
   return <div className="detail-content"><h3>调度信息</h3>
     <dl>{rows.map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{text(value)}</dd></div>)}</dl>
-    <h3>CLI 执行记录</h3>{runs.length ? runs.map(run => {
+    <h3>执行器记录（会话及历史 CLI）</h3>{runs.length ? runs.map(run => {
       const report = parseClientReport(run);
       const runState = cliRunStatusLabel(run);
       const usage = parseClientUsage(run);
@@ -261,8 +261,8 @@ function RoutingDetails({ fetch }: { fetch: DetailFetch | null }) {
         ["Token 用量", usage ? `输入 ${formatTokens(usage.input ?? 0)} · 输出 ${formatTokens(usage.output ?? 0)}` : "未报告"],
         ...(run.error ? [["失败原因", run.error] as [string, string]] : []),
       ].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl></section>;
-    }) : <p>这次没有 CLI 运行记录。</p>}
-    {route?.action === "direct_execute" && <p>这次路由选的是主代理直接做；没有 CLI 运行记录不代表任务没执行。</p>}
+    }) : <p>这次没有执行器运行记录。</p>}
+    {route?.action === "direct_execute" && <p>这次路由选的是主代理直接做；没有执行器运行记录不代表任务没执行。</p>}
     <p className="attention">路由策略来源：同源 Control API 控制面，前端只展示，不重复实现规则。</p>
   </div>;
 }

@@ -21,8 +21,16 @@ const paths = {
   TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(tempDir, "gate-session-allowlist.json"),
   TASKCENTER_DELEGATIONS_PATH: join(tempDir, "delegations.json"),
   TASKCENTER_ROUTING_CONTROL_PATH: join(tempDir, "routing-control.json"),
+  TASKCENTER_MODEL_ROLE_CONFIG_PATH: join(tempDir, "model-roles.json"),
   TASKCENTER_GATE_DENIALS_PATH: join(tempDir, "gate-denials.jsonl"),
 };
+// 历史 CLI 协议仍可回放；native-only 当前策略由独立 HTTP 用例验证。
+const legacyRoles = JSON.parse(await readFile(new URL("config/model-roles.json", root), "utf8"));
+legacyRoles.roles.executor.dispatch_channel = "cli";
+legacyRoles.roles.executor.model = "kimi-code/k3-256k";
+legacyRoles.roles.executor.fallback_models = ["mimo-v2.6-flash", "mimo-v2.6-pro"];
+legacyRoles.roles.executor.model_reasoning_efforts = {};
+await writeFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(legacyRoles));
 const port = 39_000 + (process.pid % 1_000);
 const base = `http://127.0.0.1:${port}`;
 const hook = join(rootPath, "scripts", "taskcenter-hook.mjs");
@@ -1420,3 +1428,34 @@ async function waitForReady() {
   }
   throw new Error("隔离控制服务启动超时。");
 }
+
+
+test("当前 native-only 策略拒绝新 CLI 授权，保留 native grant/claim", async () => {
+  const original = await readFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, "utf8");
+  await writeFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, await readFile(new URL("config/model-roles.json", root), "utf8"));
+  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
+  try {
+    const parent = "native-only-parent", child = "native-only-child";
+    await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
+    const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "native-only", goal: "native-only" })).json();
+    const baseGrant = { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: "mimo-v2.6-flash", ttl_seconds: 600 };
+    for (const channel of ["cli", "other", undefined]) {
+      const rejected = await post("/delegations/grant", { ...baseGrant, channel });
+      assert.equal(rejected.status, 409);
+      assert.match(await rejected.text(), /CLI_DISPATCH_DISABLED/);
+    }
+    const rejectedRoute = await post("/routing/select", { task_id: created.task.id, task_class: "implementation", channel: "cli" });
+    assert.equal(rejectedRoute.status, 409);
+    const selected = await (await post("/routing/select", { task_id: created.task.id, task_class: "implementation", channel: "other", available_native_models: ["xiaomi-tokenplan/mimo-v2.6-flash"] })).json();
+    assert.equal(selected.route.native_model, "xiaomi-tokenplan/mimo-v2.6-flash");
+    const granted = await post("/delegations/grant", { ...baseGrant, channel: "native", route_id: selected.route.route_id });
+    const grant = await granted.json();
+    assert.equal(granted.status, 201, JSON.stringify(grant));
+    await runHook("session-start", "codex", { session_id: child, cwd: "/work", model: "xiaomi-tokenplan/mimo-v2.6-flash" });
+    const claimed = await post("/delegations/claim", { workspace: "/work", session_id: child, delegation_id: grant.delegation.id, claim_token: grant.claimToken, executor_model: baseGrant.executor_model, route_id: selected.route.route_id });
+    assert.equal(claimed.status, 200, await claimed.text());
+    await post("/routing/result", { route_id: selected.route.route_id, outcome: "succeeded" });
+  } finally {
+    await writeFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, original);
+  }
+});

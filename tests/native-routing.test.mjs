@@ -52,8 +52,8 @@ test.beforeEach(async () => {
 });
 test.after(async () => rm(directory, { recursive: true, force: true }));
 
-test("native_models 配置校验：只允许 low/medium，退役或 manual_only 模型不得映射", async () => {
-  await writeFile(roleConfigPath, `${JSON.stringify({ ...roleConfig, native_models: { [flash]: { runtime_model: flashRuntime, reasoning_efforts: ["high"] } } })}\n`, "utf8");
+test("native_models 配置校验：最高 high，退役或 manual_only 模型不得映射", async () => {
+  await writeFile(roleConfigPath, `${JSON.stringify({ ...roleConfig, native_models: { [flash]: { runtime_model: flashRuntime, reasoning_efforts: ["ultra"] } } })}\n`, "utf8");
   assert.throws(() => loadModelRoleConfig(), /low\/medium/);
   await writeFile(roleConfigPath, `${JSON.stringify({ ...roleConfig, native_models: { "gpt-5.6-terra": { runtime_model: "x/y", reasoning_efforts: ["low"] } } })}\n`, "utf8");
   assert.throws(() => loadModelRoleConfig(), /退役或手动模型不能配置 native 映射/);

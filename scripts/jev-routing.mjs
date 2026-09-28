@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { evaluate, criteria, hasSuspectedSecret } from "./jev-advisor.mjs";
 import { RoutingControlError, isReviewTaskClass } from "./routing-control.mjs";
-import { loadModelRoleConfig } from "./model-role-config.mjs";
+import { executorReasoningEffort, nativeRuntimeModel, loadModelRoleConfig } from "./model-role-config.mjs";
 
 const PROTECTED_CLASSES = new Set(["security", "high_risk", "data_migration"]);
 const REVIEW_CLASSES = new Set(["ocr", "ocr_review", "independent_review"]);
@@ -39,10 +39,10 @@ export function clearJevCache() { cache.clear(); }
 
 /**
  * 从集中角色配置构建执行器型号候选。候选只来自服务端配置，外部输入不能注入。
- * 池 = roles.executor.model + fallbackModels，剔除 retired/manual_only、Codex 配额池型号，
+ * 池 = roles.executor.model + fallbackModels，剔除 retired/manual_only；native 策略按宿主能力筛选，
  * 以及 modelCatalog 中 automatic_until 已过期的条目。配置缺失目录时以型号 id 作为描述。
  */
-function executorModelPool() {
+function executorModelPool(availableNativeModels = [], taskClass = "general") {
   let config;
   try { config = loadModelRoleConfig(); } catch { return { candidates: [], configHash: "unavailable" }; }
   const role = config.roles?.executor || { model: "", fallbackModels: [] };
@@ -53,7 +53,8 @@ function executorModelPool() {
   const now = Date.now();
   const candidates = [];
   for (const model of [role.model, ...(role.fallbackModels || [])]) {
-    if (!model || retired.has(model) || manualOnly.has(model) || codexModels.has(model)) continue;
+    if (!model || retired.has(model) || manualOnly.has(model) || (role.dispatchChannel !== "native" && codexModels.has(model))) continue;
+    if (role.dispatchChannel === "native" && !nativeRuntimeModel(config, model, availableNativeModels, executorReasoningEffort(config, model, taskClass))) continue;
     const entry = catalog[model];
     const description = typeof entry === "string" ? entry : String(entry?.description || "") || model;
     const automaticUntil = typeof entry === "object" && entry ? Date.parse(entry.automatic_until || "") : NaN;
@@ -73,7 +74,7 @@ function buildQuestions(candidates = []) {
     } },
   };
   if (candidates.length) {
-    questions.executor_model = { type: "choice", instructions: "在候选执行器型号中选择最适合该任务的型号。只能使用列出的候选；没有明确更合适的选择时选 no_match，保持默认路由。", criteria: {
+    questions.executor_model = { type: "choice", instructions: "在候选执行器型号中选择最适合该任务的型号。只能使用列出的候选，候选按集中配置的成本偏好排序；能力满足时优先前面的型号，确有任务适配理由时可选后面的型号；没有明确更合适的选择时选 no_match，保持默认路由。", criteria: {
       ...Object.fromEntries(candidates.map(c => [c.model, c.description])),
       [NO_MATCH]: "候选中没有明确更合适的型号，保持默认执行器选择。",
     } };
@@ -85,7 +86,7 @@ function buildQuestions(candidates = []) {
  * 调用 Jev 获取路由建议。始终返回 { decision, status } 且 decision 携带
  * phase_id/input_hash/status/error；同一 phase 只发一次，失败也缓存，最多 100 条。
  */
-export function jevRoutingPrepare(task, { phaseId = "", phaseSummary = "", evaluator = evaluate } = {}) {
+export function jevRoutingPrepare(task, { phaseId = "", phaseSummary = "", availableNativeModels = [], taskClass = "general", evaluator = evaluate } = {}) {
   const raw = { title: String(task?.title || ""), goal: String(task?.goal || ""), phase_summary: String(phaseSummary || "") };
   // 先在完整原文上筛查密钥，再截断；任何情况下不输出原文。
   const state = { title: truncateText(raw.title, 200), goal: truncateText(raw.goal, 1000), phase_summary: truncateText(raw.phase_summary, 500) };
@@ -98,7 +99,7 @@ export function jevRoutingPrepare(task, { phaseId = "", phaseSummary = "", evalu
   if (!apiKey) {
     return Promise.resolve({ decision: { ...base, status: "no_api_key", error: "no_api_key" }, status: "no_api_key" });
   }
-  const { candidates, configHash } = executorModelPool();
+  const { candidates, configHash } = executorModelPool(availableNativeModels, taskClass);
   const candidateModels = candidates.map(c => c.model);
   const request = { lineNames: ["routing"], state, questions: buildQuestions(candidates) };
   const key = `${task?.id || ""}:${phaseId}:${base.input_hash}:${configHash}:${hashState(candidateModels)}`;
@@ -164,7 +165,7 @@ function stableDecisionMeta(decision, input) {
 }
 
 /**
- * 应用 Jev 建议。只消费 status=succeeded 且回答有效的决策；失败回到非 Codex CLI 策略，
+ * 应用 Jev 建议。只消费 status=succeeded 且回答有效的决策；失败回到集中角色派发策略，
  * 决策仍作为元数据返回供审计持久化。抛错一律为 RoutingControlError。
  */
 export function applyJevRouting(input, _task, decision) {
@@ -175,13 +176,14 @@ export function applyJevRouting(input, _task, decision) {
     && EXECUTION_CHOICES.includes(decision.execution_choice || "");
   if (REVIEW_CLASSES.has(input.task_class)) return { input, jev_decision: meta };
 
+  const delegateChannel = loadModelRoleConfig().roles.executor.dispatchChannel;
   const pinned = Boolean(input.preferred_model)
     || Boolean(input.cli_profile)
     || input.execution_model_policy?.mode === "quota_preferred";
   if (!valid) {
     if (input.channel === "direct" && !input.direct_authorization_fingerprint) requireDirectException(input, meta);
     // Jev 失败/降级不得丢弃显式 native；available_native_models 随 input 透传到路由层。
-    return { input: { ...input, channel: ["direct", "native"].includes(input.channel) ? input.channel : "cli" }, jev_decision: meta };
+    return { input: { ...input, channel: ["direct", "native", "cli"].includes(input.channel) ? input.channel : delegateChannel }, jev_decision: meta };
   }
   let taskClass = input.task_class;
   let channel = input.channel;
@@ -224,7 +226,7 @@ export function applyJevRouting(input, _task, decision) {
     } else if (explicitChannel) {
       executionOverrideReason = "explicit_channel";
     } else if (!REVIEW_CLASSES.has(taskClass)) {
-      channel = "cli";
+      channel = delegateChannel;
       executionApplied = true;
     }
   }
@@ -272,7 +274,7 @@ export async function prepareRoutingInput(input, task, { evaluator, executionMod
   if (cleanInput.channel === "direct") requireDirectReason(String(cleanInput.direct_reason || "").trim());
   const phaseSummary = cleanInput.phase_summary || task?.currentStep || task?.goal || "";
   const phaseId = cleanInput.phase_id || hashState({ phase_summary: phaseSummary });
-  const { decision } = await jevRoutingPrepare(task, { phaseId, phaseSummary, evaluator });
+  const { decision } = await jevRoutingPrepare(task, { phaseId, phaseSummary, availableNativeModels: cleanInput.available_native_models, taskClass: cleanInput.task_class, evaluator });
   const applied = applyJevRouting({ ...cleanInput, execution_model_policy: executionModelPolicy || cleanInput.execution_model_policy }, task, decision);
   return { input: applied.input, jevDecision: applied.jev_decision };
 }
