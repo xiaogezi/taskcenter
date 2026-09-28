@@ -113,8 +113,12 @@ test("Reviewer 和关闭开关不评估，HTTP body 不能伪造决策", async (
   assert.equal(forged.route.jev_decision, null);
 });
 
-test("needs_context 返回可处理的 409，invalid_response 不改变类别", async () => {
-  await assert.rejects(prepare(input, async () => result("general", "needs_context")), e => e.statusCode === 409 && e.code === "JEV_NEEDS_CONTEXT");
+test("needs_context 交回主模型补足上下文，invalid_response 不改变类别", async () => {
+  const needs = await prepare(input, async () => result("general", "needs_context"));
+  assert.equal(needs.input.channel, "direct");
+  const route = routingSelect(needs.input, undefined, needs.jevDecision).route;
+  assert.equal(route.selected_model, "current-main");
+  assert.match(route.next_action, /澄清/);
   clearJevCache();
   const prepared = await prepare(input, async () => ({ status: "succeeded", answers: {} }));
   assert.equal(prepared.jevDecision.error, "invalid_response");
@@ -214,7 +218,7 @@ test("Jev 型号推荐满额后可回退，但用户显式锁定保持不降级"
   assert.equal(fallback.route.selected_model, "mimo-v2.5-pro");
   const pinned = await prepare({ ...input, preferred_model: "kimi-code/k3-256k" }, async () => result("implementation", "delegate", "kimi-code/k3-256k"));
   assert.notEqual(pinned.jevDecision.model_applied, true);
-  assert.equal(routingSelect({ ...pinned.input, channel: "cli", event_id: "capacity-pinned" }, undefined, pinned.jevDecision).route.available, false);
+  assert.equal(routingSelect({ ...pinned.input, channel: "cli", event_id: "capacity-pinned" }, undefined, pinned.jevDecision).route.selected_model, "current-main");
 });
 
 test("真实集中路由原子保存决策、用量与审计，语义进入幂等键", async () => {
@@ -261,18 +265,19 @@ test("执行器容量用尽不阻断 Jev 选择主模型直接处理", async () 
   assert.equal(routed.route.selected_model, "current-main");
 });
 
-test("默认请求采用 Jev delegate 选择，needs_context 仍为 409", async () => {
+test("默认请求采用 Jev delegate 选择，needs_context 由主模型处理", async () => {
   const prepared = await prepare({ ...input, channel: "other", phase_id: "jev-delegate" }, async () => result("implementation", "delegate"));
   assert.equal(prepared.input.channel, "cli");
   assert.equal(prepared.jevDecision.execution_applied, true);
-  await assert.rejects(
-    prepare({ ...input, channel: "other", phase_id: "jev-needs" }, async () => result("general", "needs_context")),
-    e => e.statusCode === 409 && e.code === "JEV_NEEDS_CONTEXT");
+  const needs = await prepare({ ...input, channel: "other", phase_id: "jev-needs" }, async () => result("general", "needs_context"));
+  assert.equal(needs.input.channel, "direct");
 });
 
-test("Jev 建议 delegate 时拒绝泛化 direct 理由，仅保留有证据的限定例外", async () => {
+test("Jev 建议 delegate 不阻断有理由的主模型接管，显式例外证据仍校验", async () => {
   const base = { ...input, channel: "direct", direct_reason: "主模型做更快", phase_id: "reject-generic" };
-  await assert.rejects(prepare(base), e => e.statusCode === 409 && e.code === "JEV_DELEGATE_OVERRIDE_DENIED");
+  const direct = await prepare(base);
+  assert.equal(direct.input.channel, "direct");
+  assert.equal(direct.jevDecision.execution_override_reason, "direct_reasoned_override");
   await assert.rejects(prepare({ ...base, direct_exception_kind: "shared_dirty_workspace", direct_exception_evidence: "主模型做更快" }), e => e.statusCode === 409 && e.code === "JEV_DELEGATE_OVERRIDE_DENIED");
   await assert.rejects(prepare({ ...base, direct_exception_kind: "device_interaction", direct_exception_evidence: "任意十二字以上但无设备引用" }), e => e.statusCode === 409 && e.code === "JEV_DELEGATE_OVERRIDE_DENIED");
   const allowed = await prepare({ ...base, direct_exception_kind: "device_interaction", direct_exception_evidence: "device:SM_S9210 真机安装与启动" });
@@ -364,7 +369,7 @@ test("native-only Jev 只选择宿主可用候选，支持 Luna 和 Kimi high，
       assert.equal(request.questions.executor_model, undefined);
       return result("implementation", "delegate");
     });
-    assert.equal(routingSelect({ ...empty.input, event_id: "jev-empty" }, undefined, empty.jevDecision).route.available, false);
+    assert.equal(routingSelect({ ...empty.input, event_id: "jev-empty" }, undefined, empty.jevDecision).route.channel, "direct");
     clearJevCache();
     const failed = await prepare(nativeInput, async () => ({ status: "failed", error: "timeout" }));
     assert.equal(failed.input.channel, "native");
@@ -376,5 +381,18 @@ test("native-only Jev 只选择宿主可用候选，支持 Luna 和 Kimi high，
     assert.throws(() => routingSelect(explicitCli.input), /CLI_DISPATCH_DISABLED/);
   } finally {
     await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, original);
+  }
+});
+
+
+test("派发失败后的 direct 可跨阶段重复申请，Jev 失败也不要求一次性用户授权", async () => {
+  for (const [phase, evaluator] of [["delegate", async () => result()], ["timeout", async () => { throw new Error("timeout"); }]]) {
+    const prepared = await prepare({ ...input, channel: "direct", phase_id: phase, direct_reason: "原生执行器启动失败，已停止执行器并撤销授权，主模型接管" }, evaluator);
+    const selected = routingSelect(prepared.input, undefined, prepared.jevDecision);
+    assert.equal(selected.route.available, true);
+    assert.equal(selected.route.selected_model, "current-main");
+    assert.equal(selected.route.channel, "direct");
+    assert.equal(selected.route.jev_decision.execution_override_reason, "direct_reasoned_override");
+    routingResult({ route_id: selected.route.route_id, outcome: "succeeded" });
   }
 });

@@ -181,7 +181,7 @@ export function applyJevRouting(input, _task, decision) {
     || Boolean(input.cli_profile)
     || input.execution_model_policy?.mode === "quota_preferred";
   if (!valid) {
-    if (input.channel === "direct" && !input.direct_authorization_fingerprint) requireDirectException(input, meta);
+    if (input.channel === "direct" && !input.direct_authorization_fingerprint) recordDirectOverride(input, meta);
     // Jev 失败/降级不得丢弃显式 native；available_native_models 随 input 透传到路由层。
     return { input: { ...input, channel: ["direct", "native", "cli"].includes(input.channel) ? input.channel : delegateChannel }, jev_decision: meta };
   }
@@ -196,7 +196,9 @@ export function applyJevRouting(input, _task, decision) {
   // 显式 channel（direct/cli/native）是调用方覆盖；默认请求（other/未指定）完整采用 Jev execution 选择。
   const explicitChannel = EXPLICIT_CHANNELS.has(input.channel);
   if (decision.execution_choice === "needs_context") {
-    throw new RoutingControlError(409, "Jev 建议 needs_context：任务缺少明确目标或范围，请补充后重试。", "JEV_NEEDS_CONTEXT");
+    // A routing hint must not end the task. The main Session resolves missing context.
+    return { input: { ...input, channel: "direct", direct_reason: input.direct_reason || "Jev needs_context：由主模型核对目标和范围，必要时向用户澄清" },
+      jev_decision: { ...meta, execution_applied: true, execution_override_reason: "needs_context_main_model" } };
   }
   let executionApplied = false;
   let executionOverrideReason = null;
@@ -220,8 +222,8 @@ export function applyJevRouting(input, _task, decision) {
     if (channel === "direct") {
       if (input.direct_authorization_fingerprint) executionOverrideReason = "direct_user_authorization";
       else {
-        requireDirectException(input, meta);
-        executionOverrideReason = `direct_exception:${meta.direct_exception_kind}`;
+        recordDirectOverride(input, meta);
+        executionOverrideReason = meta.execution_override_reason;
       }
     } else if (explicitChannel) {
       executionOverrideReason = "explicit_channel";
@@ -248,14 +250,21 @@ function requireDirectReason(reason) {
   if (!reason) throw new RoutingControlError(400, "Jev 启用模式下 channel=direct 必须提供 direct_reason。", "DIRECT_REASON_REQUIRED");
 }
 
-function requireDirectException(input, meta) {
+function recordDirectOverride(input, meta) {
   // 旧 MCP 进程在 Codex 重启前仍只暴露 direct_reason；兼容其结构化前缀。
   const legacy = /^\[(device_interaction|atomic_git|shared_dirty_workspace)\]\s+(.+)$/.exec(String(input.direct_reason || "").trim());
   const kind = String(input.direct_exception_kind || legacy?.[1] || "").trim();
   const evidence = String(input.direct_exception_evidence || legacy?.[2] || "").trim();
+  // Ordinary direct work is a reasoned orchestration decision, not a fresh user permission.
+  // Keep validation for explicitly supplied legacy exception evidence.
+  if (!kind && !evidence) {
+    requireDirectReason(String(input.direct_reason || "").trim());
+    meta.execution_override_reason = "direct_reasoned_override";
+    return;
+  }
   if (!DIRECT_EXCEPTIONS.has(kind) || evidence.length < 12 || evidence.length > 500
     || !evidence.startsWith(DIRECT_EVIDENCE_PREFIX[kind]) || /[\r\n]/.test(evidence) || hasSuspectedSecret(evidence)) {
-    throw new RoutingControlError(409, "Jev 建议派发时，direct 仅允许真机操作、原子 Git 操作或共享脏工作区，且必须提供可核查的例外证据。", "JEV_DELEGATE_OVERRIDE_DENIED");
+    throw new RoutingControlError(409, "已提供的历史 direct 例外证据格式无效；普通主模型接管只需 direct_reason。", "JEV_DELEGATE_OVERRIDE_DENIED");
   }
   meta.direct_exception_kind = kind;
   meta.direct_exception_evidence = evidence;

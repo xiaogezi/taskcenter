@@ -13,6 +13,7 @@ const rootPath = resolve(fileURLToPath(root));
 const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-hook-"));
 const paths = {
   TASKCENTER_SESSIONS_ROOT: join(tempDir, "sessions"),
+  TASKCENTER_MCP_TOKEN_PATH: join(tempDir, "mcp-token"),
   TASKCENTER_TASK_EVENTS_PATH: join(tempDir, "task-events.jsonl"),
   TASKCENTER_TASK_LEDGER_PATH: join(tempDir, "task-ledger.json"),
   TASKCENTER_TASK_EVENT_IDS_PATH: join(tempDir, "task-event-ids.json"),
@@ -24,6 +25,8 @@ const paths = {
   TASKCENTER_MODEL_ROLE_CONFIG_PATH: join(tempDir, "model-roles.json"),
   TASKCENTER_GATE_DENIALS_PATH: join(tempDir, "gate-denials.jsonl"),
 };
+const fixtureMcpToken = "test".repeat(16);
+await writeFile(paths.TASKCENTER_MCP_TOKEN_PATH, fixtureMcpToken, { mode: 0o600 });
 // 历史 CLI 协议仍可回放；native-only 当前策略由独立 HTTP 用例验证。
 const legacyRoles = JSON.parse(await readFile(new URL("config/model-roles.json", root), "utf8"));
 legacyRoles.roles.executor.dispatch_channel = "cli";
@@ -958,7 +961,11 @@ test("显式 Codex native route 可 grant/claim，且拒绝错配与过期租约
     task_id: created.task.id, task_class: "implementation", channel: "native", preferred_model: "gpt-6-luna",
     available_native_models: ["gpt-6-astra"], event_id: "native-codex-unavailable",
   })).json();
-  assert.equal(unsupported.route.available, false, "未声明目标 runtime 的能力必须拒绝路由");
+  assert.equal(unsupported.route.channel, "direct", "未声明 runtime 时主模型接管");
+  assert.equal(unsupported.route.selected_model, "test-main");
+  const gate = await runHook("pre-tool-use", "codex", { session_id: parent, cwd: "/work", tool_name: "apply_patch", tool_input: {} });
+  assert.equal(gate.code, 0, gate.stderr);
+  await post("/routing/result", { route_id: unsupported.route.route_id, outcome: "succeeded" });
 
   const selected = await (await post("/routing/select", {
     task_id: created.task.id, task_class: "implementation", channel: "native", preferred_model: "gpt-6-luna",
@@ -1457,5 +1464,25 @@ test("当前 native-only 策略拒绝新 CLI 授权，保留 native grant/claim"
     await post("/routing/result", { route_id: selected.route.route_id, outcome: "succeeded" });
   } finally {
     await writeFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, original);
+  }
+});
+
+
+test("HTTP 主模型接管不读取一次性口令，重复阶段可执行且拒绝错会话和无凭据", async () => {
+  const parent = "takeover-parent";
+  const post = (path, body, bound = true) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook", ...(bound ? { "X-TaskCenter-Mcp-Token": fixtureMcpToken } : {}) }, body: JSON.stringify(body) });
+  await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
+  const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "main takeover", goal: "main takeover" })).json();
+  const input = { task_id: created.task.id, session_id: parent, task_class: "implementation", channel: "direct", direct_reason: "会话派发失败，原执行器已停止，主模型继续" };
+  assert.equal((await post("/routing/select", input, false)).status, 403);
+  assert.equal((await post("/routing/select", { ...input, session_id: "another-owner" })).status, 403);
+  for (const phase of ["implement", "verify"]) {
+    const response = await post("/routing/select", { ...input, phase_id: phase });
+    const selected = await response.json();
+    assert.equal(response.status, 201, JSON.stringify(selected));
+    assert.equal(selected.route.selected_model, "test-main");
+    const gate = await runHook("pre-tool-use", "codex", { session_id: parent, cwd: "/work", tool_name: "apply_patch", tool_input: {} });
+    assert.equal(gate.code, 0, gate.stderr);
+    await post("/routing/result", { route_id: selected.route.route_id, outcome: "succeeded" });
   }
 });

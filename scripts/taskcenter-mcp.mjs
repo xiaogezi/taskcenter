@@ -369,7 +369,7 @@ server.registerTool("taskcenter_routing_record", {
 
 server.registerTool("taskcenter_routing_select", {
   title: "选择 TaskCenter 执行模型",
-  description: "按集中模型角色配置原子检查熔断、并发和 Half-Open 探测租约，返回强建议路由；TaskCenter 不会启动执行器。普通执行使用 executor 角色，OCR 使用 fail-closed reviewer 角色并保留同一 Subject、Bundle 和规则证据。",
+  description: "优先按 executor 配置派发；普通执行无可用模型或容量时返回当前主模型 direct 租约，继续同一任务。派发失败可携实际原因申请 direct 接管，无需重复用户授权；任务权限不变。TaskCenter 不启动进程，Reviewer 仍 fail closed。",
   inputSchema: z.object({
     task_id: z.string().min(1).max(200),
     preferred_model: z.string().min(1).max(120).optional().describe("兼容单次执行覆盖；任务配置 quota_preferred 时由持久化策略接管"),
@@ -382,8 +382,8 @@ server.registerTool("taskcenter_routing_select", {
     phase_id: z.string().max(200).optional().describe("Jev 路由阶段标识；未传入时由服务端派生"),
     phase_summary: z.string().max(1000).optional().describe("当前阶段摘要，用于 Jev 路由分类；仅发送标题/目标/阶段摘要，不发送代码或日志"),
     direct_reason: z.string().min(1).max(1000).optional().describe("Jev 启用模式下 channel=direct 时必填；记录 direct 执行理由并审计"),
-    direct_exception_kind: z.enum(["device_interaction", "atomic_git", "shared_dirty_workspace"]).optional().describe("Jev 建议 delegate 时允许 direct 的限定例外类别"),
-    direct_exception_evidence: z.string().min(12).max(500).optional().describe("例外的可核查证据；仅在 Jev 建议 delegate 而选择 direct 时必填"),
+    direct_exception_kind: z.enum(["device_interaction", "atomic_git", "shared_dirty_workspace"]).optional().describe("可选的历史例外分类；普通 direct 接管只需说明 direct_reason"),
+    direct_exception_evidence: z.string().min(12).max(500).optional().describe("声明历史例外分类时提供可核查证据；派发失败接管不要求此字段"),
     available_native_models: z.array(z.string().min(1).max(120)).max(32).optional().describe("本轮原生派发工具能以集中配置指定档位运行的 runtime model ID 列表；不得把选择器可见或仅支持其他档位的模型声明为可派发"),
     lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(), response_mode: operationalResponseMode,
   }).strict(),
@@ -399,7 +399,7 @@ server.registerTool("taskcenter_routing_select", {
 
 server.registerTool("taskcenter_routing_result", {
   title: "上报 TaskCenter 路由结果",
-  description: "释放模型并发租约并更新 Closed/Open/Half-Open 健康状态；只记录执行事实，不授予任务验收或 OCR 审查权。",
+  description: "释放模型并发租约并更新健康状态；普通派发失败后停止原执行器、撤销 delegation，并按返回的 next_action 申请 direct 由当前主模型继续，不结束任务。只记录执行事实，不授予验收权。",
   inputSchema: z.object({
     route_id: z.string().min(1).max(200),
     outcome: z.enum(["succeeded", "failed", "cancelled", "unavailable", "overloaded"]),

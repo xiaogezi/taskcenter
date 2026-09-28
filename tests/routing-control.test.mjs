@@ -121,15 +121,15 @@ test("高风险任务优先回退 Terra", () => {
   assert.equal(complex.route.selected_model, terra);
 });
 
-test("策略命中规则和内容 hash 可见，高要求模型容量不足时不降级", () => {
+test("策略命中规则和内容 hash 可见，高要求执行器不足时由当前主模型接管", () => {
   const first = routingSelect({ ...baseInput, task_class: "security", event_id: "security-select" }, "2026-08-18T08:00:00.000Z");
   assert.equal(first.route.selected_model, terra);
   assert.equal(first.route.matched_rule, "task_class_models.security");
   assert.match(first.route.config_version, /^[a-f0-9]{64}$/);
   routingResult({ route_id: first.route.route_id, outcome: "overloaded", error_type: "server_overloaded" }, "2026-08-18T08:00:01.000Z");
   const unavailable = routingSelect({ ...baseInput, task_class: "security", event_id: "security-capacity" }, "2026-08-18T08:00:01.100Z");
-  assert.equal(unavailable.route.available, false);
-  assert.equal(unavailable.route.selected_model, null);
+  assert.equal(unavailable.route.available, true);
+  assert.equal(unavailable.route.selected_model, baseInput.orchestrator_model);
 });
 
 test("显式模型覆盖优先，未知 task_class 拒绝静默降级", () => {
@@ -228,6 +228,21 @@ test("派发前额度快照已耗尽时直接回退到现有执行模型", () =>
   assert.equal(selected.route.fallback_reason, "preferred_model_quota_exhausted");
   assert.equal(selected.route.quota_used_percent, 100);
   assert.equal(selected.route.probe, false);
+});
+
+test("额度耗尽且回退模型满额时主模型接管，仍保留额度快照", () => {
+  const now = "2026-08-18T08:00:01.000Z";
+  routingSelect({ ...baseInput, event_id: "occupy-quota-fallback" }, now);
+  const selected = routingSelect({
+    ...baseInput, event_id: "quota-main-fallback",
+    execution_model_policy: { mode: "quota_preferred", preferred_model: spark, quota_limit_id: "codex_bengalfox", fallback_on_exhaustion: true },
+    quota_snapshot: { limit_id: "codex_bengalfox", observed_at: now, primary: { used_percent: 100, window_minutes: 300, resets_at: 1787043900 } },
+  }, now);
+  assert.equal(selected.route.channel, "direct");
+  assert.equal(selected.route.selected_model, baseInput.orchestrator_model);
+  assert.match(selected.route.fallback_reason, /quota_fallback_model_unavailable/);
+  assert.equal(selected.route.quota_used_percent, 100);
+  assert.equal(selected.route.quota_limit_id, "codex_bengalfox");
 });
 
 test("OCR 选择集中配置的 Reviewer，并保留审查输入证据", () => {
@@ -358,7 +373,7 @@ test("当前项目策略仅会话派发：MiMo 优先、八款候选、实际能
     assert.equal(fallback.route.selected_model, "kimi-code/k3", "MiMo 共享池满后选可用会话候选");
     assert.equal(fallback.route.reasoning_effort, "low");
     routingSelect({ ...request, event_id: "policy-fourth" });
-    assert.equal(routingSelect({ ...request, event_id: "policy-fifth" }).route.available, false, "Luna 也受全局并发限制");
+    assert.equal(routingSelect({ ...request, event_id: "policy-fifth" }).route.channel, "direct", "全局派发容量满时由主模型接管");
     const review = routingSelect({ ...baseInput, task_class: "ocr_review", review_artifacts: reviewArtifacts, event_id: "native-pool-review" });
     assert.equal(review.route.available, true, "普通执行全局并发占满不占用 Reviewer 全局额度");
     assert.equal(review.route.selected_model, "gpt-6-luna");
@@ -374,8 +389,8 @@ test("当前项目策略仅会话派发：MiMo 优先、八款候选、实际能
     const luna = routingSelect({ ...request, available_native_models: ["gpt-6-luna"], event_id: "only-luna" });
     assert.equal(luna.route.selected_model, "gpt-6-luna");
     const missing = routingSelect({ ...request, available_native_models: [], event_id: "no-native" });
-    assert.equal(missing.route.available, false);
-    assert.equal(missing.route.channel, "native");
+    assert.equal(missing.route.available, true);
+    assert.equal(missing.route.channel, "direct");
     assert.equal(missing.route.cli_profile, undefined);
     assert.throws(() => routingSelect({ ...request, channel: "cli" }), /CLI_DISPATCH_DISABLED/);
     assert.throws(() => routingSelect({ ...request, channel: "invalid" }), /channel 无效/);
@@ -408,9 +423,9 @@ test("默认路由推理档位始终等于实际 profile 档位，不只在不�
 
     await rm(statePath, { force: true });
     const nativeSelected = routingSelect({ ...baseInput, channel: "native", event_id: "effort-profile-native" });
-    assert.equal(nativeSelected.route.available, false, "显式 native 无能力时不可用，不再转换为 CLI profile");
-    assert.equal(nativeSelected.route.channel, "native");
-    assert.match(nativeSelected.route.reason, /^native_model_not_configured:/);
+    assert.equal(nativeSelected.route.available, true, "显式 native 无能力时由主模型接管");
+    assert.equal(nativeSelected.route.channel, "direct");
+    assert.match(nativeSelected.route.fallback_reason, /^native_model_not_configured:/);
   } finally {
     await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
     await rm(statePath, { force: true });
@@ -485,8 +500,8 @@ test("automatic_until 到期后旧模型退出自动映射与回退，显式目�
 
     routingSelect({ ...baseInput, event_id: "expiry-occupy-2" }, "2026-10-21T02:00:02.000Z");
     const after = routingSelect({ ...baseInput, event_id: "expiry-after" }, "2026-10-21T02:00:03.000Z");
-    assert.equal(after.route.available, false, "到期后旧模型不再作为自动回退");
-    assert.equal(after.route.selected_model, null);
+    assert.equal(after.route.available, true, "到期后旧模型不再作为自动回退，由主模型接管");
+    assert.equal(after.route.selected_model, baseInput.orchestrator_model);
   } finally {
     await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
     await rm(statePath, { force: true });
@@ -511,7 +526,7 @@ test("共享 quota pool 并发上限跨候选模型生效", async () => {
     assert.equal(first.route.selected_model, "exec-a");
     assert.equal(second.route.selected_model, "exec-a", "模型级 2 个名额先用满");
     const third = routingSelect({ ...baseInput, event_id: "pool-3" }, "2026-08-18T08:00:02.000Z");
-    assert.equal(third.route.available, false, "pool 上限 2 跨 exec-a/exec-b 共享，回退也被拒绝");
+    assert.equal(third.route.channel, "direct", "pool 满时由主模型接管，不新增执行器容量");
 
     routingResult({ route_id: first.route.route_id, outcome: "succeeded" }, "2026-08-18T08:00:03.000Z");
     const fourth = routingSelect({ ...baseInput, event_id: "pool-4" }, "2026-08-18T08:00:04.000Z");
@@ -523,7 +538,7 @@ test("共享 quota pool 并发上限跨候选模型生效", async () => {
     assert.equal(expired.route.available, true);
     routingSelect({ ...baseInput, event_id: "pool-6" }, "2026-08-18T08:00:06.000Z");
     const blocked = routingSelect({ ...baseInput, event_id: "pool-7" }, "2026-08-18T08:00:07.000Z");
-    assert.equal(blocked.route.available, false);
+    assert.equal(blocked.route.channel, "direct");
     const afterExpiry = routingSelect({ ...baseInput, event_id: "pool-8" }, "2026-08-18T08:01:06.000Z");
     assert.equal(afterExpiry.route.available, true, "pool-5 租约过期后正确释放 pool 名额");
   } finally {
@@ -549,7 +564,7 @@ test("executor 全局并发上限跨全部候选模型生效", async () => {
     assert.equal(routingSelect({ ...baseInput, event_id: "global-2" }, "2026-08-18T08:00:01.000Z").route.selected_model, "exec-a");
     assert.equal(routingSelect({ ...baseInput, event_id: "global-3" }, "2026-08-18T08:00:02.000Z").route.selected_model, "exec-b");
     const fourth = routingSelect({ ...baseInput, event_id: "global-4" }, "2026-08-18T08:00:03.000Z");
-    assert.equal(fourth.route.available, false, "第 4 个 executor 租约超过全局上限 3，即使 exec-b 模型级仍有余量");
+    assert.equal(fourth.route.channel, "direct", "第 4 个任务由主模型接管，全局执行器容量仍为 3");
   } finally {
     await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
     await rm(statePath, { force: true });

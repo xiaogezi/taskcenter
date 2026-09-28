@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 普通路由无可用执行器、能力或容量时自动返回当前主模型 direct 租约；派发失败回执携带停止执行器、撤销授权和主模型接管步骤。Jev 的 needs_context 交回主模型处理，direct 不再受一次性口令或限定例外阻断；保留失败审计、任务权限和 Reviewer 独立边界。
+
 - 普通执行改为 Codex 原生会话派发，停用新 CLI 路由和授权；MiMo 四款优先，Kimi 三款与 GPT-6 Luna 共八款由 Jev 按任务和宿主实际能力选择。能力缺失、容量不足或 Jev 失败不回退 CLI。两款 Kimi Coding 按用户授权使用 high，其余保持 low/medium；保留历史 CLI 回执和撤销。
 
 - 修复显式 Codex native 路由未携带 runtime 模型 ID，导致原生 delegation grant/claim 拒绝的问题；仅当调用方声明本轮可用的 Codex 模型能力时路由成功。

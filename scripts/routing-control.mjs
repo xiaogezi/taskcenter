@@ -332,15 +332,17 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     const fallback = ensureHealth(state, mappedModel, now, config);
     advanceCircuit(fallback, now);
     if (!canLease(state, fallback, now, config, roleName)) {
-      const route = buildUnavailableRoute({
-        eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred: fallback, now,
+      const route = buildUnavailableOrMainRoute({
+        eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred: fallback, now, leaseTtlMs: input.lease_ttl_ms,
         reason: "quota_fallback_model_unavailable", fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
         configVersion: config.contentHash, policyVersion: config.schemaVersion,
         matchedRule: "task.execution_model_policy.quota_preferred",
         preferenceMode: executionModelPolicy.mode, quota, selectedReasoningEffort, jevDecision: jev, directReason,
       });
       state.routes.push(route);
-      route.selectAuditEvents = auditEventsFor(route, fallback, "selection_unavailable");
+      const routeHealth = route.available ? ensureHealth(state, orchestratorModel, now, config) : fallback;
+      route.circuitState = routeHealth.state;
+      route.selectAuditEvents = auditEventsFor(route, routeHealth, route.available ? "direct_selected" : "selection_unavailable");
       persistState(state, now);
       return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
     }
@@ -371,8 +373,8 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
       }
     }
     if (!fallback) {
-      const route = buildUnavailableRoute({
-        eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now,
+      const route = buildUnavailableOrMainRoute({
+        eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now, leaseTtlMs: input.lease_ttl_ms,
         reason: role.failClosed ? "reviewer_model_unavailable" : "no_model_capacity_available",
         fallbackFrom, fallbackReason, retryAfterAt, reviewArtifacts,
         configVersion: config.contentHash,
@@ -381,7 +383,9 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
         preferenceMode: executionModelPolicy.mode, quota, selectedReasoningEffort, jevDecision: jev, directReason,
       });
       state.routes.push(route);
-      route.selectAuditEvents = auditEventsFor(route, preferred, "selection_unavailable");
+      const routeHealth = route.available ? ensureHealth(state, orchestratorModel, now, config) : preferred;
+      route.circuitState = routeHealth.state;
+      route.selectAuditEvents = auditEventsFor(route, routeHealth, route.available ? "direct_selected" : "selection_unavailable");
       persistState(state, now);
       return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
     }
@@ -422,15 +426,17 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
           : !mapping.reasoningEfforts.includes(selectedReasoningEffort)
             ? `native_effort_not_supported:${selectedReasoningEffort}`
             : `native_model_not_available:${mapping.runtimeModel}`;
-      const route = buildUnavailableRoute({
-        eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred: selected, now,
+      const route = buildUnavailableOrMainRoute({
+        eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred: selected, now, leaseTtlMs: input.lease_ttl_ms,
         reason: unavailableReason, reviewArtifacts,
         configVersion: config.contentHash, policyVersion: config.schemaVersion,
         matchedRule: "explicit_native_capability", preferenceMode: executionModelPolicy.mode,
         selectedReasoningEffort, jevDecision: jev, directReason,
       });
       state.routes.push(route);
-      route.selectAuditEvents = auditEventsFor(route, selected, "selection_unavailable");
+      const routeHealth = route.available ? ensureHealth(state, orchestratorModel, now, config) : selected;
+      route.circuitState = routeHealth.state;
+      route.selectAuditEvents = auditEventsFor(route, routeHealth, route.available ? "direct_selected" : "selection_unavailable");
       persistState(state, now);
       return { route: publicRoute(route), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: false, auditEvents: route.selectAuditEvents };
     }
@@ -650,12 +656,13 @@ function isQuotaFailure(result) {
   return result.httpStatus === 429 || result.errorType === "rate_limit" || /quota|rate.?limit/i.test(`${result.errorType} ${result.errorCode}`);
 }
 
-function buildUnavailableRoute({
+function buildUnavailableOrMainRoute({
   eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred, now, reason,
   fallbackFrom = "", fallbackReason = "", retryAfterAt = "", reviewArtifacts = null,
   configVersion = "", policyVersion = "", matchedRule = "", preferenceMode = "auto", quota = null,
-  selectedReasoningEffort = "low", jevDecision = null, directReason = "",
+  selectedReasoningEffort = "low", jevDecision = null, directReason = "", leaseTtlMs,
 }) {
+  const mainFallback = !isReviewTaskClass(taskClass);
   return {
     id: `route_${randomUUID()}`,
     selectEventId: eventId,
@@ -663,33 +670,33 @@ function buildUnavailableRoute({
     taskId,
     orchestratorModel,
     preferredModel,
-    selectedModel: "",
-    selectedReasoningEffort,
+    selectedModel: mainFallback ? orchestratorModel : "",
+    selectedReasoningEffort: mainFallback ? "unknown" : selectedReasoningEffort,
     taskClass,
-    channel,
+    channel: mainFallback ? "direct" : channel,
     circuitState: preferred.state,
-    reason: reason || "no_model_capacity_available",
-    fallbackFrom,
-    fallbackReason,
+    reason: mainFallback ? "main_model_fallback" : reason || "no_model_capacity_available",
+    fallbackFrom: mainFallback ? preferred.model : fallbackFrom,
+    fallbackReason: mainFallback ? [reason, fallbackReason].filter(Boolean).join(":") : fallbackReason,
     retryAfterAt,
     reviewArtifacts,
     jevDecision,
-    directReason,
+    directReason: mainFallback ? directReason || `执行器不可用，由当前主模型继续：${reason}` : directReason,
     configVersion,
     policyVersion,
-    matchedRule,
+    matchedRule: mainFallback ? "main_model_fallback" : matchedRule,
     preferenceMode,
     quotaLimitId: quota?.limitId || "",
     quotaSnapshotObservedAt: quota?.observedAt || "",
     quotaUsedPercent: quota?.usedPercent,
     quotaResetAt: quota?.retryAfterAt || "",
     requiresNewSession: false,
-    available: false,
+    available: mainFallback,
     probe: false,
-    status: "unavailable",
+    status: mainFallback ? "leased" : "unavailable",
     createdAt: now,
-    expiresAt: now,
-    completedAt: now,
+    expiresAt: mainFallback ? new Date(Date.parse(now) + normalizeTtlMs(leaseTtlMs)).toISOString() : now,
+    completedAt: mainFallback ? "" : now,
     resultEventId: "",
     resultSignature: "",
     result: null,
@@ -775,8 +782,12 @@ function publicRoute(route) {
     channel: route.channel,
     circuit_state: route.circuitState,
     reason: route.reason,
-    ...(!route.available && route.reason?.startsWith("native_") ? {
-      next_action: "核对当前原生派发工具支持的型号与档位，传入真实 available_native_models；能力缺失时刷新宿主会话，不能用模型选择器代替派发能力声明。",
+    ...(route.reason === "main_model_fallback" && route.status === "leased" ? {
+      next_action: "确认同范围执行器不再写入后，当前主模型使用此 direct 路由继续已授权任务，不再请求主模型授权或等待容量。任务权限与安全边界保持不变。",
+    } : route.jevDecision?.execution_override_reason === "needs_context_main_model" && route.status === "leased" ? {
+      next_action: "主模型核对现有上下文并继续可确定的工作；确有影响结果的信息缺口时向用户澄清，不因路由建议中断任务。",
+    } : route.channel !== "direct" && !isReviewTaskClass(route.taskClass) && ["failed", "unavailable", "overloaded", "expired"].includes(route.status) ? {
+      next_action: "停止并确认原执行器不再写入，撤销其 delegation；以 channel=direct 和实际失败原因 direct_reason 调用 routing_select，由当前主模型继续同一任务。无需重复用户授权，不回退 CLI。",
     } : {}),
     fallback_from: route.fallbackFrom || null,
     fallback_reason: route.fallbackReason || null,

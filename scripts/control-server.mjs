@@ -92,7 +92,6 @@ import {
   isReviewTaskClass, validateReviewRequest, claimReview, reportReview, reviewSessionRecords, reviewTaskRecords, routeForId,
 } from "./routing-control.mjs";
 import { prepareRoutingInput } from "./jev-routing.mjs";
-import { directUserAuthorization, findSessionPath } from "./harnesses/codex-session.mjs";
 import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.mjs";
 import { readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
@@ -683,20 +682,15 @@ const server = createServer(async (request, response) => {
         throw new RoutingControlError(409, "routing_select 的 preferred_model 与任务持久化策略不一致。");
       }
       // 通过统一入口完成 direct_reason 门禁、Jev 评估与应用；伪造的 body.jev_decision 在此被剥离。
-      // Only this server can attach authorization derived from a real user-role Codex message.
+      // Direct takeover uses the existing task authority, not a one-shot transcript phrase.
       delete body.direct_authorization_fingerprint;
       delete body.direct_authorization_expires_at;
-      let directAuthorization = null;
-      const declaredDirectException = ["device_interaction", "atomic_git", "shared_dirty_workspace"].includes(body.direct_exception_kind)
-        || /^\[(?:device_interaction|atomic_git|shared_dirty_workspace)\]/.test(body.direct_reason || "");
-      if (body.channel === "direct" && !declaredDirectException) {
+      if (body.channel === "direct") {
         verifyBoundMcpRequest(request);
         // Older healthy MCP runtimes omit caller session for ordinary routing until Codex restarts.
-        if (body.session_id && canonicalSessionId(body.session_id) !== sessionId) throw new RoutingControlError(403, "只有任务所属 Session 可申请用户授权的直接执行。", "DIRECT_AUTHORIZATION_DENIED");
-        const sessionPath = findSessionPath(sessionId);
-        if (sessionPath) directAuthorization = directUserAuthorization(sessionPath, task.id, sessionId, task.createdAt);
+        if (body.session_id && canonicalSessionId(body.session_id) !== sessionId) throw new RoutingControlError(403, "只有任务所属 Session 可申请主模型直接执行。", "DIRECT_AUTHORIZATION_DENIED");
       }
-      const prepared = await prepareRoutingInput({ ...body, ...(directAuthorization ? { direct_authorization_fingerprint: directAuthorization.fingerprint, direct_authorization_expires_at: directAuthorization.expiresAt } : {}) }, task, { executionModelPolicy });
+      const prepared = await prepareRoutingInput(body, task, { executionModelPolicy });
       const quotaSnapshot = executionModelPolicy.quota_limit_id
         ? currentUsageReport().rate_limits?.by_limit_id?.[executionModelPolicy.quota_limit_id] || null
         : null;

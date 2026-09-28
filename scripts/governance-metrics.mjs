@@ -46,7 +46,7 @@ const GATE_DENIAL_GUIDANCE = {
   },
   task_permission: {
     reason: "CLI/任务权限拒绝：grant、scope、claim 或工具授权与当前执行不匹配。",
-    recovery: "在同 executor 角色内做一次有界修正：核对 delegation scope/allowed_tools、claim 状态与 route 绑定；仍失败则报告失败，不静默改主模型直接执行。",
+    recovery: "核对 delegation scope/allowed_tools、claim 与 route 绑定并最多修正一次；仍失败则停止原执行器、撤销 delegation、记录 routing_result，以 direct_reason 申请主模型 direct 接管同一已授权任务。不得绕过任务或安全权限。",
     verification: "修正后重跑该 CLI Run，evidence.failure_kind 不再是 task_permission，delegation report 进入 succeeded 或明确失败原因。",
   },
   tool_approval: {

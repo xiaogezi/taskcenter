@@ -39,7 +39,7 @@ const roleConfig = {
 await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 
 const { loadModelRoleConfig, nativeRuntimeModel, publicModelRoleConfig } = await import("../scripts/model-role-config.mjs");
-const { routingResult, routingSelect } = await import("../scripts/routing-control.mjs");
+const { routingResult, routingSelect, activeExecutionRoute } = await import("../scripts/routing-control.mjs");
 const { grantDelegation, claimDelegation, revokeDelegation } = await import("../scripts/delegation-store.mjs");
 const { boundedResponse } = await import("../scripts/bounded-response.mjs");
 
@@ -97,17 +97,17 @@ test("普通路径能力缺失维持可解释 CLI 兼容，显式 cli 保持 CLI
   assert.equal(explicitCli.route.cli_profile, "claude-mimo");
 });
 
-test("显式 native 能力缺失返回可操作不可用原因且不消费容量", () => {
+test("显式 native 能力缺失回退当前主模型且不消费执行器容量", () => {
   const missing = routingSelect({ ...baseInput, channel: "native", preferred_model: flash, available_native_models: [proRuntime], event_id: "native-missing" });
-  assert.equal(missing.route.available, false);
-  assert.equal(missing.route.channel, "native");
-  assert.equal(missing.route.reason, `native_model_not_available:${flashRuntime}`);
-  assert.match(missing.route.next_action, /available_native_models/);
+  assert.equal(missing.route.available, true);
+  assert.equal(missing.route.channel, "direct");
+  assert.equal(missing.route.fallback_reason, `native_model_not_available:${flashRuntime}`);
+  assert.match(missing.route.next_action, /当前主模型/);
   assert.equal(missing.health.find((item) => item.model === flash)?.active_executors ?? 0, 0, "不可用不发放租约");
 
   const unconfigured = routingSelect({ ...baseInput, channel: "native", preferred_model: "kimi-code/k3-256k", available_native_models: [flashRuntime], event_id: "native-unconfigured" });
-  assert.equal(unconfigured.route.available, false);
-  assert.match(unconfigured.route.reason, /^native_model_not_configured:/);
+  assert.equal(unconfigured.route.available, true);
+  assert.match(unconfigured.route.fallback_reason, /^native_model_not_configured:/);
 });
 
 test("MCP 大响应裁剪保留启动原生执行所需的完整路由字段", () => {
@@ -135,7 +135,7 @@ test("CLI-only 默认模型不会遮蔽原生候选，Jev 推荐和显式模型�
   routingResult({ route_id: selected.route.route_id, outcome: "cancelled" });
   routingResult({ route_id: second.route.route_id, outcome: "failed", error_type: "task_permission" });
   const pinned = routingSelect({ ...baseInput, channel: "native", preferred_model: "cli-only", available_native_models: [flashRuntime] });
-  assert.equal(pinned.route.available, false, "显式模型不能为原生偏好被替换");
+  assert.equal(pinned.route.selected_model, baseInput.orchestrator_model, "显式模型不可用时由主模型兜底，不换其他执行器");
   const protectedClass = routingSelect({ ...baseInput, channel: "other", task_class: "security", available_native_models: [flashRuntime] });
   assert.equal(protectedClass.route.selected_model, pro, "高风险类别仍遵守配置模型");
 });
@@ -150,7 +150,7 @@ test("native 能力声明严格校验且参与幂等签名", () => {
   assert.throws(() => routingSelect({ ...input, available_native_models: [proRuntime] }), /event_id/);
 });
 
-test("档位只声明实际请求值：映射内档位可原生，超上限不可用", async () => {
+test("档位只声明实际请求值：映射内档位可原生，不支持时主模型兜底", async () => {
   const medium = routingSelect({ ...baseInput, channel: "native", task_class: "security", available_native_models: [proRuntime], event_id: "native-medium" });
   assert.equal(medium.route.channel, "native");
   assert.equal(medium.route.selected_model, pro);
@@ -161,8 +161,9 @@ test("档位只声明实际请求值：映射内档位可原生，超上限不�
   lowOnly.native_models[pro].reasoning_efforts = ["low"];
   await writeFile(roleConfigPath, `${JSON.stringify(lowOnly)}\n`, "utf8");
   const unsupported = routingSelect({ ...baseInput, channel: "native", task_class: "security", available_native_models: [proRuntime], event_id: "native-effort" });
-  assert.equal(unsupported.route.available, false);
-  assert.equal(unsupported.route.reason, "native_effort_not_supported:medium");
+  assert.equal(unsupported.route.available, true);
+  assert.equal(unsupported.route.fallback_reason, "native_effort_not_supported:medium")
+  assert.equal(unsupported.route.reasoning_effort, "unknown", "不把执行器档位冒充主模型档位");
 });
 
 test("首选熔断后回退到有能力候选仍走原生，退休模型不进入原生", () => {
@@ -189,9 +190,9 @@ test("显式 Codex native：canonical id 即 runtime，能力声明后可路由�
   routingResult({ route_id: selected.route.route_id, outcome: "succeeded", event_id: "native-codex-release" });
 
   const missing = routingSelect({ ...baseInput, channel: "native", preferred_model: "gpt-6-luna", available_native_models: ["gpt-6-astra"], event_id: "native-codex-missing" });
-  assert.equal(missing.route.available, false, "能力列表未声明所选 Codex runtime 时不可用");
-  assert.equal(missing.route.channel, "native");
-  assert.equal(missing.route.reason, "native_model_not_available:gpt-6-luna");
+  assert.equal(missing.route.available, true, "能力未声明时回退当前主模型");
+  assert.equal(missing.route.channel, "direct");
+  assert.equal(missing.route.fallback_reason, "native_model_not_available:gpt-6-luna");
 });
 
 test("native grant 绑定 route_id，store 保留绑定且幂等重放", () => {
@@ -211,4 +212,39 @@ test("native grant 绑定 route_id，store 保留绑定且幂等重放", () => {
   const revoked = revokeDelegation({ delegation_id: granted.delegation.id, parent_session_id: "parent" });
   assert.equal(revoked.delegation.status, "revoked");
   assert.throws(() => claimDelegation({ delegation_id: granted.delegation.id, claim_token: "x", session_id: "other-child", workspace: "/work" }, { ...session, sessionId: "other-child" }), /已被其他 Session 领取/);
+});
+
+
+test("能力缺失产生可用于 Hook 的 direct 租约，幂等重放且正确结束", () => {
+  const now = "2026-09-28T08:00:00.000Z";
+  const request = { ...baseInput, channel: "native", available_native_models: [], event_id: "main-fallback", lease_ttl_ms: 60_000 };
+  const selected = routingSelect(request, now);
+  assert.equal(selected.route.reason, "main_model_fallback");
+  assert.equal(selected.route.selected_model, baseInput.orchestrator_model);
+  assert.equal(selected.route.expires_at, "2026-09-28T08:01:00.000Z");
+  assert.equal(selected.route.native_model, null);
+  assert.equal(activeExecutionRoute(baseInput.task_id, now).direct, true);
+  assert.equal(selected.auditEvents[0].dispatch_channel, "direct");
+  assert.equal(selected.auditEvents[0].fallback_reason, `native_model_not_available:${flashRuntime}`);
+  const replay = routingSelect(request, now);
+  assert.equal(replay.route.route_id, selected.route.route_id);
+  assert.equal(replay.idempotent, true);
+  assert.equal(selected.health.every(model => model.active_executors === 0), true);
+  routingResult({ route_id: selected.route.route_id, outcome: "succeeded" }, "2026-09-28T08:00:30.000Z");
+  assert.equal(activeExecutionRoute(baseInput.task_id, "2026-09-28T08:00:31.000Z").direct, false);
+});
+
+test("执行器失败回执保留原始失败和主模型接管提示，大响应裁剪也不丢失", () => {
+  for (const outcome of ["failed", "unavailable", "overloaded"]) {
+    const selected = routingSelect({ ...baseInput, channel: "native", available_native_models: [flashRuntime] });
+    const failed = routingResult({ route_id: selected.route.route_id, outcome, error_type: "task_permission", error_code: "SPAWN_FAILED", request_id: "request-failed" });
+    assert.equal(failed.route.result.outcome, outcome);
+    assert.equal(failed.route.result.error_code, "SPAWN_FAILED");
+    assert.match(failed.route.next_action, /channel=direct/);
+    assert.match(failed.route.next_action, /停止.*撤销/);
+    assert.equal(failed.health.find(model => model.model === flash).active_executors, 0);
+    const bounded = boundedResponse({ ...failed, extra: "x".repeat(5000) });
+    assert.equal(bounded.route.next_action, failed.route.next_action);
+    assert.equal(bounded.route.result.request_id, "request-failed");
+  }
 });
