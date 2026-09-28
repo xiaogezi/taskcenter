@@ -416,9 +416,10 @@ test("当前项目策略先派发非 Codex 客户端，总容量满后才使用 
     assert.equal(directMain.route.cli_profile, undefined);
 
     await rm(statePath, { force: true });
-    const nativeExplicit = routingSelect({ ...baseInput, channel: "native", preferred_model: "gpt-6-luna", event_id: "policy-native-explicit" });
+    const nativeExplicit = routingSelect({ ...baseInput, channel: "native", preferred_model: "gpt-6-luna", available_native_models: ["gpt-6-luna"], event_id: "policy-native-explicit" });
     assert.equal(nativeExplicit.route.selected_model, "gpt-6-luna");
     assert.equal(nativeExplicit.route.channel, "native", "显式 Codex native 既有路径保持原生语义");
+    assert.equal(nativeExplicit.route.native_model, "gpt-6-luna", "显式能力声明绑定实际 runtime model");
 
     for (const model of [luna, terra, "gpt-5.6-sol", spark]) {
       await rm(statePath, { force: true });

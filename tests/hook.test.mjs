@@ -940,6 +940,62 @@ test("原生委派绑定 native 路由，错配模型/路由/任务与已结束�
   assert.equal((await post("/delegations/touch", touch)).status, 409, "已结束路由不能继续执行工具");
 });
 
+test("显式 Codex native route 可 grant/claim，且拒绝错配与过期租约", async () => {
+  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
+  const parent = "native-codex-parent", child = "native-codex-child", wrongChild = "native-codex-wrong", expiredChild = "native-codex-expired";
+  await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
+  const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "explicit Codex native", goal: "explicit Codex native" })).json();
+
+  const unsupported = await (await post("/routing/select", {
+    task_id: created.task.id, task_class: "implementation", channel: "native", preferred_model: "gpt-6-luna",
+    available_native_models: ["gpt-6-astra"], event_id: "native-codex-unavailable",
+  })).json();
+  assert.equal(unsupported.route.available, false, "未声明目标 runtime 的能力必须拒绝路由");
+
+  const selected = await (await post("/routing/select", {
+    task_id: created.task.id, task_class: "implementation", channel: "native", preferred_model: "gpt-6-luna",
+    available_native_models: ["gpt-6-luna"], event_id: "native-codex-route",
+  })).json();
+  assert.equal(selected.accepted, true, JSON.stringify(selected));
+  const route = selected.route;
+  assert.equal(route.channel, "native");
+  assert.equal(route.selected_model, "gpt-6-luna");
+  assert.equal(route.native_model, "gpt-6-luna");
+
+  const grantBody = { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: route.selected_model, channel: "native", route_id: route.route_id, ttl_seconds: 600 };
+  assert.equal((await post("/delegations/grant", { ...grantBody, task_id: "wrong-task" })).status, 409, "错误任务拒绝");
+  assert.equal((await post("/delegations/grant", { ...grantBody, executor_model: "gpt-6-astra" })).status, 409, "canonical/runtime 型号错配拒绝");
+  const grantResponse = await post("/delegations/grant", grantBody);
+  const grant = await grantResponse.json();
+  assert.equal(grantResponse.status, 201, JSON.stringify(grant));
+  assert.equal(grant.delegation.routeId, route.route_id);
+
+  await runHook("session-start", "codex", { session_id: wrongChild, cwd: "/work", model: "gpt-6-astra" });
+  await runHook("session-start", "codex", { session_id: child, cwd: "/work", model: "gpt-6-luna" });
+  const claim = { workspace: "/work", delegation_id: grant.delegation.id, claim_token: grant.claimToken, route_id: route.route_id, executor_model: route.selected_model };
+  assert.equal((await post("/delegations/claim", { ...claim, session_id: wrongChild })).status, 409, "领取 Session 型号错配拒绝");
+  const claimed = await post("/delegations/claim", { ...claim, session_id: child });
+  assert.equal(claimed.status, 200, await claimed.text());
+  assert.equal((await post("/routing/result", { route_id: route.route_id, outcome: "succeeded" })).status, 200);
+  assert.equal((await post("/delegations/claim", { ...claim, session_id: child })).status, 409, "已结束路由拒绝再次 claim");
+
+  const expiring = await (await post("/routing/select", {
+    task_id: created.task.id, task_class: "implementation", channel: "native", preferred_model: "gpt-6-luna",
+    available_native_models: ["gpt-6-luna"], event_id: "native-codex-expiring-route",
+  })).json();
+  const expiredRoute = expiring.route;
+  const expiredGrantResponse = await post("/delegations/grant", { ...grantBody, route_id: expiredRoute.route_id, event_id: "native-codex-expiring-grant" });
+  const expiredGrant = await expiredGrantResponse.json();
+  assert.equal(expiredGrantResponse.status, 201, JSON.stringify(expiredGrant));
+  await runHook("session-start", "codex", { session_id: expiredChild, cwd: "/work", model: "gpt-6-luna" });
+  const state = JSON.parse(await readFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, "utf8"));
+  const storedRoute = state.routes.find(item => item.id === expiredRoute.route_id);
+  assert.ok(storedRoute);
+  storedRoute.expiresAt = new Date(Date.now() - 1_000).toISOString();
+  await writeFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify(state));
+  assert.equal((await post("/delegations/claim", { workspace: "/work", delegation_id: expiredGrant.delegation.id, claim_token: expiredGrant.claimToken, route_id: expiredRoute.route_id, executor_model: expiredRoute.selected_model, session_id: expiredChild })).status, 409, "过期路由拒绝 claim");
+});
+
 
 test("CLI Session 领取 delegation 后通过主任务门禁且不创建子任务", async () => {
   const parentSessionId = "019f0000-0000-7000-8000-000000000092";

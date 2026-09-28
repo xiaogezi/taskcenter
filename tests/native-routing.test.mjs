@@ -34,6 +34,7 @@ const roleConfig = {
     [pro]: { runtime_model: proRuntime, reasoning_efforts: ["low", "medium"] },
   },
   retired_models: ["gpt-5.6-terra"],
+  quota_pools: [{ id: "codex", provider: "codex", models: ["gpt-6-luna", "gpt-6-astra"] }],
 };
 await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 
@@ -176,6 +177,21 @@ test("首选熔断后回退到有能力候选仍走原生，退休模型不进�
     const retired = routingSelect({ ...baseInput, channel: "native", preferred_model: "gpt-5.6-terra", available_native_models: [proRuntime], event_id: "native-retired" }, "2026-09-28T08:31:00.000Z");
     assert.notEqual(retired.route.selected_model, "gpt-5.6-terra", "退役偏好归一，不进入原生映射");
   });
+});
+
+test("显式 Codex native：canonical id 即 runtime，能力声明后可路由并携带 native_model", () => {
+  const selected = routingSelect({ ...baseInput, channel: "native", preferred_model: "gpt-6-luna", available_native_models: ["gpt-6-luna"], event_id: "native-codex" });
+  assert.equal(selected.route.available, true);
+  assert.equal(selected.route.channel, "native");
+  assert.equal(selected.route.selected_model, "gpt-6-luna");
+  assert.equal(selected.route.native_model, "gpt-6-luna", "显式 Codex native 必须携带 native_model 供 grant/claim 绑定");
+  assert.equal(selected.route.cli_profile, undefined);
+  routingResult({ route_id: selected.route.route_id, outcome: "succeeded", event_id: "native-codex-release" });
+
+  const missing = routingSelect({ ...baseInput, channel: "native", preferred_model: "gpt-6-luna", available_native_models: ["gpt-6-astra"], event_id: "native-codex-missing" });
+  assert.equal(missing.route.available, false, "能力列表未声明所选 Codex runtime 时不可用");
+  assert.equal(missing.route.channel, "native");
+  assert.equal(missing.route.reason, "native_model_not_available:gpt-6-luna");
 });
 
 test("native grant 绑定 route_id，store 保留绑定且幂等重放", () => {

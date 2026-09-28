@@ -399,17 +399,23 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
   let nativeModel = "";
   if (roleName === "executor" && !resolvedProfile) {
     const codexModels = new Set((config.quotaPools || []).filter((pool) => pool.provider === "codex").flatMap((pool) => pool.models));
-    const runtime = nativeRuntimeModel(config, selectedModel, availableNativeModels, selectedReasoningEffort);
+    // 显式 Codex native：canonical 模型 id 即 runtime id，能力列表声明即可原生派发。
+    const isCodexModel = codexModels.has(selectedModel);
+    const runtime = isCodexModel
+      ? (availableNativeModels.includes(selectedModel) ? selectedModel : "")
+      : nativeRuntimeModel(config, selectedModel, availableNativeModels, selectedReasoningEffort);
     if (runtime && (automaticChannel || channel === "native")) {
       effectiveChannel = "native";
       nativeModel = runtime;
-    } else if (channel === "native" && !codexModels.has(selectedModel)) {
+    } else if (channel === "native") {
       const mapping = config.nativeModels?.[selectedModel];
-      const unavailableReason = !mapping
-        ? `native_model_not_configured:${selectedModel}`
-        : !mapping.reasoningEfforts.includes(selectedReasoningEffort)
-          ? `native_effort_not_supported:${selectedReasoningEffort}`
-          : `native_model_not_available:${mapping.runtimeModel}`;
+      const unavailableReason = isCodexModel
+        ? `native_model_not_available:${selectedModel}`
+        : !mapping
+          ? `native_model_not_configured:${selectedModel}`
+          : !mapping.reasoningEfforts.includes(selectedReasoningEffort)
+            ? `native_effort_not_supported:${selectedReasoningEffort}`
+            : `native_model_not_available:${mapping.runtimeModel}`;
       const route = buildUnavailableRoute({
         eventId, signature, taskId, orchestratorModel, preferredModel, taskClass, channel, preferred: selected, now,
         reason: unavailableReason, reviewArtifacts,
