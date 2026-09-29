@@ -61,7 +61,7 @@ export function withReviewStatus(tasks) {
 }
 
 function publicReviewRecord(route, now = new Date().toISOString()) {
-  const record = { ...route.reviewRecord, claim_token: undefined };
+  const record = { ...route.reviewRecord, route_id: route.id, claim_token: undefined };
   if (["pending", "running"].includes(record.status) && Date.parse(route.expiresAt) <= Date.parse(now)) {
     record.status = "failed";
     record.finished_at = route.expiresAt;

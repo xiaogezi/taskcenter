@@ -419,16 +419,18 @@ toolRegistry.register("taskcenter_routing_result", {
 });
 
 toolRegistry.register("taskcenter_review_start", {
-  description: "统一只读 Reviewer 入口：由宿主绑定真实身份与路由，登记、领取并准备报告周期；无需填写 Session UUID。",
-  inputSchema: z.object({}).strict(),
-}, async (_input, extra) => {
+  description: "只读 Reviewer 入口：手动首次传 route_id、claim_token、sandbox；已领取会话可空参恢复。保留受管启动兼容，无需 Session UUID。",
+  inputSchema: z.object({ route_id: z.string().min(1).optional(), claim_token: z.string().min(1).optional(), sandbox: z.literal("read-only").optional() }).strict(),
+}, async (input, extra) => {
   const identity = resolveTrustedMcpSession(extra);
   if (!identity.sessionId) return result(identity);
   try {
-    if (!process.env.TASKCENTER_MANAGED_REVIEW) throw new Error("REVIEW_LAUNCHER_REQUIRED");
-    const launch = JSON.parse(process.env.TASKCENTER_MANAGED_REVIEW);
+    const launch = Object.keys(input).length || !process.env.TASKCENTER_MANAGED_REVIEW
+      ? { ...input, manual: true }
+      : JSON.parse(process.env.TASKCENTER_MANAGED_REVIEW);
     const response = await fetch(`${controlServerUrl}/reviews/start`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": readLocalMcpToken() }, body: JSON.stringify({ ...launch, session_id: identity.sessionId }) });
-    const payload = await readJson(response);
+    const payload = await response.json();
+    if (!response.ok) return result({ error: "REVIEW_START_FAILED", code: payload.code, message: payload.error, next_action: "首次由任务所有者准备 Subject/Bundle/Rules 并获取审查路由；独立 Session 登记真实模型和工作区后，传 route_id、claim_token、sandbox=read-only。已领取会话可空参恢复；租约失效或版本变化需所有者重新授权。不得自建任务或伪造授权。" });
     managedReviewContext = payload.context;
     return result(payload);
   } catch (error) { return result({ error: "REVIEW_START_FAILED", message: error.message }); }

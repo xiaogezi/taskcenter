@@ -719,22 +719,39 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/reviews/start") {
       verifyBoundMcpRequest(request);
       const body = await readJsonBody(request);
+      const sessionId = canonicalSessionId(body.session_id || "");
+      const session = loadSessionRegistry()[sessionId];
+      if (body.manual) {
+        if (!session) throw new RoutingControlError(409, "请先登记真实 Reviewer Session、模型与工作区。", "SESSION_NOT_REGISTERED");
+        if (!body.route_id) {
+          const records = reviewSessionRecords(sessionId).filter((record) => record.status === "running");
+          if (records.length !== 1) throw new RoutingControlError(409, "没有唯一可恢复的审查授权；请提供所有者授予的 route_id。", "REVIEW_ROUTE_REQUIRED");
+          body.route_id = records[0].route_id;
+        }
+      }
       const route = routeForId(body.route_id);
       const task = loadTasks().find((item) => item.id === route?.taskId);
+      if (body.manual) {
+        const resuming = route?.reviewRecord?.reviewer_session_id === sessionId;
+        if (resuming && !body.claim_token) body.claim_token = route.reviewRecord.claim_token;
+        if (!resuming && body.sandbox !== "read-only") throw new RoutingControlError(403, "首次领取必须声明实际宿主为 read-only 沙箱。", "REVIEW_PERMISSION_DENIED");
+        body.workspace = session.workspace;
+        body.model = session.model;
+        body.sandbox = "read-only";
+      }
       if (!task || body.claim_token !== route?.reviewRecord?.claim_token) throw new RoutingControlError(403, "Review capability 不匹配。", "REVIEW_PERMISSION_DENIED");
       if (resolve(body.workspace || "") !== resolve(task.workspace || "") || body.model !== route.selectedModel || body.sandbox !== "read-only") throw new RoutingControlError(403, "Reviewer 启动配置与 Task 不匹配。", "REVIEW_PERMISSION_DENIED");
       // Bootstrap uses the MCP host identity. Claim retains all lease checks.
-      const sessionId = canonicalSessionId(body.session_id || "");
       if (!sessionId || sessionId === canonicalSessionId(task.sessionId) || (task.sessionHistory || []).some((id) => canonicalSessionId(id) === sessionId)) throw new RoutingControlError(403, "Reviewer 必须使用独立 Session。", "REVIEWER_NOT_INDEPENDENT");
       const preview = JSON.parse(readFileSync(route.reviewArtifacts.bundle.ref, "utf8"));
       if (!Array.isArray(preview.reviewable_files) || preview.reviewable_files.some((file) => typeof file.path !== "string")) throw new RoutingControlError(400, "Managed Review 需要 OCR JSON preview。", "REVIEW_ARTIFACTS_INCOMPLETE");
-      recordTaskEvent({ type: "session.register", session_id: sessionId, workspace: body.workspace, model: body.model, agent: "codex", provider: "openai" }, { requireRegistered: true });
+      if (!body.manual) recordTaskEvent({ type: "session.register", session_id: sessionId, workspace: body.workspace, model: body.model, agent: "codex", provider: "openai" }, { requireRegistered: true });
       const record = claimReview(body, task, loadSessionRegistry(), canonicalSessionId);
-      const reviewer = { type: "agent", id: sessionId, session_id: sessionId, provider: "openai" };
+      const reviewer = { type: "agent", id: sessionId, session_id: sessionId, provider: body.manual ? (session.provider || "unknown") : "openai" };
       const cycleId = `managed-${route.id}`;
       let cycle = task.reviewCycles?.find((item) => item.cycle_id === cycleId);
       if (!cycle) {
-        const result = recordTaskEvent({ type: "review_cycle.reported", task_id: task.id, session_id: task.sessionId, review_cycle: { cycle_id: cycleId, subject_ref: record.subject_ref, reviewer, model: route.selectedModel, review_scope: "full", phase: "reviewing", wait_reason: `CLI fallback: ${String(body.native_unavailable_reason || "").slice(0, 400)}` } }, { requireRegistered: true });
+        const result = recordTaskEvent({ type: "review_cycle.reported", task_id: task.id, session_id: task.sessionId, review_cycle: { cycle_id: cycleId, subject_ref: record.subject_ref, reviewer, model: route.selectedModel, review_scope: "full", phase: "reviewing", wait_reason: body.manual ? "手动 Reviewer 授权接续" : `CLI fallback: ${String(body.native_unavailable_reason || "").slice(0, 400)}` } }, { requireRegistered: true });
         cycle = result.task.reviewCycles.find((item) => item.cycle_id === cycleId);
       }
       sendJson(response, 200, { accepted: true, context: { route_id: route.id, task_id: task.id, reviewer, subject_ref: record.subject_ref, review_artifacts: route.reviewArtifacts, cycle_id: cycle.cycle_id, cycle_number: cycle.cycle_number, files: preview.reviewable_files.map((file) => file.path) } });

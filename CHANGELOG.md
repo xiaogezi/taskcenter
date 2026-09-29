@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 手动 Reviewer 可通过 `taskcenter_review_start` 显式领取已有审查授权，已绑定独立 Session 可在 MCP 重连后恢复报告上下文；保留受管启动器兼容、模型/工作区/只读/Subject/有效期校验。失败返回错误码和接续步骤，公开 Review 记录增加 `route_id`，不公开领取令牌。
+
 - 模型调度默认展示当前角色策略与原生会话派发，CLI 历史默认折叠；按通道统计用量覆盖率，成功率排除未决、撤销和取消授权，明确领取至结案时长并非实际执行耗时。新增原生路由与主模型接管计数。
 
 - 修复 MCP 压缩引用被 Kimi Router 再次展开导致 token 反增：使用纯 `#/$defs/` 引用，保留工具契约与原预算；增加引用形状回归检查并记录真实 Router 离线转换对照。

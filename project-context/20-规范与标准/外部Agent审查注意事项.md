@@ -23,6 +23,18 @@
 
 ## 审查重点
 
+### 用户明确要求接入 TaskCenter / OCR 时
+
+普通外部审查仍按上文向用户提供报告；以下仅用于用户要求绑定 TaskCenter 的审查。
+
+1. 任务所有者先固定 Subject、准备 OCR JSON preview（Bundle）和 Rules，再申请审查路由。preview 属于所有者的准备阶段，不能要求尚未授权的 Reviewer 先执行它来获得授权。
+2. 独立 Reviewer 在实际只读宿主中登记真实 Session、模型和工作区，调用 `taskcenter_review_start({route_id, claim_token, sandbox: "read-only"})`。路由与令牌来自所有者的合法授权，不手工编造，不把令牌写入报告或公共日志。
+3. 收到 `accepted=true` 后只审查返回的 Subject 与文件，完成后调用 `taskcenter_review_finish`。不需要另建普通任务，也不需要启动器环境变量。
+4. 同一已领取 Session 在 MCP 重连后可调用 `taskcenter_review_start({})` 恢复唯一运行中的审查；多个候选时显式传 `route_id`。恢复仍校验身份、模型、工作区、版本及租约，不延长有效期。
+5. `REVIEW_ROUTE_REQUIRED`：请所有者提供明确授权；`REVIEWER_LEASE_UNAVAILABLE`：请所有者重新申请路由；`SUBJECT_MISMATCH`：重新固定版本和 Bundle 后授权；`REVIEW_PERMISSION_DENIED`：核对独立身份、实际模型、工作区及只读宿主。反复恢复 Session 或创建普通任务不能修复这些错误。
+
+依据：2026-09-29 用户选定复用既有授权的手动接续方案；入口位于 `scripts/taskcenter-mcp.mjs`，校验复用 `scripts/routing-control.mjs`，集成验证位于 `tests/review-managed-integration.test.mjs`。回滚该变更恢复原受管入口，不迁移或删除既有授权数据。
+
 先核对需求是否实现，再判断代码质量。重点检查实际失败路径，而不是只做样式建议：
 
 - 任务状态与实际执行、验证、审查、验收是否区分；done_claimed 不等于最终验收。

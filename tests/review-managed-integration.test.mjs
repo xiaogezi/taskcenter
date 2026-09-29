@@ -7,9 +7,10 @@ import { spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-test("managed MCP lifecycle registers trusted identity, claims, reports and releases", async (t) => {
+for (const manual of [false, true]) test(`${manual ? "manual" : "managed"} MCP lifecycle claims, restores, reports and releases`, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "managed-review-"));
   const env = { ...process.env, TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1", TASKCENTER_CONTEXT_BRIDGE_ENABLED: "false" };
+  delete env.TASKCENTER_MANAGED_REVIEW;
   for (const key of ["TASK_LEDGER", "TASK_EVENTS", "TASK_EVENT_IDS", "TASK_RECONCILE", "SESSION_REGISTRY", "SESSION_MERGES", "ROUTING_CONTROL", "DELEGATIONS", "BUG_DISPATCHES", "DISPATCHES", "DASHBOARD", "MCP_TOKEN", "CONTEXT_TASK_MAP", "CONTEXT_AUDIT"]) env[`TASKCENTER_${key}_PATH`] = join(dir, key);
   const owner = "01a0893d-fd11-74a3-b094-2f116a7992cc";
   const reviewer = "01a089aa-23a5-7822-8296-6777b611ebe4";
@@ -34,14 +35,55 @@ test("managed MCP lifecycle registers trusted identity, claims, reports and rele
   assert.equal(response.ok, true, JSON.stringify(selected));
   for (const key of ["CODEX_SESSION_ID", "CODEX_THREAD_ID", "TASKCENTER_CALLER_SESSION_ID"]) delete env[key];
   env.TASKCENTER_CALLER_SESSION_ID = reviewer;
-  env.TASKCENTER_MANAGED_REVIEW = JSON.stringify({ route_id: selected.route.route_id, claim_token: selected.route.review_record.claim_token, workspace: dir, model: roles.roles.reviewer.model, sandbox: "read-only" });
-  const client = new Client({ name: "managed-test", version: "1" });
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: ["scripts/taskcenter-mcp.mjs"], env, stderr: "pipe" }));
+  const launch = { route_id: selected.route.route_id, claim_token: selected.route.review_record.claim_token, workspace: dir, model: roles.roles.reviewer.model, sandbox: "read-only" };
+  if (!manual) env.TASKCENTER_MANAGED_REVIEW = JSON.stringify(launch);
+  let client;
+  const connect = async () => {
+    client = new Client({ name: "managed-test", version: "1" });
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: ["scripts/taskcenter-mcp.mjs"], env, stderr: "pipe" }));
+  };
+  await connect();
   t.after(() => client.close());
   const call = async (name, args) => JSON.parse((await client.callTool({ name, arguments: args })).content[0].text);
-  const started = await call("taskcenter_review_start", {});
+  const manualArgs = { route_id: launch.route_id, claim_token: launch.claim_token, sandbox: "read-only" };
+  if (manual) {
+    const registered = await call("taskcenter_session_register", { session_id: reviewer, workspace: dir, model: launch.model });
+    assert.equal(registered.accepted, true, JSON.stringify(registered));
+    assert.equal((await call("taskcenter_review_start", {})).code, "REVIEW_ROUTE_REQUIRED");
+    assert.equal((await call("taskcenter_review_start", { ...manualArgs, claim_token: "wrong" })).code, "REVIEW_PERMISSION_DENIED");
+  }
+  const started = await call("taskcenter_review_start", manual ? manualArgs : {});
   assert.equal(started.accepted, true, JSON.stringify(started));
   assert.equal(started.context.reviewer.session_id, reviewer);
+  if (manual) {
+    await client.close();
+    await connect();
+    const restored = await call("taskcenter_review_start", {});
+    assert.equal(restored.accepted, true, JSON.stringify(restored));
+    assert.equal(restored.context.cycle_id, started.context.cycle_id);
+    await client.close();
+    env.TASKCENTER_CALLER_SESSION_ID = owner;
+    await connect();
+    assert.equal((await call("taskcenter_review_start", { route_id: launch.route_id, sandbox: "read-only" })).code, "REVIEW_PERMISSION_DENIED");
+    await client.close();
+    env.TASKCENTER_CALLER_SESSION_ID = reviewer;
+    await connect();
+    assert.equal((await call("taskcenter_review_start", {})).accepted, true);
+    const ledger = JSON.parse(await readFile(env.TASKCENTER_TASK_LEDGER_PATH, "utf8"));
+    ledger[0].currentSubject = { ...subject, value: "changed" };
+    await writeFile(env.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify(ledger));
+    assert.equal((await call("taskcenter_review_start", { route_id: launch.route_id })).code, "SUBJECT_MISMATCH");
+    ledger[0].currentSubject = subject;
+    await writeFile(env.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify(ledger));
+    const routing = JSON.parse(await readFile(env.TASKCENTER_ROUTING_CONTROL_PATH, "utf8"));
+    const route = routing.routes.find((item) => item.id === launch.route_id);
+    const expiresAt = route.expiresAt;
+    route.expiresAt = "2000-01-01T00:00:00.000Z";
+    await writeFile(env.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify(routing));
+    assert.equal((await call("taskcenter_review_start", { route_id: launch.route_id })).code, "REVIEWER_LEASE_UNAVAILABLE");
+    route.expiresAt = expiresAt;
+    await writeFile(env.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify(routing));
+  }
   const result = { reviewed_files: [], findings: [], spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", summary: "fixture" };
   assert.match((await call("taskcenter_review_finish", result)).message, /COVERAGE_INCOMPLETE/);
   const finished = await call("taskcenter_review_finish", { ...result, reviewed_files: ["a.mjs"] });
