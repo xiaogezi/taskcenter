@@ -867,6 +867,7 @@ function isReadOnlyFind(args) {
 
 function isReadOnlyGit(args) {
   const subcommand = args[0];
+  if (subcommand === "worktree") return args[1] === "list" && args.slice(2).every((arg) => ["--porcelain", "-z", "--verbose", "-v"].includes(arg));
   if (["status", "check-ignore", "ls-files"].includes(subcommand)) return true;
   if (subcommand === "branch") return args.length === 2 && args[1] === "--show-current";
   if (!["diff", "show", "log"].includes(subcommand)) return false;

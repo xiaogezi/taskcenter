@@ -439,6 +439,25 @@ test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async
   assert.equal(tasks.filter((task) => task.sessionId === sessionId).length, 0);
 });
 
+test("L0 worktree list 支持原生和 RTK，拒绝写操作及混合命令", async () => {
+  const sessionId = "worktree-l0-session";
+  await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
+  for (const prefix of ["", "rtk ", "rtk proxy "]) {
+    for (const [command, expected] of [
+      ["git worktree list", 0], ["git worktree list --porcelain", 0],
+      ["git worktree list --porcelain -z", 0], ["git worktree list --verbose", 0],
+      ["git worktree add /tmp/new", 2], ["git worktree remove /tmp/old", 2],
+      ["git worktree prune", 2], ["git worktree repair", 2],
+      ["git worktree list --unknown", 2], ["git worktree list > output", 2],
+      ["git worktree list; git worktree prune", 2],
+    ]) {
+      const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: prefix + command } });
+      assert.equal(result.code, expected, prefix + command);
+      if (expected === 0) assert.match(result.stdout, /L0/);
+    }
+  }
+});
+
 test("L0 OCR 仅放行确定性 delegate preview/rule 及安全参数", async () => {
   const sessionId = "ocr-l0-session";
   await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
