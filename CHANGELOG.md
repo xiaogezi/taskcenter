@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 模型调度默认展示当前角色策略与原生会话派发，CLI 历史默认折叠；按通道统计用量覆盖率，成功率排除未决、撤销和取消授权，明确领取至结案时长并非实际执行耗时。新增原生路由与主模型接管计数。
+
 - 修复 MCP 压缩引用被 Kimi Router 再次展开导致 token 反增：使用纯 `#/$defs/` 引用，保留工具契约与原预算；增加引用形状回归检查并记录真实 Router 离线转换对照。
 
 - 暂停 MiMo 2.6 Flash / Pro 自动执行派发；已完成原生工具读写验收的 Kimi Coding 改为首选，回退依次为 Kimi Coding Highspeed、K3、Luna。保留 MiMo 历史记录与模型映射，配置热加载作用于新路由。

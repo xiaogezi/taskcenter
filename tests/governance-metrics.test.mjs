@@ -182,3 +182,29 @@ test("治理指标聚合携带 24h 路由漏斗，且不暴露 phase summary", (
   assert.equal(report.routingFunnel24h.cliGrants, 1);
   assert.ok(!JSON.stringify(report.routingFunnel24h).includes("secret-ish summary"));
 });
+
+
+test("原生统计隔离 CLI 历史，保留未知用量及非执行结案", () => {
+  const report = buildGovernanceMetrics({ tasks: [], events: [], delegations: [
+    { id: "ok", channel: "native", status: "succeeded", executorModel: "kimi", claimedAt: "2026-09-29T00:00:00Z", completedAt: "2026-09-29T00:01:00Z" },
+    { id: "fail", channel: "native", status: "failed", executorModel: "kimi" },
+    { id: "revoked", channel: "native", status: "revoked", executorModel: "kimi" },
+    { id: "waiting", channel: "native", status: "issued", executorModel: "kimi" },
+    { id: "cli", channel: "cli", status: "succeeded", executorModel: "kimi", evidence: [JSON.stringify({ delegation_id: "cli", usage: { input_tokens: 100 } })] },
+  ] });
+  assert.equal(report.nativeRuns.runs, 4);
+  assert.equal(report.nativeRuns.succeeded + report.nativeRuns.failed, 2);
+  assert.equal(report.nativeRuns.tokens.reported, 0);
+  assert.equal(report.nativeRuns.duration.avgMs, 60000);
+  assert.equal(report.nativeRuns.recentRuns[0].id, "waiting");
+  assert.equal(report.cliRuns.runs, 1);
+  assert.equal(report.cliRuns.tokens.input, 100);
+  const now = Date.parse("2026-09-29T01:00:00Z");
+  const funnel = buildRoutingFunnel([
+    { channel: "native", createdAt: "2026-09-29T00:00:00Z" },
+    { channel: "direct", fallbackFrom: "kimi", createdAt: "2026-09-29T00:00:00Z" },
+    { channel: "direct", createdAt: "2026-09-29T00:00:00Z" },
+  ], [], now);
+  assert.equal(funnel.actualNativeRoutes, 1);
+  assert.equal(funnel.mainModelTakeovers, 1);
+});

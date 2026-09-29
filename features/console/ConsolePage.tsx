@@ -18,8 +18,8 @@ type RatePool = { limit_id?: string; limit_name?: string | null; primary?: RateW
 type UsageData = { generatedAt?: string; rate_limits?: { primary?: RateWindow; by_limit_id?: Record<string, RatePool> }; windows?: { "24h"?: { totals?: unknown; byModel?: unknown; modelContinuations?: number } }; snapshotStatus?: { stale?: boolean; lastSuccessAt?: string; lastRefreshError?: string } };
 type CliObservation = { id: string; taskId: string; workspace: string; executorModel: string; status: string; runStatus?: string; createdAt?: string; claimedAt?: string; lastObservedAt?: string; completedAt?: string; expiresAt?: string };
 type CliRunMetrics = { claimed?: number; excluded?: number; statusCounts?: Record<string, number>; recentRuns?: CliObservation[]; runs: number; active: number; succeeded: number; failed: number; cancelled: number; byModel: Record<string, { runs: number; active?: number; succeeded: number; failed: number; cancelled: number; durationSum?: number; durationCount?: number; durationMax?: number; lastFinishedAt?: number }>; tokens: { input: number; output: number; total: number; reported: number }; lastFinishedAt?: number | null; activeRuns?: Array<{ model: string; startedAt: number | null; taskId: string }>; duration?: { count: number; avgMs: number | null; maxMs: number | null; totalMs: number | null } };
-type RoutingFunnel24h = { windowStart?: string; windowEnd?: string; jevEvaluatedDecisions?: number; jevDelegateRecommendations?: number; actualCliRoutes?: number; jevDelegateDirectOverrides?: { total?: number; byKind?: Record<string, number>; legacyGenericReasons?: Record<string, number> }; cliGrants?: number; cliClaimedRuns?: number; cliStartedRuns?: number; note?: string };
-type GovernanceData = { cliRuns?: CliRunMetrics; routingFunnel24h?: RoutingFunnel24h; completedTasks?: number; reworkRate?: number | null; snapshotStatus?: { stale?: boolean } };
+type RoutingFunnel24h = { windowStart?: string; windowEnd?: string; jevEvaluatedDecisions?: number; jevDelegateRecommendations?: number; actualCliRoutes?: number; actualNativeRoutes?: number; mainModelTakeovers?: number; jevDelegateDirectOverrides?: { total?: number; byKind?: Record<string, number>; legacyGenericReasons?: Record<string, number> }; cliGrants?: number; cliClaimedRuns?: number; cliStartedRuns?: number; note?: string };
+type GovernanceData = { nativeRuns?: CliRunMetrics; cliRuns?: CliRunMetrics; routingFunnel24h?: RoutingFunnel24h; completedTasks?: number; reworkRate?: number | null; snapshotStatus?: { stale?: boolean } };
 type RoutingTask = { id: string; title?: string; updatedAt?: string; routingHistory?: Array<{ routeId?: string; selectedExecutorModel?: string; reason?: string; outcome?: string; recordedAt?: string }>; routingResult?: { routeId?: string; outcome?: string }; routingResultHistory?: Array<{ routeId?: string; outcome?: string }> };
 type RoutingRow = { taskId: string; taskTitle: string; routeId: string; model: string; reason: string; outcome: string; recordedAt: string };
 type Proposal = { id: string; title?: string; summary?: string; reason?: string; status?: string; executionPolicy?: string };
@@ -137,15 +137,14 @@ function Routing() {
   const circuitLabel = (state?: string) => state === "closed" ? "正常" : state === "open" ? "熔断中" : state === "half_open" ? "探测中" : (state || "未知");
   const modelPoolMap = (() => { const map: Record<string, string[]> = {}; for (const pool of (roles.quota_pools || [])) { for (const m of pool.models || []) { (map[m] ||= []).push(pool.id || "未命名池"); } } return map; })();
   const quota = (item: RateWindow | null | undefined) => item ? isExpiredRateWindow(item) ? `${windowLabel(item.window_minutes)}：历史快照（重置时间已过，当前额度未知） · 当时已用 ${item.used_percent ?? "未知"}% · 原重置 ${time(item.resets_at)}` : `${windowLabel(item.window_minutes)}：已用 ${item.used_percent !== null && item.used_percent !== undefined && Number.isFinite(Number(item.used_percent)) ? `${item.used_percent}%` : "未知"} · 重置 ${time(item.resets_at)}` : "未知";
-  return <><Header code="ROUTING POLICY" title="模型调度" description="角色策略、瞬时租约、真实额度窗口和最近调度均来自本机控制面。" refresh={() => { if ((preset === savedPolicy.preset && threshold === savedPolicy.threshold) || window.confirm("刷新会丢弃未保存的策略更改，是否继续？")) void load(); }} refreshing={refreshing || busy} /><p role="status">{busy ? "正在保存策略…" : notice || (!loaded && refreshing ? "正在读取模型调度数据…" : "尚未刷新")}</p><section><h2>历史 CLI 执行器消耗</h2><p><small>来自 delegation 回执证据中的 usage；无回执用量的运行不计入 Token，标注报告比例。</small></p>{governance?.cliRuns ? (() => {
-  const cr = governance.cliRuns;
+  return <><Header code="ROUTING POLICY" title="模型调度" description="角色策略、瞬时租约、真实额度窗口和最近调度均来自本机控制面。" refresh={() => { if ((preset === savedPolicy.preset && threshold === savedPolicy.threshold) || window.confirm("刷新会丢弃未保存的策略更改，是否继续？")) void load(); }} refreshing={refreshing || busy} /><p role="status">{busy ? "正在保存策略…" : notice || (!loaded && refreshing ? "正在读取模型调度数据…" : "尚未刷新")}</p><section className="console-card"><h2>角色策略</h2>{(["executor", "reviewer"] as const).map(role => { const value = roles[role]; return value ? <p key={role}><strong>{role}</strong>：{value.model} · 通道 {value.dispatch_channel || "未报告"} · 默认 {value.reasoning_effort} · 模型档位 {Object.entries(value.model_reasoning_efforts || {}).map(([model, effort]) => `${model}:${effort}`).join("、") || "沿用默认"} · 回退 {(value.fallback_models || []).join("、") || "无"} · 任务推理 {Object.entries(value.task_class_reasoning_efforts || {}).map(([key, effort]) => `${key}:${effort}`).join("，") || "沿用默认"}</p> : null; })}<p>仅手动模型：{(roles.manual_only_models || []).join("、") || "无"}</p></section>{([ ["native", governance?.nativeRuns], ["cli", governance?.cliRuns] ] as const).map(([channel, metrics]) => <details key={channel} className="console-card" open={channel === "native"}><summary>{channel === "native" ? "原生会话派发" : "历史 CLI 记录"}</summary><section><h2>派发统计</h2><p><small>用量仅统计回执中的 usage，缺失为未知；领取至结案时长包含等待，不代表实际执行耗时。成功率仅计算成功与失败记录。</small></p>{metrics ? (() => {
+  const cr = metrics;
   const pct = (n: number, d: number) => d > 0 ? (n / d) : 0;
   const pctText = (n: number, d: number) => d > 0 ? `${(n / d * 100).toFixed(0)}%` : "—";
   const reportRatio = cr.runs > 0 ? (cr.tokens.reported / cr.runs * 100).toFixed(1) : "0";
   const fmtDur = (ms: number | null | undefined) => { if (!ms || !Number.isFinite(ms)) return "—"; const m = Math.round(ms / 60000); if (m < 60) return `${m}m`; const h = Math.floor(m / 60); return `${h}h${m % 60}m`; };
-  const fmtShortTs = (ms: number | null | undefined) => { if (!ms) return "—"; const d = new Date(ms); const now = new Date(); const sameYear = d.getFullYear() === now.getFullYear(); const md = `${d.getMonth()+1}/${d.getDate()}`; return sameYear ? md : `${d.getFullYear()}/${md}`; };
   const rows = Object.entries(cr.byModel).sort((a, b) => (b[1].lastFinishedAt || 0) - (a[1].lastFinishedAt || 0));
-  const maxRuns = rows[0]?.[1].runs || 1;
+  const totalRuns = cr.runs || 1;
   const bucket = (p: number) => p >= 0.5 ? "#2e7d32" : p >= 0.3 ? "#f9a825" : "#c62828";
   const activeDot = (last: number | undefined) => {
     if (!last) return "#bdbdbd";
@@ -164,8 +163,8 @@ function Routing() {
   );
   return <div className="console-list"><article className="console-card">
     <div style={{display:"flex",gap:12,marginBottom:16}}>
-      {statCard(String(cr.runs), "CLI 授权记录", `已领取 ${cr.claimed ?? 0} · 排除 native/未知通道 ${cr.excluded ?? 0}`)}
-      {statCard(`${reportRatio}%`, "回执上报率", `仅 ${cr.tokens.reported}/${cr.runs} 次有 usage`)}
+      {statCard(String(cr.runs), "授权记录", `已领取 ${cr.claimed ?? 0} · 不包含其他通道 ${cr.excluded ?? 0}`)}
+      {statCard(`${reportRatio}%`, "用量数据覆盖率", `${cr.tokens.reported}/${cr.runs} 条有 usage · 未报告用量未知`)}
       {statCard(fmtDur(cr.duration?.totalMs), "领取至结案时长", `平均 ${fmtDur(cr.duration?.avgMs)} · 最长 ${fmtDur(cr.duration?.maxMs)}`)}
     </div>
     <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -175,13 +174,13 @@ function Routing() {
         <th style={{padding:"6px 8px"}}>模型</th>
         <th style={{padding:"6px 8px",width:"25%"}}>授权占比</th>
         <th style={{padding:"6px 8px",width:50}}>次数</th>
-        <th style={{padding:"6px 8px",width:70}}>成功 / 授权</th>
-        <th style={{padding:"6px 8px",width:60}}>平均</th>
-        <th style={{padding:"6px 8px",width:120}}>最后执行</th>
+        <th style={{padding:"6px 8px",width:70}}>成功 / 已有结果</th>
+        <th style={{padding:"6px 8px",width:60}}>平均领取至结案</th>
+        <th style={{padding:"6px 8px",width:120}}>最后结案</th>
       </tr></thead>
       <tbody>
         {rows.map(([model, row]) => {
-          const r = pct(row.succeeded ?? 0, row.runs);
+          const r = pct(row.succeeded ?? 0, row.succeeded + row.failed);
           const today = isToday(row.lastFinishedAt);
           const activeNow = (row.active ?? 0) > 0;
           const ageH = row.lastFinishedAt ? (now - row.lastFinishedAt) / 3600000 : null;
@@ -190,9 +189,9 @@ function Routing() {
             <td style={{padding:"8px"}}>{activeNow ? <span style={{color:"#2e7d32",fontWeight:600}}>● 有 active 回报</span> : <span style={{color:"#aaa"}}>无 active 回报</span>}</td>
             <td style={{padding:"8px"}}><span style={{display:"inline-block",width:8,height:8,borderRadius:4,background:activeDot(row.lastFinishedAt),marginRight:6,verticalAlign:"middle"}}/><span style={{color:"#666"}}>{ageLabel}</span></td>
             <td style={{padding:"8px",fontWeight:500}}>{model}</td>
-            <td style={{padding:"8px"}}><div style={{height:8,background:"#e0e0e0",borderRadius:4,overflow:"hidden"}}><div style={{height:"100%",width:`${(row.runs / maxRuns * 100).toFixed(0)}%`,background:"#1976d2",borderRadius:4}}/></div></td>
+            <td style={{padding:"8px"}}><div style={{height:8,background:"#e0e0e0",borderRadius:4,overflow:"hidden"}}><div style={{height:"100%",width:`${(row.runs / totalRuns * 100).toFixed(0)}%`,background:"#1976d2",borderRadius:4}}/></div></td>
             <td style={{padding:"8px"}}>{row.runs}</td>
-            <td style={{padding:"8px"}}><span style={{color: bucket(r),fontWeight:600}}>{pctText(row.succeeded ?? 0, row.runs)}</span></td>
+            <td style={{padding:"8px"}}><span style={{color: bucket(r),fontWeight:600}}>{pctText(row.succeeded ?? 0, row.succeeded + row.failed)}</span></td>
             <td style={{padding:"8px",color:"#666"}}>{fmtDur(row.durationCount ? (row.durationSum || 0) / row.durationCount : null)}</td>
             <td style={{padding:"8px",color: today ? "#333" : "#aaa"}}>{row.lastFinishedAt ? new Date(row.lastFinishedAt).toLocaleString("zh-CN",{hour12:false,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "—"}</td>
           </tr>;
@@ -200,12 +199,12 @@ function Routing() {
       </tbody>
     </table>
   </article></div>;
-})() : <p>暂无执行器数据。</p>}</section><section><h2>历史 CLI 执行器与派发</h2><article className="console-card" style={{overflowX:"auto"}}>    <p>已领取且未收尾：{(governance?.cliRuns?.recentRuns || []).filter(run => run.status === "active").length} 条。每 5 秒刷新。状态依据执行器回报与心跳；无记录不代表本机没有 CLI 进程。{governance?.snapshotStatus?.stale ? " 数据快照已过期，请刷新。" : ""}</p>
-    <p>状态分布：{Object.entries(governance?.cliRuns?.statusCounts || {}).map(([status, count]) => `${cliRunStatusLabel({ status }, now).label} ${count}`).join(" · ")}</p>
-    <table style={{width:"100%",fontSize:13,marginBottom:16}}><caption>最近 CLI 派发（最多 50 条，未收尾优先）</caption><thead><tr><th>模型 / 任务</th><th>回报状态</th><th>最后心跳</th><th>工作区</th></tr></thead><tbody>
-      {(governance?.cliRuns?.recentRuns || []).map((run) => <tr key={run.id}><td>{run.executorModel}<br/><small>{run.taskId}</small></td><td>{cliRunStatusLabel(run, now).label}{run.status === "issued" && run.expiresAt && Date.parse(run.expiresAt) < now ? "（授权已到期）" : ""}</td><td>{run.lastObservedAt ? new Date(run.lastObservedAt).toLocaleString("zh-CN", {hour12:false}) : "无心跳证据"}</td><td style={{overflowWrap:"anywhere"}}>{run.workspace}</td></tr>)}
+})() : <p>暂无执行器数据。</p>}</section><section><h2>最近派发</h2><article className="console-card" style={{overflowX:"auto"}}>    <p>已领取且未收尾：{(metrics?.recentRuns || []).filter(run => run.status === "active").length} 条。每 5 秒刷新。状态依据执行器回报与心跳；状态不代表操作系统进程状态。{governance?.snapshotStatus?.stale ? " 数据快照已过期，请刷新。" : ""}</p>
+    <p>状态分布：{Object.entries(metrics?.statusCounts || {}).map(([status, count]) => `${cliRunStatusLabel({ status }, now).label} ${count}`).join(" · ")}</p>
+    <table style={{width:"100%",fontSize:13,marginBottom:16}}><caption>最近派发（最多 50 条，未收尾优先）</caption><thead><tr><th>模型 / 任务</th><th>回报状态</th><th>最后心跳</th><th>工作区</th></tr></thead><tbody>
+      {(metrics?.recentRuns || []).map((run) => <tr key={run.id}><td>{run.executorModel}<br/><small>{run.taskId}</small></td><td>{cliRunStatusLabel(run, now).label}{run.status === "issued" && run.expiresAt && Date.parse(run.expiresAt) < now ? "（授权已到期）" : ""}</td><td>{run.lastObservedAt ? new Date(run.lastObservedAt).toLocaleString("zh-CN", {hour12:false}) : "无心跳证据"}</td><td style={{overflowWrap:"anywhere"}}>{run.workspace}</td></tr>)}
     </tbody></table>
-{!governance?.cliRuns?.recentRuns?.length && <p>暂无 CLI 派发记录。</p>}</article></section><section><h2>路由漏斗（最近 24 小时）</h2><p><small>各阶段独立计数，来源不同且缺少共享 route ID，不表示一对一转化；用于解释 CLI 授权数为何可能与 Jev delegate 建议数不一致。</small></p>{governance?.routingFunnel24h ? (() => {
+{!metrics?.recentRuns?.length && <p>暂无此通道派发记录。</p>}</article></section></details>)}<section><h2>路由漏斗（最近 24 小时）</h2><p><small>各阶段独立计数，来源不同且缺少共享 route ID，不表示一对一转化；原生与历史 CLI 路由分别统计；主模型接管只计明确带回退来源的 direct 路由。</small></p>{governance?.routingFunnel24h ? (() => {
   const funnel = governance.routingFunnel24h;
   const overrides = funnel.jevDelegateDirectOverrides || {};
   const kindLabels: Record<string, string> = { device_interaction: "真机操作", atomic_git: "原子 Git", shared_dirty_workspace: "共享脏工作区", legacy_generic: "旧式通用覆盖" };
@@ -213,13 +212,13 @@ function Routing() {
   const legacyText = Object.entries(overrides.legacyGenericReasons || {}).map(([reason, count]) => `${reason} ${count}`).join(" · ");
   return <article className="console-card">
     <p>窗口：{time(funnel.windowStart)} 至 {time(funnel.windowEnd)}</p>
-    <p>Jev 评估决策 {funnel.jevEvaluatedDecisions ?? 0} · Jev delegate 建议 {funnel.jevDelegateRecommendations ?? 0} · 实际 CLI 路由 {funnel.actualCliRoutes ?? 0}</p>
+    <p>Jev 评估决策 {funnel.jevEvaluatedDecisions ?? 0} · Jev delegate 建议 {funnel.jevDelegateRecommendations ?? 0} · 原生路由 {funnel.actualNativeRoutes ?? "未知"} · 主模型接管 {funnel.mainModelTakeovers ?? "未知"} · 历史 CLI 路由 {funnel.actualCliRoutes ?? 0}</p>
     <p>Jev delegate 的 direct 覆盖：{overrides.total ?? 0}{kindText ? `（${kindText}）` : ""}{legacyText ? `；旧式原因：${legacyText}` : ""}</p>
     <p>CLI 授权 {funnel.cliGrants ?? 0} · 已领取 {funnel.cliClaimedRuns ?? 0} · 已启动回报 {funnel.cliStartedRuns ?? 0}</p>
   </article>;
 })() : <p>暂无 24 小时路由漏斗数据。</p>}</section><section><h2>最近真实调度</h2><p><small>按最近更新的 100 个任务聚合，最多展示 20 条。</small></p><div className="console-list">{routes.map((route, index) => <article className="console-card" key={`${route.taskId}:${route.routeId || route.recordedAt}:${index}`}><strong>{route.taskTitle}</strong><p className="console-path">{route.taskId}</p><p>模型：{route.model} · 结果：{route.outcome} · 时间：{time(route.recordedAt)}</p><p>原因：{route.reason}</p></article>)}</div>{loaded && !routes.length && <p>暂无真实调度记录。</p>}</section><details className="console-card"><summary>可选执行器目录</summary><p><small>Jev 按阶段选择具体型号；目录不代表已运行或账户额度可用。独立任务可并发，名额受共享额度池约束。</small></p><div className="console-list">{Object.entries(roles.model_catalog || {}).map(([model, entry]) => <article className="console-card" key={model}><strong>{model}</strong><p>{entry.description || "暂无能力说明"}</p><p>{[roles.executor?.model, ...(roles.executor?.fallback_models || [])].includes(model) && (!entry.automatic_until || Date.parse(entry.automatic_until) > now) ? "自动选型候选" : "不参与自动选型"}{entry.automatic_until ? " · 自动选型截止 " + time(entry.automatic_until) : ""}</p></article>)}</div></details><section><h2>模型健康与瞬时租约</h2><div className="console-list">{(state?.models || []).map((health) => { const poolsForModel = modelPoolMap[health.model] || []; return <article className="console-card" key={health.model}><strong>{health.model}</strong><p>熔断：{circuitLabel(health.state)} · 当前租约：{health.active_executors ?? "未知"}/{health.concurrency_limit ?? "未知"} · 连续失败：{health.consecutive_failures ?? "未知"}</p><p>额度池：{poolsForModel.length ? poolsForModel.join("、") : "未配置"} · {health.quota_limit_id ? `当前限流绑定 ${health.quota_limit_id}` : "无活跃限流"}</p><p>限流恢复：{time(health.quota_retry_after_at) !== "未知" ? time(health.quota_retry_after_at) : time(health.retry_after_at)} · 最后错误：{health.last_error_code || "无"} · 最后成功：{time(health.last_success_at)}</p></article>; })}</div></section><section><h2>额度窗口</h2><p><small>报告生成：{time(usage?.generatedAt)}{usage?.snapshotStatus?.stale ? " · 报告已过期" : ""}；各额度以卡片内观测时间为准。</small></p><div className="console-list">{pools.map((pool) => <article className="console-card" key={pool.limit_id || "default"}><strong>{pool.limit_name || pool.limit_id || "默认额度池"}</strong><p>来源：{pool.provider ? `${pool.provider} · ${pool.source === "official-api" ? "官方接口" : pool.source === "runtime-signal" ? "运行时限流信号" : pool.source === "unknown" ? "未知" : pool.source}` : "未标注"}{pool.models?.length ? ` · 覆盖 ${pool.models.join("、")}` : ""}</p><p>主窗口 {quota(pool.primary)}</p><p>次窗口 {quota(pool.secondary)}</p><p><small>额度观测：{time(pool.observed_at)}{pool.notes ? ` · ${pool.notes}` : ""}</small></p></article>)}</div>{loaded && !pools.length && <p>暂无额度快照，使用量与重置时间均未知。</p>}</section><section><h2>今日用量（24 小时）</h2><p><small>主代理 Token，来自本机用量索引；成本估算不可得时显示「不可估算」。</small></p>{today ? <div className="console-list"><article className="console-card"><p>Token：输入 {formatTokens(today.input)}（缓存 {formatTokens(today.cachedInput)}） · 输出 {formatTokens(today.output)} · 共 {formatTokens(today.totalTokens)}</p><p>平均 {formatTokens(today.averageTokens ?? 0)} · P50 {formatTokens(today.p50 ?? 0)} · P95 {formatTokens(today.p95 ?? 0)} · 成本估算：{today.costEstimation === "unestimable" ? "不可估算" : today.cost !== null && today.cost !== undefined ? `${today.cost}` : "不可估算"}</p>{today.byModel.length ? today.byModel.map((row) => <p key={row.model}>{row.model}：{formatTokens(row.totalTokens)}</p>) : null}</article></div> : <p>暂无今日用量数据。</p>}</section>
 
-<section className="console-card"><h2>角色策略</h2>{(["executor", "reviewer"] as const).map(role => { const value = roles[role]; return value ? <p key={role}><strong>{role}</strong>：{value.model} · 通道 {value.dispatch_channel || "未报告"} · 默认 {value.reasoning_effort} · 模型档位 {Object.entries(value.model_reasoning_efforts || {}).map(([model, effort]) => `${model}:${effort}`).join("、") || "沿用默认"} · 回退 {(value.fallback_models || []).join("、") || "无"} · 任务推理 {Object.entries(value.task_class_reasoning_efforts || {}).map(([key, effort]) => `${key}:${effort}`).join("，") || "沿用默认"}</p> : null; })}<p>仅手动模型：{(roles.manual_only_models || []).join("、") || "无"}</p></section>{roles.executor?.dispatch_channel !== "native" && <section className="console-card"><h2>可选 Astra 策略</h2><label>预设 <select disabled={busy || refreshing || !loaded} value={preset} onChange={event => setPreset(event.target.value)}><option value="saving">节省</option><option value="balanced">平衡</option><option value="quality">质量</option><option value="custom">自定义</option></select></label><label> 阈值 <input disabled={busy || refreshing || !loaded || preset !== "custom"} type="number" min="0" max="100" value={threshold} onChange={event => setThreshold(Number(event.target.value))} />%</label><button disabled={busy || refreshing || !loaded || !Number.isFinite(threshold) || threshold < 0 || threshold > 100 || (preset === savedPolicy.preset && threshold === savedPolicy.threshold)} onClick={save}>保存策略</button></section>}</>;
+{roles.executor?.dispatch_channel !== "native" && <section className="console-card"><h2>可选 Astra 策略</h2><label>预设 <select disabled={busy || refreshing || !loaded} value={preset} onChange={event => setPreset(event.target.value)}><option value="saving">节省</option><option value="balanced">平衡</option><option value="quality">质量</option><option value="custom">自定义</option></select></label><label> 阈值 <input disabled={busy || refreshing || !loaded || preset !== "custom"} type="number" min="0" max="100" value={threshold} onChange={event => setThreshold(Number(event.target.value))} />%</label><button disabled={busy || refreshing || !loaded || !Number.isFinite(threshold) || threshold < 0 || threshold > 100 || (preset === savedPolicy.preset && threshold === savedPolicy.threshold)} onClick={save}>保存策略</button></section>}</>;
 }
 
 function Improvements() {

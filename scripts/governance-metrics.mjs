@@ -259,6 +259,7 @@ export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = 
     groups,
     comparisons: buildMatchedComparisons(groups, usageReport?.windows || []),
     cliRuns: buildCliRunMetrics(delegations),
+    nativeRuns: buildCliRunMetrics(delegations, Date.now(), "native"),
     routingFunnel24h: buildRoutingFunnel(routes, delegations, Number.isFinite(generatedAt) ? generatedAt : Date.now()),
   };
 }
@@ -297,6 +298,8 @@ export function buildRoutingFunnel(routes = [], delegations = [], now = Date.now
     jevEvaluatedDecisions: jevEvaluated.length,
     jevDelegateRecommendations: jevDelegate.length,
     actualCliRoutes: cliRoutes.length,
+    actualNativeRoutes: windowRoutes.filter(route => route.channel === "native").length,
+    mainModelTakeovers: windowRoutes.filter(route => route.channel === "direct" && route.fallbackFrom).length,
     jevDelegateDirectOverrides: { total: overrides.length, byKind: overrideByKind, legacyGenericReasons },
     cliGrants: cliGrants.length,
     cliClaimedRuns: cliGrants.filter((item) => Boolean(item.claimedAt)).length,
@@ -549,9 +552,9 @@ function delegationUsageTokens(delegation) {
   return null;
 }
 
-// CLI 执行器聚合：运行次数、状态分布、按执行器模型分组、回执 Token 累计。
+// 按通道聚合执行器（默认 CLI，保留历史接口）：运行次数、状态分布、按执行器模型分组、回执 Token 累计。
 // 只统计 delegation 回执证据中可解析的用量，缺失不推断为 0。
-export function buildCliRunMetrics(delegations = [], now = Date.now()) {
+export function buildCliRunMetrics(delegations = [], now = Date.now(), channel = "cli") {
   const statusCounts = {};
   const recentRuns = [];
   let claimed = 0, excluded = 0;
@@ -563,7 +566,7 @@ export function buildCliRunMetrics(delegations = [], now = Date.now()) {
   const activeRuns = [];
   for (const delegation of delegations) {
     if (!delegation || typeof delegation !== "object" || typeof delegation.id !== "string") continue;
-    if (delegation.channel !== "cli") { excluded += 1; continue; }
+    if (delegation.channel !== channel) { excluded += 1; continue; }
     if (delegation.claimedAt) claimed += 1;
     statusCounts[delegation.status || "unknown"] = (statusCounts[delegation.status || "unknown"] || 0) + 1;
     recentRuns.push(Object.fromEntries(["id", "taskId", "workspace", "executorModel", "status", "runStatus", "createdAt", "claimedAt", "lastObservedAt", "completedAt", "expiresAt"].map((key) => [key, delegation[key] || null])));
@@ -595,7 +598,7 @@ export function buildCliRunMetrics(delegations = [], now = Date.now()) {
       tokens.total += usage.total;
       tokens.reported += 1;
     }
-    // 运行时长：completedAt - claimedAt（兜底 createdAt）
+    // 领取至结案时长，不等同于实际执行耗时。
     const start = Date.parse(delegation.claimedAt || "");
     const end = Date.parse(delegation.completedAt || "");
     if (Number.isFinite(end) && end > 0) {
