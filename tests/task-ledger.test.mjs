@@ -2731,7 +2731,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
 
   const selectedRoute = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_routing_select",
-    arguments: { task_id: "task-mcp", preferred_model: "gpt-5.3-codex-spark", task_class: "test", channel: "native", available_native_models: nativeRuntimeModels, route_id: "route-mcp-compat" },
+    arguments: { task_id: "task-mcp", preferred_model: executorModel, task_class: "test", channel: "native", available_native_models: nativeRuntimeModels, route_id: "route-mcp-compat" },
   })));
   assert.equal(selectedRoute.route.route_id, "route-mcp-compat", "旧客户端不传 response_mode 时仍需取得路由租约");
   assert.equal(selectedRoute.route.preferred_model, executorModel);

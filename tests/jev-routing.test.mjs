@@ -14,6 +14,7 @@ fixtureConfig.roles.executor.fallback_models = ["mimo-v2.5-pro"];
 fixtureConfig.roles.executor.task_class_models = {};
 fixtureConfig.roles.executor.dispatch_channel = "cli";
 fixtureConfig.roles.executor.model_reasoning_efforts = {};
+delete fixtureConfig.roles.executor.allowed_models; // 此组验证旧配置兼容；名单限制另有测试。
 fixtureConfig.model_catalog = {};
 await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(fixtureConfig));
 const { routingSelect, routingResult, routeForId } = await import("../scripts/routing-control.mjs");
@@ -35,6 +36,29 @@ test.beforeEach(async () => {
   await rm(statePath, { force: true });
 });
 test.after(async () => rm(directory, { recursive: true, force: true }));
+
+test("Jev 只收到派发名单内候选，空名单和缺 key 仍记录真实候选", async () => {
+  const config = structuredClone(fixtureConfig);
+  config.roles.executor.allowed_models = [config.roles.executor.model];
+  await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(config));
+  try {
+    const prepared = await prepare({ ...input, channel: "other" }, async request => {
+      assert.deepEqual(Object.keys(request.questions.executor_model.criteria), [config.roles.executor.model, "no_match"]);
+      return result("implementation", "delegate", config.roles.executor.fallback_models[0]);
+    });
+    assert.deepEqual(prepared.jevDecision.candidate_models, [config.roles.executor.model]);
+    assert.notEqual(prepared.jevDecision.model_applied, true);
+    config.roles.executor.allowed_models = [];
+    await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(config));
+    const empty = await prepare({ ...input, channel: "other" }, async request => {
+      assert.equal(request.questions.executor_model, undefined);
+      return result();
+    });
+    assert.deepEqual(empty.jevDecision.candidate_models, []);
+    delete process.env.TYPESAFE_API_KEY;
+    assert.deepEqual((await prepare(input)).jevDecision.candidate_models, []);
+  } finally { await writeFile(process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(fixtureConfig)); }
+});
 
 test("同阶段并发去重，下一阶段重新判断，并消费真实类别和通道", async () => {
   let calls = 0;

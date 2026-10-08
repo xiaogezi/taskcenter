@@ -109,6 +109,7 @@
   "roles": {
     "executor": {
       "model": "gpt-6-luna",
+      "allowed_models": ["gpt-6-luna", "kimi-code/kimi-for-coding", "kimi-code/kimi-for-coding-highspeed", "kimi-code/k3"],
       "reasoning_effort": "low",
       "fallback_models": [
         "kimi-code/kimi-for-coding",

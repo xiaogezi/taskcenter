@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { evaluate, criteria, hasSuspectedSecret } from "./jev-advisor.mjs";
 import { RoutingControlError, isReviewTaskClass } from "./routing-control.mjs";
-import { executorReasoningEffort, nativeRuntimeModel, loadModelRoleConfig } from "./model-role-config.mjs";
+import { executorModelAllowed, executorReasoningEffort, nativeRuntimeModel, loadModelRoleConfig } from "./model-role-config.mjs";
 
 const PROTECTED_CLASSES = new Set(["security", "high_risk", "data_migration"]);
 const REVIEW_CLASSES = new Set(["ocr", "ocr_review", "independent_review"]);
@@ -53,6 +53,7 @@ function executorModelPool(availableNativeModels = [], taskClass = "general") {
   const now = Date.now();
   const candidates = [];
   for (const model of [role.model, ...(role.fallbackModels || [])]) {
+    if (!executorModelAllowed(config, model)) continue;
     if (!model || retired.has(model) || manualOnly.has(model) || (role.dispatchChannel !== "native" && codexModels.has(model))) continue;
     if (role.dispatchChannel === "native" && !nativeRuntimeModel(config, model, availableNativeModels, executorReasoningEffort(config, model, taskClass))) continue;
     const entry = catalog[model];
@@ -92,6 +93,9 @@ export function jevRoutingPrepare(task, { phaseId = "", phaseSummary = "", avail
   const state = { title: truncateText(raw.title, 200), goal: truncateText(raw.goal, 1000), phase_summary: truncateText(raw.phase_summary, 500) };
   // 受限安全摘要：原文已筛查密钥并截断，供决策元数据复盘，不回传完整原文。
   const base = { phase_id: phaseId, input_hash: hashState(state), phase_summary_hash: hashState(state.phase_summary), phase_summary_excerpt: state.phase_summary };
+  const { candidates, configHash } = executorModelPool(availableNativeModels, taskClass);
+  const candidateModels = candidates.map(c => c.model);
+  base.candidate_models = candidateModels;
   if (hasSuspectedSecret(raw)) {
     return Promise.resolve({ decision: { ...base, status: "suspected_secret", error: "suspected_secret" }, status: "suspected_secret" });
   }
@@ -99,8 +103,6 @@ export function jevRoutingPrepare(task, { phaseId = "", phaseSummary = "", avail
   if (!apiKey) {
     return Promise.resolve({ decision: { ...base, status: "no_api_key", error: "no_api_key" }, status: "no_api_key" });
   }
-  const { candidates, configHash } = executorModelPool(availableNativeModels, taskClass);
-  const candidateModels = candidates.map(c => c.model);
   const request = { lineNames: ["routing"], state, questions: buildQuestions(candidates) };
   const key = `${task?.id || ""}:${phaseId}:${base.input_hash}:${configHash}:${hashState(candidateModels)}`;
   const cached = cache.get(key);

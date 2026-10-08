@@ -25,6 +25,7 @@ import {
   loadDispatchTarget,
 } from "./dispatch-core.mjs";
 import { ModelRoleConfigError, modelManagementConfig, updateModelManagement, updateOptionalAstraPolicy } from "./model-role-config.mjs";
+import { codexModelCatalog } from "./harnesses/codex-model-catalog.mjs";
 import {
   defaultSessionsRoot,
 } from "./session-cli.mjs";
@@ -86,6 +87,7 @@ import {
   RoutingControlError,
   routingControlPath,
   routingHealth,
+  routingDecisions,
   routingResult,
   routingRoles,
   routingSelect, activeExecutionRoute,
@@ -651,6 +653,17 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/routing/models") {
       sendJson(response, 200, modelManagementConfig());
+      return;
+    }
+    if (request.method === "GET" && request.url === "/routing/model-catalog") {
+      sendJson(response, 200, await codexModelCatalog());
+      return;
+    }
+    if (request.method === "GET" && new URL(request.url, "http://localhost").pathname === "/routing/decisions") {
+      const query = new URL(request.url, "http://localhost").searchParams;
+      const log = routingDecisions({ limit: Number(query.get("limit") || 20), before: query.get("before") || "", taskId: query.get("task_id") || "" });
+      const titles = new Map(loadVisibleTasks().map(task => [task.id, task.title]));
+      sendJson(response, 200, { ...log, routes: log.routes.map(route => ({ ...route, task_title: titles.get(route.task_id) || route.task_id })) });
       return;
     }
     if (request.method === "POST" && request.url === "/routing/models") {

@@ -74,12 +74,17 @@ function validateModelRoleConfig(input, raw) {
 // 显式 cli_profile / preferred_model 语义不受本函数影响。
 export function isAutomaticEligible(config, model, now = new Date().toISOString()) {
   if (!model || config.retiredModels.includes(model) || config.manualOnlyModels.includes(model)) return false;
+  if (!executorModelAllowed(config, model)) return false;
   const until = config.modelCatalog?.[model]?.automatic_until;
   if (!until) return true;
   const untilMs = Date.parse(until);
   const nowMs = Date.parse(now);
   if (!Number.isFinite(untilMs) || !Number.isFinite(nowMs)) return true;
   return untilMs > nowMs;
+}
+
+export function executorModelAllowed(config, model) {
+  return config.roles.executor.allowedModels === null || config.roles.executor.allowedModels.includes(model);
 }
 
 export function publicModelRoleConfig(config = loadModelRoleConfig()) {
@@ -103,9 +108,11 @@ export function modelManagementConfig() {
   const ids = [...new Set([...Object.keys(config.modelCatalog), ...Object.keys(config.nativeModels), role.model, ...role.fallbackModels])];
   return {
     content_hash: config.contentHash,
-    executor_model: role.model,
-    fallback_models: role.fallbackModels,
+    executor_model: executorModelAllowed(config, role.model) ? role.model : "",
+    fallback_models: role.fallbackModels.filter(id => executorModelAllowed(config, id)),
     reviewer_model: config.roles.reviewer.model,
+    manual_only_models: config.manualOnlyModels,
+    retired_models: config.retiredModels,
     models: ids.map(id => ({
       id,
       description: config.modelCatalog[id]?.description || id,
@@ -135,10 +142,11 @@ export function updateModelManagement(input) {
     }
     const next = JSON.parse(raw);
     const models = new Set();
+    const pool = [input.executor_model, ...(Array.isArray(input.fallback_models) ? input.fallback_models : [])].filter(Boolean);
     const validId = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/.test(value);
     for (const entry of input.models) {
       if (!validId(entry?.id) || models.has(entry.id)) throw new ModelRoleConfigError("模型 ID 无效或重复。");
-      if (current.retiredModels.includes(entry.id) || current.manualOnlyModels.includes(entry.id)) throw new ModelRoleConfigError(`退役或仅手动模型不能加入自动目录: ${entry.id}`);
+      if ((current.retiredModels.includes(entry.id) && !pool.includes(entry.id)) || current.manualOnlyModels.includes(entry.id)) throw new ModelRoleConfigError(`退役或仅手动模型不能加入自动目录: ${entry.id}`);
       models.add(entry.id);
       if (typeof entry.description !== "string" || !entry.description.trim() || entry.description.length > 300) throw new ModelRoleConfigError("模型描述必须为 1–300 字符。");
       if (typeof entry.runtime_model !== "string" || (entry.runtime_model && !validId(entry.runtime_model))) throw new ModelRoleConfigError("runtime model ID 无效。");
@@ -146,7 +154,7 @@ export function updateModelManagement(input) {
       if (typeof entry.executor_reasoning_effort !== "string" || (entry.executor_reasoning_effort && !nativeReasoningEfforts.has(entry.executor_reasoning_effort))) throw new ModelRoleConfigError("执行档位只允许沿用策略或 low/medium/high。");
       if (entry.executor_reasoning_effort && !entry.reasoning_efforts.includes(entry.executor_reasoning_effort)) throw new ModelRoleConfigError(`执行档位不在 native 支持范围: ${entry.id}`);
     }
-    if (!models.has(input.executor_model) || !Array.isArray(input.fallback_models) || input.fallback_models.some(id => !models.has(id) || id === input.executor_model) || new Set(input.fallback_models).size !== input.fallback_models.length) throw new ModelRoleConfigError("首选和回退必须引用目录模型且不得重复。");
+    if (typeof input.executor_model !== "string" || (input.executor_model ? !models.has(input.executor_model) : input.fallback_models?.length) || !Array.isArray(input.fallback_models) || input.fallback_models.some(id => !models.has(id) || id === input.executor_model) || new Set(input.fallback_models).size !== input.fallback_models.length) throw new ModelRoleConfigError("首选和回退必须引用目录模型且不得重复。");
     const roleReferences = new Set([current.roles.executor.model, ...current.roles.executor.fallbackModels, current.roles.executor.capacityFallbackModel, current.roles.reviewer.model, ...Object.values(current.roles.executor.taskClassModels)]);
     for (const id of [...Object.keys(current.modelCatalog), ...Object.keys(current.nativeModels)]) {
       if (models.has(id)) continue;
@@ -155,9 +163,13 @@ export function updateModelManagement(input) {
       delete next.native_models?.[id];
       delete next.roles.executor.native_models?.[id];
     }
-    const pool = [input.executor_model, ...input.fallback_models];
-    next.roles.executor.model = input.executor_model;
+    next.roles.executor.model = input.executor_model || current.roles.executor.model;
     next.roles.executor.fallback_models = input.fallback_models;
+    next.roles.executor.allowed_models = pool;
+    next.retired_models = next.retired_models.filter(id => !pool.includes(id));
+    for (const [taskClass, id] of Object.entries(next.roles.executor.task_class_models || {})) {
+      if (!pool.includes(id)) delete next.roles.executor.task_class_models[taskClass];
+    }
     next.roles.executor.model_reasoning_efforts = {};
     for (const entry of input.models) {
       next.model_catalog ||= {};
@@ -168,6 +180,7 @@ export function updateModelManagement(input) {
       if (entry.runtime_model) mappings[entry.id] = { runtime_model: entry.runtime_model, reasoning_efforts: [...new Set(entry.reasoning_efforts)] };
       else { delete next.native_models?.[entry.id]; delete next.roles.executor.native_models?.[entry.id]; }
       if (!pool.includes(entry.id)) continue;
+      if (next.model_catalog[entry.id].automatic_until && Date.parse(next.model_catalog[entry.id].automatic_until) <= Date.now()) delete next.model_catalog[entry.id].automatic_until;
       if (!entry.runtime_model) throw new ModelRoleConfigError(`启用模型需要 native 映射: ${entry.id}`);
       if (entry.executor_reasoning_effort) next.roles.executor.model_reasoning_efforts[entry.id] = entry.executor_reasoning_effort;
     }
@@ -249,7 +262,8 @@ function normalizeRole(value, name, failClosed) {
   for (const [candidate, effort] of Object.entries(modelReasoningEfforts)) {
     if (![model, ...fallbackModels].includes(candidate) || !allowedReasoningEfforts.has(effort)) throw new ModelRoleConfigError(`roles.${name}.model_reasoning_efforts 含无效模型或档位。`);
   }
-  return { model, reasoningEffort, fallbackModels, capacityFallbackModel, concurrencyLimit, globalConcurrencyLimit, failClosed, taskClassModels, taskClassReasoningEfforts, dispatchChannel, modelReasoningEfforts };
+  const allowedModels = name === "executor" && value.allowed_models !== undefined ? uniqueModels(value.allowed_models, `roles.${name}.allowed_models`) : null;
+  return { model, reasoningEffort, fallbackModels, capacityFallbackModel, concurrencyLimit, globalConcurrencyLimit, failClosed, taskClassModels, taskClassReasoningEfforts, dispatchChannel, modelReasoningEfforts, allowedModels };
 }
 
 function normalizeTaskClassReasoningEfforts(value, roleName) {
@@ -369,6 +383,7 @@ function publicRole(role) {
     model_reasoning_efforts: role.modelReasoningEfforts,
     reasoning_effort: role.reasoningEffort,
     fallback_models: role.fallbackModels,
+    ...(role.allowedModels !== null ? { allowed_models: role.allowedModels } : {}),
     capacity_fallback_model: role.capacityFallbackModel || null,
     concurrency_limit: role.concurrencyLimit,
     global_concurrency_limit: role.globalConcurrencyLimit,

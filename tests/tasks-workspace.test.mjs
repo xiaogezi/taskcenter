@@ -105,13 +105,15 @@ test("同源代理只允许明确的控制台路径和方法", () => {
 test("模型调度页展示额度、真实调度和刷新反馈", () => {
   const source = readFileSync("features/console/ConsolePage.tsx", "utf8");
   assert.match(source, /api<UsageData>\("\/usage-report"\)/);
-  assert.match(source, /api<\{ tasks\?: RoutingTask\[\] \}>\("\/tasks\?view=summary&page_size=100"\)/);
+  const log = readFileSync("features/console/RoutingDecisions.tsx", "utf8");
+  assert.match(source, /<RoutingDecisions request=\{api\}/);
+  assert.match(log, /\/routing\/decisions\?limit=20/);
   assert.match(source, /额度池：/);
   assert.match(source, /刷新成功：/);
   assert.match(source, /刷新失败：/);
-  assert.match(source, /暂无真实调度记录/);
+  assert.match(log, /暂无调度判断记录/);
   assert.match(source, /历史快照（重置时间已过，当前额度未知）/);
-  assert.match(source, /按最近更新的 100 个任务聚合，最多展示 20 条/);
+  assert.match(log, /Jev 判断和实际执行分别展示/);
 });
 
 test("模型调度页展示 24h 路由漏斗且与旧版全量 CLI 表区分", () => {

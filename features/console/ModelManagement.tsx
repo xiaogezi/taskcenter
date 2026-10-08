@@ -2,32 +2,35 @@
 
 import { useEffect, useRef, useState } from "react";
 
-type Model = { id: string; description: string; runtime_model: string; reasoning_efforts: string[]; executor_reasoning_effort: string };
-type Config = { content_hash: string; executor_model: string; fallback_models: string[]; reviewer_model: string; models: Model[] };
+type Model = { id: string; description: string; runtime_model: string; reasoning_efforts: string[]; executor_reasoning_effort: string; display_name?: string };
+type Config = { content_hash: string; executor_model: string; fallback_models: string[]; reviewer_model: string; manual_only_models: string[]; retired_models: string[]; models: Model[] };
+type Catalog = { status: string; source: string; observed_at: string | null; error: string | null; models: Model[] };
 type Request = <T>(path: string, init?: RequestInit) => Promise<T>;
-const efforts = ["low", "medium", "high"];
-const blank: Model = { id: "", description: "", runtime_model: "", reasoning_efforts: ["low"], executor_reasoning_effort: "" };
 
 export function ModelManagement({ request, onSaved }: { request: Request; onSaved: () => void }) {
   const [saved, setSaved] = useState<Config>();
   const [draft, setDraft] = useState<Config>();
-  const [editor, setEditor] = useState<Model>();
-  const [originalId, setOriginalId] = useState("");
+  const [catalog, setCatalog] = useState<Catalog>();
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
+  const [search, setSearch] = useState("");
   const inFlight = useRef(false);
   const dirty = JSON.stringify(saved) !== JSON.stringify(draft);
   const load = async () => {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(true);
-    try { const config = await request<Config>("/routing/models"); setSaved(config); setDraft(config); setEditor(undefined); setNotice("已读取集中配置"); }
-    catch (error) { setNotice(error instanceof Error ? error.message : "读取失败"); }
+    try {
+      const [config, directory] = await Promise.all([request<Config>("/routing/models"), request<Catalog>("/routing/model-catalog")]);
+      setSaved(config); setDraft(config); setCatalog(directory); setNotice("已读取派发名单和会话模型目录");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "读取失败"); }
     finally { inFlight.current = false; setBusy(false); }
   };
   useEffect(() => {
     let stopped = false;
     inFlight.current = true;
-    void request<Config>("/routing/models").then(config => { if (!stopped) { setSaved(config); setDraft(config); } }).catch(error => { if (!stopped) setNotice(error instanceof Error ? error.message : "读取失败"); }).finally(() => { if (!stopped) { inFlight.current = false; setBusy(false); } });
+    void Promise.all([request<Config>("/routing/models"), request<Catalog>("/routing/model-catalog")]).then(([config, directory]) => {
+      if (!stopped) { setSaved(config); setDraft(config); setCatalog(directory); }
+    }).catch(error => { if (!stopped) setNotice(error instanceof Error ? error.message : "读取失败"); }).finally(() => { if (!stopped) { inFlight.current = false; setBusy(false); } });
     return () => { stopped = true; };
   }, [request]);
   const save = async () => {
@@ -35,61 +38,54 @@ export function ModelManagement({ request, onSaved }: { request: Request; onSave
     inFlight.current = true; setBusy(true);
     try {
       const config = await request<Config>("/routing/models", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: JSON.stringify(draft) });
-      setSaved(config); setDraft(config); setNotice("模型配置已保存，下次派发生效"); onSaved();
+      setSaved(config); setDraft(config); setNotice("派发名单已保存，下次派发生效"); onSaved();
     } catch (error) { setNotice(error instanceof Error ? error.message : "保存失败"); }
     finally { inFlight.current = false; setBusy(false); }
   };
-  const toggle = (id: string, enabled: boolean) => {
+  const pool = draft ? [draft.executor_model, ...draft.fallback_models].filter(Boolean) : [];
+  const directory = (catalog?.models || []).map(entry => {
+    const configured = draft?.models.find(model => model.runtime_model === entry.runtime_model || model.id === entry.id);
+    return { ...entry, id: configured?.id || entry.id, executor_reasoning_effort: configured?.executor_reasoning_effort || (entry.reasoning_efforts.includes("low") ? "" : entry.reasoning_efforts.includes("medium") ? "medium" : "high") };
+  });
+  const rows = [...directory, ...(draft?.models || []).filter(model => !directory.some(entry => entry.id === model.id))];
+  const toggle = (model: Model, enabled: boolean) => {
     if (!draft) return;
-    const pool = [draft.executor_model, ...draft.fallback_models];
-    const next = enabled ? [...pool, id] : pool.filter(model => model !== id);
-    if (!next.length) { setNotice("至少保留一个执行模型，或先启用其他模型"); return; }
-    setDraft({ ...draft, executor_model: next[0], fallback_models: next.slice(1) });
+    const next = enabled ? [...pool, model.id] : pool.filter(id => id !== model.id);
+    let models = draft.models;
+    if (enabled) models = models.some(entry => entry.id === model.id) ? models.map(entry => entry.id === model.id ? model : entry) : [...models, model];
+    else if (!saved?.models.some(entry => entry.id === model.id)) models = models.filter(entry => entry.id !== model.id);
+    setDraft({ ...draft, models, executor_model: next[0] || "", fallback_models: next.slice(1) });
   };
   const move = (index: number, offset: number) => {
     if (!draft) return;
-    const next = [...draft.fallback_models];
-    [next[index], next[index + offset]] = [next[index + offset], next[index]];
-    setDraft({ ...draft, fallback_models: next });
+    const next = [...pool]; [next[index], next[index + offset]] = [next[index + offset], next[index]];
+    setDraft({ ...draft, executor_model: next[0], fallback_models: next.slice(1) });
   };
-  const applyEditor = () => {
-    if (!draft || !editor) return;
-    if (!editor.id.trim() || (!originalId && draft.models.some(model => model.id === editor.id))) { setNotice("请填写不重复的模型 ID"); return; }
-    setDraft({ ...draft, models: originalId ? draft.models.map(model => model.id === originalId ? editor : model) : [...draft.models, editor] });
-    setEditor(undefined); setNotice("编辑已应用，请保存模型配置");
-  };
-  const remove = (id: string) => {
-    if (!draft || !saved) return;
-    if ([saved.executor_model, ...saved.fallback_models, saved.reviewer_model, draft.executor_model, ...draft.fallback_models].includes(id)) { setNotice("模型仍被角色引用，请先停用并保存；Reviewer 引用需在集中配置调整"); return; }
-    if (window.confirm(`删除模型 ${id} 的目录和原生映射？`)) setDraft({ ...draft, models: draft.models.filter(model => model.id !== id) });
-  };
-  const pool = draft ? [draft.executor_model, ...draft.fallback_models] : [];
-  return <section className="console-card"><h2>模型管理</h2>
-    <p>启停控制自动执行候选池。停用首选时按回退顺序提升下一模型，正在执行的任务不变。实际可用性仍以派发工具和额度为准。</p>
-    <p role="status">{busy ? "正在处理…" : notice || "编辑后统一保存"}{dirty && " · 有未保存更改"}</p>
+  return <section className="console-card"><h2>会话模型与派发名单</h2>
+    <p>从本机 Codex 会话模型目录勾选加入派发名单。名单外模型不派发，空名单由当前主模型继续；运行中的任务保持原模型。实际派发仍校验工具能力、档位和额度。</p>
+    <p role="status">{busy ? "正在读取或保存…" : notice || "勾选后保存名单"}{dirty && " · 有未保存更改"}</p>
+    <p>目录来源：{catalog?.source || "正在读取"} · {catalog?.status === "succeeded" ? `${catalog.models.length} 个会话模型 · ${new Date(catalog.observed_at!).toLocaleString("zh-CN", { hour12: false })}` : catalog?.error || "尚未读取"}</p>
     <div className="console-toolbar">
-      <button disabled={busy || !draft || Boolean(editor)} onClick={() => { setOriginalId(""); setEditor({ ...blank }); }}>新增模型</button>
-      <button disabled={busy || !dirty || Boolean(editor)} onClick={() => void save()}>保存模型配置</button>
-      <button disabled={busy} onClick={() => { if ((!dirty && !editor) || window.confirm("重新读取会丢弃未保存更改，是否继续？")) void load(); }}>重新读取</button>
+      <button disabled={busy || !dirty} onClick={() => void save()}>保存派发名单</button>
+      <button disabled={busy} onClick={() => { if (!dirty || window.confirm("重新读取会丢弃未保存更改，是否继续？")) void load(); }}>重新读取目录和名单</button>
+      <label>搜索模型 <input value={search} onChange={event => setSearch(event.target.value)} placeholder="名称或模型 ID" /></label>
     </div>
-    {draft && <>
-      <label>首选执行模型 <select disabled={busy || Boolean(editor)} value={draft.executor_model} onChange={event => setDraft({ ...draft, executor_model: event.target.value, fallback_models: pool.filter(id => id !== event.target.value) })}>{pool.map(id => <option key={id}>{id}</option>)}</select></label>
-      <h3>回退顺序</h3><ol>{draft.fallback_models.map((id, index) => <li key={id}>{id} <button aria-label={`上移 ${id}`} disabled={busy || Boolean(editor) || index === 0} onClick={() => move(index, -1)}>上移</button> <button aria-label={`下移 ${id}`} disabled={busy || Boolean(editor) || index === draft.fallback_models.length - 1} onClick={() => move(index, 1)}>下移</button></li>)}</ol>
-      <div className="console-list">{draft.models.map(model => <article className="console-card" key={model.id}>
-        <h3>{model.id}</h3><p>{model.description}</p><p className="console-path">原生模型：{model.runtime_model || "未配置"}</p><p>支持档位：{model.reasoning_efforts.join(" / ") || "无"} · 执行档位：{model.executor_reasoning_effort || "沿用角色/任务策略"}{model.id === draft.reviewer_model && " · Reviewer 引用"}</p>
-        <label className="console-check"><input type="checkbox" checked={pool.includes(model.id)} disabled={busy || Boolean(editor) || !model.runtime_model} onChange={event => toggle(model.id, event.target.checked)} />自动执行候选</label>
-        <button disabled={busy || Boolean(editor)} onClick={() => { setOriginalId(model.id); setEditor({ ...model }); }}>编辑 {model.id}</button> <button disabled={busy || Boolean(editor)} onClick={() => remove(model.id)}>删除 {model.id}</button>
-      </article>)}</div>
-    </>}
-    {editor && <form className="console-card" onSubmit={event => { event.preventDefault(); applyEditor(); }}><h3>{originalId ? "编辑模型" : "新增模型"}</h3>
-      <p><label>模型 ID <input required maxLength={120} disabled={Boolean(originalId)} value={editor.id} onChange={event => setEditor({ ...editor, id: event.target.value })} /></label></p>
-      <p><small>已有 ID 固定；更换 ID 请停用、保存、删除后新增。</small></p>
-      <p><label>能力与成本描述 <input required maxLength={300} value={editor.description} onChange={event => setEditor({ ...editor, description: event.target.value })} /></label></p>
-      <p><label>原生 runtime model ID <input required maxLength={120} value={editor.runtime_model} onChange={event => setEditor({ ...editor, runtime_model: event.target.value })} /></label></p>
-      <fieldset><legend>原生支持的推理档位</legend>{efforts.map(effort => <label className="console-check" key={effort}><input type="checkbox" checked={editor.reasoning_efforts.includes(effort)} onChange={event => setEditor({ ...editor, reasoning_efforts: event.target.checked ? [...editor.reasoning_efforts, effort] : editor.reasoning_efforts.filter(value => value !== effort) })} />{effort}</label>)}</fieldset>
-      <p><label>执行推理档位 <select value={editor.executor_reasoning_effort} onChange={event => setEditor({ ...editor, executor_reasoning_effort: event.target.value })}><option value="">沿用角色/任务策略</option>{efforts.map(effort => <option key={effort}>{effort}</option>)}</select></label></p>
-      <p><small>停用时保留执行档位；选择 high 表示允许该模型以 high 执行。模型映射必须填写真实工具支持值。</small></p>
-      <button type="submit">应用编辑</button> <button type="button" onClick={() => setEditor(undefined)}>取消编辑</button>
-    </form>}
+    <h3>派发名单（{pool.length}）</h3><p>首项为默认偏好，其余为回退；Jev 按任务从名单中判断。只支持 high 的模型，保存即确认以 high 派发。</p>
+    {!pool.length && <p>派发已关闭，当前主模型继续执行。</p>}
+    <ol>{pool.map((id, index) => <li key={id}>{id} {index === 0 && "（首选）"} <button aria-label={`上移 ${id}`} disabled={busy || index === 0} onClick={() => move(index, -1)}>上移</button> <button aria-label={`下移 ${id}`} disabled={busy || index === pool.length - 1} onClick={() => move(index, 1)}>下移</button> <button disabled={busy} onClick={() => toggle(draft!.models.find(model => model.id === id)!, false)}>移出名单</button></li>)}</ol>
+    <h3>会话模型目录</h3>
+    <div className="console-list">{rows.filter(model => `${model.id} ${model.display_name || ""}`.toLowerCase().includes(search.toLowerCase())).map(model => {
+      const present = directory.some(entry => entry.id === model.id);
+      const manual = draft?.manual_only_models.includes(model.id);
+      const retired = draft?.retired_models.includes(model.id);
+      return <article className="console-card" key={model.id}><h4>{model.display_name || model.id}</h4><p className="console-path">{model.id}</p><p>{model.description}</p>
+        <label className="console-check"><input type="checkbox" checked={pool.includes(model.id)} disabled={busy || Boolean(manual) || (!pool.includes(model.id) && (!present || !model.reasoning_efforts.length))} onChange={event => toggle(model, event.target.checked)} />加入派发名单</label>
+        <p>{present ? "会话目录可选；派发时校验原生工具能力" : "集中配置记录；当前会话目录未提供，可移出名单"}{manual && " · 仅手动策略，不参与普通派发"}{retired && " · 勾选保存将恢复此模型的派发资格"}</p>
+        <p>支持档位：{model.reasoning_efforts.join(" / ") || "无可用档位"}</p>
+        {pool.includes(model.id) && <label>派发档位 <select disabled={busy} value={draft!.models.find(entry => entry.id === model.id)?.executor_reasoning_effort || ""} onChange={event => setDraft({ ...draft!, models: draft!.models.map(entry => entry.id === model.id ? { ...entry, executor_reasoning_effort: event.target.value } : entry) })}>
+          {model.reasoning_efforts.includes("low") && <option value="">沿用角色/任务策略</option>}{model.reasoning_efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
+        </select></label>}
+      </article>;
+    })}</div>
   </section>;
 }

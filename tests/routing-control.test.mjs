@@ -397,7 +397,9 @@ test("当前项目策略仅会话派发：GPT 优先、MiMo 暂停、四款候�
     assert.throws(() => routingSelect({ ...request, channel: "cli" }), /CLI_DISPATCH_DISABLED/);
     assert.throws(() => routingSelect({ ...request, channel: "invalid" }), /channel 无效/);
     assert.throws(() => routingSelect({ ...request, cli_profile: "codex-luna", channel: "cli" }), /CLI_DISPATCH_DISABLED/);
-    assert.throws(() => routingSelect({ ...request, preferred_model: "gpt-6-sol" }), /候选池/);
+    const excluded = routingSelect({ ...request, preferred_model: "gpt-6-sol" });
+    assert.equal(excluded.route.channel, "direct");
+    assert.equal(excluded.route.fallback_reason, "executor_model_not_in_dispatch_list");
     const direct = routingSelect({ ...baseInput, channel: "direct", event_id: "direct" });
     assert.equal(direct.route.channel, "direct");
   } finally {

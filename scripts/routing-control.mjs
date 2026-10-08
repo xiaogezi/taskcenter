@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { executorReasoningEffort, isAutomaticEligible, loadModelRoleConfig, nativeRuntimeModel, publicModelRoleConfig } from "./model-role-config.mjs";
+import { executorModelAllowed, executorReasoningEffort, isAutomaticEligible, loadModelRoleConfig, nativeRuntimeModel, publicModelRoleConfig } from "./model-role-config.mjs";
 import { sameSubject } from "./completion-state.mjs";
 import { cliProfile, cliProfileForModel } from "./cli-profile.mjs";
 
@@ -250,7 +250,8 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     return { route: publicRoute(replay), health: healthSnapshot(state, now, config), roles: publicModelRoleConfig(config), idempotent: true, auditEvents };
   }
 
-  if (channel === "direct" && roleName === "executor") {
+  const deniedModel = roleName === "executor" && channel !== "direct" && !executorModelAllowed(config, quotaPreferred ? executionModelPolicy.preferredModel : requestedPreferredModel || preferredModel);
+  if ((channel === "direct" || deniedModel) && roleName === "executor") {
     if (input.direct_authorization_fingerprint) {
       if (!/^[a-f0-9]{64}$/.test(input.direct_authorization_fingerprint)) throw new RoutingControlError(403, "一次性主模型直接执行授权指纹无效。", "DIRECT_AUTHORIZATION_INVALID");
       const expiresAt = Date.parse(input.direct_authorization_expires_at);
@@ -264,12 +265,12 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     const route = {
       id: clean(input.route_id, 200) || `route_${randomUUID()}`,
       selectEventId: eventId, selectSignature: signature, taskId, orchestratorModel,
-      preferredModel: orchestratorModel, selectedModel: orchestratorModel,
-      selectedReasoningEffort: "unknown", taskClass, channel,
-      circuitState: health.state, reason: jev?.execution_applied ? "jev_direct" : "direct_reasoned_override",
-      fallbackFrom: "", fallbackReason: "", retryAfterAt: "", reviewArtifacts: null,
+      preferredModel: deniedModel ? requestedPreferredModel || preferredModel : orchestratorModel, selectedModel: orchestratorModel,
+      selectedReasoningEffort: "unknown", taskClass, channel: "direct",
+      circuitState: health.state, reason: deniedModel ? "main_model_fallback" : jev?.execution_applied ? "jev_direct" : "direct_reasoned_override",
+      fallbackFrom: deniedModel ? requestedPreferredModel || preferredModel : "", fallbackReason: deniedModel ? (role.allowedModels.length ? "executor_model_not_in_dispatch_list" : "executor_dispatch_list_empty") : "", retryAfterAt: "", reviewArtifacts: null,
       preferenceMode: executionModelPolicy.mode, quotaLimitId: "", quotaSnapshotObservedAt: "",
-      quotaUsedPercent: undefined, quotaResetAt: "", directReason, jevDecision: jev,
+      quotaUsedPercent: undefined, quotaResetAt: "", directReason: deniedModel ? "派发名单未允许此模型，由当前主模型继续" : directReason, jevDecision: jev,
       configVersion: config.contentHash, policyVersion: config.schemaVersion,
       matchedRule: "direct_main_model", requiresNewSession: false,
       available: true, probe: false, status: "leased", createdAt: now,
@@ -360,7 +361,7 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     );
     let fallback = protectedTaskClass ? null : chooseFallback(state, role, preferredModel, now, config, nativeOnly ? nativeCapable : undefined);
     const ordinaryModels = [role.model, ...role.fallbackModels];
-    if (!fallback && roleName === "executor" && role.capacityFallbackModel
+    if (!fallback && roleName === "executor" && role.capacityFallbackModel && executorModelAllowed(config, role.capacityFallbackModel)
       && ordinaryModels.every((model) => {
         const health = ensureHealth(state, model, now, config);
         if (canLease(state, health, now, config, roleName)) return false;
@@ -414,12 +415,13 @@ export function routingSelect(input, now = new Date().toISOString(), jevDecision
     const runtime = isCodexModel && !nativeOnly
       ? (availableNativeModels.includes(selectedModel) ? selectedModel : "")
       : nativeRuntimeModel(config, selectedModel, availableNativeModels, selectedReasoningEffort);
-    if (runtime && (automaticChannel || channel === "native")) {
+    const allowed = executorModelAllowed(config, selectedModel);
+    if (allowed && runtime && (automaticChannel || channel === "native")) {
       effectiveChannel = "native";
       nativeModel = runtime;
-    } else if (channel === "native") {
+    } else if (!allowed || channel === "native") {
       const mapping = config.nativeModels?.[selectedModel];
-      const unavailableReason = isCodexModel
+      const unavailableReason = !allowed ? "executor_model_not_in_dispatch_list" : isCodexModel
         ? `native_model_not_available:${selectedModel}`
         : !mapping
           ? `native_model_not_configured:${selectedModel}`
@@ -595,6 +597,19 @@ export function routingHealth(now = new Date().toISOString()) {
 
 export function routingRoles() {
   return publicModelRoleConfig(loadModelRoleConfig());
+}
+
+export function routingDecisions({ limit = 20, before = "", taskId = "" } = {}, now = new Date().toISOString()) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RoutingControlError(400, "日志条数须为 1–100。");
+  let routes = readState().routes.filter(route => !taskId || route.taskId === taskId).reverse();
+  const total = routes.length;
+  if (before) {
+    const index = routes.findIndex(route => route.id === before);
+    if (index < 0) throw new RoutingControlError(400, "日志游标已失效，请刷新。");
+    routes = routes.slice(index + 1);
+  }
+  const page = routes.slice(0, limit);
+  return { total, routes: page.map(route => publicRoute(route.status === "leased" && route.expiresAt <= now ? { ...route, status: "expired" } : route)), next_cursor: routes.length > limit ? page.at(-1).id : null };
 }
 
 function chooseFallback(state, role, preferredModel, now, config, eligible = () => true) {

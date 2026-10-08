@@ -11,7 +11,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   if (!target) return NextResponse.json({ error: "不允许代理该 Control API 路径。" }, { status: 404 });
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), path.at(-1) === "bug-merge" ? 15_000 : 2_500);
+  const timeout = setTimeout(() => controller.abort(), path.at(-1) === "bug-merge" ? 15_000 : path.join("/") === "routing/model-catalog" ? 12_000 : 2_500);
   try {
     const headers = new Headers();
     for (const name of ["content-type", "x-taskcenter-action"]) {
