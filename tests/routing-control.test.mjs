@@ -347,7 +347,7 @@ test("manual_only Spark 健康状态可观察，退役后隐藏", async () => {
   await writeFile(roleConfigPath, `${JSON.stringify(roleConfig)}\n`, "utf8");
 });
 
-test("当前项目策略仅会话派发：Kimi 优先、MiMo 暂停、四款候选、实际能力和档位筛选", async () => {
+test("当前项目策略仅会话派发：GPT 优先、MiMo 暂停、四款候选、实际能力和档位筛选", async () => {
   const current = await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8");
   const config = JSON.parse(current);
   await writeFile(roleConfigPath, current);
@@ -365,15 +365,15 @@ test("当前项目策略仅会话派发：Kimi 优先、MiMo 暂停、四款候�
     const main = routingSelect({ ...baseInput, orchestrator_model: "gpt-6-luna", channel: "direct", event_id: "pool-main-direct" });
     assert.equal(main.health.find(item => item.model === "gpt-6-luna").active_executors, 0, "主模型即使属于候选池也不占执行器配额");
     const first = routingSelect({ ...request, event_id: "policy-first" });
-    assert.equal(first.route.selected_model, "kimi-code/kimi-for-coding");
+    assert.equal(first.route.selected_model, config.roles.executor.model);
     assert.equal(first.route.channel, "native");
     assert.equal(first.route.native_model, native[first.route.selected_model].runtime_model);
     assert.equal(first.route.cli_profile, undefined);
-    assert.equal(first.route.reasoning_effort, "high");
+    assert.equal(first.route.reasoning_effort, config.roles.executor.reasoning_effort);
     routingSelect({ ...request, event_id: "policy-second" });
     const fallback = routingSelect({ ...request, event_id: "policy-third" });
-    assert.equal(fallback.route.selected_model, "gpt-6-luna", "Kimi 共享池满后选可用会话候选");
-    assert.equal(fallback.route.reasoning_effort, "low");
+    assert.equal(fallback.route.selected_model, config.roles.executor.fallback_models[0], "首选 GPT 容量满后选择配置回退候选");
+    assert.equal(fallback.route.reasoning_effort, config.roles.executor.model_reasoning_efforts[fallback.route.selected_model] || config.roles.executor.reasoning_effort);
     routingSelect({ ...request, event_id: "policy-fourth" });
     assert.equal(routingSelect({ ...request, event_id: "policy-fifth" }).route.channel, "direct", "全局派发容量满时由主模型接管");
     const review = routingSelect({ ...baseInput, task_class: "ocr_review", review_artifacts: reviewArtifacts, event_id: "native-pool-review" });

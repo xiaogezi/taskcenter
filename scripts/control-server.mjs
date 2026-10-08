@@ -24,7 +24,7 @@ import {
   DispatchError,
   loadDispatchTarget,
 } from "./dispatch-core.mjs";
-import { ModelRoleConfigError, updateOptionalAstraPolicy } from "./model-role-config.mjs";
+import { ModelRoleConfigError, modelManagementConfig, updateModelManagement, updateOptionalAstraPolicy } from "./model-role-config.mjs";
 import {
   defaultSessionsRoot,
 } from "./session-cli.mjs";
@@ -647,6 +647,16 @@ const server = createServer(async (request, response) => {
         throw new RoutingControlError(403, "当前 Session 无权查询该任务路由。");
       }
       sendJson(response, 200, activeExecutionRoute(task.id));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/routing/models") {
+      sendJson(response, 200, modelManagementConfig());
+      return;
+    }
+    if (request.method === "POST" && request.url === "/routing/models") {
+      verifyTaskRequest(request);
+      const config = updateModelManagement(await readJsonBody(request));
+      sendJson(response, 200, { accepted: true, ...config });
       return;
     }
     if (request.method === "GET" && request.url === "/routing/optional-astra-policy") {

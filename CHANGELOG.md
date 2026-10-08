@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 模型调度页新增模型启停、首选与回退排序、模型目录和原生映射增删改查；集中配置保存校验角色引用并检测并发冲突，仅影响新派发。
+
 - 按用户当前 GPT 额度充足的派发偏好，将普通 executor 首选调整为 GPT-6 Luna，Kimi Coding、Highspeed、K3 依次保留为回退；原生派发能力、推理档位、并发与 Reviewer 策略不变。
 
 - 修复已登记、无活跃任务的 Session 执行 `git worktree list` 被误拒绝：L0 精确支持普通输出、`--porcelain`、`-z` 和 verbose 选项及 RTK 包装；新增、删除、prune、repair、未知参数和混合写命令仍不放行。

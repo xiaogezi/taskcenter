@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 const projectRoot = resolve(import.meta.dirname, "..");
@@ -32,6 +32,10 @@ export function loadModelRoleConfig() {
   } catch {
     throw new ModelRoleConfigError(`模型角色配置不是有效 JSON: ${modelRoleConfigPath}`);
   }
+  return validateModelRoleConfig(input, raw);
+}
+
+function validateModelRoleConfig(input, raw) {
   if (input?.schema_version !== "taskcenter-model-roles-v1") {
     throw new ModelRoleConfigError("模型角色配置 schema_version 无效。");
   }
@@ -90,6 +94,94 @@ export function publicModelRoleConfig(config = loadModelRoleConfig()) {
     model_catalog: config.modelCatalog,
     native_models: publicNativeModels(config.nativeModels),
   };
+}
+
+// 管理入口只编辑模型目录、native 映射和 executor 候选，其他配置仍由原文件持有。
+export function modelManagementConfig() {
+  const config = loadModelRoleConfig();
+  const role = config.roles.executor;
+  const ids = [...new Set([...Object.keys(config.modelCatalog), ...Object.keys(config.nativeModels), role.model, ...role.fallbackModels])];
+  return {
+    content_hash: config.contentHash,
+    executor_model: role.model,
+    fallback_models: role.fallbackModels,
+    reviewer_model: config.roles.reviewer.model,
+    models: ids.map(id => ({
+      id,
+      description: config.modelCatalog[id]?.description || id,
+      runtime_model: config.nativeModels[id]?.runtimeModel || "",
+      reasoning_efforts: config.nativeModels[id]?.reasoningEfforts || [],
+      executor_reasoning_effort: role.modelReasoningEfforts[id] || config.modelCatalog[id]?.executor_reasoning_effort || "",
+    })),
+  };
+}
+
+export function updateModelManagement(input) {
+  if (!input || !Array.isArray(input.models) || input.models.length < 1 || input.models.length > 100) throw new ModelRoleConfigError("模型目录必须包含 1–100 个模型。");
+  if (modelRoleConfigPath.includes("/.local/releases/")) throw new ModelRoleConfigError("不可修改不可变发布配置，请配置外部集中配置路径。");
+  const lockPath = `${modelRoleConfigPath}.lock`;
+  let lock;
+  try { lock = openSync(lockPath, "wx", 0o600); }
+  catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    const conflict = new ModelRoleConfigError("配置正在保存，请稍后重试。"); conflict.statusCode = 409; throw conflict;
+  }
+  const temporary = `${modelRoleConfigPath}.${process.pid}.tmp`;
+  try {
+    const raw = readFileSync(modelRoleConfigPath, "utf8");
+    const current = validateModelRoleConfig(JSON.parse(raw), raw);
+    if (input.content_hash !== current.contentHash) {
+      const conflict = new ModelRoleConfigError("配置已被其他操作修改，请重新读取后编辑。"); conflict.statusCode = 409; throw conflict;
+    }
+    const next = JSON.parse(raw);
+    const models = new Set();
+    const validId = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/.test(value);
+    for (const entry of input.models) {
+      if (!validId(entry?.id) || models.has(entry.id)) throw new ModelRoleConfigError("模型 ID 无效或重复。");
+      if (current.retiredModels.includes(entry.id) || current.manualOnlyModels.includes(entry.id)) throw new ModelRoleConfigError(`退役或仅手动模型不能加入自动目录: ${entry.id}`);
+      models.add(entry.id);
+      if (typeof entry.description !== "string" || !entry.description.trim() || entry.description.length > 300) throw new ModelRoleConfigError("模型描述必须为 1–300 字符。");
+      if (typeof entry.runtime_model !== "string" || (entry.runtime_model && !validId(entry.runtime_model))) throw new ModelRoleConfigError("runtime model ID 无效。");
+      if (!Array.isArray(entry.reasoning_efforts) || entry.reasoning_efforts.some(effort => !nativeReasoningEfforts.has(effort)) || (entry.runtime_model ? !entry.reasoning_efforts.length : entry.reasoning_efforts.length)) throw new ModelRoleConfigError("native 映射需要 runtime ID 和支持的 low/medium/high 档位。");
+      if (typeof entry.executor_reasoning_effort !== "string" || (entry.executor_reasoning_effort && !nativeReasoningEfforts.has(entry.executor_reasoning_effort))) throw new ModelRoleConfigError("执行档位只允许沿用策略或 low/medium/high。");
+      if (entry.executor_reasoning_effort && !entry.reasoning_efforts.includes(entry.executor_reasoning_effort)) throw new ModelRoleConfigError(`执行档位不在 native 支持范围: ${entry.id}`);
+    }
+    if (!models.has(input.executor_model) || !Array.isArray(input.fallback_models) || input.fallback_models.some(id => !models.has(id) || id === input.executor_model) || new Set(input.fallback_models).size !== input.fallback_models.length) throw new ModelRoleConfigError("首选和回退必须引用目录模型且不得重复。");
+    const roleReferences = new Set([current.roles.executor.model, ...current.roles.executor.fallbackModels, current.roles.executor.capacityFallbackModel, current.roles.reviewer.model, ...Object.values(current.roles.executor.taskClassModels)]);
+    for (const id of [...Object.keys(current.modelCatalog), ...Object.keys(current.nativeModels)]) {
+      if (models.has(id)) continue;
+      if (roleReferences.has(id)) throw new ModelRoleConfigError(`模型仍被角色引用，请先保存角色调整再删除: ${id}`);
+      delete next.model_catalog?.[id];
+      delete next.native_models?.[id];
+      delete next.roles.executor.native_models?.[id];
+    }
+    const pool = [input.executor_model, ...input.fallback_models];
+    next.roles.executor.model = input.executor_model;
+    next.roles.executor.fallback_models = input.fallback_models;
+    next.roles.executor.model_reasoning_efforts = {};
+    for (const entry of input.models) {
+      next.model_catalog ||= {};
+      next.model_catalog[entry.id] = { ...next.model_catalog[entry.id], description: entry.description.trim() };
+      if (entry.executor_reasoning_effort) next.model_catalog[entry.id].executor_reasoning_effort = entry.executor_reasoning_effort;
+      else delete next.model_catalog[entry.id].executor_reasoning_effort;
+      const mappings = Object.hasOwn(next.roles.executor.native_models || {}, entry.id) ? next.roles.executor.native_models : (next.native_models ||= {});
+      if (entry.runtime_model) mappings[entry.id] = { runtime_model: entry.runtime_model, reasoning_efforts: [...new Set(entry.reasoning_efforts)] };
+      else { delete next.native_models?.[entry.id]; delete next.roles.executor.native_models?.[entry.id]; }
+      if (!pool.includes(entry.id)) continue;
+      if (!entry.runtime_model) throw new ModelRoleConfigError(`启用模型需要 native 映射: ${entry.id}`);
+      if (entry.executor_reasoning_effort) next.roles.executor.model_reasoning_efforts[entry.id] = entry.executor_reasoning_effort;
+    }
+    const serialized = `${JSON.stringify(next, null, 2)}\n`;
+    validateModelRoleConfig(next, serialized);
+    writeFileSync(temporary, serialized, { mode: statSync(modelRoleConfigPath).mode & 0o777 });
+    if (readFileSync(modelRoleConfigPath, "utf8") !== raw) { const conflict = new ModelRoleConfigError("配置保存期间发生修改，请重新读取。"); conflict.statusCode = 409; throw conflict; }
+    renameSync(temporary, modelRoleConfigPath);
+    return modelManagementConfig();
+  } finally {
+    if (existsSync(temporary)) unlinkSync(temporary);
+    closeSync(lock);
+    unlinkSync(lockPath);
+  }
 }
 
 // Codex 原生派发能力：canonical 模型有映射、本轮工具能力列表包含 runtime_model，
@@ -237,6 +329,10 @@ function normalizeModelCatalog(value) {
       automaticUntil = new Date(raw).toISOString();
     }
     catalog[model] = automaticUntil ? { description, automatic_until: automaticUntil } : { description };
+    if (entry.executor_reasoning_effort !== undefined) {
+      if (!nativeReasoningEfforts.has(entry.executor_reasoning_effort)) throw new ModelRoleConfigError(`model_catalog.${model}.executor_reasoning_effort 无效。`);
+      catalog[model].executor_reasoning_effort = entry.executor_reasoning_effort;
+    }
   }
   return catalog;
 }

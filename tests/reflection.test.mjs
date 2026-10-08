@@ -296,7 +296,7 @@ export class Codex {
 
 test("独立提案可复用仅有已完成任务的 Session", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "taskcenter-reflection-existing-"));
-  const port = 4_000 + Math.floor(Math.random() * 100);
+  const port = 4_100 + Math.floor(Math.random() * 100); // 避免 Fetch 禁止的 4045 端口。
   const sessionId = "019f9100-0000-7000-8000-000000000001";
   const sessionsRoot = join(directory, "sessions");
   const sessionPath = join(sessionsRoot, `${sessionId}.jsonl`);
