@@ -193,13 +193,25 @@ test("invalid JSON from server is fatal", async () => {
   } finally { restore(); }
 });
 
-test("abort signal terminates the child and settles promptly", async () => {
+test("abort signal terminates the child and settles promptly", { timeout: 10_000 }, async () => {
   const dir = tmpDir();
-  const { promise, abort, restore } = await runWithFake(dir, { scenario: { SLOW_TURN: "1" } });
+  const controller = new AbortController();
+  let abortedAt;
+  const { promise, restore } = await runWithFake(dir, {
+    scenario: { SLOW_TURN: "1" },
+    signal: controller.signal,
+    update: message => {
+      if (message.method === "turn/started") setImmediate(() => {
+        abortedAt = performance.now();
+        controller.abort();
+      });
+    },
+  });
   try {
-    setTimeout(abort, 100);
     const result = await promise;
     assert.equal(result.status, "cancelled");
+    assert.ok(abortedAt !== undefined, "abort must follow the real turn start");
+    assert.ok(performance.now() - abortedAt < 2_000, "cancellation must settle promptly");
   } finally { restore(); }
 });
 
