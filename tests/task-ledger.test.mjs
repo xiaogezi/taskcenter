@@ -3552,64 +3552,37 @@ test("Codex Session 可顺序承载多个任务，但同一时间只允许一个
   assert.match((await third.json()).error, /ACTIVE_TASK_CONFLICT/);
 });
 
-test("Bug：资料、验收、Git 合入核验闭环及伪造/过期防护", async context => {
+test("Bug 退休：历史字段保留、通用就绪一致、新写入与旧接口拒绝", async context => {
   await resetLedger();
-  const repo = await mkdtemp(join(tempDir, "bug-git-"));
-  const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-  git("init", "-b", "base"); git("config", "user.email", "fixture@example.invalid"); git("config", "user.name", "fixture");
-  await writeFile(join(repo, "file.txt"), "before"); git("add", "."); git("commit", "-m", "initial");
-  git("checkout", "-b", "fix"); await writeFile(join(repo, "file.txt"), "fixed"); git("commit", "-am", "fix");
-  const revision = git("rev-parse", "HEAD");
-  const subject = { type: "git_commit", value: revision, repository: repo, branch: "fix", observed_at: new Date().toISOString() };
-  const bug = { source: "测试反馈 #1", version: "1.0", preconditions: "已登录", steps: "打开列表并刷新", actual: "列表不更新", expected: "列表显示最新数据", acceptanceSteps: "刷新后核对新增条目", testArtifact: "local fixture", targetBranch: "base" };
-  const task = recordTaskEvent({ type: "task.create", task_id: "bug-test", contract_version: "v2", goal: "修复列表刷新", scope: [repo], non_goals: [], workflow_profile: "standard", review_policy: "not_required", verification_plan: [{ id: "test", kind: "test", title: "测试", required: true }, { id: "lint", kind: "lint", title: "静态检查", required: true }], acceptance_criteria: [{ id: "works", description: "刷新正常", required: true }], subject_ref: subject, status: "in_progress", bug }).task;
-  assert.equal(task.bug.steps, bug.steps);
-  recordTaskEvent({ type: "requirement.reported", task_id: task.id, requirement_id: "works", status: undefined, requirement_result: { requirement_id: "works", status: "passed", subject_ref: subject, evidence_refs: ["fixture"] } });
-  recordTaskEvent({ type: "verification.reported", task_id: task.id, verification_claim: { id: "fix-test", kind: "test", status: "passed", subject_ref: subject, evidence_ref: "fixture:test", command_or_probe: "fixture test", exit_code: 0, observed_at: new Date().toISOString(), producer: { type: "ci", id: "fixture" } } });
-  recordTaskEvent({ type: "verification.reported", task_id: task.id, verification_claim: { id: "fix-lint", kind: "lint", status: "passed", subject_ref: subject, evidence_ref: "fixture:lint", command_or_probe: "fixture lint", exit_code: 0, observed_at: new Date().toISOString(), producer: { type: "ci", id: "fixture" } } });
+  const subject = { type: "git_commit", value: "a".repeat(40), observed_at: new Date().toISOString() };
+  const task = recordTaskEvent({ type: "task.create", task_id: "retired-bug", title: "历史任务", goal: "完成普通任务", contract_version: "v2", scope: ["fixture"], non_goals: [], workflow_profile: "fast", review_policy: "not_required", acceptance_criteria: [{ id: "works", description: "功能正常", required: true }], subject_ref: subject }).task;
+  const historical = { ...task, bug: { steps: "历史复现", targetBranch: "main" }, bugMerge: { targetCommit: "old" }, bugAcceptanceId: "old-acceptance" };
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([historical]));
+  recordTaskEvent({ type: "task.update", task_id: task.id, next_action: "普通更新" });
+  assert.deepEqual(loadTasks()[0].bug, historical.bug);
+  assert.deepEqual(loadTasks()[0].bugMerge, historical.bugMerge);
+  assert.equal(loadTasks()[0].bugAcceptanceId, historical.bugAcceptanceId);
+  recordTaskEvent({ type: "requirement.reported", task_id: task.id, requirement_result: { requirement_id: "works", status: "passed", subject_ref: subject, evidence_refs: ["fixture"] } });
   recordTaskEvent({ type: "task.done_claimed", task_id: task.id });
-  assert.equal(taskCompletionReadiness(task.id).ready, true, JSON.stringify(taskCompletionReadiness(task.id)));
-  assert.equal(taskCompletionReadiness(task.id).completionClaim.allowed, false);
-  assert.throws(() => recordTaskEvent({ type: "task.update", task_id: task.id, bug_merge: { forged: true } }), /Git/);
-  assert.throws(() => recordTaskEvent({ type: "task.update", task_id: task.id, bug_acceptance: true }), /人工验收/);
-  recordTaskEvent({ type: "acceptance.accepted", task_id: task.id, acceptance_record: { id: "ci-acceptance", source: "ci", actor: { type: "ci", id: "fixture" }, subject_ref: subject, observed_at: new Date().toISOString(), reason: "CI通过", evidence_refs: ["fixture"] } });
+  assert.equal(taskCompletionReadiness(task.id).ready, true);
+  assert.equal(taskCompletionReadiness(task.id).completionClaim.allowed, true, "历史 Bug 不再附加验收/合入门槛");
+  for (const field of ["bug", "bug_merge", "bug_acceptance"]) {
+    const before = await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8");
+    assert.throws(() => recordTaskEvent({ type: "task.update", task_id: task.id, [field]: {} }), /RETIRED_BUG_WORKFLOW/);
+    assert.equal(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"), before);
+  }
   const { base, child } = await startControlServer(); context.after(() => child.kill("SIGTERM"));
-  const headers = { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-TaskCenter-Action": "delegate" };
-  const current = async () => (await (await fetch(`${base}/tasks/${task.id}`)).json()).task;
-  const post = async (path, body = {}, customHeaders = headers) => fetch(`${base}/tasks/${task.id}/${path}`, { method: "POST", headers: customHeaders, body: JSON.stringify({ expectedUpdatedAt: (await current()).updatedAt, ...body }) });
-  assert.equal((await current()).bugClosure.status, "awaiting_acceptance", "CI不能代替人工验收");
-  assert.equal((await post("bug", { bug: {} })).status, 400);
-  assert.equal((await post("bug", { bug, expectedUpdatedAt: "stale" })).status, 409);
-  assert.equal((await post("bug-acceptance", { outcome: "accepted", confirm: true, reason: "已测试", subject }, { "Content-Type": "application/json" })).status, 403);
-  assert.equal((await post("bug-acceptance", { outcome: "accepted", confirm: true, reason: "已测试", subject: { ...subject, value: "0".repeat(40) } })).status, 409);
-  const accepted = await post("bug-acceptance", { outcome: "accepted", confirm: true, reason: "已测试", subject });
-  assert.equal(accepted.status, 200, await accepted.text());
-  assert.equal((await current()).bugClosure.status, "awaiting_merge");
-  assert.equal((await post("bug-merge")).status, 409, "尚未合入不能关闭");
-  git("checkout", "base"); git("merge", "--no-ff", "fix", "-m", "merge fix");
-  assert.equal((await post("bug-merge")).status, 409, "合并提交缺少新验证不能关闭");
-  const mergeSubject = { ...subject, value: git("rev-parse", "HEAD"), branch: "base" };
-  const report = (id, kind, status) => recordTaskEvent({ type: "verification.reported", task_id: task.id, verification_claim: { id, kind, status, subject_ref: mergeSubject, command_or_probe: `fixture ${kind}`, exit_code: status === "passed" ? 0 : 1, observed_at: new Date().toISOString(), producer: { type: "ci", id: "fixture" } } });
-  report("merge-test", "test", "passed");
-  assert.equal((await current()).completionReadiness.ready, true, "目标证据不覆盖修复提交证据");
-  assert.equal((await post("bug-merge")).status, 409, "所有必需验证必须通过");
-  report("merge-lint", "lint", "passed");
-  report("merge-test-failed", "test", "failed");
-  assert.equal((await post("bug-merge")).status, 409, "较新的失败不能被旧通过掩盖");
-  report("merge-test-retry", "test", "passed");
-  const merged = await post("bug-merge"); assert.equal(merged.status, 200, await merged.text());
-  assert.equal((await current()).bugClosure.status, "completed");
-  assert.equal((await current()).completionReadiness.completionClaim.allowed, true);
-  report("merge-later-failure", "test", "failed");
-  assert.equal((await current()).completionReadiness.completionClaim.allowed, false, "合入核验后新失败也使完成失效");
-  assert.equal((await post("bug", { bug: { ...bug, steps: "修订后的步骤" } })).status, 200);
-  assert.equal((await current()).acceptanceStatus, "stale");
-  assert.equal((await current()).completionReadiness.completionClaim.allowed, false);
-  assert.equal((await post("bug-acceptance", { outcome: "rejected", confirm: true, reason: "仍无法刷新", subject })).status, 200);
-  assert.equal((await current()).status, "in_progress");
-  assert.equal((await current()).bugClosure.status, "returned");
-  recordTaskEvent({ type: "subject.updated", task_id: task.id, subject_ref: { ...subject, value: "0".repeat(40) } });
-  assert.equal((await current()).completionReadiness.completionClaim.allowed, false);
+  for (const [method, path] of [["GET", "/bug-dispatches"], ["GET", `/tasks/${task.id}/bug-dispatch`], ...["bug", "bug-acceptance", "bug-merge", "bug-dispatch", "bug-dispatch/control"].map(path => ["POST", `/tasks/${task.id}/${path}`]), ["POST", "/bug-dispatches/host"]]) {
+    const response = await fetch(`${base}${path}`, { method, ...(method === "POST" ? { headers: taskHeaders(), body: "{}" } : {}) });
+    assert.equal(response.status, 404, `${method} ${path}`);
+  }
+  const detail = (await (await fetch(`${base}/tasks/${task.id}`)).json()).task;
+  assert.deepEqual(detail.bug, historical.bug);
+  assert.equal(detail.bugClosure, undefined);
+  const exported = await (await fetch(`${base}/tasks/${task.id}/export?format=json`)).json();
+  assert.deepEqual(exported.completionPacket.bug, historical.bug);
+  assert.deepEqual(exported.completionPacket.bugMerge, historical.bugMerge);
+  assert.equal(exported.completionPacket.bugAcceptanceId, historical.bugAcceptanceId);
 });
 
 

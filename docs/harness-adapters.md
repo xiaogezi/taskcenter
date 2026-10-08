@@ -1,3 +1,5 @@
+> 2026-10-08 当前能力：普通派发由外部宿主使用 native 协议执行，本工具不启动 Codex SDK/CLI。以下早期 CLI 选型与实测是历史记录，不代表当前准入策略；型号以集中配置为准。
+
 # Harness 适配层决策与接入契约
 
 日期：2026-09-18。用户已选择同进程、静态注册、按能力分组的模块适配器；沿用 Node.js，不增加进程、插件加载器、依赖或数据库。
@@ -50,7 +52,7 @@ OpenAI 官方支持 MCP 单工具 `tools.<tool>.approval_mode` 设置，见[官�
 
 ## 边界
 
-控制服务/受管 CLI → `scripts/harnesses/index.mjs` → 客户端模块 → 原 SDK、CLI 或 ACP。
+能力查询/现有非 Codex 客户端 → 静态注册表 → 客户端模块；控制服务没有自动投递队列。
 
 任务账本、权限、Session 归属、派发队列、独立验收继续归核心；适配器不授予权限。Harness 标识与 provider/model 分开。请求内容不能注册适配器、指定导入模块或传入待执行命令。
 
@@ -71,12 +73,12 @@ OpenAI 官方支持 MCP 单工具 `tools.<tool>.approval_mode` 设置，见[官�
 
 | Harness | 已迁移能力 | 尚未接入 |
 | --- | --- | --- |
-| Codex | SDK 创建、CLI 恢复、JSONL 忙碌检查；原控制服务调用通过注册表 | 桌面打开、压缩、Bug 宿主创建仍为原专用通道 |
+| Codex | 身份、Token 用量、只读 JSONL 检查 | SDK 创建、CLI 恢复/委派、Reviewer 启动、CLI 模型目录扫描已退休；已有宿主压缩连接协议保留 |
 | Kimi | 受管 CLI 通过统一调用进入 ACP 创建/恢复，保留逐次权限确认、取消与上下文快照 | 控制服务安全队列（缺少独立忙碌检查），桌面打开 |
 | Claude | 受管 CLI 启动与 JSONL 回执接入统一派发，保留 Hook 领取与逐工具门禁 | 控制服务通用创建/恢复、独立用量采集 |
 | WorkBuddy / unknown | 保留兼容身份声明 | 主动操作不支持 |
 
-历史 Dashboard 新建派发继续使用注册表中的兼容默认 Harness，未新增客户端选择参数。恢复派发优先使用可信 Session 注册身份；未登记的旧记录按历史 Codex 来源处理。旧 `session-cli.mjs`、`kimi-run.mjs` 导出继续可用，任务 ID、历史数据及权限协议不变。
+历史 Dashboard/dispatch、试点 intent 和反思执行记录继续可读；启动不迁移、不重放、不唤醒。新投递及取消接口返回 404，建议接受/拒绝和迟到回执仍保留。session-cli.mjs 只导出读取操作；Kimi/Claude 现有适配不扩展本轮范围，任务身份和权限协议保留。
 
 ## 新 Harness 接入步骤
 

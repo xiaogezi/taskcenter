@@ -91,7 +91,7 @@ test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(isAllowedControlPath("/governance-metrics", "POST"), false);
   assert.equal(isAllowedControlPath("/routing/optional-astra-policy", "POST"), true);
   assert.equal(isAllowedControlPath("/context-management-pilots", "GET"), true);
-  assert.equal(isAllowedControlPath("/context-management-pilots/intents", "POST"), true);
+  assert.equal(isAllowedControlPath("/context-management-pilots/intents", "POST"), false);
   assert.equal(isAllowedControlPath("/routing/select", "POST"), false);
   assert.equal(controlProxyTarget("/usage-report")?.toString(), "http://127.0.0.1:3001/usage-report");
   assert.equal(controlProxyTarget("/tasks", "?view=summary&page_size=100")?.toString(), "http://127.0.0.1:3001/tasks?view=summary&page_size=100");
@@ -140,4 +140,11 @@ test("会话与试点页面持续刷新标题并在卸载时清理轮询", () =>
   assert.match(source, /Token 总计：\{item\.tokenUsage \? formatTokens\(item\.tokenUsage\.totalTokens\) : "暂无统计"\}/);
   assert.match(source, /输入：\{formatTokens\(item\.tokenUsage\.usage\.input\)\} · 其中缓存/);
   assert.match(source, /输出：\{formatTokens\(item\.tokenUsage\.usage\.output\)\} · 其中推理/);
+});
+
+
+test("旧 Bug 链接回落到普通任务入口", () => {
+  assert.equal(parseTaskWorkspaceSearch("tab=bug&bucket=bugs").tab, "overview");
+  for (const bucket of ["bugs", "awaiting_merge", "completed_bugs"]) assert.equal(parseTaskWorkspaceSearch(`bucket=${bucket}`).bucket, "all");
+  for (const path of ["bug", "bug-acceptance", "bug-merge", "bug-dispatch", "bug-dispatch/control"]) assert.equal(isAllowedControlPath(`/tasks/task-old/${path}`, "POST"), false);
 });

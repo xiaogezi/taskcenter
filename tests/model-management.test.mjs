@@ -173,7 +173,7 @@ test("控制接口沿用本机来源和操作标记，代理仅开放 GET/POST",
   assert.equal(isAllowedControlPath("/routing/models", "GET"), true);
   assert.equal(isAllowedControlPath("/routing/models", "POST"), true);
   assert.equal(isAllowedControlPath("/routing/models", "DELETE"), false);
-  assert.equal(isAllowedControlPath("/routing/model-catalog", "GET"), true);
+  assert.equal(isAllowedControlPath("/routing/model-catalog", "GET"), false);
   assert.equal(isAllowedControlPath("/routing/model-catalog", "POST"), false);
   assert.equal(isAllowedControlPath("/routing/decisions", "GET"), true);
   assert.equal(controlProxyTarget("/routing/decisions", "?limit=10&before=route1&task_id=one&ignored=true").search, "?limit=10&before=route1&task_id=one");

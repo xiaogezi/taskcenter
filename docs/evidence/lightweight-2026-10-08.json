@@ -1,0 +1,471 @@
+{
+  "measured_at": "2026-10-08T10:44:55.667Z",
+  "baseline_revision": "201e567b335133e09990718fc4e2b210b94b9a4a",
+  "subject_kind": "git_worktree_snapshot",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.7.0",
+    "npm": "11.19.0"
+  },
+  "algorithm": "artifact-size/v1",
+  "before": {
+    "full_dependencies": {
+      "logical_bytes": 1259117152,
+      "allocated_bytes": 1411383296
+    },
+    "build": {
+      "client_bytes": 337886,
+      "client_gzip_bytes": 103852,
+      "largest_js_bytes": 189757,
+      "server_bytes": 1157194
+    },
+    "single_release": {
+      "release_bytes": 1263370345,
+      "allocated_bytes": 1398743040
+    }
+  },
+  "after": {
+    "full_dependencies": {
+      "logical_bytes": 976532227,
+      "allocated_bytes": 1102991360
+    },
+    "production_dependencies": {
+      "logical_bytes": 60517579,
+      "allocated_bytes": 82169856
+    },
+    "release_report": {
+      "algorithm": "artifact-size/v1",
+      "mode": "release",
+      "revision": "201e567b335133e09990718fc4e2b210b94b9a4a",
+      "generated_at": "2026-10-08T10:40:52.960Z",
+      "environment": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "node": "v26.7.0",
+        "npm": "11.19.0"
+      },
+      "lock_hash": "10e1b5612dee7d6aa25fe0f3fb9616354c6eabbc82f8194be77543fc888dd315",
+      "config_hash": "04714db374e252799b12ae8065414e3b38fd091b96112c2a1279eacae8f018f8",
+      "input_hash": "4379286820f34fce0830004fafa7b1a71fe0a19679703a53021c14714acf9e89",
+      "output_hash": "b4913786a61afd020e4ff5ec918500640992333561012446c23ca6bb40e45388",
+      "dependency_hash": "8ec15aef6b5176efa3f06058f2099e2353317f02504f9710ffb0a567db0e1581",
+      "release_hash": "f3279a531a881f82d43d01c47ef930990522da2a485f831d1feef4607182f19d",
+      "metrics": {
+        "client_bytes": 326108,
+        "client_gzip_bytes": 100299,
+        "largest_js_bytes": 189757,
+        "server_bytes": 1136700,
+        "production_dependency_bytes": 60517579,
+        "release_bytes": 64646040
+      },
+      "rows": [
+        {
+          "name": "client_bytes",
+          "baseline_bytes": 326108,
+          "warn_bytes": 332630,
+          "max_bytes": 342413,
+          "measured_bytes": 326108,
+          "delta_bytes": 0,
+          "delta_percent": 0,
+          "status": "PASS"
+        },
+        {
+          "name": "client_gzip_bytes",
+          "baseline_bytes": 100299,
+          "warn_bytes": 102304,
+          "max_bytes": 105313,
+          "measured_bytes": 100299,
+          "delta_bytes": 0,
+          "delta_percent": 0,
+          "status": "PASS"
+        },
+        {
+          "name": "largest_js_bytes",
+          "baseline_bytes": 189757,
+          "warn_bytes": 193552,
+          "max_bytes": 199244,
+          "measured_bytes": 189757,
+          "delta_bytes": 0,
+          "delta_percent": 0,
+          "status": "PASS"
+        },
+        {
+          "name": "server_bytes",
+          "baseline_bytes": 1136700,
+          "warn_bytes": 1159434,
+          "max_bytes": 1193535,
+          "measured_bytes": 1136700,
+          "delta_bytes": 0,
+          "delta_percent": 0,
+          "status": "PASS"
+        },
+        {
+          "name": "production_dependency_bytes",
+          "baseline_bytes": 60517579,
+          "warn_bytes": 61727930,
+          "max_bytes": 63543457,
+          "measured_bytes": 60517579,
+          "delta_bytes": 0,
+          "delta_percent": 0,
+          "status": "PASS"
+        },
+        {
+          "name": "release_bytes",
+          "baseline_bytes": 64645071,
+          "warn_bytes": 65937972,
+          "max_bytes": 67877324,
+          "measured_bytes": 64646040,
+          "delta_bytes": 969,
+          "delta_percent": 0.0014989541894161462,
+          "status": "PASS"
+        }
+      ],
+      "failed": false,
+      "warning": false,
+      "allocated_bytes": {
+        "output": 1552384,
+        "dependencies": 82169856
+      },
+      "largest_files": [
+        {
+          "path": "node_modules/@vercel/og/dist/index.node.js.map",
+          "bytes": 1822715
+        },
+        {
+          "path": "node_modules/@vercel/og/dist/index.edge.js.map",
+          "bytes": 1820547
+        },
+        {
+          "path": "node_modules/@resvg/resvg-wasm/index_bg.wasm",
+          "bytes": 1378357
+        },
+        {
+          "path": "node_modules/@vercel/og/dist/resvg.wasm",
+          "bytes": 1378357
+        },
+        {
+          "path": "node_modules/vite/dist/node/chunks/node.js",
+          "bytes": 1352087
+        },
+        {
+          "path": "node_modules/react-dom/cjs/react-dom-profiling.development.js",
+          "bytes": 1082082
+        },
+        {
+          "path": "node_modules/react-dom/cjs/react-dom-client.development.js",
+          "bytes": 1065698
+        },
+        {
+          "path": "node_modules/@vercel/og/dist/index.node.js",
+          "bytes": 822921
+        },
+        {
+          "path": "node_modules/@vercel/og/dist/index.edge.js",
+          "bytes": 822139
+        },
+        {
+          "path": "node_modules/@shuding/opentype.js/dist/opentype.js.map",
+          "bytes": 795629
+        }
+      ],
+      "packages": [
+        {
+          "name": "drizzle-orm",
+          "bytes": 10420427,
+          "investigate": "npm explain drizzle-orm"
+        },
+        {
+          "name": "react-dom",
+          "bytes": 7319407,
+          "investigate": "npm explain react-dom"
+        },
+        {
+          "name": "@vercel/og",
+          "bytes": 6720692,
+          "investigate": "npm explain @vercel/og"
+        },
+        {
+          "name": "@modelcontextprotocol/sdk",
+          "bytes": 5380645,
+          "investigate": "npm explain @modelcontextprotocol/sdk"
+        },
+        {
+          "name": "vinext",
+          "bytes": 4640711,
+          "investigate": "npm explain vinext"
+        },
+        {
+          "name": "zod",
+          "bytes": 4558122,
+          "investigate": "npm explain zod"
+        },
+        {
+          "name": "vite",
+          "bytes": 3163427,
+          "investigate": "npm explain vite"
+        },
+        {
+          "name": "@shuding/opentype.js",
+          "bytes": 2963010,
+          "investigate": "npm explain @shuding/opentype.js"
+        },
+        {
+          "name": "satori",
+          "bytes": 2032886,
+          "investigate": "npm explain satori"
+        },
+        {
+          "name": "@resvg/resvg-wasm",
+          "bytes": 1418450,
+          "investigate": "npm explain @resvg/resvg-wasm"
+        }
+      ]
+    }
+  },
+  "fixed_baseline_report": {
+    "algorithm": "artifact-size/v1",
+    "mode": "release",
+    "revision": "201e567b335133e09990718fc4e2b210b94b9a4a",
+    "generated_at": "2026-10-08T10:35:23.196Z",
+    "environment": {
+      "platform": "darwin",
+      "arch": "arm64",
+      "node": "v26.7.0",
+      "npm": "11.19.0"
+    },
+    "lock_hash": "10e1b5612dee7d6aa25fe0f3fb9616354c6eabbc82f8194be77543fc888dd315",
+    "config_hash": "37dfe11d6ce21104638e5275de50e465aff2e0b272241cf9a2c882fce929c071",
+    "input_hash": "772ad8e21d6a7d0adf48e0aeb944ad26e3797ad4737f685b5f00ed280dfce4b7",
+    "output_hash": "bd94390e9a4c0d71bb7ad0ce3af8d980a348a665e1558b33ac10218d651cecac",
+    "dependency_hash": "8ec15aef6b5176efa3f06058f2099e2353317f02504f9710ffb0a567db0e1581",
+    "release_hash": "f576c198cff2e1f994671866ee4bfc4b37b5f5bf2f236ea79ef4576b974e0d22",
+    "metrics": {
+      "client_bytes": 326108,
+      "client_gzip_bytes": 100299,
+      "largest_js_bytes": 189757,
+      "server_bytes": 1136700,
+      "production_dependency_bytes": 60517579,
+      "release_bytes": 64645071
+    },
+    "rows": [
+      {
+        "name": "client_bytes",
+        "baseline_bytes": 326108,
+        "warn_bytes": 332630,
+        "max_bytes": 342413,
+        "measured_bytes": 326108,
+        "delta_bytes": 0,
+        "delta_percent": 0,
+        "status": "PASS"
+      },
+      {
+        "name": "client_gzip_bytes",
+        "baseline_bytes": 100299,
+        "warn_bytes": 102304,
+        "max_bytes": 105313,
+        "measured_bytes": 100299,
+        "delta_bytes": 0,
+        "delta_percent": 0,
+        "status": "PASS"
+      },
+      {
+        "name": "largest_js_bytes",
+        "baseline_bytes": 189757,
+        "warn_bytes": 193552,
+        "max_bytes": 199244,
+        "measured_bytes": 189757,
+        "delta_bytes": 0,
+        "delta_percent": 0,
+        "status": "PASS"
+      },
+      {
+        "name": "server_bytes",
+        "baseline_bytes": 1136700,
+        "warn_bytes": 1159434,
+        "max_bytes": 1193535,
+        "measured_bytes": 1136700,
+        "delta_bytes": 0,
+        "delta_percent": 0,
+        "status": "PASS"
+      },
+      {
+        "name": "production_dependency_bytes",
+        "baseline_bytes": 60517579,
+        "warn_bytes": 61727930,
+        "max_bytes": 63543457,
+        "measured_bytes": 60517579,
+        "delta_bytes": 0,
+        "delta_percent": 0,
+        "status": "PASS"
+      },
+      {
+        "name": "release_bytes",
+        "baseline_bytes": 64645071,
+        "warn_bytes": 65937972,
+        "max_bytes": 67877324,
+        "measured_bytes": 64645071,
+        "delta_bytes": 0,
+        "delta_percent": 0,
+        "status": "PASS"
+      }
+    ],
+    "failed": false,
+    "warning": false,
+    "allocated_bytes": {
+      "output": 1552384,
+      "dependencies": 82169856
+    },
+    "largest_files": [
+      {
+        "path": "node_modules/@vercel/og/dist/index.node.js.map",
+        "bytes": 1822715
+      },
+      {
+        "path": "node_modules/@vercel/og/dist/index.edge.js.map",
+        "bytes": 1820547
+      },
+      {
+        "path": "node_modules/@resvg/resvg-wasm/index_bg.wasm",
+        "bytes": 1378357
+      },
+      {
+        "path": "node_modules/@vercel/og/dist/resvg.wasm",
+        "bytes": 1378357
+      },
+      {
+        "path": "node_modules/vite/dist/node/chunks/node.js",
+        "bytes": 1352087
+      },
+      {
+        "path": "node_modules/react-dom/cjs/react-dom-profiling.development.js",
+        "bytes": 1082082
+      },
+      {
+        "path": "node_modules/react-dom/cjs/react-dom-client.development.js",
+        "bytes": 1065698
+      },
+      {
+        "path": "node_modules/@vercel/og/dist/index.node.js",
+        "bytes": 822921
+      },
+      {
+        "path": "node_modules/@vercel/og/dist/index.edge.js",
+        "bytes": 822139
+      },
+      {
+        "path": "node_modules/@shuding/opentype.js/dist/opentype.js.map",
+        "bytes": 795629
+      }
+    ],
+    "packages": [
+      {
+        "name": "drizzle-orm",
+        "bytes": 10420427,
+        "investigate": "npm explain drizzle-orm"
+      },
+      {
+        "name": "react-dom",
+        "bytes": 7319407,
+        "investigate": "npm explain react-dom"
+      },
+      {
+        "name": "@vercel/og",
+        "bytes": 6720692,
+        "investigate": "npm explain @vercel/og"
+      },
+      {
+        "name": "@modelcontextprotocol/sdk",
+        "bytes": 5380645,
+        "investigate": "npm explain @modelcontextprotocol/sdk"
+      },
+      {
+        "name": "vinext",
+        "bytes": 4640711,
+        "investigate": "npm explain vinext"
+      },
+      {
+        "name": "zod",
+        "bytes": 4558122,
+        "investigate": "npm explain zod"
+      },
+      {
+        "name": "vite",
+        "bytes": 3163427,
+        "investigate": "npm explain vite"
+      },
+      {
+        "name": "@shuding/opentype.js",
+        "bytes": 2963010,
+        "investigate": "npm explain @shuding/opentype.js"
+      },
+      {
+        "name": "satori",
+        "bytes": 2032886,
+        "investigate": "npm explain satori"
+      },
+      {
+        "name": "@resvg/resvg-wasm",
+        "bytes": 1418450,
+        "investigate": "npm explain @resvg/resvg-wasm"
+      }
+    ]
+  },
+  "validation": {
+    "sync": {
+      "exit_code": 0,
+      "log": "/tmp/reqradar-lightweight-sync.log"
+    },
+    "lint": {
+      "exit_code": 0,
+      "existing_warnings": 2,
+      "log": "/tmp/reqradar-lightweight-lint.log"
+    },
+    "full_test": {
+      "exit_code": 0,
+      "passed": 560,
+      "log": "/tmp/reqradar-lightweight-test-final.log"
+    },
+    "production": {
+      "passed": true,
+      "pages": 6,
+      "mcp_tools": 47,
+      "codex_process_invocations": 0,
+      "log": "/tmp/reqradar-lightweight-production-clean-final.log"
+    },
+    "artifact_negative_tests": {
+      "passed": 8,
+      "log": "/tmp/reqradar-lightweight-gates-final.log"
+    },
+    "queue_tests": {
+      "passed": 6,
+      "log": "/tmp/reqradar-lightweight-queues-final.log"
+    },
+    "codex_dependency_tree": {
+      "empty": true,
+      "npm_exit_code": 1,
+      "log": "/tmp/reqradar-lightweight-codex-tree.log"
+    }
+  },
+  "service": {
+    "parent_pid": 98061,
+    "revision": "201e567b335133e09990718fc4e2b210b94b9a4a",
+    "agent_initiated_restart": false,
+    "observed_original_control_oom": true,
+    "supervisor_recovered": true
+  },
+  "unverified": [
+    "Linux/x64 and Windows/x64 Node22.13.0 platform baselines",
+    "browser manual interaction",
+    "real external Agent review",
+    "actual release cutover/rollback"
+  ],
+  "not_performed": [
+    "commit",
+    "push",
+    "deployment",
+    "version bump",
+    "real data deletion",
+    "historical release cleanup"
+  ]
+}

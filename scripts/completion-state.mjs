@@ -1,5 +1,4 @@
 import { buildTaskPhaseTiming, PHASES } from "./task-phase-timing.mjs";
-import { bugClosure } from "./bug-workflow.mjs";
 
 const workflowProfiles = new Set(["fast", "standard", "strict"]);
 const reviewPolicies = new Set(["not_required", "recommended", "required"]);
@@ -241,8 +240,7 @@ export function withCompletionState(task) {
   const latest = migrated.acceptanceRecords.at(-1);
   let acceptanceStatus = latest?.outcome || (readiness.ready ? "ready" : "pending");
   if (latest?.outcome === "accepted" && !sameSubject(latest.subject_ref, migrated.currentSubject)) acceptanceStatus = "stale";
-  if (migrated.bug && latest?.outcome === "accepted" && migrated.bugAcceptanceId !== latest.id) acceptanceStatus = "stale";
-  return { ...migrated, executionStatus: migrated.status, verificationStatus: verificationStatusOf(migrated), reviewStatus: reviewStatusOf(migrated), acceptanceStatus, completionReadiness: readiness, ...(migrated.bug ? { bugClosure: bugClosure(migrated, readiness.ready) } : {}) };
+  return { ...migrated, executionStatus: migrated.status, verificationStatus: verificationStatusOf(migrated), reviewStatus: reviewStatusOf(migrated), acceptanceStatus, completionReadiness: readiness };
 }
 
 export function computeCompletionReadiness(task, subject = task.currentSubject || null) {
@@ -266,7 +264,7 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
   }
   for (const requirement of task.verificationPlan || []) {
     if (!requirement.required) continue;
-    const claim = latestVerification(task, requirement, currentSubject);
+    const claim = latestVerification(task, requirement);
     if (!claim || claim.status === "skipped") { missingRequirements.push(requirement.id); reasons.push("required_verification_missing"); }
     else if (claim.status !== "passed") { failedRequirements.push(requirement.id); reasons.push("verification_failed"); }
     else {
@@ -277,7 +275,6 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
   // Review is advisory for every profile, including historical required contracts.
   // Keep reviewStatus/attestations truthful without turning them into workflow gates.
   const claimReasons = [...reasons];
-  if (task.bug && bugClosure(task, reasons.length === 0)?.status !== "completed") claimReasons.push("bug_acceptance_or_merge_pending");
   return {
     ready: reasons.length === 0,
     completionClaim: { allowed: claimReasons.length === 0, status: claimReasons.length === 0 ? "ready" : "blocked", blockingReasons: [...new Set(claimReasons)] },
@@ -304,8 +301,10 @@ export function buildCompletionPacket(task) {
     taskId: value.id,
     taskContract: { contractVersion: value.contractVersion, goal: value.goal, scope: value.scope || [], nonGoals: value.nonGoals || [], acceptanceCriteria: value.acceptanceRequirements, workflowProfile: value.workflowProfile, reviewPolicy: value.reviewPolicy, executionEnvironment: value.executionEnvironment, verificationPlan: value.verificationPlan || [], workspacePolicy: value.workspacePolicy },
     currentSubject: value.currentSubject || null, requirementResults: value.requirementResults, verificationClaims: value.verificationClaims, reviewAttestations: value.reviewAttestations, reviewCycles: value.reviewCycles, reviewProcess, phaseTiming, diagnosticObservations: value.diagnosticObservations, acceptanceRecords: value.acceptanceRecords, completionReadiness: value.completionReadiness,
-    ...(value.bug ? { bug: value.bug, bugClosure: value.bugClosure } : {}),
     currentRevision: normalizedRevision,
+    ...(value.bug ? { bug: value.bug } : {}),
+    ...(value.bugMerge ? { bugMerge: value.bugMerge } : {}),
+    ...(value.bugAcceptanceId ? { bugAcceptanceId: value.bugAcceptanceId } : {}),
     ...(value.currentRevision && value.currentRevision !== normalizedRevision ? { legacyCurrentRevision: value.currentRevision } : {}),
     verificationStatus: value.verificationStatus, reviewStatus: value.reviewStatus, acceptanceStatus: value.acceptanceStatus,
   };
@@ -626,9 +625,9 @@ function migrateAcceptance(value, task) {
   return { ...value, id: value.id || value.contextCompletionId || `legacy-${task.id}`, source: value.source || (value.contextTaskId ? "context_agent" : "manual"), actor: normalizeActorIdentity(value.actor, { type: "task_platform", id: "taskcenter" }), subject_ref: value.subject_ref || legacySubject(value.revision, value.acceptedAt), outcome: value.outcome || "accepted", observed_at: value.observed_at || value.acceptedAt || task.updatedAt };
 }
 
-function latestVerification(task, requirement, subject = task.currentSubject) {
+function latestVerification(task, requirement) {
   const candidates = (task.verificationClaims || []).filter(item => item.requirement_id === requirement.id || (!item.requirement_id && item.kind === requirement.kind));
-  return (task.bug ? candidates.filter(item => sameSubject(item.subject_ref, subject)).at(-1) : null) || candidates.at(-1);
+  return candidates.at(-1);
 }
 
 function verificationStatusOf(task) {

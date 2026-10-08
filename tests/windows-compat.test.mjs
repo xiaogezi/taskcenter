@@ -31,7 +31,13 @@ test("vinext commands execute through Node instead of platform shell wrappers", 
   assert.equal(invocation.command, process.execPath);
   assert.match(invocation.args[0], /node_modules[\\/]vinext[\\/]dist[\\/]cli\.js$/);
   assert.equal(invocation.args[1], "build");
-  assert.equal(invocation.env.WRANGLER_LOG_PATH, ".wrangler/wrangler.log");
+});
+
+test("production start uses the exported server without loading optional build tooling", () => {
+  const invocation = vinextInvocation("start", ["--port", "3002"]);
+  assert.equal(invocation.command, process.execPath);
+  assert.ok(invocation.args[0].endsWith("prod-server.mjs"));
+  assert.deepEqual(invocation.args.slice(1), ["--port", "3002"]);
 });
 
 test("cross-platform controller reports a stopped isolated runtime", async () => {

@@ -96,117 +96,6 @@ test("续办提示词有长度上限且保留安全边界", () => {
   assert.match(prompt, /已验证结果/);
 });
 
-test("本地控制服务 dry-run 会记录操作但不会启动 Codex", async (context) => {
-  const fixture = await createFixture();
-  const brainDirectory = join(fixture.directory, "DevWorkbench");
-  const registryPath = join(fixture.directory, "session-registry.json");
-  const ledgerPath = join(fixture.directory, "task-ledger.json");
-  const pilotEventsPath = join(fixture.directory, "context-management-pilot-events.jsonl");
-  await mkdir(brainDirectory, { recursive: true });
-  await writeFile(registryPath, JSON.stringify({
-    [threadId]: { sessionId: threadId, projectId: "devworkbench", workspace: brainDirectory },
-    "00000000-0000-4000-8000-000000000002": { sessionId: "00000000-0000-4000-8000-000000000002", projectId: "atlas", workspace: fixture.projectDirectory },
-  }));
-  await writeFile(ledgerPath, JSON.stringify([{ id: "brain-task", sessionId: threadId, workspace: brainDirectory, status: "in_progress", updatedAt: "2026-09-08T00:00:00.000Z" }]));
-  const port = 32_000 + (process.pid % 1_000);
-  const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
-    cwd: new URL("../", import.meta.url),
-    env: {
-      ...process.env,
-      TASKCENTER_CONTROL_PORT: String(port),
-      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
-      TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
-      TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
-      TASKCENTER_SESSION_REGISTRY_PATH: registryPath,
-      TASKCENTER_TASK_LEDGER_PATH: ledgerPath,
-      TASKCENTER_CONTEXT_MANAGEMENT_PILOT_EVENTS_PATH: pilotEventsPath,
-      TASKCENTER_LOCAL_DIR: join(fixture.directory, "local"),
-      TASKCENTER_DISPATCH_DRY_RUN: "1",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  context.after(() => child.kill("SIGTERM"));
-  await waitForReady(child);
-
-  const response = await fetch(`http://127.0.0.1:${port}/dispatch`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Origin": "http://localhost:3000",
-      "X-TaskCenter-Action": "delegate",
-    },
-    body: JSON.stringify({ requirementId: "partial-feature", threadId }),
-  });
-  assert.equal(response.status, 202);
-  const payload = await response.json();
-  assert.equal(payload.dispatch.status, "dry_run");
-  assert.equal(payload.dispatch.mode, "new_session");
-
-  const persisted = JSON.parse(await readFile(fixture.dispatchesPath, "utf8"));
-  assert.equal(persisted.length, 1);
-  assert.equal(persisted[0].requirementId, "partial-feature");
-
-  const pilotResponse = await fetch(`http://127.0.0.1:${port}/context-management-pilots/intents`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Origin": "http://localhost:3000",
-      "X-TaskCenter-Action": "delegate",
-    },
-    body: JSON.stringify({ request_id: "019f0000-0000-7000-8000-000000000004", project_id: "atlas", workspace: fixture.projectDirectory, action: "refresh" }),
-  });
-  assert.equal(pilotResponse.status, 202);
-  const pilotSnapshot = await (await fetch(`http://127.0.0.1:${port}/context-management-pilots`)).json();
-  assert.equal(pilotSnapshot.projects.find((item) => item.project_id === "atlas").latest_intent.status, "failed");
-  assert.equal(JSON.parse(await readFile(fixture.dispatchesPath, "utf8")).length, 1);
-});
-
-test("原 Session 忙碌时进入安全队列", async (context) => {
-  const fixture = await createFixture();
-  const sessionsRoot = join(fixture.directory, "sessions");
-  await mkdir(sessionsRoot, { recursive: true });
-  await writeFile(join(sessionsRoot, `rollout-${threadId}.jsonl`), [
-    JSON.stringify({ timestamp: "2026-07-19T00:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-active" } }),
-    "",
-  ].join("\n"));
-  const port = 33_000 + (process.pid % 1_000);
-  const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
-    cwd: new URL("../", import.meta.url),
-    env: {
-      ...process.env,
-      TASKCENTER_CONTROL_PORT: String(port),
-      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
-      TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
-      TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
-      TASKCENTER_SESSIONS_ROOT: sessionsRoot,
-      TASKCENTER_TASK_LEDGER_PATH: join(fixture.directory, "task-ledger.json"),
-      TASKCENTER_TASK_EVENTS_PATH: join(fixture.directory, "task-events.jsonl"),
-      TASKCENTER_SESSION_REGISTRY_PATH: join(fixture.directory, "session-registry.json"),
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  context.after(() => child.kill("SIGTERM"));
-  await waitForReady(child);
-
-  const response = await fetch(`http://127.0.0.1:${port}/dispatch`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Origin": "http://localhost:3000",
-      "X-TaskCenter-Action": "delegate",
-    },
-    body: JSON.stringify({ requirementId: "partial-feature", threadId, mode: "existing_session" }),
-  });
-  assert.equal(response.status, 202);
-  const payload = await response.json();
-  assert.equal(payload.dispatch.status, "queued");
-  assert.match(payload.dispatch.error, /正在处理 1 个 turn/);
-
-  const persisted = JSON.parse(await readFile(fixture.dispatchesPath, "utf8"));
-  assert.equal(persisted[0].status, "queued");
-  assert.match(persisted[0].pendingPrompt, /还缺失败反馈和回归测试/);
-});
-
 test("Session 生命周期按未结束 turn 判断忙碌状态", async () => {
   const fixture = await createFixture();
   const sessionsRoot = join(fixture.directory, "sessions");
@@ -226,51 +115,6 @@ test("Session 生命周期按未结束 turn 判断忙碌状态", async () => {
     payload: { type: "task_complete", turn_id: "turn-2" },
   })}\n`);
   assert.equal(inspectSessionState(threadId, sessionsRoot).busy, false);
-});
-
-test("等待中的自动投递可以人工取消", async (context) => {
-  const fixture = await createFixture();
-  const sessionsRoot = join(fixture.directory, "sessions");
-  await mkdir(sessionsRoot, { recursive: true });
-  await writeFile(join(sessionsRoot, `rollout-${threadId}.jsonl`), `${JSON.stringify({
-    timestamp: "2026-07-19T00:00:00.000Z",
-    type: "event_msg",
-    payload: { type: "task_started", turn_id: "turn-active" },
-  })}\n`);
-  const port = 36_000 + (process.pid % 1_000);
-  const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
-    cwd: new URL("../", import.meta.url),
-    env: {
-      ...process.env,
-      TASKCENTER_CONTROL_PORT: String(port),
-      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
-      TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
-      TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
-      TASKCENTER_SESSIONS_ROOT: sessionsRoot,
-      TASKCENTER_TASK_LEDGER_PATH: join(fixture.directory, "task-ledger.json"),
-      TASKCENTER_TASK_EVENTS_PATH: join(fixture.directory, "task-events.jsonl"),
-      TASKCENTER_SESSION_REGISTRY_PATH: join(fixture.directory, "session-registry.json"),
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  context.after(() => child.kill("SIGTERM"));
-  await waitForReady(child);
-
-  const queuedResponse = await fetch(`http://127.0.0.1:${port}/dispatch`, {
-    method: "POST",
-    headers: actionHeaders(),
-    body: JSON.stringify({ requirementId: "partial-feature", threadId, mode: "existing_session" }),
-  });
-  const queued = (await queuedResponse.json()).dispatch;
-  const cancelResponse = await fetch(`http://127.0.0.1:${port}/dispatches/${queued.id}/cancel`, {
-    method: "POST",
-    headers: actionHeaders(),
-    body: "{}",
-  });
-  assert.equal(cancelResponse.status, 200);
-  const cancelled = (await cancelResponse.json()).dispatch;
-  assert.equal(cancelled.status, "cancelled");
-  assert.equal(cancelled.pendingPrompt, undefined);
 });
 
 test("人工完成、移除和恢复会持久化需求覆盖", async (context) => {
@@ -311,200 +155,18 @@ test("人工完成、移除和恢复会持久化需求覆盖", async (context) =
   assert.equal(persisted["partial-feature"].source, "manual");
 });
 
-test("空闲原 Session 通过 Codex CLI 追加并完成 JSONL 验证", async (context) => {
-  const fixture = await createFixture();
-  const sessionsRoot = join(fixture.directory, "sessions");
-  const sessionPath = join(sessionsRoot, `rollout-${threadId}.jsonl`);
-  const fakeCli = join(fixture.directory, "fake-codex-cli.mjs");
-  const capturePath = join(fixture.directory, "cli-capture.json");
-  await mkdir(sessionsRoot, { recursive: true });
-  await writeFile(sessionPath, "");
-  await writeFile(fakeCli, `
-import { appendFileSync, writeFileSync } from "node:fs";
-const [, , resumedThreadId, prompt, jsonFlag] = process.argv.slice(2);
-writeFileSync(process.env.TASKCENTER_CLI_CAPTURE, JSON.stringify({ resumedThreadId, prompt, jsonFlag }));
-const timestamp = new Date().toISOString();
-const turnId = "turn-from-fake-cli";
-appendFileSync(process.env.TASKCENTER_FAKE_SESSION, [
-  JSON.stringify({ timestamp, type: "event_msg", payload: { type: "user_message", message: prompt } }),
-  JSON.stringify({ timestamp, type: "event_msg", payload: { type: "task_started", turn_id: turnId } }),
-  JSON.stringify({ timestamp, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } }),
-  "",
-].join("\\n"));
-console.log(JSON.stringify({ type: "thread.started", thread_id: resumedThreadId }));
-console.log(JSON.stringify({ type: "turn.started" }));
-console.log(JSON.stringify({ type: "turn.completed" }));
-`);
-  const port = 35_000 + (process.pid % 1_000);
-  const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
-    cwd: new URL("../", import.meta.url),
-    env: {
-      ...process.env,
-      TASKCENTER_CONTROL_PORT: String(port),
-      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
-      TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
-      TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
-      TASKCENTER_SESSIONS_ROOT: sessionsRoot,
-      TASKCENTER_CODEX_COMMAND: process.execPath,
-      TASKCENTER_CODEX_PREFIX_ARGS: JSON.stringify([fakeCli]),
-      TASKCENTER_CLI_CAPTURE: capturePath,
-      TASKCENTER_FAKE_SESSION: sessionPath,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  context.after(() => child.kill("SIGTERM"));
-  await waitForReady(child);
-
-  const response = await fetch(`http://127.0.0.1:${port}/dispatch`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Origin": "http://localhost:3000",
-      "X-TaskCenter-Action": "delegate",
-    },
-    body: JSON.stringify({ requirementId: "partial-feature", threadId, mode: "existing_session" }),
-  });
-  assert.equal(response.status, 202);
-  const completed = await waitForDispatchStatus(port, "completed");
-  assert.match(completed.error, /已完成本次 turn/);
-
-  const capture = JSON.parse(await readFile(capturePath, "utf8"));
-  assert.equal(capture.resumedThreadId, threadId);
-  assert.equal(capture.jsonFlag, "--json");
-  assert.match(capture.prompt, /还缺失败反馈和回归测试/);
-});
-
-test("本地控制服务能新建注入上下文的 Codex Session", async (context) => {
-  const fixture = await createFixture();
-  const fakeSdk = join(fixture.directory, "fake-codex-sdk.mjs");
-  const capturePath = join(fixture.directory, "sdk-capture-new.json");
-  const newThreadId = "019f8000-0000-7000-8000-000000000001";
-  await writeFile(fakeSdk, `
-import { writeFileSync } from "node:fs";
-export class Codex {
-  startThread(options) {
-    return {
-      runStreamed: async (prompt) => {
-        writeFileSync(process.env.TASKCENTER_SDK_CAPTURE, JSON.stringify({ mode: "new_session", options, prompt }));
-        return {
-          events: (async function* () {
-            yield { type: "thread.started", thread_id: "${newThreadId}" };
-            yield { type: "turn.completed" };
-          })(),
-        };
-      },
-    };
-  }
-  resumeThread() {
-    throw new Error("新建模式不应恢复原 Session");
-  }
-}
-`);
-  const port = 34_000 + (process.pid % 1_000);
-  const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
-    cwd: new URL("../", import.meta.url),
-    env: {
-      ...process.env,
-      TASKCENTER_CONTROL_PORT: String(port),
-      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
-      TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
-      TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
-      TASKCENTER_CODEX_SDK_MODULE: fakeSdk,
-      TASKCENTER_SDK_CAPTURE: capturePath,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  context.after(() => child.kill("SIGTERM"));
-  await waitForReady(child);
-
-  const response = await fetch(`http://127.0.0.1:${port}/dispatch`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Origin": "http://localhost:3000",
-      "X-TaskCenter-Action": "delegate",
-    },
-    body: JSON.stringify({ requirementId: "partial-feature", threadId, mode: "new_session" }),
-  });
-  assert.equal(response.status, 200);
-  const payload = await response.json();
-  assert.equal(payload.dispatch.status, "delivered");
-  assert.equal(payload.dispatch.mode, "new_session");
-  assert.equal(payload.dispatch.contextThreadId, threadId);
-  assert.equal(payload.dispatch.threadId, newThreadId);
-  assert.equal(payload.dispatch.threadTitle, "新任务：部分完成能力");
-
-  const capture = JSON.parse(await readFile(capturePath, "utf8"));
-  assert.equal(capture.mode, "new_session");
-  assert.equal(capture.options.workingDirectory, fixture.projectDirectory);
-  assert.match(capture.prompt, /已完成概况：主流程已经存在/);
-  assert.match(capture.prompt, /剩余缺口：还缺失败反馈和回归测试/);
-  assert.doesNotMatch(capture.prompt, /<codex_delegation>/);
-});
-
-test("试点主脑 turn 结束但无回执时转为 failed 并允许重试", async (context) => {
-  const fixture = await createFixture();
-  const brainDirectory = join(fixture.directory, "DevWorkbench");
-  const sessionsRoot = join(fixture.directory, "sessions");
-  const sessionPath = join(sessionsRoot, `rollout-${threadId}.jsonl`);
-  const registryPath = join(fixture.directory, "session-registry.json");
-  const ledgerPath = join(fixture.directory, "task-ledger.json");
-  const fakeCli = join(fixture.directory, "fake-pilot-cli.mjs");
-  await mkdir(brainDirectory, { recursive: true });
-  await mkdir(sessionsRoot, { recursive: true });
-  await writeFile(sessionPath, "");
-  await writeFile(registryPath, JSON.stringify({
-    [threadId]: { sessionId: threadId, projectId: "devworkbench", workspace: brainDirectory },
-    "00000000-0000-4000-8000-000000000002": { sessionId: "00000000-0000-4000-8000-000000000002", projectId: "atlas", workspace: fixture.projectDirectory },
-  }));
-  await writeFile(ledgerPath, JSON.stringify([{ id: "brain-task", sessionId: threadId, workspace: brainDirectory, status: "in_progress", updatedAt: "2026-09-08T00:00:00.000Z" }]));
-  await writeFile(fakeCli, `
-import { appendFileSync } from "node:fs";
-const [, , resumedThreadId, prompt] = process.argv.slice(2);
-const timestamp = new Date().toISOString();
-appendFileSync(process.env.TASKCENTER_FAKE_SESSION, JSON.stringify({ timestamp, type: "event_msg", payload: { type: "user_message", message: prompt } }) + "\\n");
-console.log(JSON.stringify({ type: "thread.started", thread_id: resumedThreadId }));
-console.log(JSON.stringify({ type: "turn.started" }));
-console.log(JSON.stringify({ type: "turn.completed" }));
-`);
-  const port = 36_000 + (process.pid % 1_000);
-  const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
-    cwd: new URL("../", import.meta.url),
-    env: {
-      ...process.env,
-      TASKCENTER_CONTROL_PORT: String(port),
-      TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
-      TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
-      TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
-      TASKCENTER_SESSION_REGISTRY_PATH: registryPath,
-      TASKCENTER_TASK_LEDGER_PATH: ledgerPath,
-      TASKCENTER_CONTEXT_MANAGEMENT_PILOT_EVENTS_PATH: join(fixture.directory, "pilot-events.jsonl"),
-      TASKCENTER_SESSIONS_ROOT: sessionsRoot,
-      TASKCENTER_CODEX_COMMAND: process.execPath,
-      TASKCENTER_CODEX_PREFIX_ARGS: JSON.stringify([fakeCli]),
-      TASKCENTER_FAKE_SESSION: sessionPath,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  context.after(() => child.kill("SIGTERM"));
-  await waitForReady(child);
-  const response = await fetch(`http://127.0.0.1:${port}/context-management-pilots/intents`, {
-    method: "POST",
-    headers: actionHeaders(),
-    body: JSON.stringify({ request_id: "019f0000-0000-7000-8000-000000000005", project_id: "atlas", workspace: fixture.projectDirectory, action: "refresh" }),
-  });
-  assert.equal(response.status, 202);
-  const failed = await waitForPilotStatus(port, "atlas", "failed");
-  assert.match(failed.message, /未回写终态/);
-});
-
-test("服务重启保留已成功的试点回执并只终止遗留 dispatch", async (context) => {
+test("退休执行入口返回 404，服务启动和等待不修改历史队列或回执", async (context) => {
   const fixture = await createFixture();
   const pilotEventsPath = join(fixture.directory, "pilot-events.jsonl");
   const created = createPilotIntent(pilotEventsPath, { request_id: "019f0000-0000-7000-8000-000000000006", project_id: "atlas", workspace: fixture.projectDirectory, action: "enable" });
   updatePilotIntent(pilotEventsPath, created.intent.intent_id, "processing");
   updatePilotIntent(pilotEventsPath, created.intent.intent_id, "succeeded", { observed_state: "enabled" });
-  await writeFile(fixture.dispatchesPath, JSON.stringify([{ id: "legacy-pilot-dispatch", pilotIntentId: created.intent.intent_id, status: "running", error: "", updatedAt: "2026-09-08T00:00:00.000Z" }]));
+  await writeFile(fixture.dispatchesPath, JSON.stringify([{ id: "legacy-pilot-dispatch", pilotIntentId: created.intent.intent_id, status: "queued", error: "", updatedAt: "2026-09-08T00:00:00.000Z" }]));
+  const beforeDispatches = await readFile(fixture.dispatchesPath, "utf8");
+  const beforePilot = await readFile(pilotEventsPath, "utf8");
+  const bugQueuePath = join(fixture.directory, "bug-dispatches.json");
+  const legacyBugQueue = '[{"id":"old-bug","status":"queued"}]';
+  await writeFile(bugQueuePath, legacyBugQueue);
   const port = 37_000 + (process.pid % 1_000);
   const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
     cwd: new URL("../", import.meta.url),
@@ -514,6 +176,7 @@ test("服务重启保留已成功的试点回执并只终止遗留 dispatch", as
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_CONTEXT_MANAGEMENT_PILOT_EVENTS_PATH: pilotEventsPath,
+      TASKCENTER_BUG_DISPATCHES_PATH: bugQueuePath,
       TASKCENTER_SESSION_REGISTRY_PATH: join(fixture.directory, "session-registry.json"),
       TASKCENTER_TASK_LEDGER_PATH: join(fixture.directory, "task-ledger.json"),
       TASKCENTER_DELEGATIONS_PATH: join(fixture.directory, "delegations.json"),
@@ -525,7 +188,17 @@ test("服务重启保留已成功的试点回执并只终止遗留 dispatch", as
   await waitForReady(child);
   const events = (await readFile(pilotEventsPath, "utf8")).trim().split("\n").map(JSON.parse);
   assert.equal(events.at(-1).status, "succeeded");
-  assert.equal(JSON.parse(await readFile(fixture.dispatchesPath, "utf8"))[0].status, "failed");
+  assert.equal(await readFile(fixture.dispatchesPath, "utf8"), beforeDispatches);
+  for (const path of ["/dispatch", "/dispatches/legacy-pilot-dispatch/cancel", "/context-management-pilots/intents", "/reflections/reflection-evidence-gap/execute"]) {
+    assert.equal((await fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", headers: actionHeaders(), body: "{}" })).status, 404);
+  }
+  assert.equal((await fetch(`http://127.0.0.1:${port}/routing/model-catalog`)).status, 404);
+  await new Promise(resolve => setTimeout(resolve, 5_100));
+  assert.equal(await readFile(fixture.dispatchesPath, "utf8"), beforeDispatches);
+  assert.equal(await readFile(pilotEventsPath, "utf8"), beforePilot);
+  assert.equal(await readFile(bugQueuePath, "utf8"), legacyBugQueue);
+  const history = await (await fetch(`http://127.0.0.1:${port}/dispatches`)).json();
+  assert.equal(history.dispatches[0].status, "queued");
 });
 
 function waitForReady(child) {
@@ -541,28 +214,6 @@ function waitForReady(child) {
       resolve();
     });
   });
-}
-
-async function waitForDispatchStatus(port, status) {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    const response = await fetch(`http://127.0.0.1:${port}/dispatches`);
-    const payload = await response.json();
-    if (payload.dispatches?.[0]?.status === status) return payload.dispatches[0];
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error(`等待投递状态 ${status} 超时`);
-}
-
-async function waitForPilotStatus(port, projectId, status) {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    const payload = await (await fetch(`http://127.0.0.1:${port}/context-management-pilots`)).json();
-    const intent = payload.projects?.find((item) => item.project_id === projectId)?.latest_intent;
-    if (intent?.status === status) return intent;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error(`等待试点状态 ${status} 超时`);
 }
 
 function actionHeaders() {

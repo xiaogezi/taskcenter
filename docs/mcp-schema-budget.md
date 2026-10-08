@@ -1,5 +1,7 @@
 # MCP schema 压缩与预算
 
+2026-10-08：轻量化移除 `taskcenter_bug_dispatch_host` 及新写入的 Bug schema 字段；现有固定 MCP 预算不放宽。下表 48 工具测量是压缩方案历史基线，当前结果以 `npm run mcp:budget` 为准。
+
 ## 已选方案（2026-09-28）
 
 保留全部 48 个工具、参数、必填约束和原始 Zod 运行时校验。

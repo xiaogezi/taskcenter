@@ -23,21 +23,6 @@
       "provider": "xiaomi",
       "reasoning_effort": "medium"
     },
-    "codex-luna": {
-      "harness": "codex",
-      "model_key": "luna",
-      "reasoning_effort": "low"
-    },
-    "codex-sol": {
-      "harness": "codex",
-      "model_key": "sol",
-      "reasoning_effort": "low"
-    },
-    "codex-astra": {
-      "harness": "codex",
-      "model_key": "astra",
-      "reasoning_effort": "low"
-    },
     "kimi-k3-standard": {
       "harness": "kimi",
       "model_key": "k3",
@@ -60,18 +45,6 @@
     }
   },
   "cli_clients": {
-    "codex": {
-      "provider": "openai",
-      "models": {
-        "luna": "gpt-6-luna",
-        "sol": "gpt-6-sol",
-        "astra": "gpt-6-astra"
-      },
-      "reasoning_efforts": [
-        "low",
-        "medium"
-      ]
-    },
     "kimi": {
       "provider": "moonshot",
       "models": {
@@ -109,7 +82,12 @@
   "roles": {
     "executor": {
       "model": "gpt-6-luna",
-      "allowed_models": ["gpt-6-luna", "kimi-code/kimi-for-coding", "kimi-code/kimi-for-coding-highspeed", "kimi-code/k3"],
+      "allowed_models": [
+        "gpt-6-luna",
+        "kimi-code/kimi-for-coding",
+        "kimi-code/kimi-for-coding-highspeed",
+        "kimi-code/k3"
+      ],
       "reasoning_effort": "low",
       "fallback_models": [
         "kimi-code/kimi-for-coding",

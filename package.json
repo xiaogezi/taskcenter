@@ -12,29 +12,22 @@
     "task-management"
   ],
   "files": [
-    ".openai/hosting.json",
     "app/",
-    "build/",
     "config/",
     "data/dispatches.example.json",
     "data/requirements.seed.json",
     "data/session-merges.json",
-    "db/",
-    "drizzle/",
     "integrations/",
     "public/",
     "scripts/",
     "tests/",
-    "worker/",
     "AGENTS.md",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "LICENSE",
     "README.md",
     "SECURITY.md",
-    "drizzle.config.ts",
     "eslint.config.mjs",
-    "next.config.ts",
     "postcss.config.mjs",
     "tsconfig.json",
     "vite.config.ts"
@@ -66,41 +59,38 @@
     "test": "npm run sync:test && npm run build && node scripts/run-tests.mjs",
     "test:integration": "npm run sync && npm run build && node scripts/run-tests.mjs --integration",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .vinext --ignore-pattern .wrangler --ignore-pattern .local --ignore-pattern .delegate --ignore-pattern .planning --ignore-pattern .runs --ignore-pattern project-context/.obsidian --ignore-pattern project-context/.claudian",
-    "db:generate": "drizzle-kit generate",
-    "mcp:budget": "node scripts/mcp-schema-budget.mjs"
+    "mcp:budget": "node scripts/mcp-schema-budget.mjs",
+    "size:check": "node scripts/artifact-size-budget.mjs",
+    "size:report": "node scripts/artifact-size-budget.mjs",
+    "verify:production": "node scripts/verify-production.mjs",
+    "typecheck": "tsc --noEmit --incremental false"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex-sdk": "^0.149.1",
-    "drizzle-orm": "0.45.2",
-    "next": "^16.3.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "vinext": "0.0.45",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.52.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
-    "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-plugin-import": "2.32.0",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "14.0.0",
     "js-tiktoken": "1.0.21",
     "react-server-dom-webpack": "^19.2.8",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
-    "vinext": "0.0.45",
-    "vite": "^8.2.1",
-    "wrangler": "^4.122.0"
-  },
-  "overrides": {
-    "@esbuild-kit/core-utils": {
-      "esbuild": "^0.25.0"
-    }
+    "typescript-eslint": "8.59.3",
+    "vite": "^8.2.1"
   },
   "type": "module"
 }

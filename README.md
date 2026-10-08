@@ -1,24 +1,5 @@
 # TaskCenter（任务中心）
 
-### 可见 Bug 派发（本地事件协议）
-
-Bug 详情页可以加入独立修复队列。每个业务 task 只有一条持久派发，默认最多两路；独占资源键相同则排队。记录与传统 SDK/CLI dispatch 分开，SDK 创建结果不能冒充桌面可见会话。未配置或不支持 `codex queue` 的机器显示事件入口不可用，不自动改走隐藏执行器。
-
-控制面路径：`GET /bug-dispatches`、`GET/POST /tasks/:id/bug-dispatch`、`POST /tasks/:id/bug-dispatch/control`。加入队列必须明确提供用户授权的完整 `baselineCommit`，服务端核实 commit 存在；另可传 `dispatcherSessionId`（默认业务任务关联的已登记会话）与 `resources: string[]`。目标合入分支不等于用户授权创建基线，不能默认从它或仓库默认分支创建。控制输入为 `{action: "supplement" | "cancel" | "open", eventId, message}`。POST 只接受当前页面来源和既有操作确认标记，浏览器不能调用宿主回执路径。
-
-宿主使用运行时绑定身份的 `taskcenter_bug_dispatch_host`，对应受 MCP 凭据保护的 `POST /bug-dispatches/host`：
-
-1. `operation: "snapshot"` 获取记录。事件通过固定 argv 的 `codex queue --thread ID --message TEXT` 唤醒主脑；HTTP 请求持久化后即返回，不等修复结束。部署不会自动重放不确定的创建操作，也不轮询唤醒主脑。
-2. `operation: "claim", id` 原子占位。没有名额/资源则返回 `record:null`。任何已登记主脑均可领取；`resumed:true` 表示既有 claim，只能核实先前结果，**不得重新创建**。不确定 claim 保留名额，需人工核实，不能 TTL 到期后重复创建。
-3. 主脑按集中角色路由用实际 `list_projects/create_thread` 创建所属项目独立 worktree，`startingState` 使用已授权的 `baselineCommit` 既有 ref。创建提示携带派发 id，要求执行会话先发送真实 ID/workspace 给派发者、自行登记并等待核实再改代码。若宿主只返回 `clientThreadId`，立即回写 `{operation:"receipt", id, claimToken, eventId, status:"creating", clientThreadId, evidence}` 并返回；该记录持久占位，重启后只恢复核实，不重建。`clientThreadId` 不得当作真实 threadId 调用 `read_thread`。收到执行方带派发 id 的身份回报后，用 `read_thread` 核实真实会话、项目和 workspace，再回写 `{operation:"receipt", id, claimToken, eventId, status:"running", threadId, projectId, visible:true, evidence}`。服务端另查 Session 登记、Git 根目录/common-dir 和初始 HEAD 必须等于授权基线，拒绝父会话、其他仓库、相同工作树及子目录、重复会话和错误基线。身份映射不明时保持 creating/unknown，不猜测。`evidence` 是宿主操作回执引用；服务端不能独立调用桌面 API 验证该声明。
-4. 派发回执后主脑返回。执行会话只在阻塞、待验收或完成时向主脑报告，并以同一 `id` 回写 `blocked/awaiting_acceptance/done_claimed` 与稳定 `eventId/evidence`；`done_claimed` 不是验收。待验收或完成释放执行名额，并事件唤醒排队项。恢复执行仍需名额与资源通过。
-5. 主脑处理 `commands`：补充/运行中取消用实际 `send_message_to_thread`，打开用 `navigate_to_codex_page`；用 `{operation:"control_receipt", id, eventId, outcome:"sent"|"unavailable", evidence}` 回写。排队取消原子撤回，后续 claim 不会领取；已领取或运行的取消只是请求，不释放名额，不声称停止。暂停、继续没有已核实通道，UI 禁用。任何缺失宿主能力必须明确报告不可用。
-6. 外部合入前，已绑定执行会话在业务任务 `bugClosure.status=awaiting_merge` 时用 `{operation:"merge_lease", id}` 领取仓库级串行租约，完成或失败后以 `release:true` 释放。租约不执行、不授权 Git 合并，也不能约束绕过协议的外部合并；仍需原有人工授权和合入核验。
-
-当前是部分交付：事件队列、回执、并发/资源锁与 UI 能力边界。新增 MCP 工具需要宿主加载新版本；真实“事件→桌面创建→身份核实→回执”尚需在获准业务场景中验收，不能用隔离测试回执冒充真实业务验收。旧 `/dispatch` 路径保持原语义。取消后的同一 task 不自动重派，避免重复执行。
-
-隔离验证可以设置 `TASKCENTER_BUG_DISPATCHES_PATH` 和独立 `TASKCENTER_CONTROL_PORT`；同源代理仅连接该端口的 loopback。其他运行态仍按现有隔离变量设置，不能连接正式数据做测试。
-
 TaskCenter 是一个本地优先、核心协议与平台解耦的任务治理看板。人、Agent、CI、PR 审查平台和其他任务平台都可以创建任务、提交证据与独立验收；Codex、Claude Code、Context Agent、MCP 和 Hook 都只是可选适配器。
 
 > 当前版本：`v0.1.5`。核心 Web、MCP、Hook 与服务控制支持 macOS、Linux/WSL2 和原生 Windows；桌面快捷入口仅支持 macOS。
@@ -35,18 +16,6 @@ TaskCenter 是一个本地优先、核心协议与平台解耦的任务治理看
 - 支持离线补录、通用验收，以及 JSON/Markdown Completion Packet 导出。
 - 作为轻量模型路由控制面保存熔断、并发租约、路由建议与审计，但不启动或管理 CLI。
 
-## Bug 验收与合入闭环
-
-进入「任务工作区 → 某个任务 → Bug 闭环」可将已核实的缺陷登记到现有 v2 任务。填写反馈来源、受影响版本、前置条件、复现步骤、实际行为、预期依据、验收步骤、测试入口和目标本地分支。MCP 创建/更新任务也支持同名 `bug` 对象；使用字段 `source/version/preconditions/steps/actual/expected/acceptanceSteps/testArtifact/targetBranch`。反馈是否成立仍由项目会话核实，本入口不会自动认定 Bug 或新建修复会话。
-
-修复会话继续使用原有任务合同、Session、验证和独立审查机制。执行器声明完成后，验证与必要审查全部就绪，用户才可在 Bug 详情勾选确认、填写结果并办理验收。验收通过进入「待合入」；退回保留原任务与原因，恢复执行中。任务页提供 Bug、待合入、已合入 Bug 筛选。
-
-「核验合入结果」只读运行 Git，检查 `currentSubject` 的完整修复提交是否包含于目标本地分支，并要求已有测试、构建或设备验证回执绑定该分支的当前提交及同一仓库。非快进合并会产生新提交，项目会话须先上报该提交的验证。按钮不执行合并、推送或发布；squash/cherry-pick 暂不支持等价变更自动认定。记录表示核验时刻的结果，包含目标提交、验收记录和验证 ID。
-
-Bug 的执行就绪与最终关闭分开：`completionReadiness.ready` 表示可办理验收；`completionClaim.allowed` 还要求验收及合入核验。修改 Bug 资料或当前修订后，旧验收不能继续用于关闭。普通任务行为不变。当前反馈入口仍使用项目反馈文档，完整资料、事件和合入记录均在原任务账本中保存；不创建第二套问题数据库。
-
-人工入口复用本地 UI 操作来源检查，验收身份由服务端固定为 `human/local-user`，继续受任务 Workspace Policy 的来源/身份约束。它不接收 Agent 自填的人类身份；核心/MCP 事件不能提交合入证据。此本机信任模型不用于防御同一 OS 用户的恶意进程，不开放远程访问。
-
 ## 隐私与安全边界
 
 TaskCenter 只读访问：
@@ -60,7 +29,7 @@ Session 内容采用 fail-closed 白名单：缺少 `data/session-selection.json
 
 页面中的两套白名单职责独立：“读取白名单”决定哪些本机 Session JSONL 可以进入同步与反思；“门禁豁免”决定哪些 Session 在非只读工具调用前无需登记活跃任务。门禁豁免默认关闭、按 Session 显式配置；打开“门禁豁免”后，每个精确 Session 都可一键“加入豁免”或“退出豁免”，操作立即生效且不会覆盖其他 Session。豁免只跳过任务登记检查，不跳过交互式进程和命令形态等安全检查。
 
-“自改进”采用复查闭环：TaskCenter 从白名单后的聚合结果与本地任务账本识别证据缺口、阻塞聚集、逾期和返工，输出结构化提案。提案只包含聚合计数和任务 ID，不复制 Session 正文。采纳后可选择已有或新建 Codex Session；TaskCenter 会先登记目标 Session 并创建幂等的正式改进任务，再派发受 Hook 保护的执行提示。Agent 上报 `done_claimed` 后即可再次运行反思：问题消失则标为已解决，仍存在则重新进入审核；人工发现未完成时可直接打回。TaskCenter 不直接修改源码、Hook、MCP 或 `~/.codex`。
+“改进建议”从聚合结果与本地任务账本识别证据缺口、阻塞、逾期和返工，仅生成建议并保存接受/拒绝决定。接受建议不创建或启动 Agent；历史执行记录保留最后观察状态，新版本不继续投递旧队列。
 
 估时用于校准计划，不作为完成判定。`dueAt` 表示显式交付截止，`estimatedEffortMs` 表示预计有效执行工时；TaskCenter 分别记录墙钟耗时、`in_progress` 有效工时和 `blocked` 等待时间，并保留每次调整的旧值、原因和时间。Hook 只在显式交付截止逾期或有效工时超预估后提供一次幂等反馈，要求区分范围变化、依赖阻塞与执行偏差，再调整估时或拆分任务。旧 `expectedAt` 只作为历史预计完成时间保留，用于估时校准，不会自动升级为 `dueAt` 或触发交付逾期。旧任务没有状态分段证据时会显示“有效工时未知”，不会把创建至今的累计时间伪装成执行工时。反思只聚合有效工时偏差、阻塞占比和显式交付延期等校准指标，不自动延期，也不因超时判定任务失败。
 
@@ -218,7 +187,7 @@ TaskCenter 是执行合同、运行状态、验证、Review、验收与路由审
 3. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
 4. TaskCenter 可用时，当前主窗口模型在派发执行器前调用 `taskcenter_routing_select`。它会原子检查模型并发、`Closed/Open/Half-Open` 熔断状态并发放有 TTL 的执行租约；执行结束后调用 `taskcenter_routing_result` 释放租约并回报原始错误。TaskCenter 只给出强建议，不启动 CLI，也不取代当前主窗口模型的风险判断、整合和验收。
    `/routing` 页面复用 `/usage-report` 与任务账本展示真实额度窗口、重置时间和最近调度记录；模型卡片的并发数字仅表示当前活跃租约，不是历史调用次数。模型未绑定额度池也不等于额度充足，缺失或过期快照会按未知状态展示。
-   主窗口负责理解、编排、整合和验收；普通执行通过 Codex 原生会话派发。`roles.executor.dispatch_channel=native` 禁止新 CLI 路由与授权，包含显式 CLI 请求和 Jev 失败降级。候选由 `config/model-roles.json` 统一定义：MiMo 四款优先，Kimi 三款与 GPT-6 Luna 共八款；具体型号由 Jev 按任务和宿主可用能力选择。默认 MiMo 2.6 Flash；其余候选、共享额度池和并发限制沿用集中配置，Luna 同样受执行器全局并发限制。
+   主窗口负责理解、编排、整合和验收；普通执行通过 Codex 原生会话派发。`roles.executor.dispatch_channel=native` 禁止新 CLI 路由与授权，包含显式 CLI 请求和 Jev 失败降级。候选、偏好顺序、共享额度池和并发限制由集中配置统一定义；配置模型目录不代表实时宿主能力，实际型号由路由结合宿主提供的原生能力选择。
    `native_models` 与 `roles.executor.native_models` 合并声明 canonical → runtime ID 与可用档位（同键以 executor 为准），调用方必须传入本轮实际派发工具支持的 `available_native_models`。模型选择器可见不等于工具可派发；没有可用候选时明确返回不可用，不退回 CLI。既有 MiMo 映射保留在顶层，新会话映射位于 executor 字段内；旧版本忽略新字段，避免热读配置时因 high 档位校验失败，也不丢失原有 MiMo 映射。两款 Kimi Coding 通过用户授权的 `model_reasoning_efforts` 使用 high，其余保持 low/medium，K3 原生采用 low。路由报告 canonical、runtime 与配置档位；原生 grant/claim 校验 canonical/runtime 对应的独立 Session 和有效租约，宿主按路由指定档位启动。
    正式实例的 `TASKCENTER_MODEL_ROLE_CONFIG_PATH` 固定指向控制器工作区的可编辑 `config/model-roles.json`，release worktree 只承载代码，不成为模型策略副本。显式 `preferred_model` 仍优先于 task class 映射；retired 模型沿用既有归一化行为。`manual_only_models` 不进入自动角色池或普通 fallback，只有任务持久化 `execution_model_policy.mode=quota_preferred` 后才能使用。TaskCenter 按 `quota_limit_id` 读取独立额度池：新鲜且未耗尽时选择首选模型，明确耗尽时回到既有 executor 策略，缺失或过期时只在新派发边界做一次受并发限制的探测；额度失败不增加模型质量熔断计数。推理强度也由该配置控制：角色默认值为 `low`，仅 `task_class_reasoning_efforts` 或用户明确授权的 `model_reasoning_efforts` 可提升，路由结果与审计会保留实际强度。Reviewer 始终使用 reviewer 主模型并 fail closed，OCR 继续要求同一 Subject、Bundle 和规则证据，不接受 task class 映射或容量回退。
    回滚时删除对应 `task_class_models` 映射并恢复原 JSON；新派发立即回到 executor 主模型，已发放租约按原策略结算。
@@ -251,9 +220,7 @@ OCR Review 与业务任务生命周期分离：已登记的任务所属 Session 
 
 路由返回独立 `review_record` 和领取 capability。宿主使用集中配置的 reviewer 模型及 `read-only` 沙箱启动独立 Reviewer；Reviewer 登记后调用 `taskcenter_review_claim(route_id, claim_token, sandbox="read-only")`，随后通过 `taskcenter_task_review_report` 携带同一 `route_id`、`review_artifacts`、完整 `subject_ref` 上报。最后 `taskcenter_routing_result` 释放租约。MCP 从可信宿主绑定实际 Session，领取同时校验工作区、模型及与实现 Session 的独立性。同一 Reviewer Session 可领取多个 Task 的 Review；Hook 和账本禁止它创建业务任务或写入实现。Hook 是生命周期守卫，宿主仍须提供真正的只读沙箱。
 
-非交互 CLI Reviewer 使用 `node /path/to/ReqRadar/scripts/reviewer-cli.mjs PROMPT_FILE OUTPUT_FILE [REVIEWER_SESSION_UUID]`。宿主先取得 OCR route，再将 route、claim token、精确 Subject/Bundle/Rules 与验收条件写入 prompt；从受审工作区启动。入口固定集中 reviewer 模型和只读沙箱，仅为本进程的 Session 登记、review claim、review report 逐项授权，不改用户配置或全局审批。恢复已有 Reviewer 时填写其真实 UUID；路由结果及租约释放仍由宿主负责。
-
-推荐使用统一入口 `node /path/to/ReqRadar/scripts/reviewer-cli.mjs --managed REQUEST_JSON OUTPUT_FILE`。请求文件包含 `route_id`、`claim_token`、精确 `workspace`、`prompt_path` 和已验证的 `native_unavailable_reason`；主代理先按原权限取得路由。已知原生通道缺少独立 Session 时不重复试错，保留同配置 Reviewer 并记录 CLI 原因。Reviewer 首次调用无参数 `taskcenter_review_start`，程序绑定真实 Session、登记、领取和建立周期；只需阅读返回的固定证据并用 `taskcenter_review_finish` 提交逐文件覆盖、findings 与规格/质量结论。漏文件不可批准，报告身份与 cycle 由程序填写，成功后自动释放租约。启动器只有实际 finish 回执与租约释放均成功才返回成功；失败时用父 Session 尝试释放，失败会明确提示父任务处理。旧裸 CLI 入口仍兼容，但不会自动获得统一流程。
+外部 Review 继续使用既有 route、独立 Session、review claim/start/report/finish 协议，保留身份、只读、Subject 和有效期校验。内置 reviewer-cli.mjs 启动入口已退休，旧调用明确报错，不读取请求或启动系统 Codex CLI。
 
 
 
@@ -371,4 +338,6 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 
 部署先准备不可变候选构建，再执行 lint 和完整测试；npm 安装优先离线缓存（60 秒总时限），仅 ENOTCACHED 时联网一次（180 秒总时限、单请求 30 秒、最多一次请求重试）。缓存可被清理，不作为正确性前提；缺包按锁文件由 npm 下载与校验，失败在切换前终止并保留原服务。依赖安装不触发隐式 audit/fund 网络请求，独立依赖安全审计仍可按需执行。
 
-大依赖核查：`@openai/codex-sdk` 被 `scripts/harnesses/codex.mjs` 的新建会话入口使用，并传递依赖 Codex 原生 CLI；`@cloudflare/vite-plugin`、Wrangler/Workerd 被 `vite.config.ts` 构建链使用。它们不是无调用方的残留依赖；本次保留功能与依赖版本，不用删除依赖或共享可变 node_modules 来缩短部署。
+运行依赖不再包含 Codex SDK 或原生 CLI。方案 A 保留 vinext/React 页面和 Node 服务，移除 Next 编译器、Cloudflare/Wrangler/Workerd 及未使用的 Drizzle、Worker、Sites 模板链；页面直接引用 vinext 导出的兼容 API。类型检查使用 TypeScript，lint 使用已有 React、Hooks、无障碍和 TypeScript 插件。release 在完整构建后检查开发依赖预算，再裁剪开发/可选依赖，通过生产体积预算与隔离候选验证。详见 [轻量化方案及实施证据](docs/lightweight-tool-plan.md)。
+
+`npm run size:check` / `size:report` 检查已有构建，不重复构建或自动更新基线；全部资产、JS/CSS gzip、最大 JS chunk、服务端和完整开发依赖分别受累计 2% 预警、5% 失败约束。开发依赖统计排除 npm 根安装元数据及 Vite 缓存，真实包文件仍全部计入。release 额外检查实际生产依赖与单版本总量，复用旧 release 也重测目录和报告；锁文件、直接依赖和安装树禁止被移除的重依赖重新进入。`npm run verify:production -- --install` 在临时目录验证裁剪后的六个页面、控制面、MCP、同步与 watcher，不读取真实 Codex 数据。未知平台/Node/npm 版本缺基线时失败，不能跳过检查；当前基线及未覆盖平台见方案文档。

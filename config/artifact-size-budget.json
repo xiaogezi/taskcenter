@@ -1,0 +1,75 @@
+{
+  "algorithm": "artifact-size/v1",
+  "link_policy": "hardlinks per path; symlink targets once within root; escaping/cycles fail",
+  "gzip": {
+    "level": 9,
+    "mtime": 0
+  },
+  "forbidden_packages": [
+    "@openai/codex-sdk",
+    "@openai/codex",
+    "@cloudflare/vite-plugin",
+    "@cloudflare/workerd",
+    "wrangler",
+    "workerd",
+    "miniflare",
+    "next",
+    "@next/swc",
+    "drizzle-orm",
+    "drizzle-kit"
+  ],
+  "profiles": {
+    "darwin-arm64/v26.7.0/11.19.0": {
+      "baseline_revision": "git_worktree_snapshot:201e567b335133e09990718fc4e2b210b94b9a4a/toolchain-a-2026-10-08",
+      "measured_at": "2026-10-08T11:15:13.041Z",
+      "install_strategy": "npm ci; build; npm prune --omit=dev --omit=optional",
+      "metrics": {
+        "client_bytes": {
+          "baseline_bytes": 324998,
+          "warn_bytes": 331497,
+          "max_bytes": 341247
+        },
+        "client_gzip_bytes": {
+          "baseline_bytes": 100319,
+          "warn_bytes": 102325,
+          "max_bytes": 105334
+        },
+        "largest_js_bytes": {
+          "baseline_bytes": 189757,
+          "warn_bytes": 193552,
+          "max_bytes": 199244
+        },
+        "server_bytes": {
+          "baseline_bytes": 657936,
+          "warn_bytes": 671094,
+          "max_bytes": 690832
+        },
+        "production_dependency_bytes": {
+          "baseline_bytes": 50093930,
+          "warn_bytes": 51095808,
+          "max_bytes": 52598626
+        },
+        "release_bytes": {
+          "baseline_bytes": 53606123,
+          "warn_bytes": 54678245,
+          "max_bytes": 56286429
+        },
+        "development_dependency_bytes": {
+          "baseline_bytes": 206652146,
+          "warn_bytes": 210785188,
+          "max_bytes": 216984753
+        }
+      },
+      "baseline_input_hash": "e98a74773d94283dfeb376bfff20fdd3f84c6325955b3d60dff6c8809ca4f4b2",
+      "baseline_output_hash": "b67b2fd7b26a01f867f0e0f43109a316b313cd7eb78f459a0f08407b4e75e97f",
+      "baseline_lock_hash": "828faeb996e061de5ae6b3a49c6a0d20f741b8c4f9ba14892e07c7d85dc5db16",
+      "baseline_report": "docs/evidence/toolchain-a-2026-10-08.json"
+    }
+  },
+  "uncalibrated_environments": [
+    "linux-x64/Node22.13.0",
+    "win32-x64/Node22.13.0"
+  ],
+  "calibration_policy": "Measure on the actual platform; missing environment is a blocking failure. Never auto-update baselines.",
+  "development_dependency_measurement": "All installed package files; excludes node_modules root .package-lock.json/.vite/.vite-temp/.cache; hardlinks count per path"
+}

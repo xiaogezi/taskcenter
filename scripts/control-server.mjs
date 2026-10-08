@@ -13,23 +13,18 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { verifyBugMerge } from "./bug-workflow.mjs";
-import { BugDispatchError, BugDispatchQueue } from "./bug-dispatch-queue.mjs";
-import { sameSubject } from "./completion-state.mjs";
 import {
   DispatchError,
-  loadDispatchTarget,
 } from "./dispatch-core.mjs";
 import { ModelRoleConfigError, modelManagementConfig, updateModelManagement, updateOptionalAstraPolicy } from "./model-role-config.mjs";
-import { codexModelCatalog } from "./harnesses/codex-model-catalog.mjs";
 import {
   defaultSessionsRoot,
 } from "./session-cli.mjs";
-import { HarnessError, HARNESS_IDS, LEGACY_HARNESS_ID, dispatchHarnessId, harnessCapabilities, invokeHarness, requireHarnessOperation } from "./harnesses/index.mjs";
+import { HARNESS_IDS, harnessCapabilities } from "./harnesses/index.mjs";
 import {
   completeContextTasks,
   completeTasksByReconciliation,
@@ -62,14 +57,11 @@ import {
 } from "./task-reuse-advisor.mjs";
 import { syncContextCompletionFromUi, syncContextEvent } from "./context-bridge.mjs";
 import {
-  beginReflectionExecution,
-  buildReflectionExecutionPrompt,
   decideReflectionProposal,
   emptyReflectionState,
   generateReflection,
   hydrateReflectionState,
   reconcileReflectionSessionSelection,
-  updateReflectionExecution,
 } from "./reflection-engine.mjs";
 import { normalizeSessionAllowlist, readSessionAllowlist, sessionIdPattern, updateSessionAllowlist } from "./session-allowlist.mjs";
 import {
@@ -102,15 +94,11 @@ import { buildGovernanceMetrics, recordGateDenial } from "./governance-metrics.m
 import { taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
 import { enrichTaskWorkspaceEvent } from "../lib/git-workspace.mjs";
 import {
-  buildPilotPrompt,
   ContextManagementPilotError,
-  createPilotIntent,
   pilotEventsPath,
   pilotSnapshot,
   readPilotEvents,
   recordPilotTrial,
-  registeredProjectWorkspaces,
-  resolvePilotMainBrain,
   updatePilotIntent,
 } from "./context-management-pilot.mjs";
 
@@ -154,21 +142,12 @@ const allowedOrigins = new Set([
   "http://[::1]:3000",
 ]);
 const dispatches = loadDispatches();
-const bugQueue = new BugDispatchQueue(resolve(process.env.TASKCENTER_BUG_DISPATCHES_PATH || join(projectRoot, "data", "bug-dispatches.json")), {
-  task: id => loadVisibleTasks().find(task => task.id === id),
-  session: id => loadSessionRegistry()[id],
-});
 const requirementOverrides = loadJsonObject(overridesPath);
 const inboxDecisions = loadJsonObject(inboxDecisionsPath);
-const activeThreadDispatches = new Set();
-let lastDispatchAt = 0;
-let processingQueue = false;
 let syncing = null;
 const snapshotCache = new Map();
 const localMcpToken = loadOrCreateLocalMcpToken();
 
-mkdirSync(dirname(dispatchesPath), { recursive: true });
-migrateLegacyDispatches();
 const startupContextReconciliation = reconcileContextShadowTasks();
 if (startupContextReconciliation.reconciled.length) {
   console.log(`[TaskCenter] 已收敛 ${startupContextReconciliation.reconciled.length} 条 Context 影子任务。`);
@@ -184,7 +163,6 @@ if (reconcileLiveSessions) {
     console.error(`[TaskCenter] 启动对账失败：${error?.message || error}`);
   }
 }
-const queueTimer = setInterval(() => void processQueue(), 5_000);
 // 低频对账扫描：周期性核对运行事实与账本（幂等，只收口脱离运行并生成缺项）。
 const reconciliationTimer = setInterval(() => {
   if (!reconcileLiveSessions) return;
@@ -197,8 +175,6 @@ const reconciliationTimer = setInterval(() => {
     console.error(`[TaskCenter] 对账扫描失败：${error?.message || error}`);
   }
 }, 5 * 60_000);
-queueTimer.unref();
-void processQueue();
 
 const sessionSwitchOperations = new Map();
 const server = createServer(async (request, response) => {
@@ -319,16 +295,6 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/context-management-pilots") {
       sendJson(response, 200, pilotSnapshot({ registry: loadSessionRegistry(), sessionTitles: loadSessionTitles(), tasks: loadTasks(), usageReport: currentUsageReport(), events: readPilotEvents(contextManagementPilotPath) }));
-      return;
-    }
-    if (request.method === "POST" && request.url === "/context-management-pilots/intents") {
-      verifyActionRequest(request);
-      const body = await readJsonBody(request);
-      const project = registeredProjectWorkspaces(loadSessionRegistry()).find((item) => item.project_id === body.project_id && item.workspace === resolve(String(body.workspace || "")));
-      if (!project) throw new ContextManagementPilotError(404, "目标不是已登记的项目 workspace。");
-      const result = createPilotIntent(contextManagementPilotPath, { ...body, project_id: project.project_id, workspace: project.workspace });
-      if (!result.idempotent) void dispatchPilotIntent(result.intent);
-      sendJson(response, result.idempotent ? 200 : 202, { accepted: true, ...result });
       return;
     }
     const pilotResultMatch = request.method === "POST" ? request.url?.match(/^\/context-management-pilots\/intents\/([0-9a-f-]{36})\/result$/i) : null;
@@ -519,38 +485,6 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, { dispatches: dispatches.slice(-30).reverse() });
       return;
     }
-    if (request.method === "GET" && request.url === "/bug-dispatches") {
-      sendJson(response, 200, bugQueue.snapshot()); return;
-    }
-    const bugDispatchMatch = request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/bug-dispatch(?:\/(control))?$/);
-    if (bugDispatchMatch && request.method === "GET" && !bugDispatchMatch[2]) {
-      sendJson(response, 200, bugQueue.snapshot(bugDispatchMatch[1])); return;
-    }
-    if (bugDispatchMatch && request.method === "POST") {
-      verifyActionRequest(request);
-      const body = await readJsonBody(request);
-      const result = bugDispatchMatch[2] ? bugQueue.command(bugDispatchMatch[1], body) : bugQueue.enqueue(bugDispatchMatch[1], body);
-      sendJson(response, 202, { ...bugQueue.snapshot(bugDispatchMatch[1]), idempotent: result.idempotent });
-      if (!result.idempotent && result.record.status !== "cancelled") wakeBugDispatcher(result.record);
-      return;
-    }
-    if (request.method === "POST" && request.url === "/bug-dispatches/host") {
-      verifyBoundMcpRequest(request);
-      const { operation, session_id: sessionId, ...body } = await readJsonBody(request);
-      if (!loadSessionRegistry()[sessionId]) throw new BugDispatchError("宿主 Session 未登记。");
-      let result;
-      if (operation === "snapshot") result = bugQueue.snapshot();
-      else if (operation === "claim") result = bugQueue.claim(sessionId, body.id);
-      else if (operation === "receipt") result = bugQueue.receipt(sessionId, body);
-      else if (operation === "control_receipt") result = bugQueue.commandReceipt(sessionId, body);
-      else if (operation === "merge_lease") result = bugQueue.mergeLease(sessionId, body);
-      else throw new BugDispatchError("未知宿主操作。", 400);
-      sendJson(response, 200, result);
-      if (operation === "receipt" && !result.idempotent && ["awaiting_acceptance", "done_claimed"].includes(body.status)) {
-        for (const record of bugQueue.snapshot().records.filter(r => r.status === "queued")) wakeBugDispatcher(record);
-      }
-      return;
-    }
     if (request.method === "GET" && request.url?.startsWith("/tasks")) {
       const url = new URL(request.url, `http://${host}:${port}`);
       if (url.pathname !== "/tasks") {
@@ -584,7 +518,7 @@ const server = createServer(async (request, response) => {
         const pageSize = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("page_size") || "40", 10) || 40));
         const start = (page - 1) * pageSize;
         const pageTasks = withDelegations(filteredTasks.slice(start, start + pageSize));
-        const actionCounts = Object.fromEntries(["planned", "in_progress", "completed", "attention", "awaiting_verification", "awaiting_acceptance", "awaiting_merge", "bugs", "completed_bugs", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
+        const actionCounts = Object.fromEntries(["planned", "in_progress", "completed", "attention", "awaiting_verification", "awaiting_acceptance", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
         actionCounts.all = projectTasks.length;
         const projects = new Map();
         for (const task of presentedTasks) if (!projects.has(task.project.id)) projects.set(task.project.id, task.project);
@@ -653,10 +587,6 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/routing/models") {
       sendJson(response, 200, modelManagementConfig());
-      return;
-    }
-    if (request.method === "GET" && request.url === "/routing/model-catalog") {
-      sendJson(response, 200, await codexModelCatalog());
       return;
     }
     if (request.method === "GET" && new URL(request.url, "http://localhost").pathname === "/routing/decisions") {
@@ -919,115 +849,6 @@ const server = createServer(async (request, response) => {
       }
       return;
     }
-    const reflectionExecuteMatch = request.method === "POST"
-      ? request.url?.match(/^\/reflections\/([A-Za-z0-9._-]{1,160})\/execute$/)
-      : null;
-    if (reflectionExecuteMatch) {
-      verifyManualTaskAction(request);
-      const body = await readJsonBody(request);
-      const mode = String(body.mode || "new_session");
-      const requestId = String(body.requestId || "");
-      const targetSessionId = String(body.threadId || "");
-      if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new DispatchError(400, "改进任务请求 ID 无效。");
-      if (!["new_session", "existing_session"].includes(mode)) throw new DispatchError(400, "改进任务执行模式无效。");
-      if (mode === "existing_session" && !/^[0-9a-f-]{36}$/i.test(targetSessionId)) {
-        throw new DispatchError(400, "目标 Session ID 无效。");
-      }
-      if (mode === "existing_session" && !availableSessionIds().includes(targetSessionId)) {
-        throw new DispatchError(409, "目标 Session 不在当前本机会话列表中。");
-      }
-      const currentState = loadReflectionState();
-      const currentProposal = currentState.proposals.find((proposal) => proposal.id === reflectionExecuteMatch[1]);
-      const existingReplay = currentProposal?.executions?.find((execution) => execution.requestId === requestId);
-      if (existingReplay) {
-        sendJson(response, 200, hydrateReflectionState(currentState, loadVisibleTasks(), dispatches));
-        return;
-      }
-      if (mode === "existing_session" && loadVisibleTasks().some((task) => task.sessionId === targetSessionId && ["planned", "in_progress", "blocked"].includes(task.status))) {
-        throw new DispatchError(409, "ACTIVE_TASK_CONFLICT：目标 Session 已有活跃任务。");
-      }
-      if (Date.now() - lastDispatchAt < 5_000) throw new DispatchError(429, "发送过于频繁，请稍后再试。");
-      const executionId = randomUUID();
-      const execution = {
-        id: executionId,
-        requestId,
-        taskId: `task-reflection-${executionId}`,
-        dispatchId: randomUUID(),
-        mode,
-        sessionId: mode === "existing_session" ? targetSessionId : "",
-        status: "preparing",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        error: "",
-      };
-      let started;
-      try {
-        started = beginReflectionExecution(currentState, reflectionExecuteMatch[1], execution, loadVisibleTasks());
-      } catch (error) {
-        throw new DispatchError(409, error instanceof Error ? error.message : "改进任务无法启动。");
-      }
-      const proposal = started.proposal;
-      const prompt = buildReflectionExecutionPrompt(proposal, execution.taskId);
-      const record = {
-        id: execution.dispatchId,
-        requirementId: `reflection:${proposal.id}`,
-        requirementTitle: proposal.title,
-        proposalId: proposal.id,
-        reflectionExecutionId: execution.id,
-        taskId: execution.taskId,
-        contextThreadId: targetSessionId,
-        threadId: mode === "new_session" ? "" : targetSessionId,
-        threadTitle: mode === "new_session" ? `改进任务：${proposal.title}` : `改进：${proposal.title}`,
-        mode,
-        status: dryRun ? "dry_run" : "preparing",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        error: "",
-      };
-      if (!dryRun && mode === "existing_session") {
-        requireHarnessOperation(dispatchHarness(record), "inspectSession");
-        requireHarnessOperation(dispatchHarness(record), "resumeSession");
-      }
-      persistJsonObject(reflectionProposalsPath, started.state);
-      dispatches.push(record);
-      persistDispatches();
-      lastDispatchAt = Date.now();
-
-      try {
-        if (dryRun) {
-          finishDispatch(record, "dry_run", "演练模式：未创建正式任务，也未启动或投递 Session。");
-        } else if (mode === "existing_session") {
-          ensureReflectionTask(proposal, execution, targetSessionId);
-          record.pendingPrompt = prompt;
-          record.workingDirectory = projectRoot;
-          const sessionState = await inspectDispatchSession(record);
-          if (sessionState.busy || activeThreadDispatches.has(record.threadId)) {
-            finishDispatch(record, "queued", "目标 Session 正忙，正式任务已创建，空闲后自动投递。", false);
-          } else {
-            void startExistingDispatch(record);
-          }
-        } else {
-          const result = await sendToHarness(mode, "", prompt, projectRoot, {
-            onEvent: event => { record.executionStatus = event.status; persistDispatches(); },
-            onThreadStarted: async (sessionId) => {
-              record.threadId = sessionId;
-              ensureReflectionTask(proposal, execution, sessionId);
-              updateReflectionExecutionState(record, { sessionId, status: "running" });
-              persistDispatches();
-            },
-          });
-          record.threadId = result.threadId;
-          finishDispatch(record, "delivered", "新 Session 已启动，正式改进任务已创建并开始执行。");
-        }
-      } catch (error) {
-        const reason = safeError(error);
-        finishDispatch(record, error.outcome === "unknown" ? "unknown" : "failed", `改进任务派发结果：${reason}`);
-        blockReflectionTask(record, reason);
-        throw new DispatchError(502, `改进任务未能启动：${reason}`);
-      }
-      sendJson(response, dryRun || ["queued", "preparing", "delivering", "running"].includes(record.status) ? 202 : 200, hydrateReflectionState(loadReflectionState(), loadVisibleTasks(), dispatches));
-      return;
-    }
     if (request.method === "POST" && request.url === "/context-tasks/ensure") {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
@@ -1063,36 +884,6 @@ const server = createServer(async (request, response) => {
         automaticallySuperseded: automatic.reconciled,
         completed: completed.completed,
       });
-      return;
-    }
-    const bugActionMatch = request.method === "POST" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/(bug|bug-acceptance|bug-merge)$/) : null;
-    if (bugActionMatch) {
-      verifyManualTaskAction(request);
-      const body = await readJsonBody(request);
-      const task = loadTasks().find(item => item.id === bugActionMatch[1]);
-      if (!task) throw new TaskLedgerError(404, "任务不存在。");
-      if (task.contractVersion !== "v2") throw new TaskLedgerError(409, "Bug 闭环需要 v2 任务合同。");
-      if (body.expectedUpdatedAt !== task.updatedAt) throw new TaskLedgerError(409, "任务已变化，请刷新详情后重试。");
-      const event = { task_id: task.id, session_id: task.sessionId, event_id: randomUUID(), type: "task.update" };
-      if (bugActionMatch[2] === "bug") {
-        event.bug = body.bug;
-        if (!event.bug) throw new TaskLedgerError(400, "缺少 Bug 资料。");
-      } else {
-        if (!task.bug) throw new TaskLedgerError(409, "请先填写 Bug 资料。");
-        if (bugActionMatch[2] === "bug-merge") {
-          try { event.bug_merge = verifyBugMerge(task); }
-          catch (error) { throw new TaskLedgerError(error.statusCode || 409, error.message); }
-        }
-        else {
-          if (body.confirm !== true || !["accepted", "rejected"].includes(body.outcome) || !String(body.reason || "").trim()) throw new TaskLedgerError(400, "请选择验收结果，填写原因并确认。");
-          if (!sameSubject(body.subject, task.currentSubject)) throw new TaskLedgerError(409, "修订已变化，请重新验收。");
-          event.type = `acceptance.${body.outcome}`;
-          if (body.outcome === "rejected") { event.status = "in_progress"; event.next_action = `验收退回：${String(body.reason).slice(0, 400)}`; }
-          event.acceptance_record = { id: event.event_id, source: "human", actor: { type: "human", id: "local-user" }, subject_ref: task.currentSubject, observed_at: new Date().toISOString(), reason: String(body.reason).slice(0, 1000), evidence_refs: [task.bug.testArtifact] };
-        }
-      }
-      const result = recordTaskEvent(event, { verifiedBugMerge: bugActionMatch[2] === "bug-merge", verifiedBugAcceptance: bugActionMatch[2] === "bug-acceptance" });
-      sendJson(response, 200, { accepted: true, task: taskPresentation(result.task) });
       return;
     }
     const taskDetailMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)$/) : null;
@@ -1382,101 +1173,15 @@ const server = createServer(async (request, response) => {
       });
       return;
     }
-    const cancelMatch = request.method === "POST"
-      ? request.url?.match(/^\/dispatches\/([0-9a-f-]+)\/cancel$/i)
-      : null;
-    if (cancelMatch) {
-      verifyActionRequest(request);
-      const record = dispatches.find((item) => item.id === cancelMatch[1]);
-      if (!record) throw new DispatchError(404, "找不到这条投递记录。");
-      if (record.status !== "queued") {
-        throw new DispatchError(409, "只有仍在等待的队列任务可以取消；已经开始执行的任务不能强制中断。");
-      }
-      finishDispatch(record, "cancelled", "已人工取消自动投递，可复制任务信息后手动发送。");
-      cancelReflectionTask(record);
-      sendJson(response, 200, { dispatch: record });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/dispatch") {
-      verifyActionRequest(request);
-      const body = await readJsonBody(request);
-      const mode = String(body.mode || "new_session");
-      if (!["new_session", "existing_session"].includes(mode)) {
-        throw new DispatchError(400, "投递模式无效。");
-      }
-      const target = loadDispatchTarget(
-        dashboardPath,
-        String(body.requirementId || ""),
-        String(body.threadId || ""),
-      );
-      const duplicate = dispatches.find(
-        (item) =>
-          item.requirementId === body.requirementId &&
-          (item.contextThreadId || item.sourceThreadId || item.threadId) === body.threadId &&
-          item.mode === mode &&
-          ["queued", "delivering", "running", "unknown"].includes(item.status),
-      );
-      if (duplicate) {
-        throw new DispatchError(409, "这条需求正在投递到该 Session，请稍候。");
-      }
-      if (Date.now() - lastDispatchAt < 5_000) {
-        throw new DispatchError(429, "发送过于频繁，请稍后再试。");
-      }
-      lastDispatchAt = Date.now();
-      const record = {
-        id: randomUUID(),
-        requirementId: body.requirementId,
-        requirementTitle: target.requirement.title,
-        contextThreadId: body.threadId,
-        threadId: mode === "new_session" ? "" : body.threadId,
-        threadTitle: mode === "new_session"
-          ? `新任务：${target.requirement.title}`
-          : target.thread.title,
-        mode,
-        status: dryRun ? "dry_run" : "delivering",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        error: "",
-      };
-      dispatches.push(record);
-      persistDispatches();
-      if (!dryRun) {
-        try {
-          if (mode === "existing_session") {
-            record.pendingPrompt = target.prompt;
-            record.workingDirectory = target.cwd;
-            const state = await inspectDispatchSession(record);
-            if (state.busy || activeThreadDispatches.has(record.threadId)) {
-              const reason = state.busy
-                ? `目标 Session 正在处理 ${state.activeTurns.length} 个 turn`
-                : "同一 Session 已有一条 TaskCenter 消息正在投递";
-              finishDispatch(record, "queued", `${reason}，完成后自动投递。`, false);
-            } else {
-              void startExistingDispatch(record);
-            }
-          } else {
-            const result = await sendToHarness(mode, record.threadId, target.prompt, target.cwd, { onEvent: event => { record.executionStatus = event.status; persistDispatches(); } });
-            record.threadId = result.threadId;
-            finishDispatch(record, "delivered");
-          }
-        } catch (error) {
-          const reason = safeError(error);
-          finishDispatch(record, error.outcome === "unknown" ? "unknown" : "failed", `投递结果：${reason}`);
-          throw new DispatchError(502, `消息未能投递到目标 Session：${reason}`);
-        }
-      }
-      sendJson(response, dryRun || ["queued", "delivering", "running"].includes(record.status) ? 202 : 200, { dispatch: record });
-      return;
-    }
     sendJson(response, 404, { error: "接口不存在。" });
   } catch (error) {
-    const known = error instanceof HarnessError || error instanceof SessionSwitchError || error instanceof BugDispatchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
+    const known = error instanceof SessionSwitchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
     const statusCode = known ? error.statusCode : 500;
     if (!known) {
       console.error("TaskCenter control error:", safeError(error));
     }
     sendJson(response, statusCode, {
-      error: known ? error.message : "本地 Session 投递服务失败，请查看控制服务日志。",
+      error: known ? error.message : "本地控制服务失败，请查看控制服务日志。",
       ...(error.code ? { code: error.code, legacy_code: error.legacyCode } : {}),
     });
   }
@@ -1492,15 +1197,6 @@ function recordRoutingAudit(events, task) {
       workspace: task.workspace,
     });
   }
-}
-
-function wakeBugDispatcher(record) {
-  if (dryRun) { bugQueue.wakeResult(record.id, "隔离 dry-run 未唤醒真实宿主。"); return; }
-  const message = `TaskCenter Bug 事件 ${record.id}，业务任务 ${record.taskId}。先用 taskcenter_bug_dispatch_host(operation=snapshot) 读取最新状态。若已有 threadId，先处理 requested commands：补充/取消用实际 send_message_to_thread，打开用 navigate_to_codex_page；以 control_receipt 回写 sent 或 unavailable 和真实 evidence。已有会话的控制操作不需要 claim 或执行名额，处理后即返回；取消请求不是实际停止。尚无 threadId 时，queued 记录可以首次领取 claim，无名额即返回；claimed/creating/unknown 记录仅原领取者可再次 claim(id) 恢复原 claimToken，resumed=true 只用于核实已有创建结果，绝不重复 create_thread。只有首次领取成功且 resumed=false 才能用 list_projects/create_thread 创建所属项目独立 worktree 可见会话，从核实的当前业务基线启动；补充要求并入创建提示，若有取消请求先核实并报告 unknown，不得继续创建。用 read_thread 核实真实身份、项目、独立worktree并等待自身登记后，以 receipt 回写 running、threadId、projectId、visible=true 和真实 evidence。派发回执后立即返回，不等待整个修复。执行会话只在阻塞/待验收/完成时向派发主脑报告并回写状态，退回修复时先重新取得状态迁移名额再恢复执行。任何宿主工具缺失应报告 unknown/unavailable。队列接口见 README 可见 Bug 派发章节。`;
-  const creationContract = "创建必须使用记录中用户已授权的 baselineCommit 作为 startingState 的既有 ref，不从targetBranch或默认分支猜测。初始提示中携带派发id，要求执行会话先通过send_message_to_thread向派发者回报真实ID/workspace，登记后等待核实再改代码。若create_thread只返回clientThreadId，立即用receipt回写status=creating、clientThreadId、claimToken与稳定eventId/evidence，然后返回；clientThreadId不是可传给read_thread的真实ID。恢复时保留该回执，绝不重复create_thread；根据执行方带派发id的身份回报，用read_thread核实并回写running。身份尚无可靠映射时保持creating/unknown，不猜测。";
-  execFile(process.env.TASKCENTER_CODEX_COMMAND || "codex", ["queue", "--thread", record.claimant || record.dispatcherSessionId, "--message", `${message}\n${creationContract}`], { timeout: 15_000, maxBuffer: 100_000 }, error => {
-    try { bugQueue.wakeResult(record.id, error?.message); } catch (failure) { console.error("Bug wake receipt failed:", safeError(failure)); }
-  });
 }
 
 function currentUsageReport() {
@@ -1573,172 +1269,6 @@ server.listen(port, host, () => {
   console.log(`TaskCenter control server is listening on http://${host}:${port}.`);
 });
 
-async function dispatchPilotIntent(intent) {
-  try {
-    if (dryRun) {
-      updatePilotIntentIfOpen(intent.intent_id, "failed", { message: "dry-run 环境只记录 intent，不派发主脑。" });
-      return;
-    }
-    const brain = resolvePilotMainBrain(loadTasks(), loadSessionRegistry());
-    const record = {
-      id: randomUUID(),
-      pilotIntentId: intent.intent_id,
-      requirementId: `context-management:${intent.project_id}`,
-      requirementTitle: `context_management ${intent.action}`,
-      contextThreadId: brain.session_id,
-      threadId: brain.session_id,
-      threadTitle: "DevWorkbench 主脑",
-      mode: "existing_session",
-      status: "queued",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      error: "等待主脑处理。",
-      pendingPrompt: buildPilotPrompt(intent, `http://${host}:${port}`),
-      workingDirectory: validCwd(brain.workspace),
-    };
-    dispatches.push(record);
-    persistDispatches();
-    const state = await inspectDispatchSession(record);
-    if (state.busy || activeThreadDispatches.has(record.threadId)) return;
-    void startExistingDispatch(record);
-  } catch (error) {
-    try { updatePilotIntentIfOpen(intent.intent_id, "failed", { message: safeError(error) }); } catch { /* intent 已持久化，避免二次错误覆盖原始失败 */ }
-  }
-}
-
-function updatePilotIntentIfOpen(intentId, status, patch) {
-  const latest = readPilotEvents(contextManagementPilotPath).filter((event) => event.intent_id === intentId).at(-1);
-  if (["succeeded", "failed"].includes(latest?.status)) return latest;
-  return updatePilotIntent(contextManagementPilotPath, intentId, status, patch);
-}
-
-function dispatchHarness(record) {
-  return dispatchHarnessId({ ...record, threadId: canonicalSessionId(record.threadId || record.contextThreadId) }, loadSessionRegistry());
-}
-
-async function inspectDispatchSession(record) {
-  return invokeHarness(dispatchHarness(record), "inspectSession", { sessionId: record.threadId, sessionsRoot });
-}
-
-async function sendToHarness(mode, threadId, prompt, workingDirectory, hooks = {}) {
-  if (mode !== "new_session") throw new HarnessError("HARNESS_INVALID_INPUT", "Existing sessions must use the queued resume path", 400);
-  return invokeHarness(LEGACY_HARNESS_ID, "createSession", { prompt, workingDirectory: validCwd(workingDirectory), ...hooks,
-    onEvent: event => {
-      if (["failed", "unknown"].includes(event.status)) console.error("TaskCenter delegated turn:", event.status, safeError(event.message));
-      hooks.onEvent?.(event);
-    },
-  });
-}
-
-function finishDispatch(record, status, error, clearPending = true) {
-  record.status = status;
-  delete record.pid;
-  if (clearPending) {
-    delete record.pendingPrompt;
-    delete record.workingDirectory;
-  }
-  record.error = String(error || "").slice(0, 500);
-  record.updatedAt = new Date().toISOString();
-  persistDispatches();
-  if (record.proposalId && record.reflectionExecutionId) {
-    updateReflectionExecutionState(record, {
-      sessionId: record.threadId || "",
-      status,
-      error: record.error,
-      updatedAt: record.updatedAt,
-    });
-  }
-}
-
-function validCwd(candidate) {
-  if (candidate && existsSync(candidate)) return candidate;
-  throw new Error("解析出的项目工作目录已不存在，请重新同步看板。");
-}
-
-async function startExistingDispatch(record) {
-  if (activeThreadDispatches.has(record.threadId)) return;
-  activeThreadDispatches.add(record.threadId);
-  finishDispatch(record, "delivering", "", false);
-  try {
-    await invokeHarness(dispatchHarness(record), "resumeSession", {
-      sessionId: record.threadId,
-      onEvent: event => { record.executionStatus = event.status; persistDispatches(); },
-      prompt: record.pendingPrompt,
-      workingDirectory: validCwd(record.workingDirectory),
-      sessionsRoot,
-      onStarted: () => {
-        finishDispatch(record, "running", "消息已写入原 Session，客户端正在处理。", false);
-        if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "processing", { message: `主脑 Session ${record.threadId} 正在处理。` });
-      },
-    });
-    finishDispatch(record, "completed", "原 Session 已完成本次 turn。");
-    if (record.pilotIntentId) {
-      const latest = readPilotEvents(contextManagementPilotPath).filter((event) => event.intent_id === record.pilotIntentId).at(-1);
-      if (!latest || !["succeeded", "failed"].includes(latest.status)) {
-        updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: "主脑 turn 已结束，但目标项目未回写终态。可重新发起操作。" });
-      }
-    }
-  } catch (error) {
-    const reason = safeError(error);
-    finishDispatch(record, error.outcome === "unknown" ? "unknown" : "failed", `投递结果：${reason}`);
-    if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: reason });
-    blockReflectionTask(record, reason);
-  } finally {
-    activeThreadDispatches.delete(record.threadId);
-  }
-}
-
-function ensureReflectionTask(proposal, execution, sessionId) {
-  const planningAcceptance = proposal.kind === "planning_quality" ? [
-    "retrospective 必须记录估时偏差原因分类及其证据",
-    "对当前 Session 可控的活跃逾期任务更新 expected_at，或将过大范围拆成可独立验收任务",
-  ] : [];
-  const registration = recordTaskEvent({
-    type: "session.register",
-    event_id: `reflection-register-${execution.id}`,
-    session_id: sessionId,
-    agent: "codex",
-    provider: "openai",
-    model: "unknown",
-    workspace: projectRoot,
-  });
-  const created = recordTaskEvent({
-    type: "task.create",
-    event_id: `reflection-create-${execution.id}`,
-    task_id: execution.taskId,
-    requirement_id: `reflection:${proposal.id}`,
-    session_id: sessionId,
-    agent: "codex",
-    provider: "openai",
-    model: "unknown",
-    workspace: projectRoot,
-    title: `改进：${proposal.title}`,
-    goal: proposal.recommendation,
-    status: "in_progress",
-    priority: "P1",
-    plan: [
-      "核对反思提案的聚合证据与当前实现",
-      proposal.recommendation,
-      "运行与风险相称的验证并提交 evidence",
-      "上报 done_claimed，后续通过再次反思确认效果",
-    ],
-    acceptance_criteria: [
-      proposal.recommendation,
-      ...planningAcceptance,
-      "上报 done_claimed 时必须提供 tests 或 evidence 任一项",
-      "禁止复制未授权 Session 正文",
-      "完成状态上报为 done_claimed；若后续发现未完成，可人工打回",
-    ],
-    risks: [proposal.risk],
-    current_step: "正式改进任务已由 TaskCenter 创建，等待目标 Session 开始执行。",
-    next_action: "目标 Session 按照提案完成改进并在 done_claimed 中上报 tests 或 evidence。",
-  }, {
-    availableSessionIds: availableSessionIds(),
-    requireRegistered: true,
-  });
-  return { registration, task: created.task };
-}
-
 function cancelLegacyAllowlistSetupTasks() {
   for (const task of loadTasks()) {
     if (task.requirementId !== "reflection:reflection-empty-allowlist") continue;
@@ -1753,114 +1283,6 @@ function cancelLegacyAllowlistSetupTasks() {
       next_action: "无需 Agent 执行；后续直接在本机页面管理白名单。",
     });
   }
-}
-
-function updateReflectionExecutionState(record, patch) {
-  const current = loadReflectionState();
-  const next = updateReflectionExecution(
-    current,
-    record.proposalId,
-    record.reflectionExecutionId,
-    patch,
-  );
-  if (next !== current) persistJsonObject(reflectionProposalsPath, next);
-}
-
-function blockReflectionTask(record, reason) {
-  if (!record.taskId || !record.threadId) return;
-  const task = loadTasks().find((item) => item.id === record.taskId);
-  if (!task || !["planned", "in_progress"].includes(task.status)) return;
-  try {
-    recordTaskEvent({
-      type: "task.blocked",
-      event_id: `reflection-dispatch-failed-${record.id}`,
-      task_id: record.taskId,
-      session_id: record.threadId,
-      status: "blocked",
-      blocker: `TaskCenter 自动派发失败：${String(reason || "未知错误").slice(0, 300)}`,
-      next_action: "检查本地 Codex CLI/SDK 和目标 Session 状态后重试。",
-    });
-  } catch (error) {
-    console.error("TaskCenter failed to block reflection task:", safeError(error));
-  }
-}
-
-function cancelReflectionTask(record) {
-  if (!record.proposalId || !record.taskId || !record.threadId) return;
-  const task = loadTasks().find((item) => item.id === record.taskId);
-  if (!task || !["planned", "in_progress", "blocked"].includes(task.status)) return;
-  try {
-    recordTaskEvent({
-      type: "task.update",
-      event_id: `reflection-dispatch-cancelled-${record.id}`,
-      task_id: record.taskId,
-      session_id: record.threadId,
-      status: "cancelled",
-      current_step: "人工取消了尚未开始的反思提案自动投递。",
-      next_action: "如仍需改进，请重新采纳提案并选择执行 Session。",
-    });
-  } catch (error) {
-    console.error("TaskCenter failed to cancel reflection task:", safeError(error));
-  }
-}
-
-async function processQueue() {
-  if (processingQueue) return;
-  processingQueue = true;
-  try {
-    for (const record of dispatches.filter((item) => item.status === "queued")) {
-      try {
-        if (activeThreadDispatches.has(record.threadId)) continue;
-        const state = await inspectDispatchSession(record);
-        if (state.busy) continue;
-        void startExistingDispatch(record);
-      } catch (error) {
-        const reason = `队列检查失败：${safeError(error)}`;
-        finishDispatch(record, "failed", reason);
-        if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: reason });
-      }
-    }
-  } finally {
-    processingQueue = false;
-  }
-}
-
-function migrateLegacyDispatches() {
-  let changed = false;
-  for (const record of dispatches) {
-    if (["running", "delivering"].includes(record.status)) {
-      record.status = "failed";
-      record.error = "控制服务曾在投递过程中停止。为避免重复执行，系统没有自动重发；请先检查原 Session 再决定是否重试。";
-      record.updatedAt = new Date().toISOString();
-      delete record.pendingPrompt;
-      delete record.workingDirectory;
-      if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: record.error });
-      changed = true;
-      continue;
-    }
-    if (record.status === "queued" && (!record.pendingPrompt || !record.workingDirectory)) {
-      record.status = "failed";
-      record.error = "历史记录：缺少可恢复的队列上下文，请重新发送。";
-      record.updatedAt = new Date().toISOString();
-      if (record.pilotIntentId) updatePilotIntentIfOpen(record.pilotIntentId, "failed", { message: record.error });
-      delete record.pid;
-      changed = true;
-      continue;
-    }
-    if (
-      !record.proposalId
-      && record.mode !== "session_message"
-      && ["failed", "completed"].includes(record.status)
-      && !String(record.error || "").startsWith("历史记录：")
-    ) {
-      record.error = record.status === "completed"
-        ? "历史记录：旧版嵌套执行曾结束，但不代表需求完成或已验收。"
-        : "历史记录：旧版嵌套执行失败，现已改为 Session 消息投递。";
-      record.updatedAt = new Date().toISOString();
-      changed = true;
-    }
-  }
-  if (changed) persistDispatches();
 }
 
 function safeError(error) {
@@ -2241,15 +1663,8 @@ function timestamp(value) {
   return Date.parse(value || "") || 0;
 }
 
-function persistDispatches() {
-  const next = dispatches.slice(-200);
-  const temporaryPath = `${dispatchesPath}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporaryPath, dispatchesPath);
-}
-
 function shutdown() {
-  clearInterval(queueTimer);
+  clearInterval(reconciliationTimer);
   server.close(() => process.exit(0));
 }
 

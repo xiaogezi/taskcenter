@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { AGENT_IDS, AGENT_CLIENTS, agentCapabilities } from "../scripts/agent-clients.mjs";
 import { HARNESS_IDS, dispatchHarnessId, harnessCapabilities, invokeHarness } from "../scripts/harnesses/index.mjs";
 
@@ -12,58 +11,18 @@ test("Harness registry is the single source; unsupported clients never fall back
     assert.equal(agentCapabilities(id).label, AGENT_CLIENTS[id].label);
     assert.equal(harnessCapabilities(id).operations.openSession.supported, false);
   }
-  assert.equal(harnessCapabilities("codex").operations.createSession.availability, "unknown");
+  assert.equal(harnessCapabilities("codex").operations.createSession.availability, "unsupported");
   assert.equal(harnessCapabilities("kimi").usage_scope, "context_snapshot");
   assert.equal(harnessCapabilities("claude").hooks, true);
   assert.equal(harnessCapabilities("claude").operations.resumeSession.supported, false);
   assert.equal(dispatchHarnessId({ threadId: "a", harness: "codex" }, { a: { agent: "claude" } }), "claude");
   assert.equal(dispatchHarnessId({ threadId: "legacy" }), "codex");
-  for (const id of ["claude", "workbuddy", "unknown", "missing", "__proto__"]) {
+  for (const id of ["codex", "claude", "workbuddy", "unknown", "missing", "__proto__"]) {
     await assert.rejects(invokeHarness(id, "resumeSession", {}), error => error.outcome === "not_started");
   }
   await assert.rejects(invokeHarness("codex", "toString"), error => error.code === "HARNESS_UNSUPPORTED");
-  await assert.rejects(invokeHarness("codex", "createSession", { prompt: "test", workingDirectory: "relative" }), error => error.code === "HARNESS_INVALID_INPUT");
-  await assert.rejects(invokeHarness("codex", "resumeSession", { prompt: "test", workingDirectory: tmpdir() }), error => error.code === "HARNESS_INVALID_INPUT");
-});
-
-test("Codex SDK adapter preserves permissions and separates delivery from terminal receipts", async () => {
-  const root = await mkdtemp(join(tmpdir(), "harness-sdk-"));
-  const entry = join(root, "sdk.mjs");
-  const previous = process.env.TASKCENTER_CODEX_SDK_MODULE;
-  const events = [];
-  try {
-    await writeFile(entry, `export class Codex {
-      startThread(options) {
-        if (options.approvalPolicy !== "on-request" || options.sandboxMode !== "workspace-write") throw Error("permissions changed");
-        return { runStreamed: async () => ({events: (async function* () {
-          yield {type:"thread.started",thread_id:"native-session"};
-          yield {type:"turn.started"};
-          yield {type:"turn.completed"};
-        })()}) };
-      }
-    }`);
-    process.env.TASKCENTER_CODEX_SDK_MODULE = entry;
-    let done;
-    const completed = new Promise(resolve => { done = resolve; });
-    const result = await invokeHarness("codex", "createSession", {
-      workingDirectory: root, prompt: "test",
-      onEvent: event => { events.push(event); if (event.status === "completed") done(); },
-    });
-    await completed;
-    assert.equal(result.status, "accepted");
-    assert.equal(result.threadId, "native-session");
-    assert.deepEqual(events.map(event => event.status), ["accepted", "running", "completed"]);
-    assert.ok(events.every(event => event.harness === "codex"));
-    const broken = join(root, "broken.mjs");
-    await writeFile(broken, 'export class Codex { startThread() { throw Error("connection lost"); } }');
-    process.env.TASKCENTER_CODEX_SDK_MODULE = broken;
-    await assert.rejects(invokeHarness("codex", "createSession", { workingDirectory: root, prompt: "test" }),
-      error => error.code === "HARNESS_OUTCOME_UNKNOWN" && error.outcome === "unknown");
-  } finally {
-    if (previous === undefined) delete process.env.TASKCENTER_CODEX_SDK_MODULE;
-    else process.env.TASKCENTER_CODEX_SDK_MODULE = previous;
-    await rm(root, { recursive: true, force: true });
-  }
+  await assert.rejects(invokeHarness("codex", "createSession", { prompt: "test", workingDirectory: "relative" }), error => error.code === "HARNESS_UNSUPPORTED");
+  await assert.rejects(invokeHarness("codex", "resumeSession", { prompt: "test", workingDirectory: tmpdir() }), error => error.code === "HARNESS_UNSUPPORTED");
 });
 
 test("Kimi uses the same invocation contract without summing context snapshots or fabricating identity", async () => {
@@ -103,24 +62,5 @@ test("Kimi uses the same invocation contract without summing context snapshots o
 test("Business dispatch does not import the Codex SDK or execute its CLI directly", async () => {
   const source = await readFile(new URL("../scripts/control-server.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /@openai\/codex-sdk|new Codex\(|await resumeSession\(/);
-  assert.match(source, /invokeHarness\(dispatchHarness\(record\), "resumeSession"/);
-});
-
-test("CLI exit zero without a terminal receipt remains unknown and is never retried", async () => {
-  const root = await mkdtemp(join(tmpdir(), "harness-cli-"));
-  const cli = join(root, "cli.mjs");
-  const keys = ["TASKCENTER_CODEX_COMMAND", "TASKCENTER_CODEX_PREFIX_ARGS"];
-  const previous = keys.map(key => process.env[key]);
-  try {
-    await writeFile(cli, 'console.log(JSON.stringify({type:"thread.started",thread_id:"test-session"})); console.log(JSON.stringify({type:"turn.started"}));');
-    process.env.TASKCENTER_CODEX_COMMAND = process.execPath;
-    process.env.TASKCENTER_CODEX_PREFIX_ARGS = JSON.stringify([cli]);
-    const events = [];
-    await assert.rejects(invokeHarness("codex", "resumeSession", { sessionId: "test-session", workingDirectory: root, prompt: "test", sessionsRoot: root, onEvent: event => events.push(event) }),
-      error => error.outcome === "unknown" && /完成/.test(error.message));
-    assert.deepEqual(events.map(event => event.status), ["running", "unknown"]);
-  } finally {
-    keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
-    await rm(root, { recursive: true, force: true });
-  }
+  assert.doesNotMatch(source, /invokeHarness|processQueue|migrateLegacyDispatches/);
 });

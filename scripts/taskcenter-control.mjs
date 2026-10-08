@@ -18,7 +18,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendReleaseEvent, loadReleaseEvents, summarizeReleaseEvents } from "./release-history.mjs";
 import { pruneReleases } from "./release-retention.mjs";
-import { installReleaseDependencies, runDependencyInstall } from "./release-dependencies.mjs";
+import { installReleaseDependencies, runDependencyInstall, verifyReleaseBudget } from "./release-dependencies.mjs";
+import { verifyProduction } from "./verify-production.mjs";
 import { buildReleaseEnvironment, resolveManagedProcessState, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.mjs";
@@ -289,6 +290,7 @@ async function prepareRelease(revision) {
   const markerPath = resolve(sourceRoot, ".taskcenter-release.json");
   const marker = readJson(markerPath);
   if (marker?.revision === revision && existsSync(resolve(sourceRoot, "dist")) && existsSync(resolve(sourceRoot, "node_modules"))) {
+    verifyReleaseBudget({ sourceRoot, revision, budgetPath: resolve(projectRoot, "config/artifact-size-budget.json"), reuse: true });
     return { sourceRoot, revision, releaseId, webMode: "start", builtAt: marker.builtAt };
   }
 
@@ -306,6 +308,10 @@ async function prepareRelease(revision) {
       runDependencyInstall(invocation.command, [...invocation.argsPrefix, ...args], sourceRoot, timeoutMs));
     console.log(`release dependencies: ${installMode}, ${Date.now() - installStartedAt} ms`);
     await runNpmAt(["run", "build"], sourceRoot, "release build");
+    await runNpmAt(["run", "size:check"], sourceRoot, "release development dependency budget");
+    await runNpmAt(["prune", "--omit=dev", "--omit=optional", "--offline", "--no-audit", "--no-fund"], sourceRoot, "release production prune");
+    verifyReleaseBudget({ sourceRoot, revision, budgetPath: resolve(projectRoot, "config/artifact-size-budget.json"), activeSourceRoot: active?.sourceRoot });
+    await verifyProduction(sourceRoot);
     const builtAt = new Date().toISOString();
     writeJson(markerPath, { schemaVersion: "taskcenter-release/v1", revision, releaseId, builtAt });
     return { sourceRoot, revision, releaseId, webMode: "start", builtAt };

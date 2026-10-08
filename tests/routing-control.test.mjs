@@ -396,7 +396,8 @@ test("当前项目策略仅会话派发：GPT 优先、MiMo 暂停、四款候�
     assert.equal(missing.route.cli_profile, undefined);
     assert.throws(() => routingSelect({ ...request, channel: "cli" }), /CLI_DISPATCH_DISABLED/);
     assert.throws(() => routingSelect({ ...request, channel: "invalid" }), /channel 无效/);
-    assert.throws(() => routingSelect({ ...request, cli_profile: "codex-luna", channel: "cli" }), /CLI_DISPATCH_DISABLED/);
+    assert.throws(() => routingSelect({ ...request, cli_profile: "kimi-k3", channel: "cli" }), /CLI_DISPATCH_DISABLED/);
+    assert.throws(() => routingSelect({ ...request, cli_profile: "codex-luna", channel: "cli" }), /CLI_PROFILE_INVALID/);
     const excluded = routingSelect({ ...request, preferred_model: "gpt-6-sol" });
     assert.equal(excluded.route.channel, "direct");
     assert.equal(excluded.route.fallback_reason, "executor_model_not_in_dispatch_list");

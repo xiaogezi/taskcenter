@@ -1,0 +1,235 @@
+{
+  "date": "2026-10-08",
+  "task_id": "task-a318918a-927e-4fed-ac2d-62ceec2db215",
+  "session_id": "01a11aab-ef18-7f83-aa45-83de8c51ecf6",
+  "scope": "方案A：保留vinext/React和Node服务，移除Cloudflare/Next/Drizzle/Worker/Sites工具链，增加完整开发依赖固定预算",
+  "base_revision": "201e567b335133e09990718fc4e2b210b94b9a4a",
+  "version": "0.1.5",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.7.0",
+    "npm": "11.19.0"
+  },
+  "measurement_policy": {
+    "algorithm": "artifact-size/v1",
+    "unit": "logical bytes",
+    "hardlinks": "count per path",
+    "development_exclusions": [
+      "node_modules/.package-lock.json",
+      "node_modules/.vite",
+      "node_modules/.vite-temp",
+      "node_modules/.cache"
+    ],
+    "comparison": "前阶段976532227字节包含npm元数据；当前排除生成缓存和根安装元数据，下降约79%，百分比为近似对比"
+  },
+  "calibration": {
+    "kind": "manual_from_actual_clean_install",
+    "install_packages": 496,
+    "install_strategy": "npm ci; build; npm prune --omit=dev --omit=optional",
+    "clean_build_metrics": {
+      "client_bytes": 324998,
+      "client_gzip_bytes": 100319,
+      "largest_js_bytes": 189757,
+      "server_bytes": 657936,
+      "development_dependency_bytes": 206652146
+    },
+    "pruned_release_metrics": {
+      "client_bytes": 324998,
+      "client_gzip_bytes": 100319,
+      "largest_js_bytes": 189757,
+      "server_bytes": 657936,
+      "production_dependency_bytes": 50093930,
+      "release_bytes": 53606123
+    },
+    "input_hash": "e98a74773d94283dfeb376bfff20fdd3f84c6325955b3d60dff6c8809ca4f4b2",
+    "output_hash": "b67b2fd7b26a01f867f0e0f43109a316b313cd7eb78f459a0f08407b4e75e97f",
+    "lock_hash": "828faeb996e061de5ae6b3a49c6a0d20f741b8c4f9ba14892e07c7d85dc5db16",
+    "note": "raw测量用未配置profile收集measurement，passed:false表示未校准，不是预算检查结果；校准后独立检查PASS。release基线取文档收尾前真实候选，文档新增作为累计增长保留。"
+  },
+  "validation": {
+    "sync": {
+      "passed": true,
+      "selected_sessions": 0,
+      "nonempty_fixture_sync_proven": true
+    },
+    "lint": {
+      "passed": true,
+      "errors": 0,
+      "existing_warnings": 2,
+      "probe": {
+        "passed": true,
+        "rules": [
+          "react-hooks/rules-of-hooks",
+          "@typescript-eslint/no-unused-vars",
+          "@typescript-eslint/no-explicit-any",
+          "jsx-a11y/alt-text",
+          "jsx-a11y/role-supports-aria-props",
+          "jsx-a11y/aria-proptypes"
+        ]
+      }
+    },
+    "typecheck": {
+      "passed": true,
+      "workspaces": [
+        "project",
+        "clean_install"
+      ],
+      "command": "npm run typecheck"
+    },
+    "full_test": {
+      "passed": true,
+      "tests": 561,
+      "failures": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "command": "npm test",
+      "duration_ms": 86235.469542
+    },
+    "clean_build": {
+      "passed": true,
+      "metrics": {
+        "client_bytes": 324998,
+        "client_gzip_bytes": 100319,
+        "largest_js_bytes": 189757,
+        "server_bytes": 657936,
+        "development_dependency_bytes": 206652146
+      }
+    },
+    "development_hmr": {
+      "passed": true,
+      "port": 53600,
+      "pages": true,
+      "source_refresh": true,
+      "hmr_websocket_updates": [
+        {
+          "type": "custom",
+          "event": "rsc:update"
+        }
+      ],
+      "manual_browser": false
+    },
+    "production_pruned": {
+      "passed": true,
+      "pages": 6,
+      "mcp_tools": 47,
+      "fixture_sync": true,
+      "watcher": true,
+      "codex_cli_required": false
+    },
+    "production_fresh_install": {
+      "passed": true,
+      "command": "npm run verify:production -- --install",
+      "pages": 6,
+      "mcp_tools": 47,
+      "fixture_sync": true,
+      "watcher": true,
+      "codex_cli_required": false,
+      "metrics": {
+        "client_bytes": 324998,
+        "client_gzip_bytes": 100319,
+        "largest_js_bytes": 189757,
+        "server_bytes": 657936,
+        "production_dependency_bytes": 50093930,
+        "release_bytes": 53606967
+      }
+    },
+    "worktree_budget": {
+      "passed": true,
+      "warning": false,
+      "metrics": {
+        "client_bytes": 324998,
+        "client_gzip_bytes": 100319,
+        "largest_js_bytes": 189757,
+        "server_bytes": 657936,
+        "development_dependency_bytes": 207395999
+      },
+      "input_hash": "e98a74773d94283dfeb376bfff20fdd3f84c6325955b3d60dff6c8809ca4f4b2",
+      "output_hash": "105a61c92882c38fb6d72cc6b15f1cb3c25d116a5bdddb5368ba3abb3c8c3546"
+    },
+    "negative_tests": [
+      "开发依赖固定累计预算",
+      "缺少开发指标失败",
+      "生成缓存不计入包文件",
+      "直接依赖、锁文件和安装树禁止退休包",
+      "旧报告和修改产物失败",
+      "超预算不进入原服务停止阶段"
+    ],
+    "final_release_report": "/tmp/reqradar-toolchain-a-release-budget-final.json"
+  },
+  "deletion_evidence": {
+    "method": "manual fallback, not DevKit verification",
+    "devkit_profile_present": false,
+    "template_origin": "36c15bc",
+    "hosting": {
+      "d1": null,
+      "r2": null
+    },
+    "schema": "empty",
+    "business_database_consumers": "none found",
+    "reachable_removed_boundary": "Cloudflare build capability retired by explicit方案A selection",
+    "paths": [
+      "worker/index.ts",
+      "db/index.ts",
+      "db/schema.ts",
+      "drizzle.config.ts",
+      "drizzle/meta/_journal.json",
+      "build/sites-vite-plugin.ts",
+      ".openai/hosting.json",
+      "next.config.ts"
+    ],
+    "lint_consumer": "eslint-config-next imports next/dist/compiled/babel/eslint-parser; replaced by existing plugins"
+  },
+  "prevention": {
+    "policy": "fixed baseline; cumulative +2% warn/+5% max; no auto-update",
+    "forbidden_packages": [
+      "@openai/codex-sdk",
+      "@openai/codex",
+      "@cloudflare/vite-plugin",
+      "@cloudflare/workerd",
+      "wrangler",
+      "workerd",
+      "miniflare",
+      "next",
+      "@next/swc",
+      "drizzle-orm",
+      "drizzle-kit"
+    ],
+    "entrypoints": [
+      "local size:check",
+      "CI npm test/typecheck",
+      "release build size:check before prune",
+      "release budget after prune and reuse"
+    ],
+    "manifest_lock_installed_tree_checked": true
+  },
+  "boundaries": {
+    "committed": false,
+    "pushed": false,
+    "deployed": false,
+    "version_changed": false,
+    "real_data_deleted": false,
+    "historical_releases_deleted": false,
+    "external_review_started": false,
+    "devkit_profile_initialized": false,
+    "original_service_pid": 98061,
+    "original_release": "201e567b3351"
+  },
+  "unverified": [
+    "Linux/x64和Windows/x64真实平台基线",
+    "浏览器人工hydration/交互",
+    "真实三端登录",
+    "真实部署切换/回滚"
+  ],
+  "local_logs": [
+    "/tmp/reqradar-toolchain-a-clean-install-final.log",
+    "/tmp/reqradar-toolchain-a-clean-build-final.log",
+    "/tmp/reqradar-toolchain-a-clean-types.log",
+    "/tmp/reqradar-toolchain-a-lint.log",
+    "/tmp/reqradar-toolchain-a-test-final.log",
+    "/tmp/reqradar-toolchain-a-production-pruned.log",
+    "/tmp/reqradar-toolchain-a-production-install.log",
+    "/tmp/reqradar-toolchain-a-hmr-server.log"
+  ],
+  "note": "临时目录和日志非长期依赖；此文件保存关键结果。done_claimed仅为实现声明，不等于独立验收。"
+}

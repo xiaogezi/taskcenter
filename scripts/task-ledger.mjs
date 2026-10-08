@@ -17,7 +17,6 @@ import {
   withTaskPhaseTiming,
 } from "./task-phase-timing.mjs";
 import { listDelegations } from "./delegation-store.mjs";
-import { normalizeBug } from "./bug-workflow.mjs";
 import { configuredPreferredModel } from "./model-role-config.mjs";
 import { reviewSessionRecords, reviewTaskRecords, withReviewStatus, sanitizeJevDecision } from "./routing-control.mjs";
 
@@ -394,14 +393,12 @@ function readLedger() {
 }
 
 export function recordTaskEvent(input, options = {}) {
-  if (input?.bug_acceptance !== undefined) throw new TaskLedgerError(403, "Bug 人工验收标记只能由本地验收入口生成。");
-  if (input?.bug_merge !== undefined && !options.verifiedBugMerge) throw new TaskLedgerError(403, "合入证据只能由服务端 Git 核验入口生成。");
+  if (["bug", "bug_merge", "bug_acceptance"].some(field => Object.hasOwn(input || {}, field))) throw new TaskLedgerError(400, "RETIRED_BUG_WORKFLOW：Bug 闭环字段已退休，不接受新写入。");
   const tasks = loadTasks();
   const current = input?.task_id ? tasks.find((task) => task.id === String(input.task_id)) : null;
   let event;
   try { event = normalizeEvent(input, current); }
   catch (error) { if (Number.isInteger(error.statusCode)) throw new TaskLedgerError(error.statusCode, error.message); throw error; }
-  if (options.verifiedBugAcceptance && event.type === "acceptance.accepted") event.bug_acceptance = true;
   if (event.type === "task.resume" && !options.authorizedResume) throw new TaskLedgerError(403, "task.resume 只能通过已校验的 Session 恢复入口。");
   const sessionRegistry = loadSessionRegistry();
   const eventSessionId = canonicalSessionId(event.session_id);
@@ -1061,8 +1058,6 @@ function normalizeEvent(input, current = null, legacyText = false) {
     quota_reset_at: cleanText(input.quota_reset_at, 80),
     review_artifacts: normalizeReviewArtifacts(input.review_artifacts),
     execution_model_policy: normalizeExecutionModelPolicy(input.execution_model_policy),
-    bug: normalizeBug(input.bug),
-    bug_merge: input.bug_merge,
     ...normalizeCompletionEvent(input, current?.currentSubject || null),
     phase: cleanText(input.phase, 40),
     transition: cleanText(input.transition, 40),
@@ -1342,11 +1337,6 @@ function applyEvent(current, event) {
     bug: event.bug || base.bug,
     bugMerge: event.bug_merge || base.bugMerge,
   };
-  if (event.bug && JSON.stringify(event.bug) !== JSON.stringify(base.bug)) {
-    next.bugAcceptanceId = null;
-    next.bugMerge = null;
-  }
-  if (event.type === "acceptance.accepted" && next.bug && event.bug_acceptance === true) next.bugAcceptanceId = event.acceptance_record.id;
   next = applyTimingTransition(current, base, next, event, now);
   if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;
   if (event.type === "task.review") next.status = event.status || base.status;
@@ -1373,12 +1363,6 @@ function applyEvent(current, event) {
 }
 
 const RUNS_LIMIT = 50;
-
-function currentRunningRun(task) {
-  const runs = task.runs || [];
-  const last = runs[runs.length - 1];
-  return last && !last.ended_at ? last : null;
-}
 
 function runSummary(task) {
   const runs = task.runs || [];

@@ -21,7 +21,7 @@ const env = {
 };
 // Test subprocesses must never inherit the live Jev credential.
 delete env.TYPESAFE_API_KEY;
-const child = spawn(process.execPath, ["--test", ...files], {
+const child = spawn(process.execPath, ["--test", "--test-concurrency=4", ...files], {
   cwd: projectRoot,
   env,
   stdio: "inherit",

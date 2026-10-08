@@ -4,6 +4,12 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 方案 A 保留 vinext/React 与 Node 服务，移除 Next 编译器、Cloudflare/Wrangler/Workerd、未使用的 Drizzle/Worker/Sites 模板链。页面使用 vinext 导出的兼容 API；独立 TypeScript 检查和现有 React/Hooks/无障碍 lint 插件替代 Next 工具链。
+- 固定体积预算覆盖完整开发依赖，发布在裁剪前检查；直接依赖、锁文件及安装树禁止退休的重依赖回流。平台基线必须由实际干净安装校准，检查不自动上调阈值。
+- 移除 Bug 闭环的 UI、HTTP/MCP 和队列；新写入的退休字段明确拒绝，旧任务/事件保留并使用通用就绪规则。
+- 移除内置 Codex SDK/CLI 创建、恢复、委派、Reviewer 启动及模型目录探测；保留只读会话、用量、配置模型展示与外部原生/Review 协议。旧投递、反思执行、试点唤醒入口退休，历史队列不迁移或重放。
+- 发布依赖先完整构建再裁剪开发/可选依赖，生产启动直接调用现有 vinext server API。新增固定 artifact 预算、禁止 Codex 包、构建/报告摘要和 release 复用检查；超限或缺平台基线均在切换前失败。
+
 - 模型调度改为读取本机 Codex 会话模型目录并勾选派发名单；集中白名单覆盖显式型号、容量与额度回退，空名单由主模型继续。目录可选性与实际原生派发能力分别校验，新增型号和档位映射自动填充。
 - 调度页逐条展示持久化 Jev 阶段、候选、建议、置信度、用量、覆盖原因和实际派发回执；支持历史翻页，失败与降级记录可见，不再从任务摘要截取最近三条。
 

@@ -1,29 +1,31 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildInputHash, recordBuild } from "./artifact-size-budget.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 export function vinextInvocation(command, args = [], root = projectRoot) {
-  const cli = resolve(root, "node_modules", "vinext", "dist", "cli.js");
+  const cli = command === "start" ? resolve(root, "scripts", "prod-server.mjs") : resolve(root, "node_modules", "vinext", "dist", "cli.js");
   if (!existsSync(cli)) {
     throw new Error("找不到 vinext CLI，请先运行 npm ci。");
   }
   return {
     command: process.execPath,
-    args: [cli, command, ...args],
-    env: {
-      ...process.env,
-      WRANGLER_LOG_PATH: process.env.WRANGLER_LOG_PATH || ".wrangler/wrangler.log",
-    },
+    args: [cli, ...(command === "start" ? [] : [command]), ...args],
+    env: { ...process.env },
   };
 }
 
 export function runVinext(command, args = []) {
   const invocation = vinextInvocation(command, args);
+  const inputHash = command === "build" ? buildInputHash(projectRoot) : null;
+  // vinext copies every cached font into client output, including fonts removed from source.
+  if (command === "build") rmSync(resolve(projectRoot, ".vinext", "fonts"), { recursive: true, force: true });
+  if (command === "build") rmSync(resolve(projectRoot, "dist"), { recursive: true, force: true });
   const child = spawn(invocation.command, invocation.args, {
     cwd: projectRoot,
     env: invocation.env,
@@ -35,6 +37,10 @@ export function runVinext(command, args = []) {
   });
   child.once("exit", (code, signal) => {
     process.exitCode = code ?? (signal ? 1 : 0);
+    if (process.exitCode === 0 && inputHash) {
+      try { recordBuild(projectRoot, inputHash); }
+      catch (error) { console.error(error.message); process.exitCode = 1; }
+    }
   });
   return child;
 }

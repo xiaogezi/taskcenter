@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -200,24 +200,6 @@ test("控制服务支持运行反思和人工审核并持久化", async (t) => {
   const selectionPath = join(directory, "session-selection.json");
   const reflectionPath = join(directory, "reflection-proposals.json");
   const dispatchesPath = join(directory, "dispatches.json");
-  const capturePath = join(directory, "sdk-capture.json");
-  const fakeSdkPath = join(directory, "fake-codex-sdk.mjs");
-  const newSessionId = "019f9000-0000-7000-8000-000000000001";
-  await writeFile(fakeSdkPath, `
-import { writeFileSync } from "node:fs";
-export class Codex {
-  startThread() {
-    return { runStreamed: async (prompt) => {
-      writeFileSync(process.env.TASKCENTER_SDK_CAPTURE, JSON.stringify({ prompt }));
-      return { events: (async function* () {
-        yield { type: "thread.started", thread_id: "${newSessionId}" };
-        yield { type: "turn.completed" };
-      })() };
-    } };
-  }
-  resumeThread() { throw new Error("测试不应恢复已有 Session"); }
-}
-`);
   await writeFile(dashboardPath, JSON.stringify({ source: { availableThreads: [] }, threads: [] }));
   await writeFile(ledgerPath, JSON.stringify([{ id: "task-proof", status: "done_claimed", tests: [], evidence: [], sessionId: "session-local" }]));
   await writeFile(selectionPath, JSON.stringify({ version: 2, mode: "allowlist", threadIds: [] }));
@@ -235,8 +217,6 @@ export class Codex {
       TASKCENTER_SESSION_SELECTION_PATH: selectionPath,
       TASKCENTER_REFLECTION_PROPOSALS_PATH: reflectionPath,
       TASKCENTER_DISPATCHES_PATH: dispatchesPath,
-      TASKCENTER_CODEX_SDK_MODULE: fakeSdkPath,
-      TASKCENTER_SDK_CAPTURE: capturePath,
       TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1",
     },
     stdio: "ignore",
@@ -264,118 +244,8 @@ export class Codex {
   assert.equal(state.proposals.find((proposal) => proposal.id === "reflection-evidence-gap").status, "accepted");
   assert.equal(JSON.parse(await readFile(reflectionPath, "utf8")).proposals.find((proposal) => proposal.id === "reflection-evidence-gap").status, "accepted");
 
-  const requestId = "019f9000-0000-7000-8000-000000000099";
-  response = await fetch(`${base}/reflections/reflection-evidence-gap/execute`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ requestId, mode: "new_session" }),
-  });
-  assert.equal(response.status, 200, await response.text().then((text) => text || "execute failed"));
-  state = await (await fetch(`${base}/reflections`)).json();
-  const proposal = state.proposals.find((item) => item.id === "reflection-evidence-gap");
-  assert.equal(proposal.executions.length, 1);
-  assert.equal(proposal.executions[0].sessionId, newSessionId);
-  assert.equal(proposal.executions[0].taskStatus, "in_progress");
-  assert.equal(proposal.executions[0].dispatchStatus, "delivered");
-  const taskId = proposal.executions[0].taskId;
-  const tasks = JSON.parse(await readFile(ledgerPath, "utf8"));
-  assert.equal(tasks.filter((task) => task.id === taskId).length, 1);
-  assert.equal(tasks.find((task) => task.id === taskId).requirementId, "reflection:reflection-evidence-gap");
-  const capture = JSON.parse(await readFile(capturePath, "utf8"));
-  assert.match(capture.prompt, new RegExp(taskId));
-  assert.match(capture.prompt, /不得创建第二条任务/);
-
-  response = await fetch(`${base}/reflections/reflection-evidence-gap/execute`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ requestId, mode: "new_session" }),
-  });
-  assert.equal(response.status, 200);
-  assert.equal(JSON.parse(await readFile(ledgerPath, "utf8")).filter((task) => task.id === taskId).length, 1);
-});
-
-test("独立提案可复用仅有已完成任务的 Session", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "taskcenter-reflection-existing-"));
-  const port = 4_100 + Math.floor(Math.random() * 100); // 避免 Fetch 禁止的 4045 端口。
-  const sessionId = "019f9100-0000-7000-8000-000000000001";
-  const sessionsRoot = join(directory, "sessions");
-  const sessionPath = join(sessionsRoot, `${sessionId}.jsonl`);
-  const dashboardPath = join(directory, "dashboard.json");
-  const ledgerPath = join(directory, "task-ledger.json");
-  const reflectionPath = join(directory, "reflection-proposals.json");
-  const dispatchPath = join(directory, "dispatches.json");
-  const fakeCliPath = join(directory, "fake-codex-cli.mjs");
-  const capturePath = join(directory, "cli-capture.json");
-  await mkdir(sessionsRoot, { recursive: true });
-  await writeFile(sessionPath, `${JSON.stringify({ type: "session_meta", timestamp: "2026-08-17T00:00:00.000Z", payload: { id: sessionId } })}\n`);
-  await writeFile(dashboardPath, JSON.stringify({ source: { availableThreads: [{ id: sessionId, title: "已有会话" }] }, threads: [] }));
-  const issue = { id: "task-source", status: "done_claimed", tests: [], evidence: [], sessionId };
-  await writeFile(ledgerPath, `${JSON.stringify([issue])}\n`);
-  let reflection = generateReflection({ now, sessionSelection: { mode: "allowlist", threadIds: [sessionId] }, tasks: [issue] });
-  reflection = decideReflectionProposal(reflection, "reflection-evidence-gap", "accepted");
-  await writeFile(reflectionPath, JSON.stringify(reflection));
-  await writeFile(fakeCliPath, `
-import { appendFileSync, writeFileSync } from "node:fs";
-const [, , , , threadId, prompt, jsonFlag] = process.argv;
-writeFileSync(process.env.TASKCENTER_CLI_CAPTURE, JSON.stringify({ threadId, prompt, jsonFlag }));
-appendFileSync(process.env.TASKCENTER_TEST_SESSION_PATH, JSON.stringify({ type: "event_msg", timestamp: new Date().toISOString(), payload: { type: "user_message", message: prompt } }) + "\\n");
-console.log(JSON.stringify({ type: "thread.started", thread_id: threadId }));
-console.log(JSON.stringify({ type: "turn.started" }));
-console.log(JSON.stringify({ type: "turn.completed" }));
-`);
-  const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      TASKCENTER_CONTROL_PORT: String(port),
-      TASKCENTER_DASHBOARD_PATH: dashboardPath,
-      TASKCENTER_TASK_LEDGER_PATH: ledgerPath,
-      TASKCENTER_TASK_EVENTS_PATH: join(directory, "task-events.jsonl"),
-      TASKCENTER_TASK_EVENT_IDS_PATH: join(directory, "task-event-ids.json"),
-      TASKCENTER_SESSION_REGISTRY_PATH: join(directory, "session-registry.json"),
-      TASKCENTER_DELEGATIONS_PATH: join(directory, "delegations.json"),
-      TASKCENTER_SESSION_SELECTION_PATH: join(directory, "session-selection.json"),
-      TASKCENTER_REFLECTION_PROPOSALS_PATH: reflectionPath,
-      TASKCENTER_DISPATCHES_PATH: dispatchPath,
-      TASKCENTER_SESSIONS_ROOT: sessionsRoot,
-      TASKCENTER_CODEX_COMMAND: process.execPath,
-      TASKCENTER_CODEX_PREFIX_ARGS: JSON.stringify([fakeCliPath]),
-      TASKCENTER_CLI_CAPTURE: capturePath,
-      TASKCENTER_TEST_SESSION_PATH: sessionPath,
-      TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1",
-    },
-    stdio: "ignore",
-  });
-  t.after(async () => { child.kill("SIGTERM"); await rm(directory, { recursive: true, force: true }); });
-  const base = `http://127.0.0.1:${port}`;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    try { if ((await fetch(`${base}/health`)).ok) break; } catch { await new Promise((resolve) => setTimeout(resolve, 50)); }
-  }
-  const headers = { Origin: "http://localhost:3000", "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" };
-  const registryPath = join(directory, "session-registry.json");
-  await writeFile(registryPath, JSON.stringify({ [sessionId]: { sessionId, agent: "claude", workspace: process.cwd() } }));
-  const unsupported = await fetch(`${base}/reflections/reflection-evidence-gap/execute`, {
-    method: "POST", headers, body: JSON.stringify({ mode: "existing_session", threadId: sessionId, requestId: "019f9100-0000-7000-8000-000000000098" }),
-  });
-  assert.equal(unsupported.status, 409);
-  assert.match((await unsupported.json()).error, /尚未适配/);
-  assert.equal(JSON.parse(await readFile(registryPath, "utf8"))[sessionId].agent, "claude");
-  await writeFile(registryPath, JSON.stringify({ [sessionId]: { sessionId, agent: "codex", workspace: process.cwd() } }));
-  const response = await fetch(`${base}/reflections/reflection-evidence-gap/execute`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ requestId: "019f9100-0000-7000-8000-000000000099", mode: "existing_session", threadId: sessionId }),
-  });
-  assert.equal(response.status, 202);
-  assert.equal(JSON.parse(await readFile(ledgerPath, "utf8")).length, 2);
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    try { if (JSON.parse(await readFile(capturePath, "utf8")).threadId === sessionId) break; } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  assert.equal(JSON.parse(await readFile(capturePath, "utf8")).threadId, sessionId);
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    try { if (JSON.parse(await readFile(dispatchPath, "utf8")).some((item) => item.status === "completed")) break; } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  assert.ok(JSON.parse(await readFile(dispatchPath, "utf8")).some((item) => item.status === "completed"));
+  const before = await readFile(ledgerPath, "utf8");
+  response = await fetch(`${base}/reflections/reflection-evidence-gap/execute`, { method: "POST", headers, body: "{}" });
+  assert.equal(response.status, 404);
+  assert.equal(await readFile(ledgerPath, "utf8"), before);
 });

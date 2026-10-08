@@ -1,5 +1,5 @@
-import { headers } from "next/headers";
-import { redirect } from "next/navigation";
+import { headers } from "vinext/shims/headers";
+import { redirect } from "vinext/shims/navigation";
 
 export type ChatGPTUser = {
   displayName: string;

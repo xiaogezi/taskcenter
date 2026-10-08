@@ -17,8 +17,8 @@ export function resolveSpawnCommand(command, options = {}) {
   const shim = resolveNodeShim(resolved, { exists, readFile });
   if (shim) return shim;
   throw new Error(
-    `Windows 命令 ${resolved} 是无法安全解析的批处理启动器；请将 TASKCENTER_CODEX_COMMAND 指向 codex.exe，`
-      + "或通过 TASKCENTER_CODEX_PREFIX_ARGS 配置 Node 入口。",
+    `Windows 命令 ${resolved} 是无法安全解析的批处理启动器；请显式指定原生可执行文件，`
+      + "或指定该客户端的 Node 入口。",
   );
 }
 
