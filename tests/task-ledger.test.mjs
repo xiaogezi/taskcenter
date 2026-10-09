@@ -596,6 +596,10 @@ test("L0 仅聚合 Session 审计且不创建任务或事件历史", async () =>
   assert.equal(audit.count, 1);
   assert.equal(loadTasks().length, 0);
   assert.equal(getSessionStatuses().find((item) => item.sessionId === "sess-l0").l0Audit.count, 1);
+  for (const cwd of ["/", "/other-project", ""]) {
+    recordSessionL0Audit("sess-l0", cwd);
+    assert.equal(loadSessionRegistry()["sess-l0"].workspace, "/work", "只读审计不能重绑正式 workspace");
+  }
   assert.throws(() => recordSessionL0Audit("not-registered"), /尚未登记/);
 });
 
@@ -1709,6 +1713,14 @@ test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审�
   const { base, child } = await startControlServer();
   context.after(() => child.kill("SIGTERM"));
   await registerHttpSession(base, "session-reuse", { project_id: "example" });
+  const inspectFromParent = async () => {
+    const hook = await runTaskcenterHook(base, { session_id: "session-reuse", cwd: "/", tool_name: "exec_command", tool_input: { cmd: "pwd" } });
+    assert.equal(hook.code, 0, hook.stderr);
+    assert.match(hook.stdout, /L0 确定性只读|任务门禁通过/);
+    const sessions = (await (await fetch(`${base}/session-status`)).json()).sessions;
+    assert.equal(sessions.find((item) => item.sessionId === "session-reuse").workspace, "/work");
+  };
+  await inspectFromParent();
   const created = await fetch(`${base}/task-events`, {
     method: "POST",
     headers: taskHeaders(),
@@ -1725,6 +1737,7 @@ test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审�
     }),
   });
   assert.equal(created.status, 201, await created.text());
+  await inspectFromParent();
   const ledgerBefore = await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8");
   const eventsBefore = await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8");
   const checkInput = {
@@ -1755,6 +1768,11 @@ test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审�
     body: JSON.stringify({ ...checkInput, project_id: "forged-project" }),
   });
   assert.equal(mismatchedCheck.status, 403);
+  const crossProject = await fetch(`${base}/task-reuse/check`, {
+    method: "POST", headers: taskHeaders(), body: JSON.stringify({ ...checkInput, workspace: "/other-project" }),
+  });
+  assert.equal(crossProject.status, 403);
+  assert.match((await crossProject.json()).error, /workspace.*不一致/);
 
   const decision = {
     event_id: "reuse-http-decision",

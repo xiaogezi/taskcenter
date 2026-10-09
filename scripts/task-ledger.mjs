@@ -311,14 +311,13 @@ export function setSessionScheduledReadonlyScanExemption(sessionId, enabled) {
 
 // L0 only retains a per-session aggregate.  It deliberately creates neither a
 // task nor an append-only command log, which keeps inspection history private.
-export function recordSessionL0Audit(sessionId, workspace = "") {
+export function recordSessionL0Audit(sessionId) {
   const registry = loadSessionRegistry();
   const current = registry[sessionId];
   if (!current) throw new TaskLedgerError(409, "当前 Session 尚未登记，请先完成 SessionStart 登记。");
   const now = new Date().toISOString();
   registry[sessionId] = {
     ...current,
-    workspace: workspace || current.workspace || "",
     lastSeenAt: now,
     l0Audit: { count: Number(current.l0Audit?.count || 0) + 1, lastAt: now },
   };

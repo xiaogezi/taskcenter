@@ -364,7 +364,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/sessions/l0-audit") {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
-      const audit = recordSessionL0Audit(String(body.session_id || ""), String(body.workspace || ""));
+      const audit = recordSessionL0Audit(String(body.session_id || ""));
       sendJson(response, 200, { accepted: true, l0Audit: audit });
       return;
     }

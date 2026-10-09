@@ -8,7 +8,7 @@ import { setTimeout } from "node:timers/promises";
 
 const root = mkdtempSync(join(tmpdir(), "session-switch-"));
 for (const [key, file] of Object.entries({ TASKCENTER_TASK_LEDGER_PATH: "ledger.json", TASKCENTER_TASK_EVENTS_PATH: "events.jsonl", TASKCENTER_TASK_EVENT_IDS_PATH: "ids.json", TASKCENTER_SESSION_REGISTRY_PATH: "sessions.json", TASKCENTER_SESSION_MERGES_PATH: "merges.json", TASKCENTER_DELEGATIONS_PATH: "delegations.json", TASKCENTER_SESSION_SWITCH_PATH: "switch.jsonl" })) process.env[key] = join(root, file);
-const { recordTaskEvent, loadTasks, loadSessionRegistry } = await import("../scripts/task-ledger.mjs");
+const { recordTaskEvent, recordSessionL0Audit, loadTasks, loadSessionRegistry } = await import("../scripts/task-ledger.mjs");
 const { prepareSessionSwitch, confirmSessionSwitch, switchCheckpoint, switchTaskFingerprint, readRecoveryCheckpoint } = await import("../scripts/session-switch.mjs");
 const workspace = join(root, "repo"), sessions = join(root, "rollouts");
 mkdirSync(workspace); mkdirSync(sessions);
@@ -37,6 +37,8 @@ test("host-confirmed one-use switch preserves a sealed predecessor and fails clo
     writeFileSync(join(workspace, "dirty"), "dirty");
     await assert.rejects(prepareSessionSwitch(request, sessions, checkpoint), /WORKSPACE_DIRTY/);
     rmSync(join(workspace, "dirty"));
+    recordSessionL0Audit(session_id, root);
+    assert.equal(loadSessionRegistry()[session_id].workspace, workspace);
     const [prepared, duplicate] = await Promise.all([prepareSessionSwitch(request, sessions, checkpoint), prepareSessionSwitch(request, sessions, checkpoint)]);
     assert.equal(prepared.switch_id, duplicate.switch_id);
     assert.equal(prepared.host_action.executed, false);
