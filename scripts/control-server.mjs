@@ -90,7 +90,7 @@ import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.m
 import { readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
 import { queryUsageReport } from "./usage-query.mjs";
-import { buildGovernanceMetrics, recordGateDenial } from "./governance-metrics.mjs";
+import { buildGovernanceMetrics, gateDenialSnapshot, recordGateDenial } from "./governance-metrics.mjs";
 import { taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
 import { enrichTaskWorkspaceEvent } from "../lib/git-workspace.mjs";
 import {
@@ -369,6 +369,13 @@ const server = createServer(async (request, response) => {
       return;
     }
     // Hook/CLI 拒绝即时检测：落盘安全分类并同步返回短窗口去重后的批量/连续评估与恢复步骤。
+    if (request.method === "GET" && new URL(request.url, "http://localhost").pathname === "/gate-denials") {
+      const query = new URL(request.url, "http://localhost").searchParams;
+      const limit = query.has("limit") ? Number(query.get("limit")) : 20;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new RoutingControlError(400, "拒绝记录条数须为 1–50。");
+      sendJson(response, 200, gateDenialSnapshot(gateDenialsPath, { limit }));
+      return;
+    }
     if (request.method === "POST" && request.url === "/gate-denials") {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
@@ -591,8 +598,9 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && new URL(request.url, "http://localhost").pathname === "/routing/decisions") {
       const query = new URL(request.url, "http://localhost").searchParams;
-      const log = routingDecisions({ limit: Number(query.get("limit") || 20), before: query.get("before") || "", taskId: query.get("task_id") || "" });
-      const titles = new Map(loadVisibleTasks().map(task => [task.id, task.title]));
+      const tasks = loadVisibleTasks();
+      const log = routingDecisions({ limit: Number(query.get("limit") || 20), before: query.get("before") || "", taskId: query.get("task_id") || "", tasks });
+      const titles = new Map(tasks.map(task => [task.id, task.title]));
       sendJson(response, 200, { ...log, routes: log.routes.map(route => ({ ...route, task_title: titles.get(route.task_id) || route.task_id })) });
       return;
     }

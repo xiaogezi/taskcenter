@@ -601,9 +601,15 @@ export function routingRoles() {
   return publicModelRoleConfig(loadModelRoleConfig());
 }
 
-export function routingDecisions({ limit = 20, before = "", taskId = "" } = {}, now = new Date().toISOString()) {
+export function routingDecisions({ limit = 20, before = "", taskId = "", tasks = [] } = {}, now = new Date().toISOString()) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RoutingControlError(400, "日志条数须为 1–100。");
   let routes = readState().routes.filter(route => !taskId || route.taskId === taskId).reverse();
+  const taskStates = new Map(tasks.map(task => [task.id, task.status]));
+  const latestPhases = new Map();
+  for (const route of routes) {
+    const phase = route.jevDecision?.phase_id;
+    if (phase && !latestPhases.has(`${route.taskId}:${phase}`)) latestPhases.set(`${route.taskId}:${phase}`, route.id);
+  }
   const total = routes.length;
   if (before) {
     const index = routes.findIndex(route => route.id === before);
@@ -611,7 +617,15 @@ export function routingDecisions({ limit = 20, before = "", taskId = "" } = {}, 
     routes = routes.slice(index + 1);
   }
   const page = routes.slice(0, limit);
-  return { total, routes: page.map(route => publicRoute(route.status === "leased" && route.expiresAt <= now ? { ...route, status: "expired" } : route)), next_cursor: routes.length > limit ? page.at(-1).id : null };
+  return { total, routes: page.map(route => {
+    const current = publicRoute(route.status === "leased" && route.expiresAt <= now ? { ...route, status: "expired" } : route);
+    const taskStatus = taskStates.get(route.taskId);
+    const phase = route.jevDecision?.phase_id;
+    const active = ["planned", "in_progress", "blocked"].includes(taskStatus);
+    const historical = (taskStatus && !active) || ["succeeded", "cancelled"].includes(current.status) ||
+      (phase && latestPhases.get(`${route.taskId}:${phase}`) !== route.id) || (current.channel === "direct" && current.status !== "leased");
+    return { ...current, recovery_applicability: historical ? "reference_only" : active && phase ? "current" : "unknown" };
+  }), next_cursor: routes.length > limit ? page.at(-1).id : null };
 }
 
 function chooseFallback(state, role, preferredModel, now, config, eligible = () => true) {
@@ -799,12 +813,18 @@ function publicRoute(route) {
     channel: route.channel,
     circuit_state: route.circuitState,
     reason: route.reason,
+    reason_summary: route.reason === "main_model_fallback" ? "执行器不可用，已选择当前主模型接管" :
+      !route.available && isReviewTaskClass(route.taskClass) ? "独立 Reviewer 不可用" :
+      ["failed", "unavailable", "overloaded", "expired"].includes(route.status) ? "执行路由失败、不可用或已过期" :
+      route.channel === "direct" ? "当前主模型直接执行" : "按集中策略选择执行器",
     ...(route.reason === "main_model_fallback" && route.status === "leased" ? {
       next_action: "确认同范围执行器不再写入后，当前主模型使用此 direct 路由继续已授权任务，不再请求主模型授权或等待容量。任务权限与安全边界保持不变。",
     } : route.jevDecision?.execution_override_reason === "needs_context_main_model" && route.status === "leased" ? {
       next_action: "主模型核对现有上下文并继续可确定的工作；确有影响结果的信息缺口时向用户澄清，不因路由建议中断任务。",
     } : route.channel !== "direct" && !isReviewTaskClass(route.taskClass) && ["failed", "unavailable", "overloaded", "expired"].includes(route.status) ? {
-      next_action: "停止并确认原执行器不再写入，撤销其 delegation；以 channel=direct 和实际失败原因 direct_reason 调用 routing_select，由当前主模型继续同一任务。无需重复用户授权，不回退 CLI。",
+      next_action: "记录真实 routing_result，停止并确认原执行器不再写入，撤销其 delegation；以 channel=direct 和实际失败原因 direct_reason 调用 routing_select，由当前主模型继续同一任务。停止状态无法确认则不接管重叠写入。无需重复用户授权，不回退 CLI。",
+    } : !route.available && isReviewTaskClass(route.taskClass) ? {
+      next_action: "独立 Reviewer 不可用，审查尚未完成；由用户安排后续，主模型不冒充独立审查，不自动等待或派发。Review 状态如实记录，不新增普通已授权工作的阻塞。",
     } : {}),
     fallback_from: route.fallbackFrom || null,
     fallback_reason: route.fallbackReason || null,

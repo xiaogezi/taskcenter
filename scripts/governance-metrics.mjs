@@ -26,7 +26,7 @@ const KNOWN_FAILURE_KINDS = new Set(["tool_approval", "filesystem_permission", "
 const GATE_DENIAL_GUIDANCE = {
   no_active_task: {
     reason: "PreToolUse 未识别为 L0 确定性只读，且 Session 没有活跃任务或有效 delegation；这不等于检测到写入。",
-    recovery: "若确为只读，先拆开复合命令、去掉包装后重试；实际执行则同一交付用 taskcenter_task_resume 接续，独立目标用 taskcenter_task_begin，CLI 执行器领取原任务的 delegation。",
+    recovery: "若确为只读，先拆开复合命令；RTK 包装仅在规则明确允许等价原生命令时降级，并经过同一 Hook，不为只读另建无关任务。实际执行则同一交付用 taskcenter_task_resume 接续，独立目标用 taskcenter_task_begin；原生执行器登记独立 Session 并领取绑定原任务的 delegation。",
     verification: "只读调用应返回“L0 确定性只读检查放行”；实际执行应返回“任务门禁通过”或“delegation 放行”。",
   },
   session_unregistered: {
@@ -36,32 +36,32 @@ const GATE_DENIAL_GUIDANCE = {
   },
   interactive_command: {
     reason: "门禁拒绝：检测到可由 write_stdin 续写的交互式命令。",
-    recovery: "改为一次性非交互命令；受管 CLI 派发使用 --stdin 单次输入，不启动可续写会话。",
+    recovery: "改为一次性非交互命令，不启动可由 write_stdin 续写的会话；普通派发只使用集中配置允许的原生通道，不回退 CLI。",
     verification: "以非交互形式重试，Hook 应 exit 0；若仍拒绝，检查是否混入 -i/--interactive 或管道等待输入。",
   },
   missing_route: {
-    reason: "执行门禁：缺少与当前动作匹配的有效 direct 或 CLI 路由。",
-    recovery: "先 taskcenter_routing_select 取得路由；主模型直接执行须提供 direct_reason，CLI 启动须持有 CLI 路由后再重试。",
-    verification: "GET /routing/active?task_id=…&session_id=… 中对应 direct/cli 为 true 后重试原操作。",
+    reason: "执行门禁：缺少与当前动作匹配的有效路由。",
+    recovery: "当前主模型在活跃正式任务下调用 taskcenter_routing_select，以 channel=direct 和具体 direct_reason 获取路由；原生执行器核对 grant、claim 与原生 route 绑定。不扩大任务权限，不启动 CLI。",
+    verification: "核对路由属于当前任务和 Session、通道匹配、未过期，再重试原操作并确认 Hook 放行；租约有效不等于执行成功。",
   },
   task_permission: {
-    reason: "CLI/任务权限拒绝：grant、scope、claim 或工具授权与当前执行不匹配。",
-    recovery: "核对 delegation scope/allowed_tools、claim 与 route 绑定并最多修正一次；仍失败则停止原执行器、撤销 delegation、记录 routing_result，以 direct_reason 申请主模型 direct 接管同一已授权任务。不得绕过任务或安全权限。",
-    verification: "修正后重跑该 CLI Run，evidence.failure_kind 不再是 task_permission，delegation report 进入 succeeded 或明确失败原因。",
+    reason: "任务权限拒绝：grant、scope、claim、workspace 或任务所有权与当前执行不匹配。",
+    recovery: "核对 delegation scope/allowed_tools、claim 与 route 绑定并最多修正一次；仍失败则记录真实 routing_result，停止并确认原执行器不再写入，撤销 delegation，以 direct_reason 申请主模型 direct 接管同一已授权任务。停止状态无法确认则不接管重叠写入；任务所有权或权限仍不成立时禁止写入。",
+    verification: "绑定与授权校验通过后检查实际工具结果；租约释放、心跳超时或失败回报不能证明执行器已停止，不得绕过任务或安全权限。",
   },
   tool_approval: {
     reason: "Harness 工具审批拒绝：执行器未获得该工具的一次性授权。",
-    recovery: "在同一 Run 内按 Harness 语义重新发起一次工具授权（allow-once），或缩小任务改用已授权工具；不绕过审批策略。",
+    recovery: "按当前宿主语义使用已授权工具；确实缺少授权时说明具体工具和所需用户操作，宿主不允许审批时停止该调用，不绕过审批策略。",
     verification: "重试后该工具调用成功完成，Run 不再出现 permission_denials。",
   },
   filesystem_permission: {
     reason: "文件系统权限拒绝：路径不可写、只读挂载或沙箱越界。",
-    recovery: "改用 workspace 内可写路径，或在 manifest 中收紧/纠正 mode 与目标目录；不提升沙箱权限。",
+    recovery: "核对任务 scope、workspace 与宿主允许的可写路径；纠正目标目录或使用已授权路径，不提升沙箱权限，不改审批策略。",
     verification: "对修正后的路径重试写入成功，failure_kind 不再是 filesystem_permission。",
   },
   scheduled_readonly_scope: {
     reason: "scheduled_readonly 拒绝：操作超出绑定报告的确定性读取/托管写入范围。",
-    recovery: "只保留绑定项目内只读与绑定报告的托管区块写入；需要任务写入时退出 scheduled_readonly 配置。",
+    recovery: "只保留绑定项目内只读与绑定报告的托管区块写入；业务修改回到有权限的任务 Session，不静默退出或修改 scheduled_readonly 模式。",
     verification: "重试限定操作返回放行；越权操作仍被拒绝且不影响已写入报告的 sha256 校验。",
   },
   reviewer_readonly: {
@@ -74,6 +74,11 @@ const GATE_DENIAL_GUIDANCE = {
     recovery: "按 Hook 返回的原始提示修复前置条件（任务、登记、路由或授权），再重试；不要绕过 Hook 或关闭门禁。",
     verification: "同一工具调用重试后 Hook exit 0，且 /gate-denials 不再新增同类记录。",
   },
+  taskcenter_unavailable: {
+    reason: "TaskCenter 控制面不可用，无法确认当前任务与路由。",
+    recovery: "本仓库 gate-enabled 维护仅继续只读并报告 TASKCENTER_UNAVAILABLE；核对服务状态，使用既有固定恢复入口。保护健康实例，不直接停止或 restart，不关闭门禁。",
+    verification: "服务恢复后重新核对真实 Session 登记、活跃任务和有效路由，再执行原操作；此限制不扩散到外部项目构建。",
+  },
 };
 
 // 从 Hook 错误提示或 CLI failure_kind 推导稳定分类码；不返回原始消息。
@@ -81,15 +86,16 @@ export function classifyGateDenial(input) {
   const kind = String(input?.failure_kind || "");
   if (KNOWN_FAILURE_KINDS.has(kind)) return kind;
   const message = String(input?.message || input?.error || "");
-  if (/CLI_(?:PERMISSION_DENIED|READ_ONLY|TOOL_UNSUPPORTED|NOT_CLAIMED|GRANT_MISMATCH|GRANT_REPLAY)|claim rejected|TaskCenter.*门禁/i.test(message)) return "task_permission";
+  if (/TASKCENTER_UNAVAILABLE|控制服务不可用|控制面不可用|fetch failed|ECONNREFUSED/i.test(message)) return "taskcenter_unavailable";
   if (/MCP tool call requires approval|approval policy is never/i.test(message)) return "tool_approval";
   if (/EACCES|EPERM|sandbox|read.only file system/i.test(message)) return "filesystem_permission";
-  if (/无活跃任务|L0_COMMAND_NOT_RECOGNIZED/.test(message)) return "no_active_task";
-  if (/尚未登记/.test(message)) return "session_unregistered";
+  if (/无活跃任务|活跃正式任务|任务不存在|TASK_NOT_FOUND|L0_COMMAND_NOT_RECOGNIZED/.test(message)) return "no_active_task";
+  if (/尚未登记|SESSION_NOT_REGISTERED/.test(message)) return "session_unregistered";
   if (/交互式命令/.test(message)) return "interactive_command";
   if (/缺少有效路由/.test(message)) return "missing_route";
   if (/scheduled_readonly/.test(message)) return "scheduled_readonly_scope";
   if (/Reviewer Session/.test(message)) return "reviewer_readonly";
+  if (/CLI_(?:PERMISSION_DENIED|READ_ONLY|TOOL_UNSUPPORTED|NOT_CLAIMED|GRANT_MISMATCH|GRANT_REPLAY)|claim rejected|grant|scope|workspace|无权|绑定|所有权|TaskCenter.*门禁/i.test(message)) return "task_permission";
   if (/CLI_|TaskCenter/i.test(message)) return "gate_other";
   return "gate_other";
 }
@@ -105,14 +111,38 @@ export function sanitizeGateDenialFailureKind(value) {
 }
 
 export function readGateDenials(path) {
-  if (!path || !existsSync(path)) return [];
-  return readFileSync(path, "utf8").split("\n").flatMap((line) => {
+  if (!path) return [];
+  let content;
+  try { content = readFileSync(path, "utf8"); }
+  catch (error) { if (error.code === "ENOENT") return []; throw error; }
+  return content.split("\n").flatMap((line) => {
     if (!line.trim()) return [];
     try {
       const value = JSON.parse(line);
       return value && typeof value === "object" ? [value] : [];
     } catch { return []; }
   });
+}
+
+export function gateDenialSnapshot(path, { limit = 20, now = Date.now() } = {}) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new RangeError("拒绝记录条数须为 1–50。");
+  if (path) {
+    try { if (statSync(path).size > GATE_DENIAL_LOG_MAX_BYTES) throw new Error("拒绝日志超出读取上限。"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  const events = readGateDenials(path).flatMap(value => {
+    const at = typeof value.at === "string" && value.at.length <= 40 ? Date.parse(value.at) : NaN;
+    if (!Number.isFinite(at) || at > now + 5_000) return [];
+    return [{ at: new Date(at).toISOString(),
+      category: typeof value.category === "string" && Object.hasOwn(GATE_DENIAL_GUIDANCE, value.category) ? value.category : "gate_other",
+      source: ["hook", "cli"].includes(value.source) ? value.source : "hook",
+      ...Object.fromEntries(["session_id", "task_id", "run_id"].map(key => [key, sanitizeGateDenialId(value[key])])),
+      failure_kind: sanitizeGateDenialFailureKind(value.failure_kind),
+    }];
+  });
+  const records = events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, limit);
+  const assessments = [...new Set(records.map(record => record.category))].map(category => evaluateGateDenials(events, { now, category }));
+  return { generated_at: new Date(now).toISOString(), records, assessments };
 }
 
 // 短窗口去重：同一 分类+Session+task/run 在 dedupeMs 内的连续上报只计一次，

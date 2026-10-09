@@ -21,11 +21,23 @@ export function boundedResponse(payload, { cursor, summary, maxBytes = DEFAULT_R
   const id = randomUUID();
   while (snapshots.size >= 32) snapshots.delete(snapshots.keys().next().value);
   snapshots.set(id, { text: JSON.stringify(payload), expires: now + 300_000 });
-  const fallback = Object.fromEntries(["accepted", "task_id", "status", "error", "handoff_required", "new_session_required", "handoff_recommended", "new_session_recommended", "recommendation_reasons", "allowed_operations", "active_task", "delegation", "gate_allowlisted", "session_id", "source", "request_limit", "continuation_count", "compaction_count"].filter((key) => Object.hasOwn(payload, key)).map((key) => [key, payload[key]]));
+  const fallback = Object.fromEntries(["accepted", "task_id", "status", "error", "code", "http_status", "request_id", "assessment", "handoff_required", "new_session_required", "handoff_recommended", "new_session_recommended", "recommendation_reasons", "allowed_operations", "active_task", "delegation", "gate_allowlisted", "session_id", "source", "request_limit", "continuation_count", "compaction_count"].filter((key) => Object.hasOwn(payload, key)).map((key) => [key, payload[key]]));
   if (payload.task?.id) fallback.task_id = payload.task.id;
-  if (payload.route) fallback.route = Object.fromEntries(["route_id", "selected_model", "native_model", "channel", "cli_profile", "harness", "reasoning_effort", "available", "role", "reason", "status", "fallback_from", "fallback_reason", "result", "next_action"].filter((key) => Object.hasOwn(payload.route, key)).map((key) => [key, payload.route[key]]));
+  if (payload.route) fallback.route = Object.fromEntries(["route_id", "task_id", "selected_model", "native_model", "channel", "cli_profile", "harness", "reasoning_effort", "available", "role", "reason", "status", "expires_at", "fallback_from", "fallback_reason", "result", "next_action"].filter((key) => Object.hasOwn(payload.route, key)).map((key) => [key, payload.route[key]]));
   const result = { ...fallback, summary: summary || { fields: Object.keys(payload).slice(0, 30), bytes: bytes(payload) }, truncated: true, continuation_cursor: `${id}:0` };
   if (bytes(result) > DEFAULT_RESPONSE_BYTES) result.summary = { bytes: bytes(payload) };
-  if (bytes(result) > DEFAULT_RESPONSE_BYTES) return { ...Object.fromEntries(["handoff_recommended", "new_session_recommended", "recommendation_reasons", "allowed_operations", "source", "request_limit", "continuation_count", "compaction_count"].filter((key) => Object.hasOwn(payload, key)).map((key) => [key, payload[key]])), truncated: true, handoff_required: payload.handoff_required === true, new_session_required: payload.new_session_required === true, summary: { bytes: bytes(payload) }, continuation_cursor: `${id}:0` };
+  if (bytes(result) > DEFAULT_RESPONSE_BYTES) {
+    const emergency = { truncated: true, handoff_required: payload.handoff_required === true, new_session_required: payload.new_session_required === true, summary: { bytes: bytes(payload) }, continuation_cursor: `${id}:0` };
+    const scalars = (value, keys) => Object.fromEntries(keys.filter(key => ["string", "boolean", "number"].includes(typeof value[key])).map(key => [key, typeof value[key] === "string" ? value[key].slice(0, 200) : value[key]]));
+    Object.assign(emergency, scalars(payload, ["accepted", "task_id", "status", "error", "code", "http_status", "request_id", "handoff_recommended", "new_session_recommended", "source", "request_limit", "continuation_count", "compaction_count"]));
+    for (const key of ["recommendation_reasons", "allowed_operations", "continuation_count"]) if (Object.hasOwn(payload, key) && bytes(payload[key]) <= 600) emergency[key] = payload[key];
+    if (payload.route) emergency.route = scalars(payload.route, ["route_id", "task_id", "selected_model", "native_model", "reasoning_effort", "channel", "status", "available", "expires_at", "next_action"]);
+    if (payload.assessment) emergency.assessment = scalars(payload.assessment, ["category", "reason", "recovery", "verification"]);
+    // Full evidence remains in the cursor; oversized metadata must not hide the safe next step.
+    if (bytes(emergency) > DEFAULT_RESPONSE_BYTES) delete emergency.assessment;
+    if (bytes(emergency) > DEFAULT_RESPONSE_BYTES) emergency.route = { route_id: "", available: false, next_action: "响应过大，先读取 continuation 或重新查询有效路由；不得据此执行。" };
+    if (bytes(emergency) > DEFAULT_RESPONSE_BYTES) return { truncated: true, accepted: false, summary: { bytes: bytes(payload) }, continuation_cursor: `${id}:0`, next_action: "响应过大，先读取 continuation 或重新查询；不得据此执行。" };
+    return emergency;
+  }
   return result;
 }

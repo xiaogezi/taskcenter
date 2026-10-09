@@ -10,6 +10,7 @@ import { AGENT_IDS, agentCapabilities } from "./agent-clients.mjs";
 import { TASKCENTER_VERSION } from "./version.mjs";
 import { recommendTaskClose } from "./session-lifecycle.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
+import { classifyGateDenial, evaluateGateDenials } from "./governance-metrics.mjs";
 import { buildManagedReviewReport } from "./review-workflow.mjs";
 
 const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001";
@@ -767,7 +768,7 @@ async function postCore(path, input) {
     const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(body) });
     return writeResult(await readJson(response), responseModeValue);
   } catch (e) {
-    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message, ...(e.code ? { code: e.code } : {}), ...(e.statusCode ? { http_status: e.statusCode } : {}), ...(e.requestId ? { request_id: e.requestId } : {}) });
   }
 }
 
@@ -777,7 +778,7 @@ async function postLocal(path, input) {
     const response = await fetch(`${controlServerUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": readLocalMcpToken() }, body: JSON.stringify(body) });
     return writeResult(await readJson(response), responseModeValue);
   } catch (e) {
-    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message, ...(e.code ? { code: e.code } : {}), ...(e.statusCode ? { http_status: e.statusCode } : {}), ...(e.requestId ? { request_id: e.requestId } : {}) });
   }
 }
 
@@ -796,7 +797,7 @@ async function postAcceptance(input) {
     const response = await fetch(`${controlServerUrl}/task-acceptance-report`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Acceptance-Token": acceptanceToken }, body: JSON.stringify(body) });
     return writeResult(await readJson(response), responseModeValue);
   } catch (e) {
-    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message, ...(e.code ? { code: e.code } : {}), ...(e.statusCode ? { http_status: e.statusCode } : {}), ...(e.requestId ? { request_id: e.requestId } : {}) });
   }
 }
 
@@ -824,6 +825,7 @@ function compactResult(payload) {
     completion_claim_allowed: readiness.completionClaim?.allowed === true,
   };
   if (payload?.session_lifecycle) compact.session_lifecycle = payload.session_lifecycle;
+  if (payload?.route) compact.route = payload.route;
   // 通知属于账本写入后的可补偿副作用；摘要回包也必须让调用方看见失败警告。
   if (Array.isArray(payload?.warnings) && payload.warnings.length) compact.warnings = payload.warnings;
   return compact;
@@ -834,7 +836,7 @@ async function queryEndpoint(path) {
     const response = await fetch(`${controlServerUrl}${path}`);
     return result(await readJson(response));
   } catch (e) {
-    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message, ...(e.code ? { code: e.code } : {}), ...(e.statusCode ? { http_status: e.statusCode } : {}), ...(e.requestId ? { request_id: e.requestId } : {}) });
   }
 }
 
@@ -849,7 +851,7 @@ async function queryLocalEndpoint(path) {
     });
     return result(await readJson(response));
   } catch (e) {
-    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message, ...(e.code ? { code: e.code } : {}), ...(e.statusCode ? { http_status: e.statusCode } : {}), ...(e.requestId ? { request_id: e.requestId } : {}) });
   }
 }
 
@@ -860,17 +862,20 @@ async function queryText(path) {
     const text = await response.text();
     return Buffer.byteLength(text) <= 4096 ? { content: [{ type: "text", text }] } : result({ format: "text", text });
   } catch (e) {
-    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message });
+    return result({ error: "TASKCENTER_REQUEST_FAILED", message: e.message, ...(e.code ? { code: e.code } : {}), ...(e.statusCode ? { http_status: e.statusCode } : {}), ...(e.requestId ? { request_id: e.requestId } : {}) });
   }
 }
 
 async function readJson(response) {
   const payload = await response.json().catch(() => ({ error: "TaskCenter 返回了无效 JSON。" }));
-  if (!response.ok) throw new Error(payload.error || `TaskCenter 请求失败（${response.status}）。`);
+  if (!response.ok) throw Object.assign(new Error(payload.error || `TaskCenter 请求失败（${response.status}）。`), { statusCode: response.status, code: payload.code, requestId: payload.request_id });
   return payload;
 }
 
 function result(payload) {
+  if (payload?.error && !payload.assessment) payload = { ...payload, accepted: false,
+    assessment: evaluateGateDenials([], { category: classifyGateDenial({ message: `${payload.error} ${payload.message || ""} ${payload.code || ""}` }) }),
+  };
   return { content: [{ type: "text", text: JSON.stringify(boundedResponse(payload)) }] };
 }
 

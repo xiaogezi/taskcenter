@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { taskTimeState } from "../app/task-time-state.mjs";
-import { formatGateDenialAssessment } from "./governance-metrics.mjs";
+import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment } from "./governance-metrics.mjs";
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
@@ -139,7 +139,7 @@ try {
         if (error.statusCode !== 404) throw error;
       }
       if (active && !(isDelegatedCliLaunch(event) ? active.cli : active.direct)) {
-        throw new Error("执行阶段缺少有效路由：先调用 taskcenter_routing_select；主模型直接执行须提供 direct_reason，CLI 启动须持有 CLI 路由。");
+        throw new Error("执行阶段缺少有效路由：先调用 taskcenter_routing_select；主模型直接执行须提供 direct_reason，原生执行器核对绑定的 route 与 claim。不回退 CLI。");
       }
     }
     await remindOverdueTask(task);
@@ -881,8 +881,8 @@ async function recordL0Audit() {
 // 拒绝即时上报：只发送安全分类输入（消息供服务端分类，不落盘原文），失败不改变拒绝结果。
 // 服务端按短窗口去重评估批量/连续拒绝，返回恢复与验证步骤后打印到 stderr。
 async function reportGateDenial(error) {
-  if (!sessionId) return;
   try {
+    if (!sessionId) throw new Error("缺少真实 Session，未上报拒绝记录。");
     const result = await requestOnce("POST", "/gate-denials", {
       source: "hook",
       message: String(error.message || "").slice(0, 500),
@@ -894,6 +894,8 @@ async function reportGateDenial(error) {
     if (result?.assessment) console.error(formatGateDenialAssessment(result.assessment));
   } catch (reportError) {
     console.error(`TaskCenter Hook 警告：拒绝记录失败，门禁结果不变（${reportError.message}）`);
+    console.error("本地恢复说明：未记录，无批量判断；控制面不可用时仅继续只读并报告 TASKCENTER_UNAVAILABLE，恢复后重新核对登记、任务和路由。");
+    console.error(formatGateDenialAssessment(evaluateGateDenials([], { category: classifyGateDenial({ message: error.message }) })));
   }
 }
 

@@ -1507,3 +1507,35 @@ test("HTTP 主模型接管不读取一次性口令，重复阶段可执行且拒
     await post("/routing/result", { route_id: selected.route.route_id, outcome: "succeeded" });
   }
 });
+
+test("只读拒绝查询校验条数与安全字段；上报失败仍给本地指引且拒绝不变", async (context) => {
+  await writeFile(paths.TASKCENTER_GATE_DENIALS_PATH, `${JSON.stringify({ at: new Date().toISOString(), category: "missing_route", session_id: "safe-session", task_id: "", command: "secret-command", claim_token: "secret-token" })}\n`);
+  for (const limit of [1, 50]) {
+    const response = await fetch(`${base}/gate-denials?limit=${limit}`);
+    assert.equal(response.status, 200);
+    const snapshot = await response.json();
+    assert.equal(snapshot.records[0].session_id, "safe-session");
+    assert.doesNotMatch(JSON.stringify(snapshot), /secret-command|secret-token|claim_token/);
+    assert.ok(snapshot.assessments[0].recovery);
+  }
+  for (const limit of ["0", "51", "1.5", "", "invalid"]) assert.equal((await fetch(`${base}/gate-denials?limit=${limit}`)).status, 400);
+  const offlineReport = createServer(async (request, response) => {
+    if (request.url === "/gate-denials") {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "拒绝上报不可用" }));
+      return;
+    }
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const next = await fetch(`${base}${request.url}`, { method: request.method, headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, ...(body ? { body } : {}) });
+    response.writeHead(next.status, { "Content-Type": "application/json" });
+    response.end(await next.text());
+  });
+  await new Promise(resolve => offlineReport.listen(0, "127.0.0.1", resolve));
+  context.after(() => offlineReport.close());
+  const rejected = await runHook("pre-tool-use", "codex", { session_id: "unregistered-recovery", cwd: "/work", tool_name: "apply_patch", tool_input: {} }, [], `http://127.0.0.1:${offlineReport.address().port}`);
+  assert.equal(rejected.code, 2);
+  assert.match(rejected.stderr, /未记录，无批量判断/);
+  assert.match(rejected.stderr, /恢复：.*真实 session_id/);
+  assert.match(rejected.stderr, /TASKCENTER_UNAVAILABLE/);
+});
