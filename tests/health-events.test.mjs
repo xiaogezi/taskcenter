@@ -50,6 +50,10 @@ test("128 MB 控制进程刷新大事件快照后仍可读取事件和健康状�
     await writeFile(f.paths.index, JSON.stringify({ version, byTask }));
     const events = await (await fetch(`http://127.0.0.1:${f.port}/tasks/target/events`)).json();
     assert.equal(events.events.find((event) => event.event_id === "indexed").current_step, String(version));
+    const other = await (await fetch(`http://127.0.0.1:${f.port}/tasks/task-1999/events`)).json();
+    assert.equal(other.events.length, 100);
+    const restored = await (await fetch(`http://127.0.0.1:${f.port}/tasks/target/events`)).json();
+    assert.equal(restored.events.find((event) => event.event_id === "indexed").current_step, String(version));
     const health = await (await fetch(`http://127.0.0.1:${f.port}/health`)).json();
     assert.equal(health.ok, true);
   }

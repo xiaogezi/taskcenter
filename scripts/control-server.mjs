@@ -1208,14 +1208,14 @@ function currentUsageReport() {
   return readSnapshot(usageReportPath, emptyUsageReport());
 }
 
-function readSnapshot(path, fallback) {
+function readSnapshot(path, fallback, select = (value) => value, key = "") {
   try {
     const info = statSync(path);
-    const identity = `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`;
+    const identity = `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}:${key}`;
     if (snapshotCache.get(path)?.identity === identity) return snapshotCache.get(path).value;
     // Release the stale snapshot before parsing its replacement within the bounded heap.
     snapshotCache.delete(path);
-    const value = JSON.parse(readFileSync(path, "utf8"));
+    const value = select(JSON.parse(readFileSync(path, "utf8")));
     snapshotCache.set(path, { identity, value });
     return value;
   } catch {
@@ -1311,7 +1311,7 @@ function inspectFile(path, parseJson = false) {
 }
 
 function readTaskEvents(taskId) {
-  const indexed = readSnapshot(taskEventIndexPath, { byTask: {} }).byTask?.[taskId] || [];
+  const indexed = readSnapshot(taskEventIndexPath, [], (value) => value.byTask?.[taskId] || [], taskId);
   const recent = readTaskEventTail(taskId);
   const merged = new Map();
   for (const event of [...indexed, ...recent]) merged.set(event.event_id || `${event.type}:${event.recorded_at || event.created_at}`, event);
