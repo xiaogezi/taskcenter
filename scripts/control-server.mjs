@@ -677,7 +677,7 @@ const server = createServer(async (request, response) => {
       if (body.manual) {
         if (!session) throw new RoutingControlError(409, "请先登记真实 Reviewer Session、模型与工作区。", "SESSION_NOT_REGISTERED");
         if (!body.route_id) {
-          const records = reviewSessionRecords(sessionId).filter((record) => record.status === "running");
+          const records = reviewSessionRecords(sessionId).filter((record) => record.status === "running" || (record.attestation_id && routeForId(record.route_id)?.status === "leased"));
           if (records.length !== 1) throw new RoutingControlError(409, "没有唯一可恢复的审查授权；请提供所有者授予的 route_id。", "REVIEW_ROUTE_REQUIRED");
           body.route_id = records[0].route_id;
         }
@@ -707,7 +707,8 @@ const server = createServer(async (request, response) => {
         const result = recordTaskEvent({ type: "review_cycle.reported", task_id: task.id, session_id: task.sessionId, review_cycle: { cycle_id: cycleId, subject_ref: record.subject_ref, reviewer, model: route.selectedModel, review_scope: "full", phase: "reviewing", wait_reason: body.manual ? "手动 Reviewer 授权接续" : `CLI fallback: ${String(body.native_unavailable_reason || "").slice(0, 400)}` } }, { requireRegistered: true });
         cycle = result.task.reviewCycles.find((item) => item.cycle_id === cycleId);
       }
-      sendJson(response, 200, { accepted: true, context: { route_id: route.id, task_id: task.id, reviewer, subject_ref: record.subject_ref, review_artifacts: route.reviewArtifacts, cycle_id: cycle.cycle_id, cycle_number: cycle.cycle_number, files: preview.reviewable_files.map((file) => file.path) } });
+      const reported = task.reviewAttestations?.find((item) => item.route_id === route.id);
+      sendJson(response, 200, { accepted: true, context: { route_id: route.id, task_id: task.id, reviewer, subject_ref: record.subject_ref, review_artifacts: route.reviewArtifacts, cycle_id: cycle.cycle_id, cycle_number: cycle.cycle_number, files: preview.reviewable_files.map((file) => file.path), ...(reported ? { report_observed_at: reported.observed_at } : {}) } });
       return;
     }
     if (request.method === "POST" && request.url === "/reviews/claim") {
@@ -1031,7 +1032,11 @@ const server = createServer(async (request, response) => {
       let result;
       if (body.type === "review.reported" && body.review_attestation?.route_id) {
         verifyBoundMcpRequest(request);
-        result = reportReview(body, loadTasks().find((item) => item.id === body.task_id), () => commitEvent(true), canonicalSessionId);
+        const task = loadTasks().find((item) => item.id === body.task_id);
+        const reported = task?.reviewAttestations?.find((item) => item.id === body.review_attestation.id && item.route_id === body.review_attestation.route_id);
+        // Older MCP clients regenerate this timestamp on retry; keep the immutable first report time.
+        if (reported) body.review_attestation.observed_at = reported.observed_at;
+        result = reportReview(body, task, () => commitEvent(true), canonicalSessionId);
       } else {
         if (body.type === "review.reported" && reviewSessionRecords(canonicalSessionId(body.session_id || "")).length) throw new RoutingControlError(403, "OCR Reviewer 必须绑定领取的 route_id。", "REVIEW_PERMISSION_DENIED");
         result = commitEvent();
@@ -1207,8 +1212,9 @@ function readSnapshot(path, fallback) {
   try {
     const info = statSync(path);
     const identity = `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`;
-    const cached = snapshotCache.get(path);
-    if (cached?.identity === identity) return cached.value;
+    if (snapshotCache.get(path)?.identity === identity) return snapshotCache.get(path).value;
+    // Release the stale snapshot before parsing its replacement within the bounded heap.
+    snapshotCache.delete(path);
     const value = JSON.parse(readFileSync(path, "utf8"));
     snapshotCache.set(path, { identity, value });
     return value;

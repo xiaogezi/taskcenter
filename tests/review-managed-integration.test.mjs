@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -37,6 +38,30 @@ for (const manual of [false, true]) test(`${manual ? "manual" : "managed"} MCP l
   const response = await fetch(`${env.TASKCENTER_CONTROL_URL}/routing/select`, { method: "POST", headers, body: JSON.stringify({ task_id: "managed-task", session_id: owner, task_class: "ocr_review", channel: "cli", review_artifacts: { subject: { ref: subject.value }, bundle: { ref: preview }, rules: { ref: "fixture-rules" } } }) });
   const selected = await response.json();
   assert.equal(response.ok, true, JSON.stringify(selected));
+  let failReport = false;
+  let failRelease = false;
+  let reportAttempt = 0;
+  if (manual) {
+    const target = env.TASKCENTER_CONTROL_URL;
+    const proxy = createServer(async (request, response) => {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      if (request.url === "/task-events" && JSON.parse(raw).type === "review.reported") {
+        const body = JSON.parse(raw);
+        body.review_attestation.observed_at = new Date(1780000000000 + reportAttempt++ * 1000).toISOString();
+        raw = JSON.stringify(body);
+      }
+      if (failRelease && request.url === "/routing/result") { failRelease = false; response.destroy(); return; }
+      const upstream = await fetch(`${target}${request.url}`, { method: request.method, headers: request.headers, ...(raw ? { body: raw } : {}) });
+      const payload = await upstream.text();
+      if (failReport && request.url === "/task-events" && JSON.parse(raw).type === "review.reported") { failReport = false; response.destroy(); return; }
+      response.writeHead(upstream.status, { "Content-Type": "application/json" });
+      response.end(payload);
+    });
+    await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    t.after(() => proxy.close());
+    env.TASKCENTER_CONTROL_URL = `http://127.0.0.1:${proxy.address().port}`;
+  }
   for (const key of ["CODEX_SESSION_ID", "CODEX_THREAD_ID", "TASKCENTER_CALLER_SESSION_ID"]) delete env[key];
   env.TASKCENTER_CALLER_SESSION_ID = reviewer;
   const launch = { route_id: selected.route.route_id, claim_token: selected.route.review_record.claim_token, workspace: dir, model: roles.roles.reviewer.model, sandbox: "read-only" };
@@ -97,7 +122,41 @@ for (const manual of [false, true]) test(`${manual ? "manual" : "managed"} MCP l
   }
   const result = { reviewed_files: [], findings: [], spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", summary: "fixture" };
   assert.match((await call("taskcenter_review_finish", result)).message, /COVERAGE_INCOMPLETE/);
-  const finished = await call("taskcenter_review_finish", { ...result, reviewed_files: ["a.mjs"] });
+  const complete = { ...result, reviewed_files: ["a.mjs"] };
+  if (manual) {
+    failReport = true;
+    const lostReport = await call("taskcenter_review_finish", complete);
+    assert.equal(lostReport.error, "REVIEW_FINISH_FAILED");
+    assert.equal(lostReport.stage, "report");
+    const interrupted = JSON.parse(await readFile(env.TASKCENTER_ROUTING_CONTROL_PATH, "utf8"));
+    const record = interrupted.routes.find((route) => route.id === launch.route_id).reviewRecord;
+    delete record.attestation_id;
+    record.status = "running";
+    await writeFile(env.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify(interrupted));
+    await client.close();
+    await connect();
+    assert.equal((await call("taskcenter_review_start", {})).accepted, true);
+    failRelease = true;
+    const lostRelease = await call("taskcenter_review_finish", complete);
+    assert.equal(lostRelease.error, "REVIEW_FINISH_FAILED");
+    assert.equal(lostRelease.stage, "release");
+    assert.equal(lostRelease.report_status, "accepted");
+    await client.close();
+    await connect();
+    assert.equal((await call("taskcenter_review_start", {})).accepted, true);
+  }
+  const finished = await call("taskcenter_review_finish", complete);
   assert.equal(finished.accepted, true, JSON.stringify(finished));
   assert.equal(finished.lease_released, true);
+  if (manual) {
+    await client.close();
+    await connect();
+    assert.equal((await call("taskcenter_review_start", { route_id: launch.route_id })).accepted, true);
+    assert.equal((await call("taskcenter_review_finish", complete)).lease_released, true);
+    assert.equal((await call("taskcenter_review_finish", { ...complete, summary: "different conclusion" })).error, "REVIEW_FINISH_FAILED");
+    const ledger = JSON.parse(await readFile(env.TASKCENTER_TASK_LEDGER_PATH, "utf8"));
+    assert.equal(ledger[0].reviewAttestations.length, 1);
+    const routing = JSON.parse(await readFile(env.TASKCENTER_ROUTING_CONTROL_PATH, "utf8"));
+    assert.equal(routing.routes.find((route) => route.id === launch.route_id).status, "succeeded");
+  }
 });

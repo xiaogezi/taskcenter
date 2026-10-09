@@ -4,6 +4,9 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复控制服务刷新大任务事件索引时同时保留新旧快照导致的堆内存耗尽；在既有堆上限内先释放旧缓存，再解析新快照。
+- Reviewer finish 保留首次提交时间；报告已落账后，同一绑定 Session 可恢复上下文并幂等重试报告与租约释放，重复提交不同结论仍拒绝。
+
 - 修复任务更新省略工作区时被 Session 当前目录覆盖的问题：已有任务优先保留绑定工作区，显式更新仍生效；独立 Reviewer 的模型、工作区、只读和身份校验保持严格。
 
 - 方案 A 保留 vinext/React 与 Node 服务，移除 Next 编译器、Cloudflare/Wrangler/Workerd、未使用的 Drizzle/Worker/Sites 模板链。页面使用 vinext 导出的兼容 API；独立 TypeScript 检查和现有 React/Hooks/无障碍 lint 插件替代 Next 工具链。

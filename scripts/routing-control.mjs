@@ -81,13 +81,15 @@ export function claimReview(input, task, registry, canonical = (id) => id, now =
   const sessionId = canonical(input.session_id || "");
   const session = registry[sessionId];
   if (!session) throw new RoutingControlError(409, "Reviewer Session 尚未登记。", "SESSION_NOT_REGISTERED");
-  if (!record || route.status !== "leased" || Date.parse(route.expiresAt) <= Date.parse(now)) throw new RoutingControlError(409, "Reviewer lease 不可用。", "REVIEWER_LEASE_UNAVAILABLE");
+  const completedReplay = record?.attestation_id && record.reviewer_session_id === sessionId && route.status === "succeeded";
+  if (!record || (!completedReplay && (route.status !== "leased" || Date.parse(route.expiresAt) <= Date.parse(now)))) throw new RoutingControlError(409, "Reviewer lease 不可用。", "REVIEWER_LEASE_UNAVAILABLE");
   if (!task || task.id !== record.task_id) throw new RoutingControlError(404, "审查任务不存在。", "TASK_NOT_FOUND");
   if (!["in_progress", "done_claimed", "blocked"].includes(task.status)) throw new RoutingControlError(409, "任务不可审查。", "TASK_NOT_REVIEWABLE");
   if (!sameSubject(task.currentSubject, record.subject_ref)) throw new RoutingControlError(409, "当前 Subject 已变化。", "SUBJECT_MISMATCH");
   if (input.claim_token !== record.claim_token || (record.reviewer_session_id && record.reviewer_session_id !== sessionId)) throw new RoutingControlError(403, "Reviewer lease 领取身份不匹配。", "REVIEW_PERMISSION_DENIED");
   if (sessionId === canonical(task.sessionId) || (task.sessionHistory || []).some((id) => canonical(id) === sessionId)) throw new RoutingControlError(403, "Reviewer 必须独立于实现 Session。", "REVIEWER_NOT_INDEPENDENT");
   if (!session.workspace || resolve(session.workspace) !== resolve(task.workspace || "") || session.model !== route.selectedModel || input.sandbox !== "read-only") throw new RoutingControlError(403, "Reviewer 工作区、模型或只读沙箱不匹配。", "REVIEW_PERMISSION_DENIED");
+  if (record.attestation_id) return { ...record, claim_token: undefined };
   if (!["pending", "running"].includes(record.status)) throw new RoutingControlError(409, "Review 已结束。", "REVIEWER_LEASE_UNAVAILABLE");
   record.reviewer_session_id = sessionId;
   record.status = "running";

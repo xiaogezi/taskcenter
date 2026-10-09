@@ -444,15 +444,21 @@ toolRegistry.register("taskcenter_review_finish", {
   }).strict(),
 }, async (input, extra) => {
   const identity = resolveTrustedMcpSession(extra);
+  let stage = "prepare";
+  let reportAccepted = false;
   try {
     if (!managedReviewContext || identity.sessionId !== managedReviewContext.reviewer.session_id) throw new Error("REVIEW_START_REQUIRED");
-    const review = buildManagedReviewReport(managedReviewContext, input);
+    const review = buildManagedReviewReport(managedReviewContext, input, managedReviewContext.report_observed_at || new Date().toISOString());
+    managedReviewContext.report_observed_at = review.observed_at;
     const headers = { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": readLocalMcpToken() };
+    stage = "report";
     const report = await readJson(await fetch(`${controlServerUrl}/task-events`, { method: "POST", headers, body: JSON.stringify({ type: "review.reported", task_id: managedReviewContext.task_id, session_id: identity.sessionId, event_id: review.id, review_attestation: review }) }));
     if (report.accepted !== true) throw new Error("REVIEW_REPORT_NOT_ACCEPTED");
+    reportAccepted = true;
+    stage = "release";
     const release = await readJson(await fetch(`${controlServerUrl}/routing/result`, { method: "POST", headers, body: JSON.stringify({ route_id: managedReviewContext.route_id, session_id: identity.sessionId, outcome: "succeeded" }) }));
     return result({ accepted: report.accepted, attestation_id: review.id, verdict: review.verdict, covered_files: input.reviewed_files.length, lease_released: release.accepted });
-  } catch (error) { return result({ error: "REVIEW_FINISH_FAILED", message: error.message }); }
+  } catch (error) { return result({ error: "REVIEW_FINISH_FAILED", message: error.message, code: error.code || error.cause?.code, stage, report_status: reportAccepted ? "accepted" : "unconfirmed", next_action: "保留已有审查结论；控制服务恢复健康后，由同一 Reviewer Session 调用 review_start({route_id}) 恢复，再以相同结论重试 review_finish。不要换身份或代签；若 Subject 或租约失效，交由任务所有者处理。" }); }
 });
 
 toolRegistry.register("taskcenter_review_claim", {
