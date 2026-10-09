@@ -434,7 +434,7 @@ export function recordTaskEvent(input, options = {}) {
     ? (current?.phaseEvents || []).find((item) => item.event_id === event.event_id)
     : null;
   // Creation retries must also consult durable history after the bounded ID cache expires.
-  const storedEvent = processed.has(event.event_id) || event.type === "task.create" || event.type === "task.close" || event.session_switch_id || projectedPhaseEvent
+  const storedEvent = processed.has(event.event_id) || event.type === "task.create" || event.type === "task.close" || event.type === "review.reported" || event.session_switch_id || projectedPhaseEvent
     ? findStoredTaskEvent(event.event_id, event.type === "task.create" && !current ? event.task_id : "")
     : null;
   if (event.type === "task.create" && storedEvent && storedEvent.event_id !== event.event_id) {
@@ -448,6 +448,9 @@ export function recordTaskEvent(input, options = {}) {
     if (!original) {
       throw new TaskLedgerError(409, "event_id 已处理，但找不到原始事件，拒绝不安全重放。");
     }
+    if (event.type === "review.reported" && event.review_attestation?.route_id && event.review_attestation.route_id === original.review_attestation?.route_id) {
+      event.review_attestation.observed_at = original.review_attestation.observed_at;
+    }
     // task.create 未显式传 task_id 时由首次请求生成；重试仍应命中首次生成的任务。
     if (event.type === "task.create" && !String(input.task_id || "")) {
       event.task_id = original.task_id;
@@ -458,9 +461,16 @@ export function recordTaskEvent(input, options = {}) {
     if (!sameIdempotentEvent(original, replayEvent)) {
       throw new TaskLedgerError(409, "event_id 已被不同事件使用，拒绝重放。");
     }
-    const originalTask = original.task_id
+    let originalTask = original.task_id
       ? tasks.find((task) => task.id === original.task_id) ?? null
       : null;
+    if (event.type === "review.reported" && original.review_attestation?.id && originalTask && !originalTask.reviewAttestations?.some((review) => review.id === original.review_attestation.id)) {
+      // The event can survive a crash before the task projection and processed-ID cache do.
+      originalTask = applyEvent(originalTask, original);
+      persistTasks(readLedger().map((task) => task.id === originalTask.id ? originalTask : task));
+      processed.add(original.event_id);
+      persistProcessedEventIds(processed);
+    }
     if (original.session_switch_id && !originalTask) throw new TaskLedgerError(409, "SWITCH_LEDGER_RECOVERY_REQUIRED");
     if (event.type === "task.create" && !originalTask) {
       throw new TaskLedgerError(409, "TASK_LEDGER_RECOVERY_REQUIRED：历史任务缺失或已移除，请先核对恢复预览，不能重新创建。");

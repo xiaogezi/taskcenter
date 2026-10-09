@@ -133,6 +133,10 @@ for (const manual of [false, true]) test(`${manual ? "manual" : "managed"} MCP l
     delete record.attestation_id;
     record.status = "running";
     await writeFile(env.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify(interrupted));
+    const interruptedLedger = JSON.parse(await readFile(env.TASKCENTER_TASK_LEDGER_PATH, "utf8"));
+    interruptedLedger[0].reviewAttestations = [];
+    await writeFile(env.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify(interruptedLedger));
+    await writeFile(env.TASKCENTER_TASK_EVENT_IDS_PATH, "[]");
     await client.close();
     await connect();
     assert.equal((await call("taskcenter_review_start", {})).accepted, true);
@@ -156,6 +160,8 @@ for (const manual of [false, true]) test(`${manual ? "manual" : "managed"} MCP l
     assert.equal((await call("taskcenter_review_finish", { ...complete, summary: "different conclusion" })).error, "REVIEW_FINISH_FAILED");
     const ledger = JSON.parse(await readFile(env.TASKCENTER_TASK_LEDGER_PATH, "utf8"));
     assert.equal(ledger[0].reviewAttestations.length, 1);
+    const events = (await readFile(env.TASKCENTER_TASK_EVENTS_PATH, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(events.filter((event) => event.type === "review.reported" && event.event_id === finished.attestation_id).length, 1);
     const routing = JSON.parse(await readFile(env.TASKCENTER_ROUTING_CONTROL_PATH, "utf8"));
     assert.equal(routing.routes.find((route) => route.id === launch.route_id).status, "succeeded");
   }
