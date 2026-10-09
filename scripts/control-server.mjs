@@ -1018,7 +1018,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/task-events") {
       verifyTaskRequest(request);
       const input = await readJsonBody(request);
-      const body = enrichTaskWorkspaceEvent(input, loadSessionRegistry()[input.session_id]);
+      const body = enrichTaskWorkspaceEvent(input, loadSessionRegistry()[input.session_id], loadTasks().find((task) => task.id === input.task_id));
       if (body.type === "task.review" || body.status === "verified" || String(body.type || "").startsWith("acceptance.")) {
         throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
       }

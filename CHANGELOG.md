@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复任务更新省略工作区时被 Session 当前目录覆盖的问题：已有任务优先保留绑定工作区，显式更新仍生效；独立 Reviewer 的模型、工作区、只读和身份校验保持严格。
+
 - 方案 A 保留 vinext/React 与 Node 服务，移除 Next 编译器、Cloudflare/Wrangler/Workerd、未使用的 Drizzle/Worker/Sites 模板链。页面使用 vinext 导出的兼容 API；独立 TypeScript 检查和现有 React/Hooks/无障碍 lint 插件替代 Next 工具链。
 - 固定体积预算覆盖完整开发依赖，发布在裁剪前检查；直接依赖、锁文件及安装树禁止退休的重依赖回流。平台基线必须由实际干净安装校准，检查不自动上调阈值。
 - 移除 Bug 闭环的 UI、HTTP/MCP 和队列；新写入的退休字段明确拒绝，旧任务/事件保留并使用通用就绪规则。

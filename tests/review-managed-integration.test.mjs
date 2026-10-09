@@ -17,7 +17,7 @@ for (const manual of [false, true]) test(`${manual ? "manual" : "managed"} MCP l
   const roles = JSON.parse(await readFile("config/model-roles.json", "utf8"));
   const subject = { type: "artifact", value: "managed-fixture", observed_at: new Date().toISOString() };
   await writeFile(env.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([{ id: "managed-task", sessionId: owner, workspace: dir, status: "done_claimed", currentSubject: subject, reviewAttestations: [], reviewCycles: [] }]));
-  await writeFile(env.TASKCENTER_SESSION_REGISTRY_PATH, JSON.stringify({ [owner]: { model: "main-test", workspace: dir } }));
+  await writeFile(env.TASKCENTER_SESSION_REGISTRY_PATH, JSON.stringify({ [owner]: { model: "main-test", workspace: tmpdir() } }));
   const preview = join(dir, "preview.json");
   await writeFile(preview, JSON.stringify({ reviewable_files: [{ path: "a.mjs" }] }));
   const port = 39000 + Math.floor(Math.random() * 10000);
@@ -30,6 +30,10 @@ for (const manual of [false, true]) test(`${manual ? "manual" : "managed"} MCP l
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const headers = { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": (await readFile(env.TASKCENTER_MCP_TOKEN_PATH, "utf8")).trim() };
+  const updated = await fetch(`${env.TASKCENTER_CONTROL_URL}/task-events`, { method: "POST", headers, body: JSON.stringify({ type: "task.update", task_id: "managed-task", session_id: owner, current_step: "request review" }) });
+  const update = await updated.json();
+  assert.equal(updated.ok, true, JSON.stringify(update));
+  assert.equal(update.task.workspace, dir);
   const response = await fetch(`${env.TASKCENTER_CONTROL_URL}/routing/select`, { method: "POST", headers, body: JSON.stringify({ task_id: "managed-task", session_id: owner, task_class: "ocr_review", channel: "cli", review_artifacts: { subject: { ref: subject.value }, bundle: { ref: preview }, rules: { ref: "fixture-rules" } } }) });
   const selected = await response.json();
   assert.equal(response.ok, true, JSON.stringify(selected));
@@ -51,6 +55,13 @@ for (const manual of [false, true]) test(`${manual ? "manual" : "managed"} MCP l
     assert.equal(registered.accepted, true, JSON.stringify(registered));
     assert.equal((await call("taskcenter_review_start", {})).code, "REVIEW_ROUTE_REQUIRED");
     assert.equal((await call("taskcenter_review_start", { ...manualArgs, claim_token: "wrong" })).code, "REVIEW_PERMISSION_DENIED");
+    for (const mismatch of [{ workspace: tmpdir(), model: launch.model }, { workspace: dir, model: "wrong-model" }]) {
+      await call("taskcenter_session_register", { session_id: reviewer, ...mismatch });
+      assert.equal((await call("taskcenter_review_start", manualArgs)).code, "REVIEW_PERMISSION_DENIED");
+    }
+    await call("taskcenter_session_register", { session_id: reviewer, workspace: dir, model: launch.model });
+    const unsafe = await fetch(`${env.TASKCENTER_CONTROL_URL}/reviews/start`, { method: "POST", headers, body: JSON.stringify({ ...manualArgs, session_id: reviewer, manual: true, sandbox: "workspace-write" }) });
+    assert.equal(unsafe.status, 403);
   }
   const started = await call("taskcenter_review_start", manual ? manualArgs : {});
   assert.equal(started.accepted, true, JSON.stringify(started));
@@ -64,7 +75,7 @@ for (const manual of [false, true]) test(`${manual ? "manual" : "managed"} MCP l
     await client.close();
     env.TASKCENTER_CALLER_SESSION_ID = owner;
     await connect();
-    assert.equal((await call("taskcenter_review_start", { route_id: launch.route_id, sandbox: "read-only" })).code, "REVIEW_PERMISSION_DENIED");
+    assert.equal((await call("taskcenter_review_start", manualArgs)).code, "REVIEW_PERMISSION_DENIED");
     await client.close();
     env.TASKCENTER_CALLER_SESSION_ID = reviewer;
     await connect();

@@ -8,6 +8,14 @@ import test from "node:test";
 
 import { enrichTaskWorkspaceEvent, inspectGitWorkspace } from "../lib/git-workspace.mjs";
 
+test("省略工作区的任务事件保留任务绑定，显式工作区仍生效", () => {
+  const session = { workspace: "/session-parent" };
+  const task = { workspace: "/task-project" };
+  assert.equal(enrichTaskWorkspaceEvent({ type: "task.update" }, session, task).workspace, task.workspace);
+  assert.equal(enrichTaskWorkspaceEvent({ type: "task.update", workspace: "/explicit" }, session, task).workspace, "/explicit");
+  assert.equal(enrichTaskWorkspaceEvent({ type: "task.create" }, session).workspace, session.workspace);
+});
+
 test("关联 Git worktree 自动继承主项目身份、分支和执行环境", async () => {
   const root = await mkdtemp(join(tmpdir(), "taskcenter-git-workspace-"));
   const main = join(root, "SampleProject");
