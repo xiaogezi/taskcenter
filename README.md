@@ -140,6 +140,10 @@ claude mcp list
 
 当定时会话需要枚举项目文件时，可以直接对 Agent 说“为当前 scheduled_readonly Session 开启扫描豁免”或“退出扫描豁免”。Agent 调用 `taskcenter_scheduled_readonly_scan_exemption_status` / `taskcenter_scheduled_readonly_scan_exemption_set`，并传入当前 Hook payload 的真实 `session_id`；Hook 会校验它与当前 Session 完全一致，拒绝跨 Session 修改。开启后只额外允许绑定工作区内无管道、无重定向、无复合控制符的 `rtk git ls-files [工作区内路径]`、`git check-ignore [安全选项] [工作区内路径]` 和 `git branch --show-current`，不开放外部 exclude 文件、脚本、网络、跨项目读取或任何新增写入；Profile 重新检测会保留该状态，退出后立即恢复原 Profile。扫描豁免只更新 Session Profile，不创建正式任务。
 
+已提交对象巡检在 L0 和 `scheduled_readonly` 中共用精确 Git 白名单，无需扫描豁免。先单独执行 `git show-ref --verify refs/heads/dev`，再执行 `git rev-parse --verify 'refs/heads/dev^{commit}'`；后续将返回的完整 40/64 位小写 SHA 作为字面参数，使用 `git ls-tree -r --name-only SHA -- project-context/`、`git show SHA:路径` 或 `git cat-file -p SHA:路径` 读取树/blob，使用 `git diff --name-only 上次SHA 本次SHA -- project-context/` 比较覆盖范围。支持 `cat-file -t/-s` 与 `ls-tree -z`，对象路径拒绝上级目录和凭据文件；不支持 Git 全局参数、filters/textconv、batch 或输出文件。命令工作目录须在会话工作区内，逐条执行，不使用变量替换、重定向或复合命令；本扩展不改变既有 L0 批次规则。
+
+`instory-pca-2` 不匹配固定的 `instory` Profile，应使用已登记 Session 的 L0 做上述只读取证，不伪造 Automation ID 或启用扫描豁免。若原 `dev` 读取失败，不能建立成功基线；修复生效后重新运行一次，记录实际 SHA、覆盖范围和结果。无任务 `apply_patch` 写自动化 `memory.md` 仍拒绝；本项目禁止 Agent 修改 `~/.codex`，创建任务也不解除该边界。只读运行可在最终回复记录结果，由宿主保留会话；需要持久化基线时由用户亲自更新自动化 memory，或在目标项目接受有效任务并遵守其写入门禁后记录到项目允许的报告/提案路径。固定 `instory` Profile 仅可写它绑定报告的托管区块，不授权其他自动化或文件。
+
 条件配置模板位于 [`integrations/codex/scheduled-readonly-hooks.json.example`](integrations/codex/scheduled-readonly-hooks.json.example)。将其中两个 matcher group 合并到现有日常 Hook，而不是覆盖整个文件；普通 Session 不登记 Profile，因此不会改变现有门禁。占位路径必须替换为本机审核过的绝对路径。固定完整性命令由 Hook 注入，不允许自动化自行拼接 Node/Python/管道：
 
 ```text

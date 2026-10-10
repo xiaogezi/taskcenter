@@ -543,6 +543,7 @@ function isFixedManagedReportProbe(args) {
 }
 
 function isScheduledReadonlyGit(args) {
+  if (isGitObjectInspection(args)) return true;
   if (args[0] === "rev-parse") return args.length === 2 && args[1] === "HEAD";
   if (args[0] !== "status") return false;
   return args.slice(1).every((arg) => ["--short", "--porcelain", "--porcelain=v1", "--porcelain=v2", "--branch", "-b", "--untracked-files=no", "-uno"].includes(arg));
@@ -752,7 +753,7 @@ function isReadOnlyInspection(payload) {
   const command = String(input.cmd || input.command || payload.command || "").trim();
   if (!command) return false;
   const batch = inspectionBatch(command);
-  return Boolean(batch?.every(({ words, heredoc }) => isReadOnlyCommand(words, heredoc)));
+  return Boolean(batch?.every(({ words, heredoc }) => isReadOnlyCommand(words, heredoc, input.workdir || input.cwd || workspace)));
 }
 
 function isProjectExecution(payload) {
@@ -770,7 +771,7 @@ function isDelegatedCliLaunch(payload) {
   return canonicalExistingPath(resolveInputPath(match[1], cwd)) === canonicalExistingPath(resolve(projectRoot, "scripts/delegated-cli.mjs"));
 }
 
-function isReadOnlyCommand(words, heredoc) {
+function isReadOnlyCommand(words, heredoc, cwd = workspace) {
   const tokens = [...words];
   if (basename(tokens[0]) === "rtk") {
     tokens.shift();
@@ -801,7 +802,48 @@ function isReadOnlyCommand(words, heredoc) {
   if (executable === "sed") return isReadOnlySed(args);
   if (executable === "find") return isReadOnlyFind(args);
   if (executable !== "git") return false;
+  if (isGitObjectInspection(args)) {
+    const base = canonicalExistingPath(resolveInputPath(cwd));
+    const root = canonicalExistingPath(workspace);
+    return Boolean(base && root && isWithinPath(base, root));
+  }
   return isReadOnlyGit(args);
+}
+
+// Object inspection never runs textconv/filters or accepts Git global options.
+function isGitObjectInspection(args) {
+  const [command, ...rest] = args;
+  const ref = value => /^refs\/heads\/[A-Za-z0-9_-][A-Za-z0-9_./-]*$/.test(value || "")
+    && !value.includes("..") && !value.includes("//") && !value.endsWith("/") && !value.endsWith(".lock");
+  const sha = value => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value || "");
+  const path = value => Boolean(value) && !value.startsWith("/") && !value.startsWith("-")
+    && !value.includes("\\") && !value.split("/").includes("..")
+    && !/(?:^|\/)(?:auth\.json|\.env(?:\.[^/]+)?|id_rsa|id_ed25519)(?:$|\/)/.test(value);
+  const object = value => {
+    const colon = (value || "").indexOf(":");
+    return colon < 0 ? sha(value) : sha(value.slice(0, colon)) && path(value.slice(colon + 1));
+  };
+  if (command === "show-ref") {
+    return rest[0] === "--verify" && (rest.length === 2 && ref(rest[1])
+      || rest.length === 3 && rest[1] === "--hash" && ref(rest[2]));
+  }
+  if (command === "rev-parse") {
+    return rest.length === 2 && rest[0] === "--verify"
+      && (ref(rest[1]) || rest[1].endsWith("^{commit}") && ref(rest[1].slice(0, -9)));
+  }
+  if (command === "cat-file") return rest.length === 2 && ["-p", "-t", "-s"].includes(rest[0]) && object(rest[1]);
+  if (command === "show") return rest.length === 1 && rest[0].includes(":") && object(rest[0]);
+  if (command === "ls-tree") {
+    let index = 0;
+    while (["-r", "--name-only", "-z"].includes(rest[index])) index++;
+    if (!sha(rest[index++])) return false;
+    return index === rest.length || rest[index++] === "--" && rest.length > index && rest.slice(index).every(path);
+  }
+  if (command === "diff") {
+    return rest[0] === "--name-only" && sha(rest[1]) && sha(rest[2])
+      && (rest.length === 3 || rest[3] === "--" && rest.length > 4 && rest.slice(4).every(path));
+  }
+  return false;
 }
 
 function isReadOnlyOcr(args) {
@@ -867,6 +909,8 @@ function isReadOnlyFind(args) {
 
 function isReadOnlyGit(args) {
   const subcommand = args[0];
+  // Invalid literal blob reads must not fall back to the broader legacy show rule.
+  if (subcommand === "show" && args.some(arg => /^[a-f0-9]{40,64}:/.test(arg))) return false;
   if (subcommand === "worktree") return args[1] === "list" && args.slice(2).every((arg) => ["--porcelain", "-z", "--verbose", "-v"].includes(arg));
   if (["status", "check-ignore", "ls-files"].includes(subcommand)) return true;
   if (subcommand === "branch") return args.length === 2 && args[1] === "--show-current";

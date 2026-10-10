@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -398,6 +399,90 @@ test("L0 路径探测跨客户端放行，但不能借 command 包装执行", as
   }
 });
 
+const objectSha = "a".repeat(40);
+const objectInspectionCommands = [
+  "git show-ref --verify refs/heads/dev",
+  "rtk git show-ref --verify --hash refs/heads/dev",
+  "git rev-parse --verify 'refs/heads/dev^{commit}'",
+  `git ls-tree -r --name-only ${objectSha} -- project-context/`,
+  `git show ${objectSha}:project-context/AGENTS.md`,
+  `git cat-file -p ${objectSha}:README.md`,
+  `git cat-file -t ${objectSha}`,
+  `git diff --name-only ${objectSha} ${"b".repeat(40)} -- project-context/`,
+];
+const unsafeObjectCommands = [
+  "git show-ref --exclude-existing",
+  "git rev-parse --git-dir",
+  "git rev-parse --verify --output-object-format=sha256 refs/heads/dev",
+  `git ls-tree --output=/tmp/out ${objectSha}`,
+  `git cat-file --filters ${objectSha}:README.md`,
+  `git cat-file --textconv ${objectSha}:README.md`,
+  "git cat-file --batch",
+  `git show --textconv ${objectSha}:README.md`,
+  `git show --output=/tmp/out ${objectSha}:README.md`,
+  `git diff --ext-diff ${objectSha} ${"b".repeat(40)}`,
+  `git cat-file -p ${objectSha}:../private.md`,
+  `git cat-file -p ${objectSha}:.env`,
+  `git cat-file -p ${objectSha}:secrets/auth.json`,
+  `git show ${objectSha}:.env`,
+  `git show ${objectSha}:../private.md`,
+  "git -C /other show-ref --verify refs/heads/dev",
+  "git show-ref --verify refs/heads/dev && touch sentinel",
+  "git show-ref --verify refs/heads/dev > /tmp/out",
+];
+
+test("L0 无任务可从 dev 固定 SHA 读取 Git 对象，写入与跨工作区仍拒绝", async () => {
+  const session_id = "git-object-inspection";
+  await runHook("session-start", "codex", { session_id, cwd: rootPath });
+  const check = (cmd, workdir = rootPath) => runHook("pre-tool-use", "codex", {
+    session_id, cwd: rootPath, tool_name: "exec_command", tool_input: { cmd, workdir },
+  });
+  for (const cmd of objectInspectionCommands) {
+    const result = await check(cmd);
+    assert.equal(result.code, 0, `${cmd}: ${result.stderr}`);
+    assert.match(result.stdout, /L0/);
+  }
+  for (const cmd of unsafeObjectCommands) assert.equal((await check(cmd)).code, 2, cmd);
+  assert.equal((await check(objectInspectionCommands[0], tempDir)).code, 2);
+  const memory = await runHook("pre-tool-use", "codex", {
+    session_id, cwd: rootPath, tool_name: "apply_patch",
+    tool_input: { command: "*** Begin Patch\n*** Add File: /tmp/automation/memory.md\n+baseline\n*** End Patch" },
+  });
+  assert.equal(memory.code, 2);
+});
+
+test("dev 对象巡检不采纳当前分支和未提交内容", async () => {
+  const repo = join(tempDir, "dev-object-fixture");
+  await mkdir(join(repo, "project-context"), { recursive: true });
+  const git = async (...args) => (await promisify(execFile)("git", args, { cwd: repo })).stdout.trim();
+  await git("init", "-b", "dev");
+  const document = join(repo, "project-context", "status.md");
+  await writeFile(document, "dev committed baseline\n");
+  await git("add", ".");
+  await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "baseline");
+  const baseline = await git("rev-parse", "HEAD");
+  await git("checkout", "-b", "other");
+  await writeFile(document, "other branch content\n");
+  await git("add", ".");
+  await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "other");
+  await writeFile(document, "uncommitted content\n");
+  const session_id = "dev-object-fixture";
+  await runHook("session-start", "codex", { session_id, cwd: repo });
+  const inspect = async (args, expected) => {
+    const cmd = "git " + args.map(arg => `'${arg}'`).join(" ");
+    const result = await runHook("pre-tool-use", "codex", { session_id, cwd: repo, tool_name: "exec_command", tool_input: { cmd } });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await git(...args), expected);
+  };
+  await inspect(["show-ref", "--verify", "refs/heads/dev"], `${baseline} refs/heads/dev`);
+  await inspect(["rev-parse", "--verify", "refs/heads/dev^{commit}"], baseline);
+  await inspect(["ls-tree", "-r", "--name-only", baseline, "--", "project-context/"], "project-context/status.md");
+  await inspect(["show", `${baseline}:project-context/status.md`], "dev committed baseline");
+  await inspect(["cat-file", "-p", `${baseline}:project-context/status.md`], "dev committed baseline");
+  await inspect(["diff", "--name-only", baseline, baseline, "--", "project-context/"], "");
+  assert.equal(await readFile(document, "utf8"), "uncommitted content\n");
+});
+
 test("Hook 拒绝即时记录安全分类并给出可执行恢复步骤", async () => {
   const session_id = "lookup-denial-guidance";
   await runHook("session-start", "codex", { session_id, cwd: "/work" });
@@ -583,6 +668,7 @@ test("scheduled_readonly 仅绕过 active task 并限制为 inStory 精确只读
 
   const reportPatch = reportUpdatePatch(reportPath, initialReport, updatedReport);
   const allowedCases = [
+    ...objectInspectionCommands.map(cmd => ({ tool_name: "exec_command", tool_input: { cmd } })),
     { tool_name: "Read", tool_input: { file_path: join(instoryRoot, "README.md") } },
     { tool_name: "Grep", tool_input: { path: join(instoryRoot, "project-context"), pattern: "status" } },
     { tool_name: "Glob", tool_input: { path: instoryRoot, pattern: "project-context/**/*.md" } },
@@ -678,6 +764,9 @@ test("scheduled_readonly 仅绕过 active task 并限制为 inStory 精确只读
   await writeFile(reportPath, initialReport);
 
   const blockedCases = [
+    ...unsafeObjectCommands.map(cmd => ({ tool_name: "exec_command", tool_input: { cmd } })),
+    { tool_name: "exec_command", tool_input: { cmd: "git show-ref --verify refs/heads/dev && git status --short" } },
+    { tool_name: "exec_command", tool_input: { cmd: objectInspectionCommands[0], workdir: tempDir } },
     { cwd: "/other", tool_name: "Read", tool_input: { file_path: "/other/private.md" } },
     { tool_name: "Read", tool_input: { file_path: join(tempDir, "other.md") } },
     { tool_name: "Glob", tool_input: { path: instoryRoot, pattern: "../**/*" } },
