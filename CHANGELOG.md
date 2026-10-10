@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 按格子授权为 `instory-pca-2` 增加唯一 `memory.md` 的 apply_patch 新建/更新能力：批准配置与宿主 automation 元数据、启动消息、登记工作区共同绑定；拒绝其他身份/路径、链接、删除/移动、多文件及 shell 写入。结构化记录的失败/未完成状态保留成功基线，补丁批准与真实落盘分别记录哈希审计，inStory 项目写门禁不变。
+
 - 修复无活跃任务的 Git 对象巡检被 L0 误拒绝：精确支持分支 ref 验证、SHA 解析、固定 SHA 的树/blob 读取与路径差异；scheduled_readonly 复用相同校验，无需扫描豁免。保留写入、危险 Git 选项、定时复合命令和跨工作区限制，不扩大自动化身份或 memory.md 写权限。
 
 - 拒绝诊断改用当前原生派发与 RTK 规则，具体分类优先；Hook 上报失败仍保留本地恢复说明，MCP 错误和有界路由响应保留恢复指引及必要状态。调度页展示原因、处理责任、下一步和验证，区分当前与历史路由；新增限量且仅返回安全字段的拒绝记录 GET，不增加依赖或恢复执行按钮。

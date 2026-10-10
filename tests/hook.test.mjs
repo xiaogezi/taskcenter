@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
-const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-hook-"));
+const tempDir = await realpath(await mkdtemp(join(tmpdir(), "taskcenter-hook-")));
 const paths = {
   TASKCENTER_SESSIONS_ROOT: join(tempDir, "sessions"),
   TASKCENTER_MCP_TOKEN_PATH: join(tempDir, "mcp-token"),
@@ -25,6 +25,8 @@ const paths = {
   TASKCENTER_ROUTING_CONTROL_PATH: join(tempDir, "routing-control.json"),
   TASKCENTER_MODEL_ROLE_CONFIG_PATH: join(tempDir, "model-roles.json"),
   TASKCENTER_GATE_DENIALS_PATH: join(tempDir, "gate-denials.jsonl"),
+  TASKCENTER_AUTOMATION_MEMORY_CONFIG_PATH: join(tempDir, "automation-memory.json"),
+  TASKCENTER_AUTOMATION_MEMORY_STATE_ROOT: join(tempDir, "automation-memory-audit"),
 };
 const fixtureMcpToken = "test".repeat(16);
 await writeFile(paths.TASKCENTER_MCP_TOKEN_PATH, fixtureMcpToken, { mode: 0o600 });
@@ -481,6 +483,108 @@ test("dev 对象巡检不采纳当前分支和未提交内容", async () => {
   await inspect(["cat-file", "-p", `${baseline}:project-context/status.md`], "dev committed baseline");
   await inspect(["diff", "--name-only", baseline, baseline, "--", "project-context/"], "");
   assert.equal(await readFile(document, "utf8"), "uncommitted content\n");
+});
+
+test("自动化 memory 仅允许宿主绑定的单文件补丁，失败不推进基线且审计落盘", async () => {
+  const session_id = "019f0000-0000-7000-8000-00000000009a";
+  const workspace = await realpath(rootPath);
+  const codexHome = join(await realpath(tempDir), "memory-codex-home");
+  await mkdir(join(codexHome, "sessions"), { recursive: true });
+  const memoryPath = join(codexHome, "automations", "instory-pca-2", "memory.md");
+  const sessionPath = join(codexHome, "sessions", `rollout-${session_id}.jsonl`);
+  const metadata = { type: "session_meta", payload: { id: session_id, cwd: workspace, thread_source: "automation" } };
+  const userMessage = { type: "response_item", payload: { type: "message", role: "user", content: [{ text: "Automation: fixture\nAutomation ID: instory-pca-2\nAutomation memory: $CODEX_HOME/automations/instory-pca-2/memory.md\n" }] } };
+  const saveSession = async (meta = metadata, message = userMessage) => writeFile(sessionPath, [meta, message].map(JSON.stringify).join("\n") + "\n");
+  const config = { enabled: true, automation_id: "instory-pca-2", workspace_root: workspace, codex_home: codexHome, authorization_ref: "human:fixture" };
+  await writeFile(paths.TASKCENTER_AUTOMATION_MEMORY_CONFIG_PATH, JSON.stringify(config));
+  await saveSession();
+  await runHook("session-start", "codex", { session_id, cwd: workspace });
+  const record = (changes = {}) => "# instory-pca-2\n\n```json\n" + JSON.stringify({ automation_id: "instory-pca-2", status: "incomplete", subject_sha: objectSha, last_successful_sha: null, observed_at: "2026-10-10T04:00:00Z", coverage: ["project-context/AGENTS.md"], result: "git read verified; scan incomplete", ...changes }, null, 2) + "\n```\n";
+  const add = (content, path = memoryPath) => `*** Begin Patch\n*** Add File: ${path}\n${content.trimEnd().split("\n").map(line => "+" + line).join("\n")}\n*** End Patch`;
+  const check = (patch, action = "pre-tool-use", extra = {}) => runHook(action, "codex", { session_id, cwd: workspace, tool_name: "apply_patch", tool_input: { command: patch }, ...extra });
+  try {
+    const initial = record();
+    const first = await check(add(initial));
+    assert.equal(first.code, 0, first.stderr);
+    assert.match(first.stdout, /单文件写入放行/);
+    assert.equal((await check(add(initial), "pre-tool-use", { session_id: "019f0000-0000-7000-8000-00000000009b" })).code, 2);
+    assert.equal((await check(add(initial), "pre-tool-use", { cwd: tempDir })).code, 2);
+    await saveSession({ ...metadata, payload: { ...metadata.payload, thread_source: "vscode" } });
+    assert.equal((await check(add(initial))).code, 2, "a prompt alone cannot authorize memory");
+    await saveSession(metadata, { ...userMessage, payload: { ...userMessage.payload, content: [{ text: "Automation: fixture\nAutomation ID: other\n" }] } });
+    assert.equal((await check(add(initial))).code, 2);
+    await writeFile(sessionPath, [metadata, { ...userMessage, payload: { ...userMessage.payload, content: [{ text: "ordinary user prompt" }] } }, userMessage].map(JSON.stringify).join("\n") + "\n");
+    assert.equal((await check(add(initial))).code, 2, "later identity spoofing cannot authorize memory");
+    await saveSession();
+    for (const patch of [
+      add(initial, memoryPath.replace("instory-pca-2", "other")),
+      add(record({ status: "failed", last_successful_sha: objectSha })),
+      add(record({ status: "success", last_successful_sha: null })),
+      add(record({ status: "success", last_successful_sha: objectSha, coverage: [] })),
+      add(record({ coverage: ["../private.md"] })),
+      add(record({ coverage: ["/other/private.md"] })),
+      add(record({ observed_at: "not-a-date" })),
+      add(record({ result: "x".repeat(65537) })),
+      add(initial).replace("*** End Patch", "*** Add File: /tmp/other\n+other\n*** End Patch"),
+      `*** Begin Patch\n*** Delete File: ${memoryPath}\n*** End Patch`,
+      add(initial).replace("*** End Patch", "*** Move to: /tmp/moved\n*** End Patch"),
+    ]) assert.equal((await check(patch)).code, 2, patch);
+    await mkdir(dirname(memoryPath), { recursive: true });
+    await writeFile(memoryPath, initial);
+    assert.equal((await check(add(initial), "post-tool-use")).code, 0);
+    assert.equal((await check(add(initial))).code, 2, "Add must not overwrite");
+    const success = record({ status: "success", last_successful_sha: objectSha, result: "fixture inspection completed" });
+    const update = reportUpdatePatch(memoryPath, initial, success);
+    assert.equal((await check(update)).code, 0);
+    await writeFile(memoryPath, success);
+    assert.equal((await check(update, "post-tool-use")).code, 0);
+    const failure = record({ status: "failed", last_successful_sha: objectSha, subject_sha: "b".repeat(40), result: "read denied" });
+    assert.equal((await check(reportUpdatePatch(memoryPath, success, failure))).code, 0);
+    for (const last_successful_sha of [null, "b".repeat(40)]) assert.equal((await check(reportUpdatePatch(memoryPath, success, record({ status: "failed", last_successful_sha })))).code, 2);
+    await writeFile(memoryPath, failure);
+    assert.equal((await check(reportUpdatePatch(memoryPath, success, failure), "post-tool-use")).code, 0);
+    const incomplete = record({ last_successful_sha: objectSha });
+    const incompletePatch = reportUpdatePatch(memoryPath, failure, incomplete);
+    assert.equal((await check(incompletePatch)).code, 0);
+    await writeFile(memoryPath, record({ last_successful_sha: objectSha, result: "different content" }));
+    assert.equal((await check(incompletePatch, "post-tool-use")).code, 2, "post hash mismatch");
+    await writeFile(memoryPath, incomplete);
+    assert.equal((await check(incompletePatch, "post-tool-use")).code, 0);
+    const audit = (await readFile(join(paths.TASKCENTER_AUTOMATION_MEMORY_STATE_ROOT, "audit.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+    assert.ok(audit.some(row => row.phase === "allowed"));
+    assert.ok(audit.some(row => row.phase === "verified" && row.status === "failed" && row.last_successful_sha === objectSha));
+    assert.doesNotMatch(JSON.stringify(audit), /fixture inspection completed/);
+    await writeFile(paths.TASKCENTER_AUTOMATION_MEMORY_CONFIG_PATH, JSON.stringify({ ...config, authorization_ref: "" }));
+    assert.equal((await check(reportUpdatePatch(memoryPath, incomplete, success))).code, 2, "missing user approval");
+    await writeFile(paths.TASKCENTER_AUTOMATION_MEMORY_CONFIG_PATH, JSON.stringify(config));
+    for (const cmd of [`cat '${memoryPath}' > /tmp/other`, `printf x > '${memoryPath}'`, `python3 -c 'pass'`, `git status && touch '${memoryPath}'`]) {
+      assert.equal((await runHook("pre-tool-use", "codex", { session_id, cwd: workspace, tool_name: "exec_command", tool_input: { cmd } })).code, 2);
+    }
+    assert.equal((await check(add(initial, join(workspace, "project-context/90-Agent提案/probe.md")))).code, 2);
+    await writeFile(paths.TASKCENTER_AUTOMATION_MEMORY_CONFIG_PATH, JSON.stringify({ ...config, enabled: false }));
+    assert.equal((await check(reportUpdatePatch(memoryPath, incomplete, success))).code, 2, "revoke binding");
+    await writeFile(paths.TASKCENTER_AUTOMATION_MEMORY_CONFIG_PATH, JSON.stringify(config));
+    if (process.platform !== "win32") {
+      await rm(memoryPath);
+      await symlink(join(tempDir, "missing-memory"), memoryPath);
+      assert.equal((await check(add(initial))).code, 2, "dangling memory symlink");
+      await rm(memoryPath);
+      const hardlinkTarget = join(tempDir, "hardlink-memory.md");
+      await writeFile(hardlinkTarget, incomplete);
+      await link(hardlinkTarget, memoryPath);
+      assert.equal((await check(reportUpdatePatch(memoryPath, incomplete, success))).code, 2, "hardlink memory");
+      await rm(memoryPath);
+      await rm(dirname(memoryPath), { recursive: true });
+      await symlink(tempDir, dirname(memoryPath));
+      assert.equal((await check(add(initial))).code, 2, "ancestor symlink");
+      await rm(dirname(memoryPath));
+      const auditPath = join(paths.TASKCENTER_AUTOMATION_MEMORY_STATE_ROOT, "audit.jsonl");
+      await rm(auditPath);
+      await symlink(join(tempDir, "missing-audit"), auditPath);
+      assert.equal((await check(add(initial))).code, 2, "audit cannot follow links or fail open");
+      await rm(auditPath);
+    }
+  } finally { await rm(paths.TASKCENTER_AUTOMATION_MEMORY_CONFIG_PATH, { force: true }); }
 });
 
 test("Hook 拒绝即时记录安全分类并给出可执行恢复步骤", async () => {

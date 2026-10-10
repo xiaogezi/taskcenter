@@ -142,7 +142,31 @@ claude mcp list
 
 已提交对象巡检在 L0 和 `scheduled_readonly` 中共用精确 Git 白名单，无需扫描豁免。先单独执行 `git show-ref --verify refs/heads/dev`，再执行 `git rev-parse --verify 'refs/heads/dev^{commit}'`；后续将返回的完整 40/64 位小写 SHA 作为字面参数，使用 `git ls-tree -r --name-only SHA -- project-context/`、`git show SHA:路径` 或 `git cat-file -p SHA:路径` 读取树/blob，使用 `git diff --name-only 上次SHA 本次SHA -- project-context/` 比较覆盖范围。支持 `cat-file -t/-s` 与 `ls-tree -z`，对象路径拒绝上级目录和凭据文件；不支持 Git 全局参数、filters/textconv、batch 或输出文件。命令工作目录须在会话工作区内，逐条执行，不使用变量替换、重定向或复合命令；本扩展不改变既有 L0 批次规则。
 
-`instory-pca-2` 不匹配固定的 `instory` Profile，应使用已登记 Session 的 L0 做上述只读取证，不伪造 Automation ID 或启用扫描豁免。若原 `dev` 读取失败，不能建立成功基线；修复生效后重新运行一次，记录实际 SHA、覆盖范围和结果。无任务 `apply_patch` 写自动化 `memory.md` 仍拒绝；本项目禁止 Agent 修改 `~/.codex`，创建任务也不解除该边界。只读运行可在最终回复记录结果，由宿主保留会话；需要持久化基线时由用户亲自更新自动化 memory，或在目标项目接受有效任务并遵守其写入门禁后记录到项目允许的报告/提案路径。固定 `instory` Profile 仅可写它绑定报告的托管区块，不授权其他自动化或文件。
+`instory-pca-2` 不匹配固定的 `instory` Profile，应使用已登记 Session 的 L0 做上述只读取证，不伪造 Automation ID 或启用扫描豁免。若原 `dev` 读取失败，不能建立成功基线；修复生效后重新运行一次，记录实际 SHA、覆盖范围和结果。自动化 memory 默认不享有无任务写权限，创建任务也不解除 `~/.codex` 禁写边界；唯一例外是下文格子明确批准的 `instory-pca-2` 单文件能力。其他情况只在最终回复记录结果，或由用户亲自更新 memory。固定 `instory` Profile 仅可写它绑定报告的托管区块，不授权其他自动化或文件。
+
+格子已单独批准 `instory-pca-2` 的 memory 例外，由 [`config/automation-memory.json`](config/automation-memory.json) 绑定启用状态、固定 automation ID、inStory 工作区、Codex home 绝对路径和直接用户授权来源；不通过 `scheduledReadonly` 的旧 `instory` 报告能力。Hook 从本机 `sessions/**/*.jsonl` 的有界启动段验证 Session ID、`thread_source=automation`、工作区，以及第一条非 AGENTS 用户消息中的宿主自动化 ID/memory 路径，另核对服务端已登记工作区。普通聊天、工具参数或后续消息自报的身份不能获得该能力；源文件缺失、身份不明或审计失败均拒绝。
+
+仅允许单个 `apply_patch` 对 Codex home 下 `automations/instory-pca-2/memory.md` 执行 Add/Update。Add 不覆盖，Update 使用唯一精确上下文；路径/祖先不得为符号链接，文件不得为硬链接，Delete/Move、多文件、任意 shell 写入和其他自动化/项目文件不在授权内。现有全局 PreToolUse/PostToolUse 直接加载源码，无需修改 `~/.codex/hooks.json` 或重启健康服务。文件限制为 64 KiB、固定 Markdown 标题和唯一 JSON 区块：
+
+````markdown
+# instory-pca-2
+
+```json
+{
+  "automation_id": "instory-pca-2",
+  "status": "incomplete",
+  "subject_sha": null,
+  "last_successful_sha": null,
+  "observed_at": "2026-10-10T04:00:00Z",
+  "coverage": [],
+  "result": "等待实际巡检结果"
+}
+```
+````
+
+Agent 应填写真实时间、已验证 Subject SHA、实际仓库相对覆盖路径和结果。只有完成本次已声明覆盖的巡检才写 `status=success`，此时成功 SHA 必须等于 Subject SHA 且覆盖非空；`failed` / `incomplete` 必须保留旧成功 SHA，首次运行保持 null。缺少旧记录时不猜基线。Hook 验证结构及基线变更规则，无法独立验证 Agent 对语义巡检完成的声明。写前/写后审计位于 `.local/automation-memory/audit.jsonl`，只记录批准来源、身份、路径、状态、SHA 和内容哈希，不记录结果正文。PostToolUse 比对批准内容与实际落盘哈希，失败不得宣称记录成功；修复有效内容后重新验证，不自动覆盖可能来自用户的改动。
+
+撤销能力：由有权限的 TaskCenter 维护任务或用户将绑定配置 `enabled` 设为 false（或移除配置），下一次 Hook 即拒绝该例外，不删除已有 memory 或审计。若用户换 Codex home/工作区，须重新审核配置绑定；不能通过工具输入或环境中的 `$CODEX_HOME` 自行改变批准路径。该能力是 Hook guardrail，不是进程级隔离。inStory `90-Agent提案/` 等文件仍须走其 TaskCenter、Worktree、ExecPlan 门禁。
 
 条件配置模板位于 [`integrations/codex/scheduled-readonly-hooks.json.example`](integrations/codex/scheduled-readonly-hooks.json.example)。将其中两个 matcher group 合并到现有日常 Hook，而不是覆盖整个文件；普通 Session 不登记 Profile，因此不会改变现有门禁。占位路径必须替换为本机审核过的绝对路径。固定完整性命令由 Hook 注入，不允许自动化自行拼接 Node/Python/管道：
 

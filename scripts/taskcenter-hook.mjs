@@ -11,6 +11,7 @@ import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment } f
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
+import { assertNoSymlinks, auditAutomationMemory, automationMemoryBinding, inspectAutomationMemoryPatch } from "./automation-memory.mjs";
 
 class ControlUnavailableError extends Error {}
 
@@ -37,6 +38,25 @@ try {
     process.exit(0);
   }
   if (!sessionId) throw new Error("Hook 输入缺少真实 session_id，拒绝猜测会话身份。");
+  if (["pre-tool-use", "post-tool-use"].includes(action) && String(event.tool_name || "") === "apply_patch") {
+    const patch = extractApplyPatch(event);
+    if (/^\*\*\* (?:Add|Update|Delete) File: .*[/\\]automations[/\\][^/\\]+[/\\]memory\.md\s*$/m.test(patch)) {
+      const binding = await automationMemoryBinding(sessionId, workspace, agent);
+      if (!binding) throw new Error("自动化 memory 写入未绑定可信自动化身份、工作区和用户批准配置。");
+      const registered = await requireRegisteredSession();
+      if (canonicalExistingPath(registered.workspace) !== binding.workspaceRoot) throw new Error("自动化 memory 登记工作区不一致。");
+      if (action === "pre-tool-use") {
+        const inspected = inspectAutomationMemoryPatch(binding, patch, simulateScheduledReportPatch);
+        auditAutomationMemory(binding, "allowed", inspected.content, inspected.oldSha);
+        console.log("TaskCenter 自动化 memory 单文件写入放行：instory-pca-2；不授予项目写入。");
+      } else {
+        assertNoSymlinks(binding.memoryPath);
+        auditAutomationMemory(binding, "verified", readFileSync(binding.memoryPath, "utf8"));
+        console.log("TaskCenter 自动化 memory 落盘与基线校验通过。");
+      }
+      process.exit(0);
+    }
+  }
   if (action === "scheduled-profile-detect") {
     if (!scheduledReadonly || !matchesScheduledReadonlyPrompt(event.prompt)) process.exit(0);
     validateScheduledReadonlyIdentity();
@@ -610,6 +630,7 @@ async function requireRegisteredSession() {
     ? result.sessions.find((session) => session.sessionId === sessionId)
     : null;
   if (!current || current.status !== "registered") throw new Error("scheduled_readonly Session 尚未登记，请先完成 SessionStart 登记。");
+  return current;
 }
 
 async function recordScheduledReadonlyAudit() {

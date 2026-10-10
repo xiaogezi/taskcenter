@@ -6,6 +6,7 @@
 - Read Codex session data only from `~/.codex/sessions/**/*.jsonl` and `~/.codex/session_index.jsonl`; model roles come only from this repository's `config/model-roles.json`.
 - Never read `~/.codex/auth.json`, API keys, cookies, or other credentials.
 - Never modify files under `~/.codex`; user-owned integration config changes require explicit user action.
+  - 唯一例外：格子已批准 `instory-pca-2` 的单个 `automations/instory-pca-2/memory.md` 通过 `apply_patch` 新建/更新。必须由 `config/automation-memory.json` 的启用绑定、本机宿主 automation Session 元数据、启动消息和登记工作区共同验证，补丁与落盘均须通过结构/路径/成功基线校验并留审计；不得修改其他 `~/.codex` 文件或配置，不授予 inStory 仓库写入。
 - Treat an assistant's `done_claimed` status as an implementation claim, not acceptance.
 
 ## Required workflow
