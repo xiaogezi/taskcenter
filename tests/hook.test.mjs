@@ -629,6 +629,47 @@ test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async
   assert.equal(tasks.filter((task) => task.sessionId === sessionId).length, 0);
 });
 
+test("L0 无任务 DevKit 仅放行可信入口的受限只读参数", async () => {
+  const fixture = await realpath(await mkdtemp(join(tmpdir(), "hook-devkit-")));
+  try {
+    const home = join(fixture, "home"), workspace = join(fixture, "repo");
+    const bin = join(home, ".local/share/uv/tools/devkit-assets/bin/dev-kit");
+    const entry = join(home, ".local/bin/dev-kit");
+    await mkdir(join(home, ".local/share/uv/tools/devkit-assets/bin"), { recursive: true });
+    await mkdir(join(home, ".local/bin"), { recursive: true });
+    await mkdir(join(workspace, "src"), { recursive: true });
+    await writeFile(bin, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await symlink(bin, entry);
+    const session_id = "devkit-l0-session";
+    const env = { HOME: home };
+    assert.equal((await runHook("session-start", "codex", { session_id, cwd: workspace }, [], base, env)).code, 0);
+    const wrapper = `env PYTHONDONTWRITEBYTECODE=1 ${entry}`;
+    const cases = [
+      [`${wrapper} doctor --repo . --format json`, 0],
+      [`rtk proxy ${wrapper} asset status --repo . --format json`, 0],
+      [`rtk proxy ${wrapper} asset capture preview --baseline --all-sources --check project-ci --repo . --format json`, 0],
+      [`${wrapper} asset capture preview --base HEAD --repo .`, 0],
+      [`${wrapper} asset capture apply --baseline --all-sources --repo .`, 2],
+      [`${wrapper} scaffold apply --repo .`, 2], [`${wrapper} verify --repo .`, 2],
+      [`${wrapper} doctor --repo ..`, 2], [`${wrapper} doctor --repo . --unknown`, 2],
+      [`${wrapper} doctor --repo . --profile malicious.json`, 2],
+      [`${entry} doctor --repo .`, 2],
+      [`env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=evil ${entry} doctor --repo .`, 2],
+      [`env PYTHONDONTWRITEBYTECODE=1 /tmp/dev-kit doctor --repo .`, 2],
+      [`${wrapper} doctor --repo .; touch sentinel`, 2],
+      [`${wrapper} doctor --repo $(pwd)`, 2],
+      [`${wrapper} doctor --repo . > sentinel`, 2],
+    ];
+    for (const [cmd, code] of cases) {
+      const result = await runHook("pre-tool-use", "codex", { session_id, cwd: workspace, tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
+      assert.equal(result.code, code, `${cmd}\n${result.stderr}`);
+      if (code === 0) assert.match(result.stdout, /L0/);
+    }
+    const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+    assert.equal(tasks.filter((task) => task.sessionId === session_id).length, 0);
+  } finally { await rm(fixture, { recursive: true, force: true }); }
+});
+
 test("L0 worktree list 支持原生和 RTK，拒绝写操作及混合命令", async () => {
   const sessionId = "worktree-l0-session";
   await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
@@ -1597,11 +1638,11 @@ test("控制服务离线时只放行固定恢复命令", async () => {
   assert.equal(missingWorkspace.code, 2);
 });
 
-async function runHook(action, agent, payload, extraArgs = [], controlUrl = base) {
+async function runHook(action, agent, payload, extraArgs = [], controlUrl = base, envOverrides = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [hook, action, "--agent", agent, ...extraArgs], {
       cwd: root,
-      env: { ...process.env, ...paths, TASKCENTER_CONTROL_URL: controlUrl },
+      env: { ...process.env, ...paths, TASKCENTER_CONTROL_URL: controlUrl, ...envOverrides },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

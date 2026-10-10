@@ -11,6 +11,7 @@ import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment } f
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
+import { isReadOnlyDevKit } from "./devkit-inspection.mjs";
 import { assertNoSymlinks, auditAutomationMemory, automationMemoryBinding, inspectAutomationMemoryPatch } from "./automation-memory.mjs";
 
 class ControlUnavailableError extends Error {}
@@ -801,6 +802,7 @@ function isReadOnlyCommand(words, heredoc, cwd = workspace) {
   const executable = basename(tokens[0]);
   const args = tokens.slice(1);
   if (heredoc && executable !== "cat") return false;
+  if (executable === "env") return isReadOnlyDevKit(tokens, { cwd, workspace });
   if (isCliVersionQuery(executable, args)) return true;
   if (["which", "command", "type"].includes(executable)) {
     // `command NAME` executes NAME; only its explicit lookup forms are read-only.
