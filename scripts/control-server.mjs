@@ -44,6 +44,7 @@ import {
   taskPhaseReport,
   taskEventsPath,
   taskLedgerPath,
+  taskReconcilePath,
   TaskLedgerError,
 } from "./task-ledger.mjs";
 import { runReconciliation, queryFindings, lastReconciliation } from "./task-reconciler.mjs";
@@ -136,19 +137,18 @@ if (startupContextReconciliation.reconciled.length) {
 // 轻量对账：服务启动时恢复未处理记录（收口脱离会话的运行，生成缺项；不伪造验收、不自动重跑）。
 if (reconcileLiveSessions) {
   try {
-    const startupReconciliation = runReconciliation({ availableSessionIds: availableSessionIds() });
-    if (startupReconciliation.reconciled.length || startupReconciliation.findings.length) {
-      console.log(`[TaskCenter] 启动对账：收口 ${startupReconciliation.reconciled.length} 条脱离运行，发现 ${startupReconciliation.findings.length} 条缺项。`);
-    }
+    void runReconciliation({ availableSessionIds: availableSessionIds() }).then(result => {
+      console.log(`[TaskCenter] 启动对账：处置 ${result.actions.length} 条任务，发现 ${result.findings.length} 条缺项。`);
+    }).catch(error => console.error(`[TaskCenter] 启动对账失败：${error.message}`));
   } catch (error) {
     console.error(`[TaskCenter] 启动对账失败：${error?.message || error}`);
   }
 }
 // 低频对账扫描：周期性核对运行事实与账本（幂等，只收口脱离运行并生成缺项）。
-const reconciliationTimer = setInterval(() => {
+const reconciliationTimer = setInterval(async () => {
   if (!reconcileLiveSessions) return;
   try {
-    const result = runReconciliation({ availableSessionIds: availableSessionIds() });
+    const result = await runReconciliation({ availableSessionIds: availableSessionIds() });
     if (result.reconciled.length || result.findings.length) {
       console.log(`[TaskCenter] 对账扫描：收口 ${result.reconciled.length} 条脱离运行，发现 ${result.findings.length} 条缺项。`);
     }
@@ -182,7 +182,7 @@ const server = createServer(async (request, response) => {
       const params = new URL(request.url, "http://localhost").searchParams;
       const observer = readSnapshot(join(resolve(process.env.TASKCENTER_RUNTIME_DIR || join(projectRoot, ".local/runtime")), "ai-observer-health.json"), { status: "stopped" });
       const stale = !observer.updated_at || Date.now() - Date.parse(observer.updated_at) > 15_000;
-      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, params, tasks: loadVisibleTasks(), running: aiGovernance.running || (!stale && observer.status === "analyzing") }), observer: { ...observer, stale } });
+      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks: loadVisibleTasks(), running: aiGovernance.running || (!stale && observer.status === "analyzing") }), observer: { ...observer, stale } });
       return;
     }
     if (request.method === "POST" && request.url === "/ai/analyze") {
@@ -349,6 +349,7 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && request.url === "/reconciliation") {
       sendJson(response, 200, { findings: queryFindings(), lastRunAt: lastReconciliation()?.observedAt || null });
+      return;
     }
     if (request.method === "GET" && request.url === "/session-status") {
       const titles = new Map(loadSessionTitles().map((item) => [item.id, item]));
@@ -523,7 +524,7 @@ const server = createServer(async (request, response) => {
         const pageSize = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("page_size") || "40", 10) || 40));
         const start = (page - 1) * pageSize;
         const pageTasks = filteredTasks.slice(start, start + pageSize);
-        const actionCounts = Object.fromEntries(["planned", "in_progress", "completed", "attention", "awaiting_verification", "awaiting_acceptance", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
+        const actionCounts = Object.fromEntries(["planned", "in_progress", "execution_unconfirmed", "completed", "attention", "awaiting_verification", "awaiting_acceptance", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
         actionCounts.all = projectTasks.length;
         const projects = new Map();
         for (const task of presentedTasks) if (!projects.has(task.project.id)) projects.set(task.project.id, task.project);

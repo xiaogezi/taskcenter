@@ -130,6 +130,12 @@ test("人工完成、移除和恢复会持久化需求覆盖", async (context) =
       TASKCENTER_DASHBOARD_PATH: fixture.dashboardPath,
       TASKCENTER_DISPATCHES_PATH: fixture.dispatchesPath,
       TASKCENTER_OVERRIDES_PATH: overridesPath,
+      TASKCENTER_TASK_LEDGER_PATH: join(fixture.directory, "task-ledger.json"),
+      TASKCENTER_TASK_EVENTS_PATH: join(fixture.directory, "task-events.jsonl"),
+      TASKCENTER_TASK_EVENT_IDS_PATH: join(fixture.directory, "task-event-ids.json"),
+      TASKCENTER_TASK_RECONCILE_PATH: join(fixture.directory, "task-reconcile.jsonl"),
+      TASKCENTER_SESSION_REGISTRY_PATH: join(fixture.directory, "session-registry.json"),
+      TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

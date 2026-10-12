@@ -121,3 +121,14 @@ test("旧 Bug 链接回落到普通任务入口", () => {
   for (const bucket of ["bugs", "awaiting_merge", "completed_bugs"]) assert.equal(parseTaskWorkspaceSearch(`bucket=${bucket}`).bucket, "all");
   for (const path of ["bug", "bug-acceptance", "bug-merge", "bug-dispatch", "bug-dispatch/control"]) assert.equal(isAllowedControlPath(`/tasks/task-old/${path}`, "POST"), false);
 });
+
+
+test("结束与事实待确认任务从执行中统计剔除但保持可恢复", () => {
+  for (const task of [{ status: "in_progress", runs: [{ ended_at: "2026-10-12" }] }, { status: "in_progress", executionReconciliation: { state: "recovery_pending", next_action: "核对并恢复" } }]) {
+    assert.equal(taskMatchesBucket(task, "in_progress"), false);
+    assert.equal(taskMatchesBucket(task, "execution_unconfirmed"), true);
+    assert.equal(taskMatchesBucket(task, "attention"), true);
+    assert.equal(taskMatchesBucket(task, "completed"), false);
+  }
+  assert.equal(taskMatchesBucket({ status: "in_progress", runs: [{ ended_at: "" }] }, "in_progress"), true);
+});

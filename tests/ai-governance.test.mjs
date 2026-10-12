@@ -95,3 +95,20 @@ test("主线 AI 推理独立于派发配置并禁用工具、MCP 和持久化", 
   assert.deepEqual(JSON.parse(request.args[request.args.indexOf("--mcp-config") + 1]), { mcpServers: {} });
   await assert.rejects(runClaudeInference({ profile: { model: "other", effort: "low" }, prompt: "bounded snapshot" }), /CLI_MODEL_MISMATCH/);
 });
+
+
+test("实际处置日志加入AI时间线，可按任务与来源查询成功和失败", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "ai-reconcile-")); t.after(() => rm(dir, { recursive: true, force: true }));
+  const reconciliationPath = join(dir, "reconcile");
+  await writeFile(reconciliationPath, JSON.stringify({ observedAt: "2026-10-12T00:00:00Z", actions: [{ task_id: "t", action: "execution_unconfirmed", status: "succeeded", basis: "run:r" }, { task_id: "other", action: "recovery_pending", status: "failed", error: "sealed" }] }) + "\n");
+  const options = { path: join(dir, "ai"), jevPath: join(dir, "jev"), reconciliationPath };
+  const all = await aiActivity({ ...options, params: new URLSearchParams({ source: "reconciliation" }) });
+  assert.equal(all.rows.length, 2);
+  assert.ok(all.rows.some(row => row.status === "failed" && row.result.error === "sealed"));
+  const filtered = await aiActivity({ ...options, params: new URLSearchParams({ source: "reconciliation", task_id: "t" }) });
+  assert.equal(filtered.rows.length, 1);
+  assert.equal(filtered.rows[0].result.basis, "run:r");
+  const receipt = await aiActivity({ ...options, params: new URLSearchParams({ task_id: "lost" }), tasks: [{ id: "lost", executionReconciliation: { event_id: "reconcile-lost", observed_at: "2026-10-12T00:00:01Z", state: "recovery_pending", basis: "session_end_unconfirmed", next_action: "恢复原任务" } }] });
+  assert.equal(receipt.rows[0].id, "reconcile-lost");
+  assert.equal(receipt.rows[0].result.next_action, "恢复原任务");
+});

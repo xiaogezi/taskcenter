@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { parseTaskWorkspaceSearch, taskActions, taskAxes, taskListRequestKey } from "@/lib/task-workspace.mjs";
+import { parseTaskWorkspaceSearch, taskActions, taskAxes, taskListRequestKey, executionDisplayStatus } from "@/lib/task-workspace.mjs";
 import { describeActivityEvent, fetchInFlight, lastSuccessText, reduceDetailFailure, reduceDetailSuccess, reduceEventsFailure, reduceEventsSuccess } from "@/lib/task-detail.mjs";
 
 
@@ -14,11 +14,7 @@ type TaskRowAction = { action: TaskAction; label: string };
 const labels: Record<string, string> = { planned: "计划中", in_progress: "执行中", blocked: "已阻塞", done_claimed: "已声明完成", verified: "已验证", cancelled: "已取消", passed: "通过", pending: "待处理", failed: "失败", stale: "已过期", changes_requested: "需修改", ready: "就绪", accepted: "已验收", rejected: "已拒绝", not_required: "不要求", unknown: "未知", execution_unconfirmed: "执行待确认" };
 const text = (value: unknown) => typeof value === "string" && value.trim() ? value : "未知";
 // 执行终态与完成判定解耦：任务仍在账本但运行已收口且会话脱离时，展示“执行待确认”而非“执行中”。
-const displayStatus = (task: Task) => {
-  const runs = task.runs || [];
-  if (task.status === "in_progress" && runs.length && !runs.some((run) => !run.ended_at) && task.sessionDetachedAt) return "execution_unconfirmed";
-  return task.status || "unknown";
-};
+const displayStatus = (task: Task) => executionDisplayStatus(task);
 const formatDate = (value: unknown) => typeof value === "string" && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "未知";
 const tokenFormatter = new Intl.NumberFormat("en-US", { notation: "compact", maximumSignificantDigits: 3 });
 const formatTokens = (value: number) => tokenFormatter.format(Math.max(0, Number(value || 0)));
@@ -163,7 +159,7 @@ export function TaskWorkspace() {
   <main className={state.task ? "task-workspace with-open-detail" : "task-workspace"}>
     <aside className="task-nav"><a className="task-logo" href="/tasks">TASK<span>CENTER</span></a><nav><a className="active" href="/tasks">任务工作区</a><a href="/sessions">会话</a><a href="/ai">AI 行为</a><a href="/improvements">改进建议</a><a href="/settings">设置</a></nav></aside>
     <section className="task-main"><header className="task-header"><div><p>LOCAL CONTROL API</p><h1>任务工作区</h1><small>任务事实、证据与活动均来自本地 Control API。</small></div><button disabled={refreshing || loading} onClick={() => { setRefreshing(true); setPollTick(current => current + 1); }}>{refreshing ? "刷新中…" : "刷新"}</button></header>
-      <section className="task-stats" aria-label="任务统计">{([['planned','新建'],['in_progress','执行中'],['completed','已完成'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
+      <section className="task-stats" aria-label="任务统计">{([['planned','新建'],['in_progress','执行中'],['execution_unconfirmed','执行待确认'],['completed','已完成'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
       <section className="task-filters"><select value={state.project} onChange={(event) => update({ project: event.target.value, page: 1 })}><option value="all">全部项目</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.label}</option>)}</select><input value={state.query} onChange={(event) => update({ query: event.target.value, page: 1 })} placeholder="搜索标题、ID 或目标" /><span>共 {payload.total ?? "未知"} 条</span></section>
       {notice && <p role="status">{notice}</p>}{error && <p className="task-error" role="status">{error}</p>}<div className="task-table-wrap"><table className="task-table"><thead><tr><th>状态</th><th>任务名称</th><th>项目</th><th>当前阶段</th><th>Token</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{loading && !tasks.length ? <tr><td colSpan={7}>正在加载真实任务摘要…</td></tr> : tasks.length ? tasks.map((task) => {
         const actions = taskActions(task) as TaskRowAction[];

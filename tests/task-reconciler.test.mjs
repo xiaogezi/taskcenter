@@ -24,7 +24,7 @@ for (const [key, value] of Object.entries(envPaths)) {
 }
 // 动态 import：必须在 envPaths 设置之后加载，避免路径常量落到默认（真实数据）路径。
 const { runReconciliation, queryFindings, lastReconciliation } = await import("../scripts/task-reconciler.mjs");
-const { recordTaskEvent, reconcileTasks, loadTasks } = await import("../scripts/task-ledger.mjs");
+const { recordTaskEvent, loadTasks } = await import("../scripts/task-ledger.mjs");
 
 async function resetLedger() {
   for (const path of Object.values(envPaths)) {
@@ -38,7 +38,7 @@ test("对账器：不调用 task_close 的任务在会话脱离后被收口并�
   // 触发执行中状态（模拟真实运行）
   recordTaskEvent({ type: "task.resume", task_id: "rec-orphan", session_id: "sess-orphan", agent: "a1" }, { authorizedResume: true });
 
-  const result = runReconciliation({ availableSessionIds: ["other-session"] });
+  const result = await runReconciliation({ availableSessionIds: ["other-session"] });
   assert.equal(result.reconciled.length, 1, "脱离会话的任务被收口");
   assert.equal(result.reconciled[0].id, "rec-orphan");
 
@@ -56,11 +56,11 @@ test("对账器：不调用 task_close 的任务在会话脱离后被收口并�
 test("对账器：幂等——重复对账不重复收口，不改变已收口的结束时间", async () => {
   await resetLedger();
   recordTaskEvent({ type: "task.create", session_id: "sess-idem", task_id: "rec-idem", title: "幂等任务", goal: "目标" });
-  runReconciliation({ availableSessionIds: [] });
+  await runReconciliation({ availableSessionIds: [] });
   const first = loadTasks()[0].runs.at(-1).ended_at;
   assert.ok(first, "首次对账已收口");
-  runReconciliation({ availableSessionIds: [] });
-  runReconciliation({ availableSessionIds: [] });
+  await runReconciliation({ availableSessionIds: [] });
+  await runReconciliation({ availableSessionIds: [] });
   const task = loadTasks()[0];
   assert.equal(task.runs.at(-1).ended_at, first, "重复对账幂等");
   assert.equal(task.sessionDetachedAt, task.sessionDetachedAt, "脱离时间保留");
@@ -100,9 +100,63 @@ test("对账器：queryFindings 为纯只读，不写任何文件", async () => 
 test("对账器：服务重启恢复——重启后再次对账可恢复未处理记录", async () => {
   await resetLedger();
   recordTaskEvent({ type: "task.create", session_id: "sess-restart", task_id: "rec-restart", title: "重启", goal: "r" });
-  const result = runReconciliation({ availableSessionIds: [] });
+  const result = await runReconciliation({ availableSessionIds: [] });
   assert.equal(result.reconciled.length, 1);
   const task = loadTasks()[0];
   assert.equal(task.runs.at(-1).ended_reason, "session_detached", "重启后的首次对账收口脱离运行");
   assert.equal(lastReconciliation().observedAt, result.observedAt, "对账审计记录可查询");
+});
+
+
+test("主动处置依据明确回合结束收口 Run，保持契约与归属并幂等登记恢复动作", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", task_id: "auto-ended", session_id: "auto-session", title: "待恢复", goal: "保留目标", status: "in_progress" });
+  const terminal = { type: "task_complete", turn_id: "turn-1", at: new Date(Date.now() + 1000).toISOString() };
+  const options = { availableSessionIds: ["auto-session"], inspectSession: () => ({ busy: false, lastTerminal: terminal }) };
+  const first = await runReconciliation(options);
+  const task = loadTasks()[0];
+  assert.equal(first.actions.length, 1);
+  assert.equal(task.runs.at(-1).ended_at, terminal.at);
+  assert.equal(task.status, "in_progress");
+  assert.equal(task.sessionId, "auto-session");
+  assert.equal(task.goal, "保留目标");
+  assert.equal(task.executionReconciliation.state, "execution_unconfirmed");
+  assert.match(task.executionReconciliation.next_action, /原契约/);
+  const before = await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8");
+  assert.deepEqual((await runReconciliation(options)).actions, []);
+  assert.equal(await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8"), before);
+  recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: task.sessionId }, { authorizedResume: true });
+  assert.equal(loadTasks()[0].executionReconciliation, null);
+  assert.equal(loadTasks()[0].runs.at(-1).ended_at, "");
+});
+
+test("当前忙碌、旧结束事件、缺失会话和CLI活跃不会被错误收口或取消", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", task_id: "auto-busy", session_id: "busy-session", status: "in_progress" });
+  assert.deepEqual((await runReconciliation({ availableSessionIds: ["busy-session"], inspectSession: () => ({ busy: true }) })).actions, []);
+  const task = loadTasks()[0];
+  await runReconciliation({ availableSessionIds: ["busy-session"], inspectSession: () => ({ busy: false, lastTerminal: { type: "task_complete", at: "2000-01-01T00:00:00Z", turn_id: "old" } }) });
+  assert.equal(loadTasks()[0].runs.at(-1).ended_at, "");
+  assert.equal(loadTasks()[0].executionReconciliation.state, "recovery_pending");
+  assert.equal(loadTasks()[0].status, task.status);
+  assert.throws(() => recordTaskEvent({ type: "task.execution_reconciled", task_id: task.id }), /内部/);
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([{ ...task, cliRuns: [{ status: "active" }] }]));
+  assert.deepEqual((await runReconciliation({ availableSessionIds: [task.sessionId], inspectSession: () => { assert.fail("活跃CLI不能被扫描收口"); } })).actions, []);
+});
+
+test("只有当前Run的完整版本证据才补齐完成声明，失败与旧证据保持待确认", async () => {
+  await resetLedger();
+  const started = "2026-10-12T00:00:00Z", observed = "2026-10-12T00:01:00Z";
+  const subject = { type: "git_commit", value: "abc123", observed_at: observed };
+  const base = { id: "auto-delivery", sessionId: "delivery-session", status: "in_progress", contractVersion: "v2", goal: "交付", scope: ["本任务"], nonGoals: [], workflowProfile: "standard", reviewPolicy: "recommended", acceptanceRequirements: [{ id: "done", description: "交付", required: true }], verificationPlan: [{ id: "test", kind: "test", title: "验证", required: true }], currentSubject: subject, evidence: ["artifact:report"], tests: ["测试通过"], requirementResults: [{ requirement_id: "done", status: "passed", evidence_refs: ["artifact:report"], checked_at: observed, checked_by: { type: "agent", id: "owner" }, subject_ref: subject }], verificationClaims: [{ id: "claim", requirement_id: "test", kind: "test", status: "passed", evidence_ref: "artifact:report", observed_at: observed, producer: { type: "agent", id: "owner" }, subject_ref: subject }], runs: [{ run_id: "delivery-run", session_id: "delivery-session", started_at: started, ended_at: observed, ended_reason: "completed" }] };
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([base]));
+  const options = { availableSessionIds: [base.sessionId], inspectSession: () => ({ busy: false }) };
+  assert.equal((await runReconciliation(options)).actions[0].action, "delivery_reconciled");
+  assert.equal(loadTasks()[0].status, "done_claimed");
+  assert.notEqual(loadTasks()[0].acceptanceStatus, "accepted");
+  assert.deepEqual((await runReconciliation(options)).actions, []);
+  await resetLedger();
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([{ ...base, requirementResults: [{ ...base.requirementResults[0], checked_at: "2000-01-01T00:00:00Z" }] }]));
+  await runReconciliation(options);
+  assert.equal(loadTasks()[0].status, "in_progress");
 });

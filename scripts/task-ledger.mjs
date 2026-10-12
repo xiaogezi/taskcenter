@@ -336,7 +336,7 @@ export function reconcileTasks(availableSessionIds) {
     if (task.status === "removed") return false;
     const sessionId = canonicalSessionId(task.sessionId);
     if (!sessionId) return false;
-    return !available.has(sessionId) && !registered.has(sessionId);
+    return !task.sessionDetachedAt && !available.has(sessionId) && !registered.has(sessionId);
   });
   if (!stale.length) return [];
   const now = new Date().toISOString();
@@ -385,6 +385,7 @@ function readLedger() {
 }
 
 export function recordTaskEvent(input, options = {}) {
+  if (input?.type === "task.execution_reconciled" && options.internalReconciliation !== true) throw new TaskLedgerError(403, "执行对账事件仅允许内部确定性对账器写入。");
   if (["bug", "bug_merge", "bug_acceptance"].some(field => Object.hasOwn(input || {}, field))) throw new TaskLedgerError(400, "RETIRED_BUG_WORKFLOW：Bug 闭环字段已退休，不接受新写入。");
   const tasks = loadTasks();
   const current = input?.task_id ? tasks.find((task) => task.id === String(input.task_id)) : null;
@@ -604,7 +605,7 @@ const idempotentEventFields = [
   "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
   "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation", "review_cycle",
   "phase", "transition", "activity_source", "activity_id", "review_cycle_id",
-  "diagnostic_observation",
+  "diagnostic_observation", "execution_observation",
   "close_requirements", "close_verifications",
   "context_completion_id", "authorization_id", "reason", "actor", "subject_ref", "acceptance_record", "workspace_policy",
 ];
@@ -962,6 +963,7 @@ function normalizeEvent(input, current = null, legacyText = false) {
     "session.register", "task.create", "task.resume", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.close", "task.review",
     "task.reminder", "tool.call", "requirement.reported", "verification.reported", "review.reported", "review_cycle.reported",
     "acceptance.accepted", "acceptance.rejected", "subject.updated", "diagnostic.reported", "phase.reported",
+    "task.execution_reconciled",
   ]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
   if (input.status !== undefined && !statuses.has(input.status)) throw new TaskLedgerError(400, "任务状态无效。");
@@ -1013,6 +1015,7 @@ function normalizeEvent(input, current = null, legacyText = false) {
     reviewed_at: cleanText(input.reviewed_at, 80),
     tool_name: cleanText(input.tool_name, 120),
     tool_use_id: cleanText(input.tool_use_id, 200),
+    ...(type === "task.execution_reconciled" ? { execution_observation: input.execution_observation } : {}),
     ...normalizeCompletionEvent(input, current?.currentSubject || null),
     phase: cleanText(input.phase, 40),
     transition: cleanText(input.transition, 40),
@@ -1056,6 +1059,18 @@ function normalizeEvent(input, current = null, legacyText = false) {
 }
 
 function applyEvent(current, event) {
+  if (event.type === "task.execution_reconciled") {
+    const observation = event.execution_observation;
+    if (!current || !["in_progress", "planned", "blocked"].includes(current.status)
+      || !["execution_unconfirmed", "recovery_pending"].includes(observation?.state)
+      || !observation.basis || !observation.next_action) throw new TaskLedgerError(400, "执行对账事实无效。");
+    const runs = (current.runs || []).map(run => observation.terminal && !run.ended_at
+      ? { ...run, ended_at: observation.terminal.at, ended_reason: observation.terminal.type } : run);
+    if (observation.terminal && (!Number.isFinite(Date.parse(observation.terminal.at))
+      || !["task_complete", "task_failed", "turn_aborted", "turn_failed"].includes(observation.terminal.type)
+      || runs.some(run => Date.parse(run.started_at) > Date.parse(observation.terminal.at)))) throw new TaskLedgerError(400, "运行结束事实无效。");
+    return withCompletionState({ ...current, runs, executionReconciliation: { ...observation, event_id: event.event_id, observed_at: event.created_at }, updatedAt: event.created_at, lastEventId: event.event_id });
+  }
   const alreadyTerminal = ["done_claimed", "verified", "cancelled"].includes(current?.status);
   const supersedingActiveShadow = event.status === "cancelled" && Boolean(event.superseded_by);
   if (event.archived_at && event.archived_at !== "__UNARCHIVE__" && current && !alreadyTerminal && !supersedingActiveShadow) {
@@ -1217,6 +1232,7 @@ function runSummary(task) {
 
 // 打开一个 Run：同 session 延续当前 Run；切换到新 session 时结束旧 Run（handoff）并新开。
 function withRunOpened(task, event, now) {
+  task = { ...task, executionReconciliation: null };
   const runs = [...(task.runs || [])];
   const last = runs[runs.length - 1];
   if (last && !last.ended_at && last.session_id === event.session_id) return task;

@@ -5,11 +5,14 @@
 // 日常只读查询不经过本模块，不会出现“打开任务页面就改变账本”的副作用。
 import { readFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { setImmediate } from "node:timers/promises";
+import { createHash } from "node:crypto";
 import { taskReconcilePath } from "./task-ledger.mjs";
-import { reconcileTasks, loadTasks } from "./task-ledger.mjs";
+import { reconcileTasks, loadTasks, recordTaskEvent, isContextShadowTask } from "./task-ledger.mjs";
+import { inspectSessionState } from "./harnesses/codex-session.mjs";
+import { computeCompletionReadiness, sameSubject } from "./completion-state.mjs";
 
 const ACTIVE_TASK_STATUSES = new Set(["planned", "in_progress", "blocked"]);
-const CONFIRMED_STATUSES = new Set(["done_claimed", "verified", "cancelled"]);
 
 function activeRuns(task) {
   return (task.runs || []).filter((run) => !run.ended_at);
@@ -51,23 +54,77 @@ function findingsForTask(task) {
 }
 
 // 运行一次对账：收口脱离会话的运行（幂等），并生成缺项清单。
-// 返回 { reconciled, findings }；reconciled 为本次被收口运行的任务。
-export function runReconciliation({ availableSessionIds = [] } = {}) {
-  const reconciled = reconcileTasks(availableSessionIds);
-  const findings = loadTasks()
-    .filter((task) => !task.archivedAt)
-    .flatMap((task) => findingsForTask(task));
-  const now = new Date().toISOString();
-  if (reconciled.length || findings.length) {
-    mkdirSync(dirname(taskReconcilePath), { recursive: true });
-    appendFileSync(taskReconcilePath, `${JSON.stringify({
-      type: "reconciliation.run",
-      observedAt: now,
-      reconciled: reconciled.map((task) => ({ id: task.id, sessionId: task.sessionId })),
-      findings,
-    })}\n`, { mode: 0o600 });
-  }
-  return { reconciled, findings, observedAt: now };
+// 返回 { reconciled, findings, actions }；逐条让出事件循环，不阻塞控制请求。
+let reconciling = false;
+export async function runReconciliation({ availableSessionIds = [], inspectSession = inspectSessionState } = {}) {
+  if (reconciling) return { reconciled: [], findings: [], actions: [], observedAt: new Date().toISOString() };
+  reconciling = true;
+  try {
+    const reconciled = reconcileTasks(availableSessionIds);
+    const actions = [];
+    const candidates = loadTasks().filter(task => !task.archivedAt && !isContextShadowTask(task) && ACTIVE_TASK_STATUSES.has(task.status)).map(task => task.id);
+    for (const taskId of candidates) {
+      await setImmediate();
+      const task = loadTasks().find(task => task.id === taskId);
+      if (!task || task.archivedAt || !ACTIVE_TASK_STATUSES.has(task.status)) continue;
+      // CLI Runs are owned by their host; the session reconciler cannot terminate them.
+      if (task.cliRuns?.some(run => run.status === "active")) continue;
+      const runs = task.runs || [], running = activeRuns(task);
+      const startedAt = runs.at(-1)?.started_at || task.activeStartedAt || task.createdAt;
+      let terminal = null, basis = "";
+      if (running.length || !runs.length) {
+        let session;
+        try { session = inspectSession(task.sessionId); } catch { session = null; }
+        if (session?.busy) continue;
+        if (session?.lastTerminal && Number.isFinite(Date.parse(startedAt))
+          && Date.parse(session.lastTerminal.at) >= Date.parse(startedAt)) {
+          terminal = session.lastTerminal;
+          basis = `session:${task.sessionId}/turn:${terminal.turn_id}/${terminal.type}@${terminal.at}`;
+        } else basis = !runs.length ? "legacy_run_missing" : "session_end_unconfirmed";
+      } else basis = task.executionReconciliation?.terminal?.at === runs.at(-1).ended_at
+        ? task.executionReconciliation.basis
+        : `run:${runs.at(-1).run_id}/${runs.at(-1).ended_reason}@${runs.at(-1).ended_at}`;
+      const state = terminal || (!running.length && runs.length) ? "execution_unconfirmed" : "recovery_pending";
+      const nextAction = "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
+      const id = `reconcile-${createHash("sha256").update(JSON.stringify([task.id, startedAt, basis, task.currentSubject])).digest("hex")}`;
+      const completion = computeCompletionReadiness({ ...task, status: "done_claimed" });
+      const fresh = [...(task.requirementResults || []), ...(task.verificationClaims || [])]
+        .filter(item => item.status === "passed" || item.status === "not_applicable")
+        .every(item => Date.parse(item.checked_at || item.observed_at) >= Date.parse(startedAt)
+          && sameSubject(item.subject_ref, task.currentSubject));
+      const completedRun = terminal?.type === "task_complete" || (!running.length && runs.at(-1)?.ended_reason === "completed");
+      try {
+        if (completedRun && task.currentSubject?.type !== "none" && task.currentSubject && task.evidence?.length && fresh && completion.completionClaim.allowed) {
+          const result = recordTaskEvent({ type: "task.close", event_id: `${id}-close`, task_id: task.id, session_id: task.sessionId, status: "done_claimed", subject_ref: task.currentSubject, tests: task.tests || [], evidence: task.evidence, current_step: "自动对账：当前版本交付证据满足契约，补齐完成声明", next_action: "由独立授权主体验收；自动对账不代替验收。" });
+          if (!result.idempotent) actions.push({ event_id: result.event.event_id, task_id: task.id, action: "delivery_reconciled", status: "succeeded", basis });
+        } else if (task.executionReconciliation?.basis !== basis) {
+          const result = recordTaskEvent({ type: "task.execution_reconciled", event_id: id, task_id: task.id, session_id: task.sessionId, execution_observation: { state, basis, terminal, next_action: nextAction } }, { internalReconciliation: true });
+          if (!result.idempotent) actions.push({ event_id: result.event.event_id, task_id: task.id, action: state, status: "succeeded", basis });
+        }
+      } catch (error) {
+        actions.push({ task_id: task.id, action: state, status: "failed", basis, error: error.message });
+      }
+      const action = actions.at(-1);
+      if (action?.task_id === task.id) {
+        mkdirSync(dirname(taskReconcilePath), { recursive: true });
+        appendFileSync(taskReconcilePath, `${JSON.stringify({ type: "reconciliation.action", observedAt: new Date().toISOString(), actions: [action] })}\n`, { mode: 0o600 });
+      }
+    }
+    const findings = loadTasks()
+      .filter((task) => !task.archivedAt)
+      .flatMap((task) => findingsForTask(task));
+    const now = new Date().toISOString();
+    if (reconciled.length || actions.length) {
+      mkdirSync(dirname(taskReconcilePath), { recursive: true });
+      appendFileSync(taskReconcilePath, `${JSON.stringify({
+        type: "reconciliation.run",
+        observedAt: now,
+        reconciled: reconciled.map((task) => ({ id: task.id, sessionId: task.sessionId })),
+        findings,
+      })}\n`, { mode: 0o600 });
+    }
+    return { reconciled, findings, actions, observedAt: now };
+  } finally { reconciling = false; }
 }
 
 // 纯查询：当前账本的对账发现（不写任何文件）。

@@ -285,6 +285,13 @@ test("查询缺失会话任务不会写账本；reconcile 收口运行并保留�
   await writeFile(dashboardPath, JSON.stringify({ threads: [], source: { availableThreads: [] } }));
   const { base, child } = await startControlServer({ TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "0", TASKCENTER_DASHBOARD_PATH: dashboardPath });
   context.after(() => child.kill("SIGTERM"));
+  let startupFinished = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    startupFinished = Boolean((await (await fetch(`${base}/reconciliation`)).json()).lastRunAt);
+    if (startupFinished) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(startupFinished, true, "等待后台启动对账结束，再独立验证GET不写账本");
   const before = await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8");
   for (const path of ["/tasks", "/tasks?view=summary", "/session-status"]) {
     const response = await fetch(`${base}${path}`);

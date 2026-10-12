@@ -19,7 +19,7 @@ const redactPaths = text => text.replace(/(?:\/Users\/|\/home\/|[A-Z]:\\Users\\)
 
 export function governanceSnapshot(task, kind) {
   if (!task || !Object.hasOwn(kinds, kind)) throw new AiGovernanceError(400, "请选择有效任务和分析类型。");
-  const selected = { title: task.title, goal: task.goal, status: task.status, blocker: task.blocker, current_step: task.currentStep, next_action: task.nextAction, contract_version: task.contractVersion, workflow_profile: task.workflowProfile, scope: task.scope, non_goals: task.nonGoals, plan: task.plan, verification_plan: task.verificationPlan, criteria: task.acceptanceCriteria, requirements: task.acceptanceRequirements, tests: task.tests, evidence: task.evidence, verifications: task.verificationClaims, results: task.requirementResults, subject: task.currentSubject };
+  const selected = { title: task.title, goal: task.goal, status: task.status, blocker: task.blocker, current_step: task.currentStep, next_action: task.nextAction, contract_version: task.contractVersion, workflow_profile: task.workflowProfile, scope: task.scope, non_goals: task.nonGoals, plan: task.plan, verification_plan: task.verificationPlan, criteria: task.acceptanceCriteria, requirements: task.acceptanceRequirements, tests: task.tests, evidence: task.evidence, verifications: task.verificationClaims, results: task.requirementResults, subject: task.currentSubject, ...(task.executionReconciliation ? { execution_reconciliation: task.executionReconciliation } : {}) };
   if (containsSecret(selected)) throw new AiGovernanceError(400, "任务快照疑似包含凭据，未发送给模型。", "AI_SUSPECTED_SECRET");
   let truncated = Object.values(selected).some(value => Array.isArray(value) && value.length > 20);
   const references = [{ id: "task", text: redactPaths(JSON.stringify({ title: clean(task.title), goal: clean(task.goal), status: task.status, blocker: clean(task.blocker), current_step: clean(task.currentStep), next_action: clean(task.nextAction) })) }];
@@ -55,6 +55,7 @@ export function collaborationRules(task) {
   const readiness = computeCompletionReadiness(task);
   const steps = [];
   const add = (id, category, action, tool, reason) => steps.push({ id, category, action, tool, reason: reason.slice(0, 500) });
+  if (task.executionReconciliation && ["planned", "in_progress", "blocked"].includes(task.status)) add("resume", "recovery", task.executionReconciliation.next_action, "taskcenter_task_resume", task.executionReconciliation.basis);
   if (!task.goal || !task.scope?.length || !(task.acceptanceRequirements?.length || task.acceptanceCriteria?.length)) add("contract", "contract", "从已有委托补齐目标、scope 与可验证的验收条件；只有授权或范围存在实质歧义才询问用户。", "taskcenter_task_update", "契约缺项");
   if (["standard", "strict"].includes(task.workflowProfile) && !task.verificationPlan?.length) add("plan", "contract", "将验收条件对应到必要的验证计划，复用项目现有命令。", "taskcenter_task_update", "缺少验证计划");
   if (task.status === "blocked" || task.blocker) {
@@ -156,21 +157,23 @@ export function createGovernanceRunner({ path, infer = runClaudeInference, profi
   };
 }
 
-export async function aiActivity({ path, jevPath, params = new URLSearchParams(), running = false, tasks = [] }) {
+export async function aiActivity({ path, jevPath, reconciliationPath, params = new URLSearchParams(), running = false, tasks = [] }) {
   const source = params.get("source") || "", taskId = params.get("task_id") || "", before = params.get("before") || "";
   const limit = Number(params.get("limit") || 30);
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (source && !["governance", "jev"].includes(source))) throw new AiGovernanceError(400, "行为筛选参数无效。");
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (source && !["governance", "jev", "reconciliation"].includes(source))) throw new AiGovernanceError(400, "行为筛选参数无效。");
   let boundary;
   try { boundary = before ? JSON.parse(Buffer.from(before, "base64url").toString()) : null; } catch { throw new AiGovernanceError(400, "行为游标无效。"); }
   if (boundary && (!Array.isArray(boundary) || boundary.length !== 2 || boundary.some(item => typeof item !== "string"))) throw new AiGovernanceError(400, "行为游标无效。");
-  const rows = [], warnings = [];
+  const rows = [], warnings = [], seen = new Set();
   const compare = (a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id);
   const add = row => {
-    if (!row.at || !row.id || (source && row.source !== source) || (taskId && row.task_id !== taskId) || (boundary && compare(row, { at: boundary[0], id: boundary[1] }) <= 0)) return;
+    if (!row.at || !row.id || seen.has(row.id) || (source && row.source !== source) || (taskId && row.task_id !== taskId) || (boundary && compare(row, { at: boundary[0], id: boundary[1] }) <= 0)) return;
+    seen.add(row.id);
     rows.push(row);
     if (rows.length > limit * 2) { rows.sort(compare); rows.length = limit + 1; }
   };
-  for (const [file, origin] of [[path, "governance"], [`${jevPath}.1`, "jev"], [jevPath, "jev"]]) {
+  for (const [file, origin] of [[path, "governance"], [`${jevPath}.1`, "jev"], [jevPath, "jev"], [reconciliationPath, "reconciliation"]]) {
+    if (!file) continue;
     try {
       const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
       let index = 0;
@@ -178,11 +181,18 @@ export async function aiActivity({ path, jevPath, params = new URLSearchParams()
         index++;
         try {
           const row = JSON.parse(line);
-          if (origin === "governance") add(row);
+          if (origin === "reconciliation") {
+            for (const [index, action] of (row.actions || []).entries()) add({ id: action.event_id || `reconciliation:${row.observedAt}:${action.task_id}:${index}`, source: origin, at: row.observedAt, task_id: action.task_id, title: "自主任务处置", model: "rules", status: action.status, action: action.action, summary: action.status === "failed" ? "处置失败，保留原任务，下次对账重试" : action.action === "delivery_reconciled" ? "已补齐完成声明，等待独立验收" : "已登记运行事实与恢复动作，保留原契约和任务归属", result: action });
+          } else if (origin === "governance") add(row);
           else add({ id: `jev:${file.endsWith(".1") ? "previous" : "current"}:${index}:${row.input_hash || row.event_id || ""}`, source: "jev", at: row.observed_at, task_id: row.task_id, title: `Jev 观察 · ${(row.lines || []).join(" / ") || row.status}`, model: row.model || "unknown", status: row.status, summary: row.reason || row.error || "观察建议", result: row.answers || null, input_hash: row.input_hash, prompt_version: row.prompt_version, duration_ms: row.latency_ms, usage: row.usage });
         } catch { warnings.push("行为日志存在无效记录，已跳过"); }
       }
     } catch (error) { if (error.code !== "ENOENT") warnings.push(`${origin} 日志读取失败`); }
+  }
+  // Durable task receipts also cover a process stopping between projection and activity append.
+  for (const task of tasks) {
+    const receipt = task.executionReconciliation;
+    if (receipt?.event_id) add({ id: receipt.event_id, source: "reconciliation", at: receipt.observed_at, task_id: task.id, title: "自主任务处置", model: "rules", status: "succeeded", summary: "已登记运行事实与恢复动作，保留原契约和任务归属", result: { action: receipt.state, basis: receipt.basis, next_action: receipt.next_action } });
   }
   rows.sort(compare);
   const page = rows.slice(0, limit), last = page.at(-1);
@@ -194,5 +204,5 @@ export async function aiActivity({ path, jevPath, params = new URLSearchParams()
     try { if (row.snapshot?.state_fingerprint) changed = row.snapshot.state_fingerprint !== governanceSnapshot(task, row.kind || "evidence").state_fingerprint; } catch { /* No secret fields in the derived view. */ }
     row.follow_up = { status: task.status, updated_at: task.updatedAt, changed_since_analysis: changed, verification_status: task.verificationStatus || "unknown", acceptance_status: task.acceptanceStatus || "pending", remaining_steps: collaborationRules(task).steps, attribution: "任务账本后续事实；未确认 Agent 采纳建议，不能据此推断因果或独立验收。" };
   }
-  return { rows: page, running, next_cursor: rows.length > limit ? Buffer.from(JSON.stringify([last.at, last.id])).toString("base64url") : null, warnings: [...new Set(warnings)], coverage: "TaskCenter 已记录的主线治理调用与当前/上一轮 Jev 观察日志；不包含模型内部思维或平台外调用。" };
+  return { rows: page, running, next_cursor: rows.length > limit ? Buffer.from(JSON.stringify([last.at, last.id])).toString("base64url") : null, warnings: [...new Set(warnings)], coverage: "TaskCenter 主线治理调用、自主任务处置及当前/上一轮 Jev 观察日志；不包含模型内部思维或平台外调用。" };
 }

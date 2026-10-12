@@ -2,9 +2,9 @@
 
 AI 辅助以推进契约内交付为目标：`taskcenter_task_prepare`、任务写入回包和指定任务的摘要查询返回 `agent_guidance`。规则立即提供契约补齐、阻塞恢复、已有验证复用及 Subject 绑定修复步骤；已有 AI 结果只在快照一致且输出有效时作为补充，读取受限日志尾部，不启动或等待模型。Agent 自行执行授权范围内的动作，完成后通过原有任务与证据接口记录事实。响应过大时保留首个规则动作，其余通过 continuation 读取。`/ai` 展示推进建议和任务后续账本事实，明确不把任务变化等同于建议采纳，不替代独立验收。CLI、日志缺失或旧结果不阻塞主线，且不能把缺少完成登记当成停工理由。
 
-「AI 行为」页面 `/ai` 默认展示自主治理。`config/ai-governance.json / automatic.enabled` 启用受管理的独立观察器：自动关联当前工作区的活跃任务与新内容变化，Jev 判断是否需要参与，Claude/DeepSeek 分析证据或阻塞；Jev 未配置或失败时由 DeepSeek 自主判断。无需手动输入任务 ID，手动分析保留在折叠入口。快照只含受限任务字段与已登记证据摘要，不读取会话正文、文件或完整日志；本机路径隐去，疑似密钥拒绝发送。Claude CLI 禁用工具、MCP、项目上下文与会话持久化，超时 120 秒。自动推理并发一，同一快照持久去重，每任务间隔一分钟；失败冷却五分钟并返回规则检查，主线操作不等待 AI。判断和分析只提供建议，不改变任务或验收状态。
+「AI 行为」页面 `/ai` 默认展示自主治理。`config/ai-governance.json / automatic.enabled` 启用受管理的独立观察器：自动关联当前工作区的活跃任务与新内容变化，Jev 判断是否需要参与，Claude/DeepSeek 分析证据或阻塞；Jev 未配置或失败时由 DeepSeek 自主判断。无需手动输入任务 ID，手动分析保留在折叠入口。快照只含受限任务字段与已登记证据摘要，不读取会话正文、文件或完整日志；本机路径隐去，疑似密钥拒绝发送。Claude CLI 禁用工具、MCP、项目上下文与会话持久化，超时 120 秒。自动推理并发一，同一快照持久去重，每任务间隔一分钟；失败冷却五分钟并返回规则检查，主线操作不等待 AI。模型判断和分析只提供建议。确定性对账独立于 AI CLI：服务启动和低频扫描自动核对未归档任务，复用本地 Codex 回合结束事实收口 Run；缺少会话或运行证据时登记恢复动作，不凭时间推断完成或取消。只有当前 Run 的版本证据满足原契约才补齐 done_claimed，独立验收保持不变。逐条扫描让出事件循环，不等待模型。
 
-治理行为写入 `data/ai-activity.jsonl`（可通过 `TASKCENTER_AI_ACTIVITY_PATH` 隔离）；Jev 观察从 `TASKCENTER_JEV_RUNTIME_DIR/events.jsonl` 及上一轮日志读取。`GET /ai/activity`、`GET /ai/snapshot` 与受同源人工动作校验的 `POST /ai/analyze` 是工作台入口。页面仅展示平台已有记录，不暴露模型内部思维；未记录的用量和原因明确显示未知，历史保留范围遵循原来源，不重放旧任务。
+治理行为写入 `data/ai-activity.jsonl`（可通过 `TASKCENTER_AI_ACTIVITY_PATH` 隔离）；Jev 观察从 `TASKCENTER_JEV_RUNTIME_DIR/events.jsonl` 及上一轮日志读取。`GET /ai/activity`、`GET /ai/snapshot` 与受同源人工动作校验的 `POST /ai/analyze` 是工作台入口。自主处置逐条写入 `data/task-reconcile.jsonl`，对应任务事件持久化运行依据和恢复动作，`/ai` 展示实际动作、结果及失败原因。任务页将执行待确认从执行中分开统计。页面仅展示平台已有记录，不暴露模型内部思维；未记录的用量和原因明确显示未知，历史保留范围遵循原来源，不重放旧任务。
 
 观察器通过任务快照变化发现新事件，不批量重放已结束历史。运行状态与去重状态分别写入 runtime 下的 `ai-observer-health.json`、`ai-observer-state.json`，页面显示心跳、待判断数量与当前任务。Jev 复用宿主已有 `TYPESAFE_API_KEY` 环境变量，不读取凭据文件；候选 dry-run 环境禁用自动推理。停止观察器会终止未结束的 CLI，下一次服务启动恢复观察；配置或日志故障会停止观察器并展示异常，核心服务不依赖它。
 

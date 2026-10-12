@@ -16,6 +16,7 @@ export function inspectSessionState(threadId, sessionsRoot = defaultSessionsRoot
   }
 
   const activeTurns = new Map();
+  let lastTerminal = null;
   for (const line of readFileSync(sessionPath, "utf8").split(/\r?\n/)) {
     if (!line) continue;
     let item;
@@ -32,6 +33,7 @@ export function inspectSessionState(threadId, sessionsRoot = defaultSessionsRoot
       activeTurns.set(turnId, item.timestamp || "");
     } else if (terminalEvents.has(event.type)) {
       activeTurns.delete(turnId);
+      if (Number.isFinite(Date.parse(item.timestamp))) lastTerminal = { type: event.type, at: item.timestamp, turn_id: turnId };
     }
   }
 
@@ -42,6 +44,7 @@ export function inspectSessionState(threadId, sessionsRoot = defaultSessionsRoot
     sessionPath,
     busy: pending.length > 0,
     activeTurns: pending,
+    lastTerminal,
   };
 }
 
