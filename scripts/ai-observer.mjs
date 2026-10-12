@@ -14,6 +14,7 @@ const choices = {
   blockers: "任务阻塞、失败、重复尝试或下一步不清楚，需要复盘并建议下一步。",
 };
 const activeStatuses = new Set(["planned", "in_progress", "blocked"]);
+const snapshotVersion = "collaboration-v1";
 const readableJson = async (path, fallback) => {
   try { return JSON.parse(await readFile(path, "utf8")); }
   catch (error) { if (error.code === "ENOENT") return fallback; throw error; }
@@ -45,8 +46,8 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
           }
           continue;
         }
-        if (!initialized && !activeStatuses.has(task.status) && !state.tasks[task.id]) {
-          state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now() };
+        if (!initialized && !activeStatuses.has(task.status) && state.tasks[task.id]?.snapshot_version !== snapshotVersion) {
+          state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now(), snapshot_version: snapshotVersion };
           continue;
         }
         const previous = state.tasks[task.id];
@@ -97,7 +98,7 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
         const result = ruleResult(task, decision);
         await emit({ status: "degraded", model: "rules", decision, decision_reason: "AI 不可用，按已登记状态执行规则检查", summary: result.summary, result, fallback_reason: code, duration_ms: Math.round(performance.now() - started) });
       } finally {
-        if (!cancelled) state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now() };
+        if (!cancelled) state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now(), snapshot_version: snapshotVersion };
         await save();
         active = false; health.status = "watching"; health.current_task_id = null;
         health.pending_tasks = Math.max(0, health.pending_tasks - 1);

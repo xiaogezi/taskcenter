@@ -38,6 +38,18 @@ test("Jev 自主选择继续观察时不调用 CLI，保留原始判断", async 
   await f.observer.tick([task], profile);
   assert.equal(f.calls(), 0); assert.equal(f.rows.at(-1).decision, "observe"); assert.equal(f.rows.at(-1).status, "skipped"); assert.equal(f.jev[0].usage.input_tokens, 10);
 });
+test("快照版本升级仅重建已结束历史的基线，之后真实变化仍参与", async t => {
+  const f = await fixture(t);
+  await writeFile(f.options.statePath, JSON.stringify({ tasks: { past: { hash: "legacy-snapshot", handled_at: 1 } }, cooldown_until: 0 }));
+  const observer = await createAutomaticObserver(f.options);
+  const past = { ...task, id: "past", status: "done_claimed" };
+  await observer.tick([past], profile);
+  assert.equal(f.calls(), 0); assert.equal(f.rows.length, 0);
+  assert.equal(JSON.parse(await readFile(f.options.statePath, "utf8")).tasks.past.snapshot_version, "collaboration-v1");
+  f.advance(60_001);
+  await observer.tick([{ ...past, evidence: ["新增实际证据"] }], profile);
+  assert.equal(f.calls(), 1);
+});
 test("CLI 缺失只失败一次，其他快照规则降级，冷却不阻塞或改写任务", async t => {
   let calls = 0;
   const f = await fixture(t, { infer: async () => { calls++; throw Object.assign(new Error("missing"), { code: "ENOENT" }); } });
