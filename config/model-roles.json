@@ -1,6 +1,13 @@
 {
   "schema_version": "taskcenter-model-roles-v1",
+  "ai_governance": { "cli_profile": "claude-deepseek" },
   "cli_profiles": {
+    "claude-deepseek": {
+      "harness": "claude",
+      "model_key": "deepseek-v4-flash",
+      "provider": "deepseek",
+      "reasoning_effort": "low"
+    },
     "kimi-k3": {
       "harness": "kimi",
       "model": "kimi-code/k3-256k",
@@ -62,6 +69,7 @@
     "claude": {
       "provider": "xiaomi",
       "models": {
+        "deepseek-v4-flash": "deepseek-v4-flash",
         "mimo-v2.6-pro": "mimo-v2.6-pro",
         "mimo-v2.6-flash": "mimo-v2.6-flash",
         "mimo-v2.5-pro": "mimo-v2.5-pro",

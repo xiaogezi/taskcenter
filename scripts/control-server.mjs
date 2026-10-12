@@ -86,6 +86,7 @@ import {
   isReviewTaskClass, validateReviewRequest, claimReview, reportReview, reviewSessionRecords, reviewTaskRecords, routeForId,
 } from "./routing-control.mjs";
 import { prepareRoutingInput } from "./jev-routing.mjs";
+import { AiGovernanceError, aiActivity, createGovernanceRunner, governanceSnapshot } from "./ai-governance.mjs";
 import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.mjs";
 import { readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
@@ -121,6 +122,9 @@ const taskEventIndexPath = resolve(process.env.TASKCENTER_TASK_EVENT_INDEX_PATH 
 const usageHealthPath = resolve(process.env.TASKCENTER_USAGE_HEALTH_PATH || join(projectRoot, ".local", "runtime", "usage-worker-health.json"));
 const governanceHealthPath = resolve(process.env.TASKCENTER_GOVERNANCE_HEALTH_PATH || join(projectRoot, ".local", "runtime", "governance-worker-health.json"));
 const contextManagementPilotPath = pilotEventsPath(projectRoot);
+const aiActivityPath = resolve(process.env.TASKCENTER_AI_ACTIVITY_PATH || join(projectRoot, "data", "ai-activity.jsonl"));
+const jevActivityPath = join(resolve(process.env.TASKCENTER_JEV_RUNTIME_DIR || join(projectRoot, ".local", "jev-pilot")), "events.jsonl");
+const aiGovernance = createGovernanceRunner({ path: aiActivityPath });
 const host = "127.0.0.1";
 function releaseInfo() {
   const revision = String(process.env.TASKCENTER_RELEASE_REVISION || "").trim();
@@ -195,6 +199,33 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/sync") {
       verifyActionRequest(request);
       sendJson(response, syncing ? 202 : 200, await syncNow());
+      return;
+    }
+    if (request.method === "GET" && /^\/ai\/activity(?:\?|$)/.test(request.url)) {
+      const params = new URL(request.url, "http://localhost").searchParams;
+      const tasks = loadVisibleTasks(), routes = [];
+      let before = "";
+      do {
+        const page = routingDecisions({ limit: 100, before, tasks });
+        routes.push(...page.routes);
+        before = page.next_cursor;
+      } while (before);
+      sendJson(response, 200, await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, routes, delegations: listDelegations(), params, running: aiGovernance.running }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/ai/analyze") {
+      verifyManualTaskAction(request);
+      const body = await readJsonBody(request);
+      const task = loadVisibleTasks().find(item => item.id === body.task_id);
+      if (!task) throw new AiGovernanceError(404, "任务不存在或不可见。");
+      sendJson(response, 202, aiGovernance.start(task, body));
+      return;
+    }
+    if (request.method === "GET" && /^\/ai\/snapshot\?/.test(request.url)) {
+      const params = new URL(request.url, "http://localhost").searchParams;
+      const task = loadVisibleTasks().find(item => item.id === params.get("task_id"));
+      if (!task) throw new AiGovernanceError(404, "任务不存在或不可见。");
+      sendJson(response, 200, governanceSnapshot(task, params.get("kind")));
       return;
     }
     if (request.method === "GET" && request.url === "/dashboard") {
@@ -1188,7 +1219,7 @@ const server = createServer(async (request, response) => {
     }
     sendJson(response, 404, { error: "接口不存在。" });
   } catch (error) {
-    const known = error instanceof SessionSwitchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
+    const known = error instanceof AiGovernanceError || error instanceof SessionSwitchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
     const statusCode = known ? error.statusCode : 500;
     if (!known) {
       console.error("TaskCenter control error:", safeError(error));

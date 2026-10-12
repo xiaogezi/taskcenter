@@ -49,3 +49,17 @@ button { cursor: pointer; }
 @media (max-width: 560px) { .task-main { padding: 24px 14px; }.task-header { gap: 10px; }.task-filters { align-items: stretch; flex-direction: column; }.task-table th:nth-child(3), .task-table td:nth-child(3), .task-table th:nth-child(4), .task-table td:nth-child(4) { display: none; } }
 
 .version-badge { background: rgba(255,255,255,.85); border: 1px solid #e4e8ef; border-radius: 99px; bottom: 8px; box-shadow: 0 2px 8px rgba(24,33,52,.08); color: #8992a3; font-size: 11px; letter-spacing: .02em; padding: 3px 10px; position: fixed; left: 10px; z-index: 20; }
+.ai-analysis { margin-bottom: 24px; }
+.ai-analysis pre, .ai-event pre { background: #f6f7fa; border-radius: 8px; max-height: 340px; overflow: auto; padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.ai-analysis .console-toolbar { flex-wrap: wrap; }
+.ai-analysis input[list] { min-width: 0; width: 260px; max-width: 100%; }
+.ai-source-bars { display: grid; gap: 8px; margin: 24px 0; }
+.ai-source-bars > div { display: grid; grid-template-columns: 110px minmax(80px, 1fr) 40px; align-items: center; gap: 12px; }
+.ai-source-bars meter { width: 100%; }
+.ai-timeline { border-left: 2px solid #dce2f1; padding-left: 20px; display: grid; gap: 16px; }
+.ai-event-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+.ai-event-heading > span { background: #eef0ff; color: #4050c6; padding: 3px 10px; border-radius: 6px; }
+.ai-failed { border-color: #e6a3a3; }
+.ai-decision { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.ai-decision span { background: #f2f4f8; padding: 6px 10px; border-radius: 6px; }
+.ai-event details { margin-top: 12px; }

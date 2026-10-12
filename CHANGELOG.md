@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 新增「AI 行为」页面，统一展示治理分析、Jev 路由与观察建议、执行路由和执行器回执。手动通过 Claude CLI / DeepSeek 分析完成证据与失败阻塞，发送前预览并确认受限任务快照；禁用工具与会话持久化，记录调用、结果、失败、耗时和用量，不自动验收或修改任务，AI 不可用时自动降级规则检查且不阻塞核心工具；普通执行仍保持 native-only。
+
 - L0 精确支持可信 uv DevKit 安装入口的禁 Python 字节码包装与 doctor、asset status、asset capture preview 参数；仅允许当前工作区，只生成计划，不执行项目 check。apply、构建、未知参数、伪造入口、任意环境变量和跨工作区继续受执行门禁限制。
 
 - 按格子授权为 `instory-pca-2` 增加唯一 `memory.md` 的 apply_patch 新建/更新能力：批准配置与宿主 automation 元数据、启动消息、登记工作区共同绑定；拒绝其他身份/路径、链接、删除/移动、多文件及 shell 写入。结构化记录的失败/未完成状态保留成功基线，补丁批准与真实落盘分别记录哈希审计，inStory 项目写门禁不变。

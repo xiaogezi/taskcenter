@@ -6,8 +6,9 @@ import { isExpiredRateWindow, rateLimitPools, usageToday } from "@/lib/routing-c
 
 import { ModelManagement } from "./ModelManagement";
 import { RoutingDecisions } from "./RoutingDecisions";
+import { AiActivity } from "./AiActivity";
 
-type Section = "sessions" | "routing" | "improvements" | "settings";
+type Section = "sessions" | "routing" | "improvements" | "settings" | "ai";
 type Thread = { id: string; title?: string };
 type TokenUsage = { usage: { input: number; cachedInput: number; output: number; reasoning: number }; totalTokens: number; count: number };
 type Session = { agent?: string; harness?: { label?: string; usage_scope?: string; operations?: Record<string, { supported: boolean; availability: string; reason: string }> }; sessionId: string; title?: string; status?: string; taskCount?: number; tokenUsage?: TokenUsage | null };
@@ -31,7 +32,7 @@ type PilotProject = { project_id: string; workspace: string; sessions: Array<{ s
 type PilotData = { generated_at?: string; projects?: PilotProject[] };
 const operationLabels: Record<string, string> = { createSession: "新建会话", resumeSession: "恢复会话", inspectSession: "检查会话" };
 const actionHeaders = { "content-type": "application/json", "x-taskcenter-action": "delegate" };
-const entries: Array<[Section, string, string]> = [["sessions", "/sessions", "会话"], ["routing", "/routing", "模型调度"], ["improvements", "/improvements", "改进建议"], ["settings", "/settings", "设置"]];
+const entries: Array<[Section, string, string]> = [["sessions", "/sessions", "会话"], ["routing", "/routing", "模型调度"], ["ai", "/ai", "AI 行为"], ["improvements", "/improvements", "改进建议"], ["settings", "/settings", "设置"]];
 const tokenFormatter = new Intl.NumberFormat("en-US", { notation: "compact", maximumSignificantDigits: 3 });
 const formatTokens = (value: number) => tokenFormatter.format(Math.max(0, Number(value || 0)));
 
@@ -71,7 +72,7 @@ function Header({ code, title, description, refresh, refreshing = false }: { cod
 }
 
 export function ConsolePage({ section }: { section: Section }) {
-  return <Layout section={section}>{section === "sessions" ? <Sessions /> : section === "routing" ? <Routing /> : section === "improvements" ? <Improvements /> : <Settings />}</Layout>;
+  return <Layout section={section}>{section === "ai" ? <AiActivity request={api} /> : section === "sessions" ? <Sessions /> : section === "routing" ? <Routing /> : section === "improvements" ? <Improvements /> : <Settings />}</Layout>;
 }
 
 function Sessions() {
