@@ -27,6 +27,14 @@ test("retention protects distinct rollback, dirty trees and links; dry-run and h
       events: [...revisions, revisions[2]].map((revision) => ({ revision, stage: "deployment", outcome: "succeeded" })),
       assertHealthy: async () => {},
     };
+    const reportPath = resolve(paths[0], ".taskcenter-size-report.json");
+    writeFileSync(reportPath, JSON.stringify({ algorithm: "artifact-size/v1", mode: "release", revision: revisions[2] }));
+    assert.match((await pruneReleases({ ...options, dryRun: true })).skipped[0].reason, /身份不匹配/);
+    rmSync(reportPath);
+    symlinkSync(resolve(paths[0], ".taskcenter-release.json"), reportPath);
+    assert.match((await pruneReleases({ ...options, dryRun: true })).skipped[0].reason, /普通文件/);
+    rmSync(reportPath);
+    writeFileSync(reportPath, JSON.stringify({ algorithm: "artifact-size/v1", mode: "release", revision: revisions[0] }));
     assert.deepEqual((await pruneReleases({ ...options, dryRun: true })).removed, [paths[0]]);
     assert.ok(existsSync(paths[0]));
     await assert.rejects(pruneReleases({ ...options, assertHealthy: async () => { throw new Error("unhealthy"); } }), /unhealthy/);

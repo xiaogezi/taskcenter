@@ -31,7 +31,15 @@ export async function pruneReleases({ projectRoot, active, events, assertHealthy
       if (marker.schemaVersion !== "taskcenter-release/v1" || marker.releaseId !== entry.name || marker.revision?.slice(0, 12) !== entry.name || git(["-C", path, "rev-parse", "HEAD"]) !== marker.revision) throw new Error("构建身份不匹配");
       if (keep.has(marker.revision)) continue;
       const changes = git(["-C", path, "status", "--porcelain", "--untracked-files=all"]).split("\n").filter(Boolean);
-      if (changes.some((line) => line !== "?? .taskcenter-release.json")) throw new Error("存在用户改动");
+      const generated = new Set(["?? .taskcenter-release.json"]);
+      if (changes.includes("?? .taskcenter-size-report.json")) {
+        const reportPath = resolve(path, ".taskcenter-size-report.json");
+        if (!lstatSync(reportPath).isFile()) throw new Error("体积报告不是普通文件");
+        const report = JSON.parse(readFileSync(reportPath, "utf8"));
+        if (report.algorithm !== "artifact-size/v1" || report.mode !== "release" || report.revision !== marker.revision) throw new Error("体积报告身份不匹配");
+        generated.add("?? .taskcenter-size-report.json");
+      }
+      if (changes.some((line) => !generated.has(line))) throw new Error("存在用户改动");
       candidates.push(path);
     } catch (error) {
       skipped.push({ path, reason: error.message });
