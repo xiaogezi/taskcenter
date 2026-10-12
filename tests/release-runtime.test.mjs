@@ -31,6 +31,7 @@ test("正式 release 从不可变源码运行但继续绑定正式数据目录",
   assert.equal(environment.TASKCENTER_GOVERNANCE_HEALTH_PATH, "/taskcenter/runtime/governance-worker-health.json");
   assert.equal(environment.TASKCENTER_TASK_EVENT_INDEX_PATH, "/taskcenter/runtime/task-event-index.json");
   assert.equal(environment.TASKCENTER_AI_ACTIVITY_PATH, "/taskcenter/data/ai-activity.jsonl");
+  assert.equal(environment.TASKCENTER_AI_WORKSPACE, "/taskcenter");
   assert.equal(environment.TASKCENTER_JEV_RUNTIME_DIR, "/taskcenter/.local/jev-pilot");
 });
 

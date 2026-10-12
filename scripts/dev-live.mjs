@@ -18,6 +18,7 @@ const specs = [
   { name: "watch-codex", command: process.execPath, args: ["scripts/watch-codex.mjs"] },
   { name: "metrics-worker", command: process.execPath, args: ["--expose-gc", "--max-old-space-size=128", "scripts/metrics-worker.mjs"] },
   { name: "control-server", command: process.execPath, args: ["--max-old-space-size=128", "scripts/control-server.mjs"] },
+  { name: "ai-observer", command: process.execPath, args: ["--max-old-space-size=128", "scripts/ai-observer.mjs"], optional: true },
   { name: "web", command: web.command, args: web.args, env: web.env },
 ];
 const children = new Map();
@@ -38,6 +39,7 @@ function start(spec) {
     if (children.get(spec.name) === child) children.delete(spec.name);
     persistChildren();
     if (shuttingDown) return;
+    if (spec.optional) return;
     console.error(`[dev-live] ${spec.name} exited (${signal || code}); restarting in 1s`);
     const timer = setTimeout(() => {
       restartTimers.delete(timer);

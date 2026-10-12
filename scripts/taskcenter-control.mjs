@@ -545,6 +545,7 @@ function matchesManagedChildProcess(child, parentPid) {
     "watch-codex": "scripts/watch-codex.mjs",
     "metrics-worker": "scripts/metrics-worker.mjs",
     "control-server": "scripts/control-server.mjs",
+    "ai-observer": "scripts/ai-observer.mjs",
     web: "vinext",
   }[child.name];
   if (!expected) return false;

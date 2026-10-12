@@ -1,8 +1,10 @@
 # TaskCenter（任务中心）
 
-「AI 行为」页面 `/ai` 汇总主线治理分析与 Jev 观察日志，支持分页和自动刷新。选定任务后预览受限快照，确认发送给 `config/ai-governance.json` 配置的模型服务，再分析完成证据或失败阻塞。快照不读取会话正文、文件或完整日志；本机路径被隐去，疑似密钥拒绝发送。Claude CLI 禁用工具、MCP、项目上下文与会话持久化，超时 120 秒、并发一；失败时回退规则检查。分析仅提供建议，不改变任务和验收状态。
+「AI 行为」页面 `/ai` 默认展示自主治理。`config/ai-governance.json / automatic.enabled` 启用受管理的独立观察器：自动关联当前工作区的活跃任务与新内容变化，Jev 判断是否需要参与，Claude/DeepSeek 分析证据或阻塞；Jev 未配置或失败时由 DeepSeek 自主判断。无需手动输入任务 ID，手动分析保留在折叠入口。快照只含受限任务字段与已登记证据摘要，不读取会话正文、文件或完整日志；本机路径隐去，疑似密钥拒绝发送。Claude CLI 禁用工具、MCP、项目上下文与会话持久化，超时 120 秒。自动推理并发一，同一快照持久去重，每任务间隔一分钟；失败冷却五分钟并返回规则检查，主线操作不等待 AI。判断和分析只提供建议，不改变任务或验收状态。
 
 治理行为写入 `data/ai-activity.jsonl`（可通过 `TASKCENTER_AI_ACTIVITY_PATH` 隔离）；Jev 观察从 `TASKCENTER_JEV_RUNTIME_DIR/events.jsonl` 及上一轮日志读取。`GET /ai/activity`、`GET /ai/snapshot` 与受同源人工动作校验的 `POST /ai/analyze` 是工作台入口。页面仅展示平台已有记录，不暴露模型内部思维；未记录的用量和原因明确显示未知，历史保留范围遵循原来源，不重放旧任务。
+
+观察器通过任务快照变化发现新事件，不批量重放已结束历史。运行状态与去重状态分别写入 runtime 下的 `ai-observer-health.json`、`ai-observer-state.json`，页面显示心跳、待判断数量与当前任务。Jev 复用宿主已有 `TYPESAFE_API_KEY` 环境变量，不读取凭据文件；候选 dry-run 环境禁用自动推理。停止观察器会终止未结束的 CLI，下一次服务启动恢复观察；配置或日志故障会停止观察器并展示异常，核心服务不依赖它。
 
 TaskCenter 是一个本地优先、核心协议与平台解耦的任务治理看板。人、Agent、CI、PR 审查平台和其他任务平台都可以创建任务、提交证据与独立验收；Codex、Claude Code、Context Agent、MCP 和 Hook 都只是可选适配器。
 

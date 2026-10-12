@@ -2,5 +2,6 @@
   "harness": "claude",
   "model": "deepseek-v4-flash",
   "provider": "deepseek",
-  "effort": "low"
+  "effort": "low",
+  "automatic": { "enabled": true }
 }

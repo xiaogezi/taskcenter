@@ -6,12 +6,12 @@ import { join } from "node:path";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 
 // Inference has no tools, project context, persistent session, or delegation authority.
-export async function runClaudeInference({ profile, prompt }) {
+export async function runClaudeInference({ profile, prompt, signal }) {
   const cwd = await mkdtemp(join(tmpdir(), "taskcenter-inference-"));
   try {
     const executable = resolveSpawnCommand("claude");
     const args = [...executable.argsPrefix, "--print", "--safe-mode", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--disable-slash-commands", "--no-session-persistence", "--output-format", "json", "--max-turns", "1", "--model", profile.model, "--effort", profile.effort];
-    const completed = promisify(execFile)(executable.command, args, { cwd, timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 256 * 1024 });
+    const completed = promisify(execFile)(executable.command, args, { cwd, signal, timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 256 * 1024 });
     completed.child.stdin.on("error", () => {});
     completed.child.stdin.end(prompt);
     const { stdout } = await completed;

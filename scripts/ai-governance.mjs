@@ -45,7 +45,7 @@ export function validateGovernanceResult(value, snapshot) {
   return { summary: value.summary, findings: value.findings.map(({ severity, basis, message, evidence_refs }) => ({ severity, basis, message, evidence_refs })), next_steps: value.next_steps };
 }
 
-function ruleResult(task, kind) {
+export function ruleResult(task, kind) {
   const readiness = computeCompletionReadiness(task);
   return {
     summary: kind === "evidence" ? `规则检查：${readiness.ready ? "现有完成就绪检查通过，仍需独立验收" : "完成条件尚未满足"}。此结果没有 AI 语义分析。` : `规则复盘：${task.blocker ? "任务已登记阻塞" : "未登记阻塞原因"}，规则无法推断根因。`,

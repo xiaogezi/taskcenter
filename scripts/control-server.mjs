@@ -180,7 +180,9 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && /^\/ai\/activity(?:\?|$)/.test(request.url)) {
       const params = new URL(request.url, "http://localhost").searchParams;
-      sendJson(response, 200, await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, params, running: aiGovernance.running }));
+      const observer = readSnapshot(join(resolve(process.env.TASKCENTER_RUNTIME_DIR || join(projectRoot, ".local/runtime")), "ai-observer-health.json"), { status: "stopped" });
+      const stale = !observer.updated_at || Date.now() - Date.parse(observer.updated_at) > 15_000;
+      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, params, running: aiGovernance.running || (!stale && observer.status === "analyzing") }), observer: { ...observer, stale } });
       return;
     }
     if (request.method === "POST" && request.url === "/ai/analyze") {
