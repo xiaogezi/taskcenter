@@ -4,8 +4,6 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { buildGovernanceMetrics } from "./governance-metrics.mjs";
-import { delegationsPath, listDelegations } from "./delegation-store.mjs";
-import { routingControlPath } from "./routing-control.mjs";
 import { loadVisibleTasks, taskEventsPath, taskLedgerPath } from "./task-ledger.mjs";
 import { updateTaskEventIndex } from "./task-event-index.mjs";
 import { updateUsageIndex, writeJsonAtomic } from "./usage-index.mjs";
@@ -31,7 +29,7 @@ async function refreshUsage() {
     const { report, index } = await updateUsageIndex({
       sessionsRoot,
       indexPath: usageIndexPath,
-      ledger: usageTasks(),
+      ledger: loadVisibleTasks(),
       rates: modelRatesPath,
     });
     await writeJsonAtomic(usageReportPath, {
@@ -52,31 +50,17 @@ async function refreshUsage() {
   }
 }
 
-function usageTasks() {
-  const cliRunsByTask = new Map();
-  for (const delegation of listDelegations()) {
-    const runs = cliRunsByTask.get(delegation.taskId) || [];
-    runs.push(delegation);
-    cliRunsByTask.set(delegation.taskId, runs);
-  }
-  return loadVisibleTasks().map((task) => ({ ...task, cliRuns: cliRunsByTask.get(task.id) || [] }));
-}
-
 async function refreshGovernance() {
   if (refreshingGovernance) return;
   refreshingGovernance = true;
   try {
     const { events, offset } = await updateTaskEventIndex({ sourcePath: taskEventsPath, indexPath: taskEventIndexPath });
     const tasks = loadVisibleTasks();
-    const delegationEvents = listDelegations().flatMap((delegation) =>
-      (delegation.events || []).map((event) => ({ ...event, task_id: delegation.taskId })));
     const usageReport = readJson(usageReportPath, emptyUsageReport());
-    const routingState = readJson(routingControlPath, { routes: [] });
-    const routes = Array.isArray(routingState.routes) ? routingState.routes : [];
     await writeJsonAtomic(governanceMetricsPath, {
-      ...buildGovernanceMetrics({ tasks, events: [...(events || []), ...delegationEvents], usageReport, delegations: listDelegations(), routes }),
+      ...buildGovernanceMetrics({ tasks, events, usageReport }),
       generatedAt: new Date().toISOString(),
-      source: { mode: "incremental_snapshot", taskEventOffset: offset, delegationStore: delegationsPath },
+      source: { mode: "incremental_snapshot", taskEventOffset: offset },
     });
     await writeWorkerHealth(governanceHealthPath, "governance", true);
   } catch (error) {
@@ -153,7 +137,7 @@ function runRefreshChild(mode) {
 }
 
 function sourceSignature() {
-  return [taskEventsPath, taskLedgerPath, delegationsPath, usageReportPath, routingControlPath].map((path) => {
+  return [taskEventsPath, taskLedgerPath, usageReportPath].map((path) => {
     try { const info = statSync(path); return `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`; } catch { return "missing"; }
   }).join("|");
 }

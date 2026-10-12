@@ -25,9 +25,9 @@ const KNOWN_FAILURE_KINDS = new Set(["tool_approval", "filesystem_permission", "
 
 const GATE_DENIAL_GUIDANCE = {
   no_active_task: {
-    reason: "PreToolUse 未识别为 L0 确定性只读，且 Session 没有活跃任务或有效 delegation；这不等于检测到写入。",
-    recovery: "若确为只读，先拆开复合命令；RTK 包装仅在规则明确允许等价原生命令时降级，并经过同一 Hook，不为只读另建无关任务。实际执行则同一交付用 taskcenter_task_resume 接续，独立目标用 taskcenter_task_begin；原生执行器登记独立 Session 并领取绑定原任务的 delegation。",
-    verification: "只读调用应返回“L0 确定性只读检查放行”；实际执行应返回“任务门禁通过”或“delegation 放行”。",
+    reason: "PreToolUse 未识别为 L0 确定性只读，且 Session 没有活跃任务；这不等于检测到写入。",
+    recovery: "若确为只读，先拆开复合命令；RTK 包装仅在规则明确允许等价原生命令时降级，并经过同一 Hook，不为只读另建无关任务。实际执行则同一交付用 taskcenter_task_resume 接续，独立目标用 taskcenter_task_begin。",
+    verification: "只读调用应返回“L0 确定性只读检查放行”；实际执行应返回“任务门禁通过”。",
   },
   session_unregistered: {
     reason: "门禁拒绝：当前 Session 尚未完成 SessionStart 登记。",
@@ -36,18 +36,18 @@ const GATE_DENIAL_GUIDANCE = {
   },
   interactive_command: {
     reason: "门禁拒绝：检测到可由 write_stdin 续写的交互式命令。",
-    recovery: "改为一次性非交互命令，不启动可由 write_stdin 续写的会话；普通派发只使用集中配置允许的原生通道，不回退 CLI。",
+    recovery: "改为一次性非交互命令，不启动可由 write_stdin 续写的会话。",
     verification: "以非交互形式重试，Hook 应 exit 0；若仍拒绝，检查是否混入 -i/--interactive 或管道等待输入。",
   },
   missing_route: {
-    reason: "执行门禁：缺少与当前动作匹配的有效路由。",
-    recovery: "当前主模型在活跃正式任务下调用 taskcenter_routing_select，以 channel=direct 和具体 direct_reason 获取路由；原生执行器核对 grant、claim 与原生 route 绑定。不扩大任务权限，不启动 CLI。",
-    verification: "核对路由属于当前任务和 Session、通道匹配、未过期，再重试原操作并确认 Hook 放行；租约有效不等于执行成功。",
+    reason: "历史路由门禁拒绝：模型路由现已退役。",
+    recovery: "核对主线任务、真实 Session、工作区和授权范围；同一交付调用 taskcenter_task_resume。模型路由已退役。",
+    verification: "核对客户端已加载现行主线 Hook；主线只校验任务身份和所有权。",
   },
   task_permission: {
-    reason: "任务权限拒绝：grant、scope、claim、workspace 或任务所有权与当前执行不匹配。",
-    recovery: "核对 delegation scope/allowed_tools、claim 与 route 绑定并最多修正一次；仍失败则记录真实 routing_result，停止并确认原执行器不再写入，撤销 delegation，以 direct_reason 申请主模型 direct 接管同一已授权任务。停止状态无法确认则不接管重叠写入；任务所有权或权限仍不成立时禁止写入。",
-    verification: "绑定与授权校验通过后检查实际工具结果；租约释放、心跳超时或失败回报不能证明执行器已停止，不得绕过任务或安全权限。",
+    reason: "任务权限拒绝：scope、workspace 或任务所有权与当前执行不匹配。",
+    recovery: "核对真实 Session、主线任务所有权、scope 和 workspace；旧派发授权不再授予任务权限。",
+    verification: "主线任务所有权和工作区校验通过后检查实际工具结果。",
   },
   tool_approval: {
     reason: "Harness 工具审批拒绝：执行器未获得该工具的一次性授权。",
@@ -66,18 +66,18 @@ const GATE_DENIAL_GUIDANCE = {
   },
   reviewer_readonly: {
     reason: "独立 Reviewer 拒绝：该 Session 只允许确定性只读与 Review 报告。",
-    recovery: "Reviewer 不写业务代码、不建任务、不派执行器；实现修改回到任务所属 Session。",
-    verification: "Reviewer 重试只读检查 exit 0；业务写入仍被拒绝。",
+    recovery: "托管 Reviewer 已退役；外部审查由用户与宿主安排。",
+    verification: "核对客户端不再调用托管 Reviewer 接口；审查证据使用外部报告入口。",
   },
   gate_other: {
     reason: "门禁拒绝：未归入更具体分类的 Hook/CLI 拒绝。",
-    recovery: "按 Hook 返回的原始提示修复前置条件（任务、登记、路由或授权），再重试；不要绕过 Hook 或关闭门禁。",
+    recovery: "按 Hook 返回的原始提示修复前置条件（任务、登记或授权），再重试；不要绕过 Hook 或关闭门禁。",
     verification: "同一工具调用重试后 Hook exit 0，且 /gate-denials 不再新增同类记录。",
   },
   taskcenter_unavailable: {
-    reason: "TaskCenter 控制面不可用，无法确认当前任务与路由。",
+    reason: "TaskCenter 控制面不可用，无法确认当前主线任务。",
     recovery: "本仓库 gate-enabled 维护仅继续只读并报告 TASKCENTER_UNAVAILABLE；核对服务状态，使用既有固定恢复入口。保护健康实例，不直接停止或 restart，不关闭门禁。",
-    verification: "服务恢复后重新核对真实 Session 登记、活跃任务和有效路由，再执行原操作；此限制不扩散到外部项目构建。",
+    verification: "服务恢复后重新核对真实 Session 登记、活跃任务，再执行原操作；此限制不扩散到外部项目构建。",
   },
 };
 
@@ -247,12 +247,12 @@ export function recordGateDenial(path, input, now = Date.now()) {
   return { record, assessment };
 }
 
-export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = null, delegations = [], routes = [] } = {}) {
+export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = null } = {}) {
   const visible = tasks.filter((task) => task.status !== "removed");
   const groups = {
     workflow_profile: groupMetrics(visible, events, (task) => task.workflowProfile || "legacy"),
-    task_class: groupMetrics(visible, events, (task) => task.routing?.taskClass || task.taskClass || "unclassified"),
-    model: groupMetrics(visible, events, (task) => task.routing?.selectedExecutorModel || task.model || "unknown"),
+    task_class: groupMetrics(visible, events, (task) => task.taskClass || "unclassified"),
+    model: groupMetrics(visible, events, (task) => task.model || "unknown"),
   };
   const generatedAt = Date.parse(usageReport?.generatedAt || "");
   const windowDuration = Number(usageReport?.windows?.["24h"]?.durationMs || 86_400_000);
@@ -288,53 +288,6 @@ export function buildGovernanceMetrics({ tasks = [], events = [], usageReport = 
     reviews,
     groups,
     comparisons: buildMatchedComparisons(groups, usageReport?.windows || []),
-    cliRuns: buildCliRunMetrics(delegations),
-    nativeRuns: buildCliRunMetrics(delegations, Date.now(), "native"),
-    routingFunnel24h: buildRoutingFunnel(routes, delegations, Number.isFinite(generatedAt) ? generatedAt : Date.now()),
-  };
-}
-
-// 最近 24h 路由漏斗：Jev 评估、Jev delegate 建议、实际 CLI 路由、Jev delegate 的 direct 覆盖、
-// CLI 授权与领取/启动回报。各阶段来自不同存储且缺少共享 route_id，是独立计数，不表示一对一转化。
-// 只输出聚合计数，不携带 phase_summary、directReason 原文等敏感内容。
-export function buildRoutingFunnel(routes = [], delegations = [], now = Date.now()) {
-  const end = Number.isFinite(Number(now)) ? Number(now) : Date.now();
-  const start = end - 86_400_000;
-  const inWindow = (value) => {
-    const ts = Date.parse(value || "");
-    return Number.isFinite(ts) && ts >= start && ts <= end;
-  };
-  const windowRoutes = (Array.isArray(routes) ? routes : []).filter((route) => route && typeof route === "object" && inWindow(route.createdAt));
-  const jevEvaluated = windowRoutes.filter((route) => route.jevDecision && typeof route.jevDecision === "object");
-  const jevDelegate = jevEvaluated.filter((route) => route.jevDecision.execution_choice === "delegate");
-  const cliRoutes = windowRoutes.filter((route) => route.channel === "cli");
-  const overrides = jevDelegate.filter((route) => route.channel === "direct");
-  const overrideByKind = {};
-  const legacyGenericReasons = {};
-  for (const route of overrides) {
-    const kind = ["device_interaction", "atomic_git", "shared_dirty_workspace"].includes(route.jevDecision?.direct_exception_kind)
-      ? route.jevDecision.direct_exception_kind : "legacy_generic";
-    overrideByKind[kind] = (overrideByKind[kind] || 0) + 1;
-    if (kind === "legacy_generic") {
-      const reason = route.reason || "unknown";
-      legacyGenericReasons[reason] = (legacyGenericReasons[reason] || 0) + 1;
-    }
-  }
-  const cliGrants = (Array.isArray(delegations) ? delegations : []).filter((item) => item && item.channel === "cli" && inWindow(item.createdAt));
-  return {
-    window: "24h",
-    windowStart: new Date(start).toISOString(),
-    windowEnd: new Date(end).toISOString(),
-    jevEvaluatedDecisions: jevEvaluated.length,
-    jevDelegateRecommendations: jevDelegate.length,
-    actualCliRoutes: cliRoutes.length,
-    actualNativeRoutes: windowRoutes.filter(route => route.channel === "native").length,
-    mainModelTakeovers: windowRoutes.filter(route => route.channel === "direct" && route.fallbackFrom).length,
-    jevDelegateDirectOverrides: { total: overrides.length, byKind: overrideByKind, legacyGenericReasons },
-    cliGrants: cliGrants.length,
-    cliClaimedRuns: cliGrants.filter((item) => Boolean(item.claimedAt)).length,
-    cliStartedRuns: cliGrants.filter((item) => Boolean(item.runStatus)).length,
-    note: "24h 窗口内各阶段独立计数，来源不同且缺少共享 route_id，不表示一对一转化。legacy_generic 为早期无结构化例外的 direct 覆盖。",
   };
 }
 
@@ -545,118 +498,3 @@ function subjectKey(subject) { return subject ? `${subject.type}:${subject.value
 function groupCount(values, keyOf) { const map = new Map(); for (const value of values) { const key = keyOf(value); map.set(key, (map.get(key) || 0) + 1); } return map; }
 function countBy(values, field) { return Object.fromEntries([...groupCount(values, (item) => item[field] || "unknown").entries()].sort(([left], [right]) => left.localeCompare(right))); }
 function ratioOf(values, field, expected) { return values.length ? values.filter((item) => item[field] === expected).length / values.length : null; }
-
-const CLI_USAGE_INPUT_KEYS = ["input_tokens", "inputTokens", "prompt_tokens", "input"];
-const CLI_USAGE_OUTPUT_KEYS = ["output_tokens", "outputTokens", "completion_tokens", "output"];
-
-function cliUsageToken(usage, keys) {
-  for (const key of keys) {
-    const value = usage[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
-  }
-  return null;
-}
-
-function delegationUsageTokens(delegation) {
-  if (!delegation || typeof delegation !== "object" || typeof delegation.id !== "string") return null;
-  const evidence = Array.isArray(delegation.evidence) ? delegation.evidence : [];
-  for (const entry of evidence) {
-    if (typeof entry !== "string") continue;
-    let parsed;
-    try {
-      parsed = JSON.parse(entry);
-    } catch {
-      continue;
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-    if (parsed.delegation_id !== delegation.id) continue;
-    if (typeof delegation.delegateSessionId === "string" && delegation.delegateSessionId && parsed.sessionId !== delegation.delegateSessionId) continue;
-    const usage = parsed.usage;
-    if (!usage || typeof usage !== "object" || Array.isArray(usage)) continue;
-    const input = cliUsageToken(usage, CLI_USAGE_INPUT_KEYS);
-    const output = cliUsageToken(usage, CLI_USAGE_OUTPUT_KEYS);
-    if (input === null && output === null) continue;
-    return { input: input ?? 0, output: output ?? 0, total: (input ?? 0) + (output ?? 0) };
-  }
-  return null;
-}
-
-// 按通道聚合执行器（默认 CLI，保留历史接口）：运行次数、状态分布、按执行器模型分组、回执 Token 累计。
-// 只统计 delegation 回执证据中可解析的用量，缺失不推断为 0。
-export function buildCliRunMetrics(delegations = [], now = Date.now(), channel = "cli") {
-  const statusCounts = {};
-  const recentRuns = [];
-  let claimed = 0, excluded = 0;
-  const byModel = {};
-  let runs = 0, active = 0, succeeded = 0, failed = 0, cancelled = 0;
-  const tokens = { input: 0, output: 0, total: 0, reported: 0 };
-  let lastFinishedAt = 0;
-  let durationSum = 0, durationCount = 0, durationMax = 0;
-  const activeRuns = [];
-  for (const delegation of delegations) {
-    if (!delegation || typeof delegation !== "object" || typeof delegation.id !== "string") continue;
-    if (delegation.channel !== channel) { excluded += 1; continue; }
-    if (delegation.claimedAt) claimed += 1;
-    statusCounts[delegation.status || "unknown"] = (statusCounts[delegation.status || "unknown"] || 0) + 1;
-    recentRuns.push(Object.fromEntries(["id", "taskId", "workspace", "executorModel", "status", "runStatus", "createdAt", "claimedAt", "lastObservedAt", "completedAt", "expiresAt"].map((key) => [key, delegation[key] || null])));
-    runs += 1;
-    const status = delegation.status || "";
-    if (status === "active") active += 1;
-    else if (status === "succeeded") succeeded += 1;
-    else if (status === "failed") failed += 1;
-    else if (status === "cancelled") cancelled += 1;
-    const model = typeof delegation.executorModel === "string" && delegation.executorModel ? delegation.executorModel : "unknown";
-    const entry = byModel[model] || (byModel[model] = { runs: 0, active: 0, succeeded: 0, failed: 0, cancelled: 0, durationSum: 0, durationCount: 0, durationMax: 0, lastFinishedAt: 0 });
-    entry.runs += 1;
-    if (status === "active") {
-      entry.active += 1;
-      const startedAt = Date.parse(delegation.claimedAt || delegation.createdAt || "");
-      activeRuns.push({
-        model,
-        startedAt: Number.isFinite(startedAt) ? startedAt : null,
-        taskId: delegation.taskId || "",
-      });
-    }
-    else if (status === "succeeded") entry.succeeded += 1;
-    else if (status === "failed") entry.failed += 1;
-    else if (status === "cancelled") entry.cancelled += 1;
-    const usage = delegationUsageTokens(delegation);
-    if (usage) {
-      tokens.input += usage.input;
-      tokens.output += usage.output;
-      tokens.total += usage.total;
-      tokens.reported += 1;
-    }
-    // 领取至结案时长，不等同于实际执行耗时。
-    const start = Date.parse(delegation.claimedAt || "");
-    const end = Date.parse(delegation.completedAt || "");
-    if (Number.isFinite(end) && end > 0) {
-      if (end > lastFinishedAt) lastFinishedAt = end;
-      if (Number.isFinite(start) && start > 0) {
-        const dur = end - start;
-        if (dur > 0) {
-          durationSum += dur;
-          durationCount += 1;
-          if (dur > durationMax) durationMax = dur;
-          entry.durationSum += dur;
-          entry.durationCount += 1;
-          if (dur > entry.durationMax) entry.durationMax = dur;
-        }
-      }
-      if (end > entry.lastFinishedAt) entry.lastFinishedAt = end;
-    }
-  }
-  return {
-    runs, active, succeeded, failed, cancelled, byModel, tokens, claimed, excluded, statusCounts, observedAt: now,
-    recentRuns: recentRuns.sort((a, b) => Number(["active", "issued"].includes(b.status)) - Number(["active", "issued"].includes(a.status)) || Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0)).slice(0, 50),
-    lastFinishedAt: lastFinishedAt || null,
-    activeRuns,
-    duration: {
-      count: durationCount,
-      avgMs: durationCount > 0 ? Math.round(durationSum / durationCount) : null,
-      maxMs: durationMax || null,
-      totalMs: durationSum || null,
-    },
-  };
-}

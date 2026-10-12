@@ -3,10 +3,8 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { cliProfile } from "./cli-profile.mjs";
-import { modelRoleConfigPath } from "./model-role-config.mjs";
 import { hasSuspectedSecret } from "./jev-advisor.mjs";
-import { runClaudeInference } from "./harnesses/claude-delegated.mjs";
+import { runClaudeInference } from "./claude-inference.mjs";
 import { computeCompletionReadiness } from "./completion-state.mjs";
 
 const kinds = { evidence: "完成证据分析", blockers: "失败与阻塞复盘" };
@@ -56,7 +54,7 @@ function ruleResult(task, kind) {
   };
 }
 
-export function createGovernanceRunner({ path, infer = runClaudeInference, profileFor = cliProfile }) {
+export function createGovernanceRunner({ path, infer = runClaudeInference, profileFor = () => JSON.parse(readFileSync(process.env.TASKCENTER_AI_CONFIG_PATH || new URL("../config/ai-governance.json", import.meta.url), "utf8")) }) {
   let active = false;
   const record = row => { mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); appendFileSync(path, `${JSON.stringify(row)}\n`, { mode: 0o600 }); };
   return {
@@ -69,9 +67,8 @@ export function createGovernanceRunner({ path, infer = runClaudeInference, profi
       if (input.input_hash !== snapshot.input_hash) throw new AiGovernanceError(409, "任务快照已变化，请重新预览后分析。", "AI_SNAPSHOT_CHANGED");
       let profile, configError;
       if (!rulesOnly) try {
-        const config = JSON.parse(readFileSync(modelRoleConfigPath, "utf8"));
-        profile = profileFor(config.ai_governance?.cli_profile);
-        if (profile.harness !== "claude") throw new Error("AI_CONFIG_UNAVAILABLE");
+        profile = profileFor();
+        if (profile.harness !== "claude" || typeof profile.model !== "string" || !profile.model.trim() || (profile.effort !== undefined && !["low", "medium"].includes(profile.effort))) throw new Error("AI_CONFIG_UNAVAILABLE");
       } catch { configError = new Error("AI_CONFIG_UNAVAILABLE"); }
       const id = `ai-${randomUUID()}`, at = new Date().toISOString();
       const base = { run_id: id, source: "governance", task_id: task.id, title: kinds[input.kind], kind: input.kind, model: profile?.model || "rules", prompt_version: promptVersion, input_hash: snapshot.input_hash, snapshot };
@@ -105,10 +102,10 @@ export function createGovernanceRunner({ path, infer = runClaudeInference, profi
   };
 }
 
-export async function aiActivity({ path, jevPath, routes = [], delegations = [], params = new URLSearchParams(), running = false }) {
+export async function aiActivity({ path, jevPath, params = new URLSearchParams(), running = false }) {
   const source = params.get("source") || "", taskId = params.get("task_id") || "", before = params.get("before") || "";
   const limit = Number(params.get("limit") || 30);
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (source && !["governance", "jev", "routing", "executor"].includes(source))) throw new AiGovernanceError(400, "行为筛选参数无效。");
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (source && !["governance", "jev"].includes(source))) throw new AiGovernanceError(400, "行为筛选参数无效。");
   let boundary;
   try { boundary = before ? JSON.parse(Buffer.from(before, "base64url").toString()) : null; } catch { throw new AiGovernanceError(400, "行为游标无效。"); }
   if (boundary && (!Array.isArray(boundary) || boundary.length !== 2 || boundary.some(item => typeof item !== "string"))) throw new AiGovernanceError(400, "行为游标无效。");
@@ -133,18 +130,7 @@ export async function aiActivity({ path, jevPath, routes = [], delegations = [],
       }
     } catch (error) { if (error.code !== "ENOENT") warnings.push(`${origin} 日志读取失败`); }
   }
-  for (const route of routes) {
-    const base = { task_id: route.task_id, at: route.completed_at || route.created_at, model: route.selected_model || "unknown" };
-    add({ ...base, id: `route:${route.route_id}`, source: "routing", title: "执行路由", status: route.status, summary: route.reason_summary || route.reason, result: { channel: route.channel, result: route.result, direct_reason: route.direct_reason, fallback_reason: route.fallback_reason }, run_id: route.route_id });
-    if (route.jev_decision) {
-      const jev = route.jev_decision;
-      add({ ...base, at: route.created_at, id: `jev-route:${route.route_id}`, source: "jev", title: "Jev 路由判断", model: jev.model || "unknown", status: jev.status, summary: jev.execution_choice || jev.error || "判断未产生建议", result: jev, duration_ms: jev.latency_ms, usage: jev.usage, input_hash: jev.input_hash, run_id: route.route_id });
-    }
-  }
-  for (const run of delegations) {
-    add({ id: `executor:${run.id}`, source: "executor", task_id: run.taskId, at: run.completedAt || run.lastObservedAt || run.createdAt, model: run.executorModel, title: `${run.channel || "cli"} 执行器回执`, status: run.runStatus || run.status, summary: run.error || run.events?.at(-1)?.summary || "尚无执行结果", result: { channel: run.channel, tool_calls: run.toolCalls, events: run.events, tests: run.tests, evidence: run.evidence }, duration_ms: run.claimedAt && run.completedAt ? Date.parse(run.completedAt) - Date.parse(run.claimedAt) : null, run_id: run.id });
-  }
   rows.sort(compare);
   const page = rows.slice(0, limit), last = page.at(-1);
-  return { rows: page, running, next_cursor: rows.length > limit ? Buffer.from(JSON.stringify([last.at, last.id])).toString("base64url") : null, warnings: [...new Set(warnings)], coverage: "TaskCenter 已记录的治理调用、路由、执行器回执与当前/上一轮 Jev 观察日志；不包含模型内部思维或平台外调用。" };
+  return { rows: page, running, next_cursor: rows.length > limit ? Buffer.from(JSON.stringify([last.at, last.id])).toString("base64url") : null, warnings: [...new Set(warnings)], coverage: "TaskCenter 已记录的主线治理调用与当前/上一轮 Jev 观察日志；不包含模型内部思维或平台外调用。" };
 }

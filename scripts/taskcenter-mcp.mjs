@@ -11,29 +11,18 @@ import { TASKCENTER_VERSION } from "./version.mjs";
 import { recommendTaskClose } from "./session-lifecycle.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
 import { classifyGateDenial, evaluateGateDenials } from "./governance-metrics.mjs";
-import { buildManagedReviewReport } from "./review-workflow.mjs";
 
 const controlServerUrl = process.env.TASKCENTER_CONTROL_URL || "http://127.0.0.1:3001";
 const acceptanceToken = process.env.TASKCENTER_ACCEPTANCE_TOKEN || "";
 const localMcpTokenPath = resolve(process.env.TASKCENTER_MCP_TOKEN_PATH || join(import.meta.dirname, "..", ".local", "runtime", "mcp-token"));
 const server = new McpServer({ name: "taskcenter-task-server", version: TASKCENTER_VERSION });
 const toolRegistry = schemaToolRegistry(server, process.env.TASKCENTER_MCP_SCHEMA_MODE || "compact");
-let managedReviewContext;
 const verificationKind = z.enum(["test", "build", "lint", "static_check", "device", "manual", "security", "performance", "other"]);
 const taskReuseDecision = z.enum(["reuse", "create_new", "uncertain"]);
-const responseMode = z.enum(["summary", "full"]).default("summary");
-// 路由和 delegation 的调用方必须消费 route_id、selected_model 或 claim_token；
-// 默认压成任务摘要会破坏旧执行器，因此控制面接口保留 full 默认值。
 const operationalResponseMode = z.enum(["summary", "full"]).default("full");
+const responseMode = z.enum(["summary", "full"]).default("summary");
 const actorIdentity = z.object({ type: z.enum(["human", "agent", "ci", "review_platform", "task_platform", "other"]), id: z.string().min(1).max(200), display_name: z.string().max(200).optional(), provider: z.string().max(200).optional(), session_id: z.string().max(200).optional() }).strict();
 const subjectReference = z.object({ type: z.enum(["git_commit", "git_worktree_snapshot", "pull_request_head", "artifact", "document_version", "external", "none"]), value: z.string().max(500).optional(), repository: z.string().max(300).optional(), branch: z.string().max(300).optional(), observed_at: z.string().datetime({ offset: true }) }).strict();
-const routingReviewArtifact = z.object({ ref: z.string().max(1_000).optional(), fingerprint: z.string().max(300).optional() }).strict()
-  .refine((value) => Boolean(value.ref?.trim() || value.fingerprint?.trim()), { message: "ref 或 fingerprint 至少提供一个" });
-const routingReviewArtifacts = z.object({
-  subject: routingReviewArtifact,
-  bundle: routingReviewArtifact,
-  rules: routingReviewArtifact,
-}).strict();
 const acceptanceCriterion = z.union([z.string().min(1).max(500), z.object({ id: z.string().min(1).max(120), description: z.string().min(1).max(500), required: z.boolean() }).strict()]);
 const verificationRequirement = z.object({
   id: z.string().min(1).max(120),
@@ -105,13 +94,6 @@ const taskFields = {
   workflow_profile: z.enum(["fast", "standard", "strict"]).optional(),
   review_policy: z.enum(["not_required", "recommended", "required"]).optional(),
   execution_environment: z.enum(["local", "worktree", "ci", "remote", "other"]).optional(),
-  execution_model_policy: z.object({
-    mode: z.enum(["auto", "quota_preferred"]),
-    preferred_model: z.string().min(1).max(120).optional(),
-    quota_limit_id: z.string().min(1).max(120).optional(),
-    fallback_on_exhaustion: z.boolean().optional(),
-    authorization_reason: z.string().max(500).optional(),
-  }).strict().optional(),
   verification_plan: z.array(verificationRequirement).max(30).optional(),
   revision: z.string().max(200).optional().describe("Git revision 或明确的工作区快照标识"),
   subject_ref: subjectReference.optional(),
@@ -262,14 +244,8 @@ toolRegistry.register("taskcenter_task_review_report", {
     cycle_id: z.string().max(120).optional(), cycle_number: z.number().int().positive().optional(), review_scope: z.enum(["full", "incremental"]).optional(),
     base_attestation_id: z.string().max(120).optional(), reviewed_files: z.array(z.string().max(500)).max(500).optional(),
     changed_files_since_previous_review: z.array(z.string().max(500)).max(500).optional(), findings: z.array(reviewFinding).max(500).optional(),
-    route_id: z.string().max(200).optional(), review_artifacts: routingReviewArtifacts.optional(),
   }).strict(),
-}, async ({ session_id, task_id, event_id, response_mode, ...review_attestation }, extra) => {
-  if (review_attestation.route_id) {
-    const context = resolveTrustedMcpSession(extra);
-    if (!context.sessionId) return result({ ...context, code: "SESSION_NOT_REGISTERED" });
-    return postLocal("/task-events", { type: "review.reported", session_id: context.sessionId, task_id, event_id, response_mode, revision: review_attestation.revision, review_attestation });
-  }
+}, async ({ session_id, task_id, event_id, response_mode, ...review_attestation }) => {
   return report("review.reported", { session_id, task_id, event_id, response_mode, revision: review_attestation.revision, review_attestation });
 });
 
@@ -281,7 +257,7 @@ toolRegistry.register("taskcenter_review_cycle_report", {
 
 toolRegistry.register("taskcenter_task_phase_report", {
   title: "上报 TaskCenter 任务阶段事件",
-  description: "追加可审计的阶段边界事件并返回更新后的任务；仅用于流程归因，不参与绩效、任务门禁或验收。跨 Session 续接需提供稳定 activity_id，delegated_executor 与 Review Cycle 必须引用已有授权记录。",
+  description: "追加可审计的阶段边界事件并返回更新后的任务；仅用于流程归因，不参与绩效、任务门禁或验收。跨 Session 续接需提供稳定 activity_id，Review Cycle 必须引用已有记录。",
   inputSchema: z.object({
     task_id: z.string().min(1).max(200),
     session_id: z.string().min(1).max(200),
@@ -291,9 +267,8 @@ toolRegistry.register("taskcenter_task_phase_report", {
     occurred_at: z.string().datetime({ offset: true }),
     subject_ref: subjectReference,
     reason: z.string().min(1).max(1_000),
-    activity_source: z.enum(["agent", "delegated_executor", "review_cycle", "build_wait", "external_wait", "other"]),
+    activity_source: z.enum(["agent", "review_cycle", "build_wait", "external_wait", "other"]),
     activity_id: z.string().min(1).max(200).optional(),
-    delegation_id: z.string().min(1).max(200).optional(),
     review_cycle_id: z.string().min(1).max(120).optional(),
     response_mode: responseMode,
   }).strict(),
@@ -345,167 +320,6 @@ toolRegistry.register("taskcenter_task_acceptance_report", {
   description: "供已配置独立验收凭据的人工、CI、PR 或任务平台适配器上报 AcceptanceRecord；普通执行 Agent 不应配置该凭据。",
   inputSchema: z.object({ task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), outcome: z.enum(["accepted", "rejected"]), occurred_at: z.string().datetime({ offset: true }).optional(), acceptance_record: z.object({ id: z.string().min(1).max(120), source: z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"]), actor: actorIdentity, subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(), evidence_refs: z.array(z.string().max(500)).max(30).optional(), reason: z.string().max(1_000).optional() }).strict(), response_mode: responseMode }).strict(),
 }, async (input) => postAcceptance(input));
-
-toolRegistry.register("taskcenter_routing_record", {
-  title: "记录 TaskCenter 模型路由",
-  description: "记录直接执行、原生派发、CLI 兜底或有理由偏离的模型路由决定。该记录仅用于审计，不改变任务状态，也不作为执行门禁。",
-  inputSchema: z.object({
-    session_id: z.string().min(1).max(200),
-    task_id: z.string().min(1).max(200),
-    event_id: z.string().max(200).optional(),
-    routing_action: z.enum(["direct_execute", "delegate_native", "fallback_cli", "reasoned_override"]),
-    orchestrator_model: z.string().min(1).max(120),
-    preferred_executor_model: z.string().min(1).max(120),
-    selected_executor_model: z.string().min(1).max(120),
-    task_class: z.enum(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", "ocr", "ocr_review", "independent_review"]).default("general"),
-    dispatch_channel: z.enum(["direct", "native", "cli", "other"]),
-    routing_reason: z.string().min(1).max(1_000),
-    fallback_from: z.string().max(120).optional(),
-    fallback_reason: z.string().max(200).optional(),
-    retry_after_at: z.string().datetime({ offset: true }).optional(),
-    review_artifacts: routingReviewArtifacts.optional(),
-    routing_outcome: z.enum(["selected", "started", "succeeded", "failed"]).optional(),
-    policy_version: z.string().min(1).max(80).optional(), response_mode: responseMode,
-  }).strict(),
-}, async (input) => report("routing.decision", input));
-
-toolRegistry.register("taskcenter_routing_select", {
-  title: "选择 TaskCenter 执行模型",
-  description: "优先按 executor 配置派发；普通执行无可用模型或容量时返回当前主模型 direct 租约，继续同一任务。派发失败可携实际原因申请 direct 接管，无需重复用户授权；任务权限不变。TaskCenter 不启动进程，Reviewer 仍 fail closed。",
-  inputSchema: z.object({
-    task_id: z.string().min(1).max(200),
-    preferred_model: z.string().min(1).max(120).optional().describe("兼容单次执行覆盖；任务配置 quota_preferred 时由持久化策略接管"),
-    cli_profile: z.string().min(1).max(120).optional().describe("历史 CLI 策略兼容字段；当前 native-only executor 策略拒绝此入口"),
-    task_class: z.enum(["general", "search", "mechanical", "implementation", "test", "documentation", "architecture", "security", "migration", "data_migration", "complex_diagnosis", "high_risk", "ocr", "ocr_review", "independent_review"]),
-    channel: z.enum(["direct", "native", "cli", "other"]),
-    event_id: z.string().max(200).optional(),
-    route_id: z.string().max(200).optional(),
-    review_artifacts: routingReviewArtifacts.optional().describe("OCR 路由必填；Subject、OCR Bundle 与规则各提供 ref 或 fingerprint"),
-    phase_id: z.string().max(200).optional().describe("Jev 路由阶段标识；未传入时由服务端派生"),
-    phase_summary: z.string().max(1000).optional().describe("当前阶段摘要，用于 Jev 路由分类；仅发送标题/目标/阶段摘要，不发送代码或日志"),
-    direct_reason: z.string().min(1).max(1000).optional().describe("Jev 启用模式下 channel=direct 时必填；记录 direct 执行理由并审计"),
-    direct_exception_kind: z.enum(["device_interaction", "atomic_git", "shared_dirty_workspace"]).optional().describe("可选的历史例外分类；普通 direct 接管只需说明 direct_reason"),
-    direct_exception_evidence: z.string().min(12).max(500).optional().describe("声明历史例外分类时提供可核查证据；派发失败接管不要求此字段"),
-    available_native_models: z.array(z.string().min(1).max(120)).max(32).optional().describe("本轮原生派发工具能以集中配置指定档位运行的 runtime model ID 列表；不得把选择器可见或仅支持其他档位的模型声明为可派发"),
-    lease_ttl_ms: z.number().int().min(60_000).max(28_800_000).optional(), response_mode: operationalResponseMode,
-  }).strict(),
-}, async (input, extra) => {
-  if (!["ocr", "ocr_review", "independent_review"].includes(input.task_class)) {
-    if (input.channel !== "direct" || input.direct_exception_kind || /^\[(?:device_interaction|atomic_git|shared_dirty_workspace)\]/.test(input.direct_reason || "")) return postLocal("/routing/select", input);
-    const context = resolveTrustedMcpSession(extra);
-    return context.sessionId ? postLocal("/routing/select", { ...input, session_id: context.sessionId }) : result({ ...context, code: "SESSION_NOT_REGISTERED" });
-  }
-  const context = resolveTrustedMcpSession(extra);
-  return context.sessionId ? postLocal("/routing/select", { ...input, session_id: context.sessionId }) : result({ ...context, code: "SESSION_NOT_REGISTERED" });
-});
-
-toolRegistry.register("taskcenter_routing_result", {
-  title: "上报 TaskCenter 路由结果",
-  description: "释放模型并发租约并更新健康状态；普通派发失败后停止原执行器、撤销 delegation，并按返回的 next_action 申请 direct 由当前主模型继续，不结束任务。只记录执行事实，不授予验收权。",
-  inputSchema: z.object({
-    route_id: z.string().min(1).max(200),
-    outcome: z.enum(["succeeded", "failed", "cancelled", "unavailable", "overloaded"]),
-    http_status: z.number().int().min(0).max(599).optional(),
-    error_type: z.string().max(120).optional(),
-    error_code: z.string().max(160).optional(),
-    request_id: z.string().max(300).optional(),
-    quota_limit_id: z.string().max(120).optional(),
-    quota_retry_after_at: z.string().datetime({ offset: true }).optional(),
-    event_id: z.string().max(200).optional(), response_mode: operationalResponseMode,
-  }).strict(),
-}, async (input, extra) => {
-  const context = resolveTrustedMcpSession(extra);
-  return postLocal("/routing/result", { ...input, ...(context.sessionId ? { session_id: context.sessionId } : {}) });
-});
-
-toolRegistry.register("taskcenter_review_start", {
-  description: "只读 Reviewer 入口：手动首次传 route_id、claim_token、sandbox；已领取会话可空参恢复。保留受管启动兼容，无需 Session UUID。",
-  inputSchema: z.object({ route_id: z.string().min(1).optional(), claim_token: z.string().min(1).optional(), sandbox: z.literal("read-only").optional() }).strict(),
-}, async (input, extra) => {
-  const identity = resolveTrustedMcpSession(extra);
-  if (!identity.sessionId) return result(identity);
-  try {
-    const launch = Object.keys(input).length || !process.env.TASKCENTER_MANAGED_REVIEW
-      ? { ...input, manual: true }
-      : JSON.parse(process.env.TASKCENTER_MANAGED_REVIEW);
-    const response = await fetch(`${controlServerUrl}/reviews/start`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": readLocalMcpToken() }, body: JSON.stringify({ ...launch, session_id: identity.sessionId }) });
-    const payload = await response.json();
-    if (!response.ok) return result({ error: "REVIEW_START_FAILED", code: payload.code, message: payload.error, next_action: "首次由任务所有者准备 Subject/Bundle/Rules 并获取审查路由；独立 Session 登记真实模型和工作区后，传 route_id、claim_token、sandbox=read-only。已领取会话可空参恢复；租约失效或版本变化需所有者重新授权。不得自建任务或伪造授权。" });
-    managedReviewContext = payload.context;
-    return result(payload);
-  } catch (error) { return result({ error: "REVIEW_START_FAILED", message: error.message }); }
-});
-
-toolRegistry.register("taskcenter_review_finish", {
-  description: "提交实际逐文件覆盖与规格/质量结论；程序绑定身份、Subject、OCR证据及cycle，成功落账后释放租约。未覆盖全部文件不能批准。",
-  inputSchema: z.object({
-    reviewed_files: z.array(z.string().min(1)).max(500), findings: z.array(reviewFinding).max(500),
-    spec_verdict: z.enum(["compliant", "issues_found", "not_evaluated"]), quality_verdict: z.enum(["approved", "needs_fixes", "not_evaluated"]), verdict: z.enum(["approved", "changes_requested", "rejected"]),
-    unverified_requirements: z.array(unverifiedRequirement).max(50).default([]), summary: z.string().min(1).max(1000),
-  }).strict(),
-}, async (input, extra) => {
-  const identity = resolveTrustedMcpSession(extra);
-  let stage = "prepare";
-  let reportAccepted = false;
-  try {
-    if (!managedReviewContext || identity.sessionId !== managedReviewContext.reviewer.session_id) throw new Error("REVIEW_START_REQUIRED");
-    const review = buildManagedReviewReport(managedReviewContext, input, managedReviewContext.report_observed_at || new Date().toISOString());
-    managedReviewContext.report_observed_at = review.observed_at;
-    const headers = { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp", "X-TaskCenter-MCP-Token": readLocalMcpToken() };
-    stage = "report";
-    const report = await readJson(await fetch(`${controlServerUrl}/task-events`, { method: "POST", headers, body: JSON.stringify({ type: "review.reported", task_id: managedReviewContext.task_id, session_id: identity.sessionId, event_id: review.id, review_attestation: review }) }));
-    if (report.accepted !== true) throw new Error("REVIEW_REPORT_NOT_ACCEPTED");
-    reportAccepted = true;
-    stage = "release";
-    const release = await readJson(await fetch(`${controlServerUrl}/routing/result`, { method: "POST", headers, body: JSON.stringify({ route_id: managedReviewContext.route_id, session_id: identity.sessionId, outcome: "succeeded" }) }));
-    return result({ accepted: report.accepted, attestation_id: review.id, verdict: review.verdict, covered_files: input.reviewed_files.length, lease_released: release.accepted });
-  } catch (error) { return result({ error: "REVIEW_FINISH_FAILED", message: error.message, code: error.code || error.cause?.code, stage, report_status: reportAccepted ? "accepted" : "unconfirmed", next_action: "保留已有审查结论；控制服务恢复健康后，由同一 Reviewer Session 调用 review_start({route_id}) 恢复，再以相同结论重试 review_finish。不要换身份或代签；若 Subject 或租约失效，交由任务所有者处理。" }); }
-});
-
-toolRegistry.register("taskcenter_review_claim", {
-  title: "领取独立只读 Review",
-  description: "已登记的独立 Reviewer 领取已有业务任务的 Review lease，不创建 Task。执行宿主必须使用 read-only 沙箱。",
-  inputSchema: z.object({ route_id: z.string().min(1), claim_token: z.string().min(1), sandbox: z.literal("read-only"), response_mode: operationalResponseMode }).strict(),
-}, async (input, extra) => {
-  const context = resolveTrustedMcpSession(extra);
-  return context.sessionId ? postLocal("/reviews/claim", { ...input, session_id: context.sessionId }) : result({ ...context, code: "SESSION_NOT_REGISTERED" });
-});
-
-toolRegistry.register("taskcenter_delegation_grant", {
-  title: "创建执行委派授权",
-  description: "由主任务 Session 创建受 TTL、workspace 和 scope 限制的执行授权；当前策略仅接受 native，必须绑定 route_id，不另建正式任务。",
-  inputSchema: z.object({
-    parent_session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), delegation_id: z.string().max(200).optional(),
-    workspace: z.string().min(1).max(4_096), scope: z.array(z.string().min(1).max(500)).min(1).max(50), allowed_tools: z.array(z.string().min(1).max(120)).max(40).optional(),
-    executor_model: z.string().min(1).max(120), channel: z.enum(["cli", "native", "other"]).default("cli"),
-    route_id: z.string().max(200).optional().describe("native 委派必填：绑定一条有效 native 路由；canonical 模型、任务与租约均来自该路由"),
-    purpose: z.string().max(1_000).optional(), ttl_seconds: z.number().int().min(60).max(28_800).default(3_600), response_mode: operationalResponseMode,
-  }).strict(),
-}, async (input) => postLocal("/delegations/grant", input));
-
-toolRegistry.register("taskcenter_delegation_claim", {
-  title: "领取执行委派授权",
-  description: "执行器使用自身已登记 Session 和一次性 claim token 附着主任务；原生 Session 校验授权已绑定的 route 与 runtime model，不创建正式子任务。",
-  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), claim_token: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096),
-    route_id: z.string().max(200).optional(), executor_model: z.string().max(120).optional(),
-    event_id: z.string().max(200).optional(), response_mode: operationalResponseMode }).strict(),
-}, async (input) => postLocal("/delegations/claim", input));
-
-toolRegistry.register("taskcenter_cli_run_report", {
-  title: "上报委派执行结果",
-  description: "上报附着主任务的原生或 CLI 执行状态和证据；不会改变主任务状态或形成独立验收。",
-  inputSchema: z.object({
-    delegation_id: z.string().min(1).max(200), session_id: z.string().min(1).max(200), workspace: z.string().min(1).max(4_096), event_id: z.string().max(200).optional(),
-    status: z.enum(["started", "running", "succeeded", "failed", "cancelled"]), summary: z.string().max(1_000).optional(), changed_files: z.array(z.string().max(500)).max(100).optional(),
-    tests: z.array(z.string().max(500)).max(50).optional(), evidence: z.array(z.string().max(1_000)).max(50).optional(), error: z.string().max(1_000).optional(), response_mode: operationalResponseMode,
-  }).strict(),
-}, async (input) => postLocal("/delegations/report", input));
-
-toolRegistry.register("taskcenter_delegation_revoke", {
-  title: "撤销执行器 Delegation",
-  description: "由主任务 Session 撤销尚未结束的原生或历史 CLI delegation。",
-  inputSchema: z.object({ delegation_id: z.string().min(1).max(200), parent_session_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), response_mode: operationalResponseMode }).strict(),
-}, async (input) => postLocal("/delegations/revoke", input));
 
 toolRegistry.register("taskcenter_task_query", {
   title: "查询 TaskCenter 任务",
@@ -737,7 +551,7 @@ async function queryTasks({ task_id, session_id, view } = {}) {
     if (!Number.isSafeInteger(payload.totalPages) || !payload.tasks.length) throw new Error("TaskCenter 任务分页响应无效。");
   }
   if (view !== "summary") return tasks;
-  const fields = ["id", "sessionId", "title", "goal", "status", "currentStep", "nextAction", "blocker", "verificationStatus", "reviewStatus", "acceptanceStatus", "currentSubject", "updatedAt", "routing", "cliRuns"];
+  const fields = ["id", "sessionId", "title", "goal", "status", "currentStep", "nextAction", "blocker", "verificationStatus", "reviewStatus", "acceptanceStatus", "currentSubject", "updatedAt"];
   return tasks.map(task => ({
     ...Object.fromEntries(fields.filter(key => Object.hasOwn(task, key)).map(key => [key, task[key]])),
     completionReasons: task.completionReadiness?.reasons || [],

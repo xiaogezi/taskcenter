@@ -1,15 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CLI_LOST_AFTER_MS,
-  cliRunStatusLabel,
   describeActivityEvent,
   fetchInFlight,
   isValidEventsResponse,
   isValidTaskResponse,
   lastSuccessText,
-  parseClientReport,
-  parseClientUsage,
   reduceDetailFailure,
   reduceDetailSuccess,
   reduceEventsFailure,
@@ -103,31 +99,6 @@ test("lastSuccessText 不产生 1970", () => {
   assert.equal(lastSuccessText(60_000, 120_000), "上次成功：1 分钟前");
 });
 
-test("客户端报告模型：仅采信 delegation 绑定且 session 匹配的完整 JSON", () => {
-  const run = {
-    id: "run-a",
-    delegateSessionId: "session-a",
-    executorModel: "requested-model",
-    evidence: [JSON.stringify({ delegation_id: "run-a", sessionId: "session-a", requested_model: "requested-model", reportedModels: ["reported-model"], requested_effort: "medium", effective_effort: "low" })],
-  };
-  assert.deepEqual(parseClientReport(run), { models: ["reported-model"], requestedEffort: "medium", effectiveEffort: "low" });
-});
-
-test("客户端报告模型：截断 JSON、delegation 不符、session 不符、字段畸形均为未报告", () => {
-  const base = { delegation_id: "run-a", sessionId: "session-a", reportedModels: ["m"] };
-  const run = (evidence) => ({ id: "run-a", delegateSessionId: "session-a", evidence });
-  assert.equal(parseClientReport(run(['{"delegation_id":"run-a","sessionId":"session-a","reportedModels":["m'])), null);
-  assert.equal(parseClientReport(run([JSON.stringify({ ...base, delegation_id: "other" })])), null);
-  assert.equal(parseClientReport(run([JSON.stringify({ ...base, sessionId: "other" })])), null);
-  assert.equal(parseClientReport(run([JSON.stringify({ delegation_id: "run-a", sessionId: "session-a" })])), null);
-  assert.equal(parseClientReport(run([JSON.stringify({ ...base, reportedModels: [] })])), null);
-  assert.equal(parseClientReport(run([JSON.stringify({ ...base, reportedModels: "m" })])), null);
-  assert.equal(parseClientReport(run([JSON.stringify({ ...base, reportedModels: [42] })])), null);
-  assert.equal(parseClientReport(run([JSON.stringify({ ...base, reportedModels: ["  "] })])), null);
-  assert.equal(parseClientReport({ id: "run-a", evidence: ["plain text"] }), null);
-  assert.equal(parseClientReport({ evidence: [JSON.stringify(base)] }), null);
-});
-
 test("活动白名单：tool.call 只暴露工具名、调用 ID、时间并注明结果未记录", () => {
   const item = describeActivityEvent({ type: "tool.call", tool_name: "Bash", tool_use_id: "tu-1", command: "SECRET_COMMAND", tool_input: { token: "SECRET_TOKEN" }, output: "SECRET_OUTPUT", recorded_at: "2026-09-20T00:00:00Z" });
   assert.equal(item.type, "tool.call");
@@ -141,7 +112,7 @@ test("活动白名单：tool.call 只暴露工具名、调用 ID、时间并注�
 
 test("活动白名单：routing.decision 仅模型/动作/结果，其他事件仅类型与时间", () => {
   const decision = describeActivityEvent({ type: "routing.decision", selected_executor_model: "k3", routing_action: "direct_execute", routing_outcome: "selected", prompt: "SECRET_PROMPT", extra: "x", occurred_at: "2026-09-20T01:00:00Z" });
-  assert.deepEqual(decision.lines, ["路由选择模型：k3", "动作：direct_execute", "结果：selected"]);
+  assert.deepEqual(decision.lines, []);
   assert.doesNotMatch(JSON.stringify(decision), /SECRET_PROMPT/);
 
   const other = describeActivityEvent({ type: "note", payload: "SECRET_PAYLOAD", recorded_at: "2026-09-20T02:00:00Z" });
@@ -153,39 +124,4 @@ test("活动白名单：routing.decision 仅模型/动作/结果，其他事件�
   assert.equal(describeActivityEvent(null), null);
   assert.equal(describeActivityEvent("x"), null);
   assert.equal(describeActivityEvent({}).type, "未知事件");
-});
-
-test("CLI 运行状态：终态直读、active 按心跳判断失联、信号不足待确认", () => {
-  const now = Date.parse("2026-09-20T10:00:00.000Z");
-  const fresh = new Date(now - 30_000).toISOString();
-  const stale = new Date(now - CLI_LOST_AFTER_MS - 1_000).toISOString();
-  assert.equal(cliRunStatusLabel(null).label, "未知");
-  assert.equal(cliRunStatusLabel({ status: "issued" }).label, "未领取");
-  assert.equal(cliRunStatusLabel({ status: "succeeded" }).label, "成功");
-  assert.equal(cliRunStatusLabel({ status: "failed" }).label, "失败");
-  assert.equal(cliRunStatusLabel({ status: "cancelled" }).label, "取消");
-  assert.equal(cliRunStatusLabel({ status: "revoked" }).label, "已撤销");
-  assert.equal(cliRunStatusLabel({ status: "expired" }).label, "已过期");
-  assert.equal(cliRunStatusLabel({ status: "active" }).label, "待确认");
-  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "started", lastObservedAt: fresh }, now).label, "启动中");
-  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "running", lastObservedAt: fresh }, now).label, "执行中");
-  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "waiting_permission", lastObservedAt: fresh }, now).label, "等待权限");
-  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "waiting_quota", lastObservedAt: fresh }, now).label, "等待限流恢复");
-  const lost = cliRunStatusLabel({ status: "active", runStatus: "running", lastObservedAt: stale }, now);
-  assert.equal(lost.label, "失联");
-  assert.equal(lost.lost, true);
-  assert.equal(cliRunStatusLabel({ status: "active", runStatus: "waiting_quota", lastObservedAt: stale }, now).label, "失联");
-  assert.equal(cliRunStatusLabel({ status: "active", lastObservedAt: fresh }, now).label, "执行中");
-});
-
-test("客户端回执用量：只采信绑定证据并容错解析 usage", () => {
-  const base = { delegation_id: "run-a", sessionId: "session-a" };
-  const run = (evidence) => ({ id: "run-a", delegateSessionId: "session-a", evidence });
-  assert.deepEqual(parseClientUsage(run([JSON.stringify({ ...base, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3 } })])), { input: 10, output: 5, cacheRead: 3, cacheWrite: null });
-  assert.deepEqual(parseClientUsage(run([JSON.stringify({ ...base, usage: { prompt_tokens: "40", completion_tokens: 8 } })])), { input: 40, output: 8, cacheRead: null, cacheWrite: null });
-  assert.equal(parseClientUsage(run([JSON.stringify({ ...base })])), null);
-  assert.equal(parseClientUsage(run([JSON.stringify({ ...base, delegation_id: "other" })])), null);
-  assert.equal(parseClientUsage(run(["plain"])), null);
-  assert.equal(parseClientUsage({ id: "run-a", evidence: [] }), null);
-  assert.equal(parseClientUsage(null), null);
 });

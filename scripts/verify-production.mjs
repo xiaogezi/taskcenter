@@ -58,7 +58,7 @@ export async function verifyProduction(root) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.ok(healthy, output || "Production stack did not become healthy");
-    for (const path of ["/", "/tasks", "/sessions", "/routing", "/improvements", "/settings"]) {
+    for (const path of ["/", "/tasks", "/sessions", "/improvements", "/settings"]) {
       const response = await fetch(`http://127.0.0.1:${webPort}${path}`, { signal: AbortSignal.timeout(5000) });
       assert.equal(response.status, 200, path);
       assert.doesNotMatch(await response.text(), /创建改进任务|请求启用|Bug 派发/);

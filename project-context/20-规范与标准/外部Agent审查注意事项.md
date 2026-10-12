@@ -2,7 +2,7 @@
 编号: TASKCENTER-EXTERNAL-REVIEW
 类型: 协作规范
 状态: 当前
-更新时间: 2026-09-15
+更新时间: 2026-10-12
 依据: 用户明确指定外部 Agent 审查，实施 Agent 不介入流程
 ---
 
@@ -27,18 +27,14 @@
 
 普通外部审查仍按上文向用户提供报告；以下仅用于用户要求绑定 TaskCenter 的审查。
 
-1. 任务所有者先固定 Subject、准备 OCR JSON preview（Bundle）和 Rules，再申请审查路由。preview 属于所有者的准备阶段，不能要求尚未授权的 Reviewer 先执行它来获得授权。
-2. 独立 Reviewer 在实际只读宿主中登记真实 Session、模型和工作区，调用 `taskcenter_review_start({route_id, claim_token, sandbox: "read-only"})`。路由与令牌来自所有者的合法授权，不手工编造，不把令牌写入报告或公共日志。
-3. 收到 `accepted=true` 后只审查返回的 Subject 与文件，完成后调用 `taskcenter_review_finish`。不需要另建普通任务，也不需要启动器环境变量。
-4. 同一已领取 Session 在 MCP 重连后可调用 `taskcenter_review_start({})` 恢复唯一运行中的审查；多个候选时显式传 `route_id`。恢复仍校验身份、模型、工作区、版本及租约，不延长有效期。
-5. `REVIEW_ROUTE_REQUIRED`：请所有者提供明确授权；`REVIEWER_LEASE_UNAVAILABLE`：请所有者重新申请路由；`SUBJECT_MISMATCH`：重新固定版本和 Bundle 后授权；`REVIEW_PERMISSION_DENIED`：核对独立身份、实际模型、工作区及只读宿主。反复恢复 Session 或创建普通任务不能修复这些错误。
-
-依据：2026-09-29 用户选定复用既有授权的手动接续方案；入口位于 `scripts/taskcenter-mcp.mjs`，校验复用 `scripts/routing-control.mjs`，集成验证位于 `tests/review-managed-integration.test.mjs`。回滚该变更恢复原受管入口，不迁移或删除既有授权数据。
+1. 固定审查 Subject、目标 commit、范围与规则，使用真实只读宿主完成独立审查。TaskCenter 不分配模型或管理 Reviewer Session。
+2. 用户明确要求导入时，通过 `taskcenter_task_review_report` 或 `taskcenter_review_cycle_report` 记录真实身份、Subject、覆盖文件、结论和证据，遵循当前 schema 的独立性与版本校验。
+3. 路由、start/claim/restore/finish 和租约接口均已退役；不得编造 route_id、委派或托管 Reviewer 身份。
 
 先核对需求是否实现，再判断代码质量。重点检查实际失败路径，而不是只做样式建议：
 
 - 任务状态与实际执行、验证、审查、验收是否区分；done_claimed 不等于最终验收。
-- Session、task、delegation 的身份和所有权；不能用计划派发模型冒充实际执行模型。
+- 主线 Session、task 与审查参与者的身份和所有权；记录真实审查身份。
 - MCP、HTTP、Hook、账本投影之间的字段与语义一致性；同一行为的所有入口是否一致。
 - 追加事件、幂等重试、并发冲突、部分失败、旧版本证据失效，以及合并后 Subject 的变化。
 - 本地数据与凭据边界；禁止读取认证文件、上传 Session 正文或破坏健康服务。

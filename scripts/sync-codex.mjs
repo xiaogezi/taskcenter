@@ -77,7 +77,7 @@ async function readSessionFileMetadata(path) {
 function groupSessionFiles(files) {
   const groups = new Map();
   for (const file of files) {
-    if (!file.canonicalId) continue;
+    if (file.isSubagent || !file.canonicalId) continue;
     const current = groups.get(file.canonicalId) || {
       threadId: file.canonicalId,
       files: [],

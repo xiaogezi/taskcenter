@@ -16,9 +16,6 @@ import {
   validatePhaseEvent,
   withTaskPhaseTiming,
 } from "./task-phase-timing.mjs";
-import { listDelegations } from "./delegation-store.mjs";
-import { configuredPreferredModel } from "./model-role-config.mjs";
-import { reviewSessionRecords, reviewTaskRecords, withReviewStatus, sanitizeJevDecision } from "./routing-control.mjs";
 
 import { switchCheckpoint, validateSessionSwitch } from "./session-switch.mjs";
 
@@ -31,10 +28,6 @@ export const sessionRegistryPath = resolve(process.env.TASKCENTER_SESSION_REGIST
 export const sessionMergesPath = resolve(process.env.TASKCENTER_SESSION_MERGES_PATH || join(projectRoot, "data", "session-merges.json"));
 
 const statuses = new Set(["planned", "in_progress", "blocked", "done_claimed", "verified", "cancelled", "removed"]);
-const routingActions = new Set(["direct_execute", "delegate_native", "fallback_cli", "reasoned_override"]);
-const dispatchChannels = new Set(["direct", "native", "cli", "other"]);
-const routingOutcomes = new Set(["selected", "started", "succeeded", "failed"]);
-const routingHistoryLimit = 20;
 const demoPattern = /^ui-demo-/;
 const contextShadowPattern = /^context-[0-9a-f]{24}$/;
 let ledgerCache = null;
@@ -44,13 +37,13 @@ export { taskTimeState, STALE_TASK_MS };
 
 export function loadTasks() {
   const source = readLedger();
-  if (normalizedTasksCache?.source === source) return withReviewStatus(normalizedTasksCache.tasks).map((task) => withTaskPhaseTiming(withCompletionState(task)));
+  if (normalizedTasksCache?.source === source) return normalizedTasksCache.tasks.map((task) => withTaskPhaseTiming(withCompletionState(task)));
   const tasks = source
     .filter((task) => task.status !== "removed")
     .map((task) => normalizeDueAtSemantics(task))
     .map((task) => withCompletionState({ ...task, sessionId: canonicalSessionId(task.sessionId) }));
   normalizedTasksCache = { source, tasks };
-  return withReviewStatus(tasks).map((task) => withTaskPhaseTiming(withCompletionState(task)));
+  return tasks.map((task) => withTaskPhaseTiming(withCompletionState(task)));
 }
 
 function normalizeDueAtSemantics(task) {
@@ -402,12 +395,6 @@ export function recordTaskEvent(input, options = {}) {
   const sessionRegistry = loadSessionRegistry();
   const eventSessionId = canonicalSessionId(event.session_id);
   const isRegistered = Boolean(eventSessionId && sessionRegistry[eventSessionId]);
-  if (eventSessionId && reviewSessionRecords(eventSessionId).length && !["session.register", "review.reported"].includes(event.type)) {
-    throw new TaskLedgerError(403, "REVIEW_PERMISSION_DENIED：Reviewer Session 仅允许独立只读审查，不得修改业务 Task。");
-  }
-  if (event.type === "review.reported" && (event.review_attestation?.route_id || reviewTaskRecords(event.task_id).length) && !options.authorizedReviewLease) {
-    throw new TaskLedgerError(403, "REVIEW_PERMISSION_DENIED：OCR 报告必须通过匹配的独立 Reviewer lease 校验。");
-  }
 
   if (options.requireRegistered
     && ["session.register", "task.create"].includes(event.type)
@@ -486,7 +473,7 @@ export function recordTaskEvent(input, options = {}) {
     if (switchEvents.some((item) => item.session_switch_id === event.session_switch_id)) throw new TaskLedgerError(409, "SWITCH_ALREADY_CONSUMED");
     previousTaskId = validateSessionSwitch(event, tasks, (id) => {
       const predecessor = tasks.find((task) => task.id === id && task.sessionId === eventSessionId);
-      return switchCheckpoint(predecessor, tasks, sessionRegistry[eventSessionId], listDelegations(id));
+      return switchCheckpoint(predecessor, tasks, sessionRegistry[eventSessionId], []);
     });
   }
   if (options.requireRegistered && current && (current.closedGoal || ["done_claimed", "verified", "cancelled"].includes(current.status)) && event.goal && event.goal !== (current.closedGoal || current.goal)) {
@@ -568,15 +555,6 @@ export function recordTaskEvent(input, options = {}) {
 }
 
 function authorizePhaseSession(task, event, sameOwnerSession) {
-  let delegated = false;
-  if (event.delegation_id) {
-    const delegation = listDelegations(task.id).find((item) => item.id === event.delegation_id);
-    if (!delegation) throw new TaskLedgerError(404, "阶段事件引用的 delegation 不存在或不属于该任务。");
-    if (canonicalSessionId(delegation.delegateSessionId) !== canonicalSessionId(event.session_id)) {
-      throw new TaskLedgerError(403, "阶段事件 Session 不是该 delegation 的执行 Session。");
-    }
-    delegated = true;
-  }
   let reviewActor = false;
   if (event.review_cycle_id) {
     const cycle = (task.reviewCycles || []).find((item) => item.cycle_id === event.review_cycle_id);
@@ -584,7 +562,7 @@ function authorizePhaseSession(task, event, sameOwnerSession) {
     const reviewerSession = cycle.reviewer?.session_id || cycle.reviewer?.id || "";
     reviewActor = Boolean(reviewerSession && canonicalSessionId(reviewerSession) === canonicalSessionId(event.session_id));
   }
-  return sameOwnerSession || delegated || reviewActor;
+  return sameOwnerSession || reviewActor;
 }
 
 function derivedCompletionEvents(previous, next, source) {
@@ -622,14 +600,10 @@ const idempotentEventFields = [
   "tests", "evidence", "assumptions", "risks", "tradeoffs", "open_questions", "retrospective",
   "expected_at", "archived_at", "superseded_by", "review_reason", "reviewed_at", "tool_name",
   "due_at", "estimated_effort_ms", "estimate_reason",
-  "tool_use_id", "routing_action", "orchestrator_model", "preferred_executor_model",
-  "selected_executor_model", "dispatch_channel", "routing_reason", "routing_outcome", "policy_version",
-  "fallback_from", "fallback_reason", "retry_after_at", "review_artifacts", "jev_decision", "direct_reason",
-  "preference_mode", "quota_limit_id", "quota_snapshot_observed_at", "quota_used_percent", "quota_reset_at",
+  "tool_use_id",
   "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
-  "execution_model_policy",
   "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation", "review_cycle",
-  "phase", "transition", "activity_source", "activity_id", "delegation_id", "review_cycle_id",
+  "phase", "transition", "activity_source", "activity_id", "review_cycle_id",
   "diagnostic_observation",
   "close_requirements", "close_verifications",
   "context_completion_id", "authorization_id", "reason", "actor", "subject_ref", "acceptance_record", "workspace_policy",
@@ -986,7 +960,7 @@ function normalizeEvent(input, current = null, legacyText = false) {
   const content = legacyText ? cleanText : cleanContent;
   const allowedTypes = new Set([
     "session.register", "task.create", "task.resume", "task.update", "task.blocked", "task.done_claimed", "task.report", "task.close", "task.review",
-    "task.reminder", "tool.call", "routing.decision", "routing.result", "routing.health", "requirement.reported", "verification.reported", "review.reported", "review_cycle.reported",
+    "task.reminder", "tool.call", "requirement.reported", "verification.reported", "review.reported", "review_cycle.reported",
     "acceptance.accepted", "acceptance.rejected", "subject.updated", "diagnostic.reported", "phase.reported",
   ]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
@@ -1039,40 +1013,11 @@ function normalizeEvent(input, current = null, legacyText = false) {
     reviewed_at: cleanText(input.reviewed_at, 80),
     tool_name: cleanText(input.tool_name, 120),
     tool_use_id: cleanText(input.tool_use_id, 200),
-    routing_action: cleanText(input.routing_action, 40),
-    orchestrator_model: cleanText(input.orchestrator_model, 120),
-    preferred_executor_model: cleanText(input.preferred_executor_model, 120),
-    selected_executor_model: cleanText(input.selected_executor_model, 120),
-    dispatch_channel: cleanText(input.dispatch_channel, 40),
-    routing_reason: cleanText(input.routing_reason, 1_000),
-    ...(input.jev_decision ? { jev_decision: sanitizeJevDecision(input.jev_decision) } : {}),
-    ...(input.direct_reason ? { direct_reason: cleanText(input.direct_reason, 1_000) } : {}),
-    reasoning_effort: cleanText(input.reasoning_effort, 40),
-    routing_outcome: cleanText(input.routing_outcome, 40),
-    fallback_from: cleanText(input.fallback_from, 120),
-    fallback_reason: cleanText(input.fallback_reason, 200),
-    policy_version: cleanText(input.policy_version, 80),
-    route_id: cleanText(input.route_id, 200),
-    task_class: cleanText(input.task_class, 80),
-    circuit_state: cleanText(input.circuit_state, 40),
-    health_model: cleanText(input.health_model, 120),
-    health_transition: cleanText(input.health_transition, 80),
-    consecutive_failures: normalizeNonNegativeInteger(input.consecutive_failures),
-    active_executors: normalizeNonNegativeInteger(input.active_executors),
-    retry_after_at: cleanText(input.retry_after_at, 80),
-    preference_mode: cleanText(input.preference_mode, 40),
-    quota_limit_id: cleanText(input.quota_limit_id, 120),
-    quota_snapshot_observed_at: cleanText(input.quota_snapshot_observed_at, 80),
-    quota_used_percent: normalizePercentage(input.quota_used_percent),
-    quota_reset_at: cleanText(input.quota_reset_at, 80),
-    review_artifacts: normalizeReviewArtifacts(input.review_artifacts),
-    execution_model_policy: normalizeExecutionModelPolicy(input.execution_model_policy),
     ...normalizeCompletionEvent(input, current?.currentSubject || null),
     phase: cleanText(input.phase, 40),
     transition: cleanText(input.transition, 40),
     activity_source: cleanText(input.activity_source, 40),
     activity_id: cleanText(input.activity_id, 200),
-    delegation_id: cleanText(input.delegation_id, 200),
     review_cycle_id: cleanText(input.review_cycle_id, 120),
     created_at: new Date().toISOString(),
   };
@@ -1086,44 +1031,6 @@ function normalizeEvent(input, current = null, legacyText = false) {
   }
   if (input.estimated_effort_ms !== undefined && event.estimated_effort_ms === undefined) {
     throw new TaskLedgerError(400, "estimated_effort_ms 必须是正整数毫秒。");
-  }
-  if (type === "routing.decision") {
-    if (!routingActions.has(event.routing_action)) throw new TaskLedgerError(400, "routing_action 无效。");
-    if (!dispatchChannels.has(event.dispatch_channel)) throw new TaskLedgerError(400, "dispatch_channel 无效。");
-    if (event.routing_outcome && !routingOutcomes.has(event.routing_outcome)) throw new TaskLedgerError(400, "routing_outcome 无效。");
-    if (!event.orchestrator_model || !event.preferred_executor_model || !event.selected_executor_model || !event.routing_reason) {
-      throw new TaskLedgerError(400, "路由决定缺少模型或原因字段。");
-    }
-    event.task_class ||= "general";
-    const configuredPreferred = configuredPreferredModel(event.task_class);
-    if (!event.route_id && event.preferred_executor_model !== configuredPreferred) {
-      throw new TaskLedgerError(400, `preferred_executor_model 与集中配置不一致：${event.task_class} 应为 ${configuredPreferred}。`);
-    }
-    const expectedChannel = {
-      direct_execute: "direct",
-      delegate_native: "native",
-      fallback_cli: "cli",
-    }[event.routing_action];
-    if (expectedChannel && event.dispatch_channel !== expectedChannel) {
-      throw new TaskLedgerError(400, `${event.routing_action} 必须使用 ${expectedChannel} 通道；特殊路由请使用 reasoned_override。`);
-    }
-    if (event.routing_action === "direct_execute" && event.selected_executor_model !== event.orchestrator_model) {
-      throw new TaskLedgerError(400, "direct_execute 的执行模型必须与编排模型一致；特殊路由请使用 reasoned_override。");
-    }
-    if (["delegate_native", "fallback_cli"].includes(event.routing_action)
-      && event.selected_executor_model !== event.preferred_executor_model) {
-      throw new TaskLedgerError(400, `${event.routing_action} 默认使用首选执行模型；特殊路由请使用 reasoned_override。`);
-    }
-    event.routing_outcome ||= "selected";
-    event.policy_version ||= "soft-routing-v1";
-  }
-  if (type === "routing.health") {
-    if (!event.route_id || !event.health_model || !["closed", "open", "half_open"].includes(event.circuit_state)) {
-      throw new TaskLedgerError(400, "路由健康事件缺少 route_id、model 或有效 circuit_state。");
-    }
-  }
-  if (type === "routing.result" && (!event.route_id || !event.routing_outcome)) {
-    throw new TaskLedgerError(400, "routing.result 缺少 route_id 或 outcome。");
   }
   if (type === "diagnostic.reported" && !event.diagnostic_observation?.case_id) {
     throw new TaskLedgerError(400, "diagnostic.reported 缺少有效 diagnostic_observation。");
@@ -1175,72 +1082,6 @@ function applyEvent(current, event) {
     }
     return { ...current, status: "removed", updatedAt: event.created_at, lastEventId: event.event_id };
   }
-  if (event.type === "routing.decision") {
-    const routing = {
-      action: event.routing_action,
-      orchestratorModel: event.orchestrator_model,
-      preferredExecutorModel: event.preferred_executor_model,
-      selectedExecutorModel: event.selected_executor_model,
-      reasoningEffort: event.reasoning_effort || undefined,
-      dispatchChannel: event.dispatch_channel,
-      reason: event.routing_reason,
-      jevDecision: event.jev_decision || undefined,
-      directReason: event.direct_reason || undefined,
-      outcome: event.routing_outcome,
-      policyVersion: event.policy_version,
-      recordedAt: event.created_at,
-      eventId: event.event_id,
-      routeId: event.route_id || undefined,
-      taskClass: event.task_class || undefined,
-      circuitState: event.circuit_state || undefined,
-      fallbackFrom: event.fallback_from || undefined,
-      fallbackReason: event.fallback_reason || undefined,
-      retryAfterAt: event.retry_after_at || undefined,
-      reviewArtifacts: event.review_artifacts || undefined,
-      preferenceMode: event.preference_mode || "auto",
-      quotaLimitId: event.quota_limit_id || undefined,
-      quotaSnapshotObservedAt: event.quota_snapshot_observed_at || undefined,
-      quotaUsedPercent: event.quota_used_percent,
-      quotaResetAt: event.quota_reset_at || undefined,
-    };
-    return {
-      ...current,
-      routing,
-      routingHistory: [...(current.routingHistory || []), routing].slice(-routingHistoryLimit),
-      routingRecordedAt: event.created_at,
-    };
-  }
-  if (event.type === "routing.health") {
-    const health = {
-      routeId: event.route_id,
-      model: event.health_model,
-      state: event.circuit_state,
-      transition: event.health_transition,
-      consecutiveFailures: event.consecutive_failures ?? 0,
-      activeExecutors: event.active_executors ?? 0,
-      retryAfterAt: event.retry_after_at || "",
-      recordedAt: event.created_at,
-      eventId: event.event_id,
-    };
-    return {
-      ...current,
-      routingHealth: health,
-      routingHealthHistory: [...(current.routingHealthHistory || []), health].slice(-routingHistoryLimit),
-    };
-  }
-  if (event.type === "routing.result") {
-    const result = {
-      routeId: event.route_id,
-      outcome: event.routing_outcome,
-      recordedAt: event.created_at,
-      eventId: event.event_id,
-    };
-    return {
-      ...current,
-      routingResult: result,
-      routingResultHistory: [...(current.routingResultHistory || []), result].slice(-routingHistoryLimit),
-    };
-  }
   const now = event.created_at;
   const base = current || {
     id: event.task_id,
@@ -1268,10 +1109,6 @@ function applyEvent(current, event) {
     risks: [],
     tradeoffs: [],
     openQuestions: [],
-    routing: null,
-    routingHistory: [],
-    routingHealth: null,
-    routingHealthHistory: [],
     phaseEvents: [],
     createdAt: now,
     timingModelVersion: "estimate-calibration-v1",
@@ -1342,7 +1179,6 @@ function applyEvent(current, event) {
     reviewedAt: event.reviewed_at || base.reviewedAt || "",
     toolCalls: { ...(base.toolCalls || {}) },
     diagnosticObservations: [...(base.diagnosticObservations || [])],
-    executionModelPolicy: event.execution_model_policy || base.executionModelPolicy || { mode: "auto" },
     bug: event.bug || base.bug,
     bugMerge: event.bug_merge || base.bugMerge,
   };
@@ -1460,55 +1296,10 @@ function cleanList(value, maxItems, maxLength, normalize = cleanText) {
   return value.filter((item) => typeof item === "string").map((item) => normalize(item, maxLength)).filter(Boolean).slice(0, maxItems);
 }
 
-function normalizeReviewArtifacts(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const normalize = (item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-    const ref = cleanText(item.ref, 1_000);
-    const fingerprint = cleanText(item.fingerprint, 300);
-    return ref || fingerprint ? { ref: ref || null, fingerprint: fingerprint || null } : null;
-  };
-  const subject = normalize(value.subject);
-  const bundle = normalize(value.bundle);
-  const rules = normalize(value.rules);
-  return subject && bundle && rules ? { subject, bundle, rules } : undefined;
-}
-
-function normalizeExecutionModelPolicy(value) {
-  if (value === undefined || value === null) return undefined;
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TaskLedgerError(400, "execution_model_policy 必须是对象。");
-  const mode = cleanText(value.mode, 40);
-  if (mode === "auto") return { mode: "auto" };
-  const preferredModel = cleanText(value.preferred_model, 120);
-  const quotaLimitId = cleanText(value.quota_limit_id, 120);
-  if (mode !== "quota_preferred" || !preferredModel || !quotaLimitId || value.fallback_on_exhaustion !== true) {
-    throw new TaskLedgerError(400, "quota_preferred 必须提供 preferred_model、quota_limit_id，并允许额度耗尽回退。");
-  }
-  return {
-    mode,
-    preferred_model: preferredModel,
-    quota_limit_id: quotaLimitId,
-    fallback_on_exhaustion: true,
-    authorization_reason: cleanText(value.authorization_reason, 500),
-  };
-}
-
 function normalizePositiveInteger(value) {
   if (value === undefined || value === null || value === "") return undefined;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function normalizeNonNegativeInteger(value) {
-  if (value === undefined || value === null || value === "") return undefined;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
-}
-
-function normalizePercentage(value) {
-  if (value === undefined || value === null || value === "") return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : undefined;
 }
 
 function applyTimingTransition(current, base, next, event, now) {

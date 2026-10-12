@@ -30,15 +30,6 @@ const paths = {
 };
 const fixtureMcpToken = "test".repeat(16);
 await writeFile(paths.TASKCENTER_MCP_TOKEN_PATH, fixtureMcpToken, { mode: 0o600 });
-// 历史 CLI 协议仍可回放；native-only 当前策略由独立 HTTP 用例验证。
-const legacyRoles = JSON.parse(await readFile(new URL("config/model-roles.json", root), "utf8"));
-legacyRoles.roles.executor.dispatch_channel = "cli";
-legacyRoles.roles.executor.model = "kimi-code/k3-256k";
-legacyRoles.roles.executor.fallback_models = ["mimo-v2.6-flash", "mimo-v2.6-pro"];
-legacyRoles.roles.executor.model_reasoning_efforts = {};
-delete legacyRoles.roles.executor.allowed_models; // 本组覆盖历史 CLI/native 授权兼容。
-legacyRoles.native_models["mimo-v2.6-flash"].reasoning_efforts = ["low", "medium"];
-await writeFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, JSON.stringify(legacyRoles));
 const port = 39_000 + (process.pid % 1_000);
 const base = `http://127.0.0.1:${port}`;
 const hook = join(rootPath, "scripts", "taskcenter-hook.mjs");
@@ -46,36 +37,6 @@ const server = spawn(process.execPath, ["scripts/control-server.mjs"], {
   cwd: root,
   env: { ...process.env, ...paths, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1", TASKCENTER_JEV_ROUTING: "0" },
   stdio: ["ignore", "pipe", "pipe"],
-});
-
-test("Review Hook 兼容旧服务 404，其他服务错误不能当成豁免", async (context) => {
-  let status = 404;
-  const legacy = createServer((request, response) => {
-    const reviews = request.url.startsWith("/reviews/session?");
-    response.writeHead(reviews ? status : 200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(reviews ? { error: "接口不存在。" } : {}));
-  });
-  await new Promise((resolve) => legacy.listen(0, "127.0.0.1", resolve));
-  context.after(() => legacy.close());
-  const payload = { session_id: "review-old-service", cwd: "/work", tool_name: "mcp__taskcenter__taskcenter_routing_select" };
-  const url = `http://127.0.0.1:${legacy.address().port}`;
-  assert.equal((await runHook("pre-tool-use", "codex", payload, [], url)).code, 0);
-  status = 500;
-  assert.equal((await runHook("pre-tool-use", "codex", payload, [], url)).code, 2);
-});
-
-test("Reviewer Hook 无需 active Task，只读且拒绝代码写入和新任务", async () => {
-  const sessionId = "reviewer-hook-session";
-  await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
-  await writeFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify({ version: 3, models: {}, routes: [{ reviewRecord: { reviewer_session_id: sessionId, status: "approved" } }] }));
-  try {
-    const payload = { session_id: sessionId, cwd: "/work" };
-    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "rtk git diff" } })).code, 0);
-    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "mcp__taskcenter__taskcenter_task_review_report" })).code, 0);
-    for (const event of [{ tool_name: "apply_patch" }, { tool_name: "mcp__taskcenter__taskcenter_task_create" }, { tool_name: "exec_command", tool_input: { cmd: "touch forbidden" } }, { tool_name: "mcp__taskcenter__taskcenter_delegation_grant" }]) {
-      assert.equal((await runHook("pre-tool-use", "codex", { ...payload, ...event })).code, 2);
-    }
-  } finally { await rm(paths.TASKCENTER_ROUTING_CONTROL_PATH, { force: true }); }
 });
 
 test("控制服务离线时只放行固定恢复命令", async () => {
@@ -348,40 +309,6 @@ test("Claude 写入门禁仅接受真实 Session 的任务，前缀身份不能�
   const allowed = await probe();
   assert.equal(allowed.code, 0, allowed.stderr);
   assert.match(allowed.stdout, /任务门禁通过/);
-});
-
-test("Codex 执行须有相符路由，CLI 路由不能授权主模型写入", async () => {
-  const sessionId = "codex-route-gate";
-  await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" });
-  const response = await fetch(`${base}/task-events`, {
-    method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" },
-    body: JSON.stringify({ type: "task.create", session_id: sessionId, workspace: "/work", agent: "codex", title: "route gate", goal: "test routing", plan: ["verify"], scope: ["probe"], non_goals: [], acceptance_criteria: [{ id: "route", description: "route selected", required: true }], contract_version: "v2", workflow_profile: "fast", review_policy: "recommended" }),
-  });
-  const created = await response.json();
-  assert.equal(created.accepted, true, JSON.stringify(created));
-  const taskId = created.task.id;
-  const payload = { session_id: sessionId, cwd: "/work", tool_name: "apply_patch", tool_input: {} };
-  const route = (channel) => ({ id: `route-${channel}`, taskId, channel, status: "leased", available: true, expiresAt: new Date(Date.now() + 60_000).toISOString() });
-  const save = async (routes) => writeFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify({ version: 3, models: {}, routes }));
-  try {
-    assert.match((await runHook("pre-tool-use", "codex", payload)).stderr, /缺少有效路由/);
-    await save([route("cli")]);
-    assert.match((await runHook("pre-tool-use", "codex", payload)).stderr, /缺少有效路由/);
-    const launcher = join(rootPath, "scripts/delegated-cli.mjs");
-    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: `node ${launcher} /tmp/manifest.json` } })).code, 0);
-    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: `node ${launcher} --stdin` } })).code, 0);
-    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: `node ${launcher} --stdin`, tty: true } })).code, 0);
-    assert.equal((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs --stdin", workdir: rootPath } })).code, 0);
-    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs --stdin" } })).stderr, /缺少有效路由/);
-    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node /tmp/delegated-cli.mjs --stdin" } })).stderr, /缺少有效路由/);
-    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node /tmp/delegated-cli.mjs --stdin", tty: true } })).stderr, /交互式命令/);
-    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: `node ${launcher} /tmp/manifest.json`, tty: true } })).stderr, /交互式命令/);
-    assert.match((await runHook("pre-tool-use", "codex", { ...payload, tool_name: "exec_command", tool_input: { cmd: "node scripts/delegated-cli.mjs --stdin > /tmp/output" } })).stderr, /缺少有效路由/);
-    await save([route("direct")]);
-    assert.equal((await runHook("pre-tool-use", "codex", payload)).code, 0);
-    await save([{ ...route("direct"), expiresAt: new Date(Date.now() - 1_000).toISOString() }]);
-    assert.match((await runHook("pre-tool-use", "codex", payload)).stderr, /缺少有效路由/);
-  } finally { await rm(paths.TASKCENTER_ROUTING_CONTROL_PATH, { force: true }); }
 });
 
 test("L0 路径探测跨客户端放行，但不能借 command 包装执行", async () => {
@@ -1121,208 +1048,6 @@ test("跨客户端共享任务保留创建者和证据，接手后旧 Session �
   }
 });
 
-test("共享任务阻止有效委派和并发抢接", async () => {
-  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" }, body: JSON.stringify(body) });
-  const source = "handoff-race-source", targets = ["handoff-race-claude", "handoff-race-kimi"];
-  for (const session_id of [source, ...targets]) await runHook("session-start", "codex", { session_id, cwd: "/work" });
-  const created = await (await post("/task-events", { type: "task.create", session_id: source, workspace: "/work", title: "race", goal: "race" })).json();
-  const task_id = created.task.id;
-  const grantResponse = await post("/delegations/grant", { parent_session_id: source, task_id, workspace: "/work", scope: ["."], executor_model: "test-model", ttl_seconds: 600 });
-  assert.equal(grantResponse.status, 201);
-  const grant = await grantResponse.json();
-  const resume = session_id => post("/task-resume", { session_id, task_id, expected_session_id: source });
-  const blocked = await resume(targets[0]);
-  assert.equal(blocked.status, 409);
-  assert.match((await blocked.json()).error, /ACTIVE_DELEGATION_CONFLICT/);
-  assert.equal((await post("/delegations/revoke", { delegation_id: grant.delegation.id, parent_session_id: source })).status, 200);
-  const results = await Promise.all(targets.map(resume));
-  assert.deepEqual(results.map(result => result.status).sort(), [200, 409]);
-  const task = (await (await fetch(`${base}/tasks`)).json()).tasks.find(item => item.id === task_id);
-  assert.equal(task.handoffs.length, 1);
-  assert.equal((await post("/task-events", { type: "task.update", session_id: task.sessionId, task_id, status: "cancelled" })).status, 200);
-  assert.equal((await resume(source)).status, 409);
-});
-
-test("可选 CLI 领取绑定路由与型号，错误路由不消耗授权", async () => {
-  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
-  const parent = "optional-cli-parent", child = "optional-cli-child";
-  await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
-  const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "optional CLI", goal: "optional CLI" })).json();
-  const selected = await (await post("/routing/select", { task_id: created.task.id, task_class: "test", channel: "cli", cli_profile: "claude-mimo" })).json();
-  assert.equal(selected.accepted, true, JSON.stringify(selected));
-  const route = selected.route;
-  const grant = await (await post("/delegations/grant", { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: route.selected_model, ttl_seconds: 60 })).json();
-  await runHook("session-start", "claude", { session_id: child, cwd: "/work", model: route.selected_model });
-  const claim = { session_id: child, workspace: "/work", delegation_id: grant.delegation.id, claim_token: grant.claimToken, executor_model: route.selected_model };
-  assert.equal((await post("/delegations/claim", { ...claim, route_id: "missing-route" })).status, 409);
-  const response = await post("/delegations/claim", { ...claim, route_id: route.route_id });
-  assert.equal(response.status, 200, await response.text());
-});
-
-test("原生委派绑定 native 路由，错配模型/路由/任务与已结束租约均拒绝", async () => {
-  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
-  const parent = "native-parent", child = "native-child", wrongChild = "native-child-wrong";
-  await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
-  const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "native delegation", goal: "native delegation" })).json();
-  const selected = await (await post("/routing/select", { task_id: created.task.id, task_class: "implementation", channel: "other", preferred_model: "mimo-v2.6-flash", available_native_models: ["xiaomi-tokenplan/mimo-v2.6-flash"] })).json();
-  assert.equal(selected.accepted, true, JSON.stringify(selected));
-  const route = selected.route;
-  assert.equal(route.channel, "native");
-  assert.equal(route.selected_model, "mimo-v2.6-flash");
-  assert.equal(route.native_model, "xiaomi-tokenplan/mimo-v2.6-flash");
-
-  const grantBody = { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: route.selected_model, channel: "native", ttl_seconds: 600 };
-  assert.equal((await post("/delegations/grant", grantBody)).status, 409, "native grant 缺 route_id 拒绝");
-  assert.equal((await post("/delegations/grant", { ...grantBody, route_id: route.route_id, executor_model: "mimo-v2.6-pro" })).status, 409, "canonical 模型与路由不一致拒绝");
-  const grantResponse = await post("/delegations/grant", { ...grantBody, route_id: route.route_id });
-  const grant = await grantResponse.json();
-  assert.equal(grantResponse.status, 201, JSON.stringify(grant));
-  assert.equal(grant.delegation.routeId, route.route_id);
-  assert.equal((await post("/delegations/grant", { ...grantBody, route_id: route.route_id })).status, 409, "同一租约不能再授予第二执行器");
-
-  await runHook("session-start", "codex", { session_id: wrongChild, cwd: "/work", model: "mimo-v2.6-flash" });
-  await runHook("session-start", "codex", { session_id: child, cwd: "/work", model: "xiaomi-tokenplan/mimo-v2.6-flash" });
-  const claim = { workspace: "/work", delegation_id: grant.delegation.id, claim_token: grant.claimToken, route_id: route.route_id, executor_model: route.selected_model };
-  assert.equal((await post("/delegations/claim", { ...claim, session_id: wrongChild })).status, 409, "Session 模型不是路由 native_model 拒绝");
-  assert.equal((await post("/delegations/claim", { ...claim, session_id: wrongChild, route_id: undefined, executor_model: undefined })).status, 409, "省略参数不能绕过已绑定路由校验");
-  assert.equal((await post("/delegations/claim", { ...claim, session_id: parent })).status, 409, "父会话不能领取原生子会话授权");
-  await runHook("session-start", "claude", { session_id: "native-wrong-client", cwd: "/work", model: route.native_model });
-  assert.equal((await post("/delegations/claim", { ...claim, session_id: "native-wrong-client" })).status, 409, "相同模型的非 Codex 客户端不能领取原生授权");
-  await runHook("session-start", "codex", { session_id: "native-wrong-workspace", cwd: "/other", model: route.native_model });
-  assert.equal((await post("/delegations/claim", { ...claim, session_id: "native-wrong-workspace" })).status, 403, "工作区不一致拒绝");
-  assert.equal((await post("/delegations/claim", { ...claim, session_id: child, route_id: "missing-route" })).status, 409);
-  const claimed = await post("/delegations/claim", { ...claim, session_id: child, route_id: undefined, executor_model: undefined });
-  const claimedPayload = await claimed.json();
-  assert.equal(claimed.status, 200, JSON.stringify(claimedPayload));
-  const touch = { delegation_id: grant.delegation.id, session_id: child, workspace: "/work", tool_name: "Read", paths: ["/work/a.txt"] };
-  assert.equal((await post("/delegations/touch", touch)).status, 200);
-  assert.equal((await post("/delegations/touch", { ...touch, paths: ["/outside/a.txt"] })).status, 403);
-
-  const released = await post("/routing/result", { route_id: route.route_id, outcome: "succeeded" });
-  assert.equal(released.status, 200);
-  const health = await (await fetch(`${base}/routing/health`)).json();
-  assert.equal(health.models.find((item) => item.model === "mimo-v2.6-flash").active_executors, 0, "原生终态释放 canonical 租约");
-  assert.equal((await post("/delegations/claim", { ...claim, session_id: child, route_id: undefined })).status, 409, "已结束路由不能重新 claim");
-  assert.equal((await post("/delegations/touch", touch)).status, 409, "已结束路由不能继续执行工具");
-});
-
-test("显式 Codex native route 可 grant/claim，且拒绝错配与过期租约", async () => {
-  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
-  const parent = "native-codex-parent", child = "native-codex-child", wrongChild = "native-codex-wrong", expiredChild = "native-codex-expired";
-  await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
-  const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "explicit Codex native", goal: "explicit Codex native" })).json();
-
-  const unsupported = await (await post("/routing/select", {
-    task_id: created.task.id, task_class: "implementation", channel: "native", preferred_model: "gpt-6-luna",
-    available_native_models: ["gpt-6-astra"], event_id: "native-codex-unavailable",
-  })).json();
-  assert.equal(unsupported.route.channel, "direct", "未声明 runtime 时主模型接管");
-  assert.equal(unsupported.route.selected_model, "test-main");
-  const gate = await runHook("pre-tool-use", "codex", { session_id: parent, cwd: "/work", tool_name: "apply_patch", tool_input: {} });
-  assert.equal(gate.code, 0, gate.stderr);
-  await post("/routing/result", { route_id: unsupported.route.route_id, outcome: "succeeded" });
-
-  const selected = await (await post("/routing/select", {
-    task_id: created.task.id, task_class: "implementation", channel: "native", preferred_model: "gpt-6-luna",
-    available_native_models: ["gpt-6-luna"], event_id: "native-codex-route",
-  })).json();
-  assert.equal(selected.accepted, true, JSON.stringify(selected));
-  const route = selected.route;
-  assert.equal(route.channel, "native");
-  assert.equal(route.selected_model, "gpt-6-luna");
-  assert.equal(route.native_model, "gpt-6-luna");
-
-  const grantBody = { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: route.selected_model, channel: "native", route_id: route.route_id, ttl_seconds: 600 };
-  assert.equal((await post("/delegations/grant", { ...grantBody, task_id: "wrong-task" })).status, 409, "错误任务拒绝");
-  assert.equal((await post("/delegations/grant", { ...grantBody, executor_model: "gpt-6-astra" })).status, 409, "canonical/runtime 型号错配拒绝");
-  const grantResponse = await post("/delegations/grant", grantBody);
-  const grant = await grantResponse.json();
-  assert.equal(grantResponse.status, 201, JSON.stringify(grant));
-  assert.equal(grant.delegation.routeId, route.route_id);
-
-  await runHook("session-start", "codex", { session_id: wrongChild, cwd: "/work", model: "gpt-6-astra" });
-  await runHook("session-start", "codex", { session_id: child, cwd: "/work", model: "gpt-6-luna" });
-  const claim = { workspace: "/work", delegation_id: grant.delegation.id, claim_token: grant.claimToken, route_id: route.route_id, executor_model: route.selected_model };
-  assert.equal((await post("/delegations/claim", { ...claim, session_id: wrongChild })).status, 409, "领取 Session 型号错配拒绝");
-  const claimed = await post("/delegations/claim", { ...claim, session_id: child });
-  assert.equal(claimed.status, 200, await claimed.text());
-  assert.equal((await post("/routing/result", { route_id: route.route_id, outcome: "succeeded" })).status, 200);
-  assert.equal((await post("/delegations/claim", { ...claim, session_id: child })).status, 409, "已结束路由拒绝再次 claim");
-
-  const expiring = await (await post("/routing/select", {
-    task_id: created.task.id, task_class: "implementation", channel: "native", preferred_model: "gpt-6-luna",
-    available_native_models: ["gpt-6-luna"], event_id: "native-codex-expiring-route",
-  })).json();
-  const expiredRoute = expiring.route;
-  const expiredGrantResponse = await post("/delegations/grant", { ...grantBody, route_id: expiredRoute.route_id, event_id: "native-codex-expiring-grant" });
-  const expiredGrant = await expiredGrantResponse.json();
-  assert.equal(expiredGrantResponse.status, 201, JSON.stringify(expiredGrant));
-  await runHook("session-start", "codex", { session_id: expiredChild, cwd: "/work", model: "gpt-6-luna" });
-  const state = JSON.parse(await readFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, "utf8"));
-  const storedRoute = state.routes.find(item => item.id === expiredRoute.route_id);
-  assert.ok(storedRoute);
-  storedRoute.expiresAt = new Date(Date.now() - 1_000).toISOString();
-  await writeFile(paths.TASKCENTER_ROUTING_CONTROL_PATH, JSON.stringify(state));
-  assert.equal((await post("/delegations/claim", { workspace: "/work", delegation_id: expiredGrant.delegation.id, claim_token: expiredGrant.claimToken, route_id: expiredRoute.route_id, executor_model: expiredRoute.selected_model, session_id: expiredChild })).status, 409, "过期路由拒绝 claim");
-});
-
-
-test("CLI Session 领取 delegation 后通过主任务门禁且不创建子任务", async () => {
-  const parentSessionId = "019f0000-0000-7000-8000-000000000092";
-  const cliSessionId = "019f0000-0000-7000-8000-000000000093";
-  assert.equal((await runHook("session-start", "codex", { session_id: parentSessionId, cwd: "/work" })).code, 0);
-  assert.equal((await runHook("session-start", "codex", { session_id: cliSessionId, cwd: "/work" })).code, 0);
-  const created = await fetch(`${base}/task-events`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
-    body: JSON.stringify({ type: "task.create", event_id: "hook-delegation-task-create", task_id: "hook-delegation-task", session_id: parentSessionId, title: "CLI 附着主任务", goal: "验证 delegation 门禁", workspace: "/work" }),
-  });
-  assert.equal(created.status, 201);
-  const grantResponse = await fetch(`${base}/delegations/grant`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
-    body: JSON.stringify({ parent_session_id: parentSessionId, task_id: "hook-delegation-task", event_id: "hook-delegation-grant", workspace: "/work", scope: ["."], allowed_tools: ["exec_command"], executor_model: "gpt-5.3-codex-spark", channel: "cli", ttl_seconds: 600 }),
-  });
-  assert.equal(grantResponse.status, 201);
-  const grant = await grantResponse.json();
-  const claim = await fetch(`${base}/delegations/claim`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
-    body: JSON.stringify({ delegation_id: grant.delegation.id, claim_token: grant.claimToken, session_id: cliSessionId, workspace: "/work" }),
-  });
-  const claimPayload = await claim.json();
-  assert.equal(claim.status, 200, claimPayload.error);
-
-  const allowed = await runHook("pre-tool-use", "codex", {
-    session_id: cliSessionId,
-    cwd: "/work",
-    tool_name: "exec_command",
-    tool_use_id: "delegated-true",
-    tool_input: { cmd: "true" },
-  });
-  assert.equal(allowed.code, 0, allowed.stderr);
-  assert.match(allowed.stdout, /delegation 放行/);
-  const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
-  assert.equal(tasks.filter((task) => task.id === "hook-delegation-task").length, 1);
-  assert.equal((await getStatus(cliSessionId)).taskCount, 0);
-  assert.equal(tasks.find((task) => task.id === "hook-delegation-task").cliRuns[0].toolCalls.exec_command, 1);
-
-  const revoke = await fetch(`${base}/delegations/revoke`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
-    body: JSON.stringify({ delegation_id: grant.delegation.id, parent_session_id: parentSessionId }),
-  });
-  assert.equal(revoke.status, 200);
-  const blocked = await runHook("pre-tool-use", "codex", {
-    session_id: cliSessionId,
-    cwd: "/work",
-    tool_name: "exec_command",
-    tool_input: { cmd: "true" },
-  });
-  assert.equal(blocked.code, 2);
-  assert.match(blocked.stderr, /无活跃任务或有效 delegation/);
-});
-
 test("Context task ensure 跨 Turn 幂等复用，complete 后可按仍活跃语义重新进入", async () => {
   const body = {
     context_task_id: "context-hook-semantic",
@@ -1691,57 +1416,6 @@ async function waitForReady() {
   throw new Error("隔离控制服务启动超时。");
 }
 
-
-test("当前 native-only 策略拒绝新 CLI 授权，保留 native grant/claim", async () => {
-  const original = await readFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, "utf8");
-  await writeFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, await readFile(new URL("config/model-roles.json", root), "utf8"));
-  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" }, body: JSON.stringify(body) });
-  try {
-    const parent = "native-only-parent", child = "native-only-child";
-    await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
-    const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "native-only", goal: "native-only" })).json();
-    const baseGrant = { task_id: created.task.id, parent_session_id: parent, workspace: "/work", scope: ["."], executor_model: "kimi-code/kimi-for-coding", ttl_seconds: 600 };
-    for (const channel of ["cli", "other", undefined]) {
-      const rejected = await post("/delegations/grant", { ...baseGrant, channel });
-      assert.equal(rejected.status, 409);
-      assert.match(await rejected.text(), /CLI_DISPATCH_DISABLED/);
-    }
-    const rejectedRoute = await post("/routing/select", { task_id: created.task.id, task_class: "implementation", channel: "cli" });
-    assert.equal(rejectedRoute.status, 409);
-    const selected = await (await post("/routing/select", { task_id: created.task.id, task_class: "implementation", channel: "other", available_native_models: ["kimi-oauth/kimi-for-coding"] })).json();
-    assert.equal(selected.route.native_model, "kimi-oauth/kimi-for-coding");
-    const granted = await post("/delegations/grant", { ...baseGrant, channel: "native", route_id: selected.route.route_id });
-    const grant = await granted.json();
-    assert.equal(granted.status, 201, JSON.stringify(grant));
-    await runHook("session-start", "codex", { session_id: child, cwd: "/work", model: "kimi-oauth/kimi-for-coding" });
-    const claimed = await post("/delegations/claim", { workspace: "/work", session_id: child, delegation_id: grant.delegation.id, claim_token: grant.claimToken, executor_model: baseGrant.executor_model, route_id: selected.route.route_id });
-    assert.equal(claimed.status, 200, await claimed.text());
-    await post("/routing/result", { route_id: selected.route.route_id, outcome: "succeeded" });
-  } finally {
-    await writeFile(paths.TASKCENTER_MODEL_ROLE_CONFIG_PATH, original);
-  }
-});
-
-
-test("HTTP 主模型接管不读取一次性口令，重复阶段可执行且拒绝错会话和无凭据", async () => {
-  const parent = "takeover-parent";
-  const post = (path, body, bound = true) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook", ...(bound ? { "X-TaskCenter-Mcp-Token": fixtureMcpToken } : {}) }, body: JSON.stringify(body) });
-  await runHook("session-start", "codex", { session_id: parent, cwd: "/work", model: "test-main" });
-  const created = await (await post("/task-events", { type: "task.create", session_id: parent, workspace: "/work", title: "main takeover", goal: "main takeover" })).json();
-  const input = { task_id: created.task.id, session_id: parent, task_class: "implementation", channel: "direct", direct_reason: "会话派发失败，原执行器已停止，主模型继续" };
-  assert.equal((await post("/routing/select", input, false)).status, 403);
-  assert.equal((await post("/routing/select", { ...input, session_id: "another-owner" })).status, 403);
-  for (const phase of ["implement", "verify"]) {
-    const response = await post("/routing/select", { ...input, phase_id: phase });
-    const selected = await response.json();
-    assert.equal(response.status, 201, JSON.stringify(selected));
-    assert.equal(selected.route.selected_model, "test-main");
-    const gate = await runHook("pre-tool-use", "codex", { session_id: parent, cwd: "/work", tool_name: "apply_patch", tool_input: {} });
-    assert.equal(gate.code, 0, gate.stderr);
-    await post("/routing/result", { route_id: selected.route.route_id, outcome: "succeeded" });
-  }
-});
-
 test("只读拒绝查询校验条数与安全字段；上报失败仍给本地指引且拒绝不变", async (context) => {
   await writeFile(paths.TASKCENTER_GATE_DENIALS_PATH, `${JSON.stringify({ at: new Date().toISOString(), category: "missing_route", session_id: "safe-session", task_id: "", command: "secret-command", claim_token: "secret-token" })}\n`);
   for (const limit of [1, 50]) {
@@ -1772,4 +1446,25 @@ test("只读拒绝查询校验条数与安全字段；上报失败仍给本地�
   assert.match(rejected.stderr, /未记录，无批量判断/);
   assert.match(rejected.stderr, /恢复：.*真实 session_id/);
   assert.match(rejected.stderr, /TASKCENTER_UNAVAILABLE/);
+});
+
+test("子代理不参与主线门禁：全部 Hook 离线放行且不请求服务", async () => {
+  const probe = createServer((_req, res) => { requests++; res.writeHead(503); res.end(); });
+  let requests = 0;
+  await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
+  const offline = `http://127.0.0.1:${probe.address().port}`;
+  await mkdir(paths.TASKCENTER_SESSIONS_ROOT, { recursive: true });
+  const session_id = "01a10000-0000-7000-8000-000000000555";
+  await writeFile(join(paths.TASKCENTER_SESSIONS_ROOT, `rollout-${session_id}.jsonl`), JSON.stringify({ type: "session_meta", payload: { id: session_id, source: { subagent: { parent_thread_id: "parent" } } } }) + "\n");
+  try {
+    for (const action of ["session-start", "user-prompt-submit", "pre-tool-use", "post-tool-use", "stop"]) {
+      for (const agent of ["codex", "claude"]) {
+        const result = await runHook(action, agent, { session_id, agent_id: agent === "claude" ? "child" : undefined, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: "touch /work/probe" } }, [], offline);
+        assert.equal(result.code, 0, `${agent}/${action}: ${result.stderr}`);
+      }
+    }
+    assert.equal(requests, 0);
+    const forged = await runHook("pre-tool-use", "codex", { session_id: "unregistered-main", thread_source: "subagent", source: { subagent: {} }, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: "touch /work/probe", agent_id: "fake" } }, [], offline);
+    assert.equal(forged.code, 2, "工具参数不能伪造宿主 Session 身份");
+  } finally { await new Promise(resolve => probe.close(resolve)); }
 });

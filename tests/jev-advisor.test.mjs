@@ -27,7 +27,7 @@ async function temp(t) {
 }
 
 test("four lines use only their approved structured summaries", () => {
-  assert.deepEqual(request.lineNames, ["routing"]);
+  assert.deepEqual(request.lineNames, ["classification"]);
   assert.deepEqual(request.state, { title: create.title, goal: create.goal, requirements: ["点击可用"] });
   const continuation = requestForEvent(checkpoint, { title: create.title, goal: create.goal, requirements: ["点击可用"] });
   assert.deepEqual(continuation.lineNames, ["continuation", "risk"]);
@@ -76,9 +76,9 @@ test("all four lines are produced from create, checkpoint and report events", as
   const records = []; let calls = 0;
   const advise = createAdvisor({ enabled: true, apiKey: "key", workspace: "/project", record: async row => records.push(row), fetchImpl: async (...args) => { calls++; return okFetch(...args); } });
   await advise(create); await advise(checkpoint); await advise(report);
-  assert.equal(calls, 3); assert.deepEqual(records.map(row => row.lines), [["routing"], ["continuation", "risk"], ["output"]]);
+  assert.equal(calls, 3); assert.deepEqual(records.map(row => row.lines), [["classification"], ["continuation", "risk"], ["output"]]);
   assert.equal(records[1].answers.next_step.choice, "continue"); assert.equal(records[1].answers.production_change.type, "noul"); assert.equal(records[2].answers.unverified_completion.type, "noul");
-  await advise({ type: "routing.decision", task_id: create.task_id, task_class: "mechanical", selected_executor_model: "test" }); assert.equal(records.at(-1).status, "actual_route");
+  await advise({ type: "routing.decision", task_id: create.task_id, task_class: "mechanical", selected_executor_model: "test" }); assert.equal(records.length, 3);
 });
 
 test("secrets, invalid credentials and rate limits skip advice without blocking task events", async () => {

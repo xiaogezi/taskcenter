@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -8,8 +8,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const root = new URL("../", import.meta.url);
-const currentRoleConfig = JSON.parse(await readFile(new URL("config/model-roles.json", root), "utf8"));
-const nativeRuntimeModels = Object.values({ ...currentRoleConfig.native_models, ...currentRoleConfig.roles.executor.native_models }).map(entry => entry.runtime_model);
 const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-ledger-"));
 process.env.TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION = "1";
 
@@ -652,112 +650,6 @@ test("估时提醒事件幂等记录且不改变任务运行态", async () => {
   assert.deepEqual(loadTasks()[0], before);
 });
 
-test("模型路由决定只追加审计记录，不改变任务状态", async () => {
-  await resetLedger();
-  const executorModel = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles.executor.model;
-  const executorConfig = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles.executor;
-  const securityModel = executorConfig.task_class_models?.security || executorModel;
-  recordTaskEvent({
-    type: "session.register",
-    session_id: "sess-routing",
-    event_id: "routing-register",
-    agent: "codex",
-    provider: "openai",
-    model: "gpt-5.6-sol",
-    workspace: "/work",
-  });
-  recordTaskEvent({
-    type: "task.create",
-    session_id: "sess-routing",
-    task_id: "task-routing",
-    event_id: "routing-create",
-    status: "blocked",
-    blocker: "等待外部依赖。",
-  });
-  const executionState = loadTasks()[0];
-  const firstInput = {
-    type: "routing.decision",
-    session_id: "sess-routing",
-    task_id: "task-routing",
-    event_id: "routing-native",
-    direct_reason: "人工选择执行路径",
-    jev_decision: { model: "jev-1.13.0", phase_id: "phase-one", input_hash: "hash", status: "succeeded", execution_choice: "delegate", usage: { input_tokens: 80, output_tokens: 12 }, latency_ms: 25 },
-    routing_action: "delegate_native",
-    orchestrator_model: "gpt-5.6-sol",
-    preferred_executor_model: executorModel,
-    selected_executor_model: executorModel,
-    dispatch_channel: "native",
-    routing_reason: "任务边界清晰，可独立验证。",
-    fallback_from: "gpt-5.3-codex-spark",
-    fallback_reason: "preferred_model_circuit_open",
-    retry_after_at: "2026-08-25T04:00:00.000Z",
-    review_artifacts: {
-      subject: { fingerprint: "sha256:subject" },
-      bundle: { ref: "bundle://ocr/review-1", fingerprint: "sha256:bundle" },
-      rules: { fingerprint: "sha256:rules" },
-    },
-  };
-  const first = recordTaskEvent(firstInput);
-  assert.equal(first.task.status, "blocked");
-  assert.equal(first.task.blocker, "等待外部依赖。");
-  assert.equal(first.task.updatedAt, executionState.updatedAt);
-  assert.equal(first.task.lastEventId, executionState.lastEventId);
-  assert.equal(first.task.routing.action, "delegate_native");
-  assert.equal(first.task.routing.directReason, "人工选择执行路径");
-  assert.equal(first.task.routing.jevDecision.phase_id, "phase-one");
-  assert.equal(first.task.routing.jevDecision.usage.input_tokens, 80);
-  assert.throws(() => recordTaskEvent({ ...firstInput, direct_reason: "changed" }), /event_id/);
-  assert.throws(() => recordTaskEvent({ ...firstInput, event_id: "routing-wrong-preferred", preferred_executor_model: "gpt-6-astra", selected_executor_model: "gpt-6-astra" }), /集中配置不一致/);
-  assert.equal(first.task.routing.outcome, "selected");
-  assert.equal(first.task.routing.policyVersion, "soft-routing-v1");
-  assert.equal(first.task.routing.fallbackFrom, "gpt-5.3-codex-spark");
-  assert.equal(first.task.routing.fallbackReason, "preferred_model_circuit_open");
-  assert.equal(first.task.routing.retryAfterAt, "2026-08-25T04:00:00.000Z");
-  assert.equal(first.task.routing.reviewArtifacts.bundle.fingerprint, "sha256:bundle");
-  assert.equal(first.task.routing.reasoningEffort, undefined);
-  assert.equal(first.task.routingHistory.length, 1);
-  assert.ok(first.task.routingRecordedAt);
-  const session = getSessionStatuses().find((item) => item.sessionId === "sess-routing");
-  assert.equal(session.agent, "codex");
-  assert.equal(session.provider, "openai");
-  assert.equal(session.model, "gpt-5.6-sol");
-
-  const replay = recordTaskEvent(firstInput);
-  assert.equal(replay.idempotent, true);
-  assert.equal(replay.task.routingHistory.length, 1);
-  const withReason = recordTaskEvent({
-    ...firstInput,
-    event_id: "routing-native-reason",
-    reasoning_effort: "medium",
-    routing_reason: "任务边界清晰并记录推理强度。",
-  });
-  assert.equal(withReason.task.routing.reasoningEffort, "medium");
-  assert.equal(withReason.task.routingHistory.length, 2);
-  assert.throws(
-    () => recordTaskEvent({ ...firstInput, routing_reason: "尝试篡改既有路由原因。" }),
-    (error) => error instanceof TaskLedgerError && error.statusCode === 409,
-  );
-
-  const fallback = recordTaskEvent({
-    ...firstInput,
-    event_id: "routing-cli",
-    routing_action: "fallback_cli",
-    dispatch_channel: "cli",
-    routing_reason: "原生派发不可用，改用 CLI 兜底。",
-    routing_outcome: "started",
-  });
-  assert.equal(fallback.task.status, "blocked");
-  assert.equal(fallback.task.blocker, "等待外部依赖。");
-  assert.equal(fallback.task.updatedAt, executionState.updatedAt);
-  assert.equal(fallback.task.routing.action, "fallback_cli");
-  assert.equal(fallback.task.routingHistory.length, 3);
-  assert.throws(
-    () => recordTaskEvent({ ...firstInput, event_id: "routing-invalid", dispatch_channel: "cli" }),
-    (error) => error instanceof TaskLedgerError && error.statusCode === 400,
-  );
-  assert.doesNotThrow(() => recordTaskEvent({ ...firstInput, event_id: "routing-security", task_class: "security", preferred_executor_model: securityModel, selected_executor_model: securityModel }));
-});
-
 test("已登记的外部 Session 不被 Codex 会话清理误删", async () => {
   await resetLedger();
   recordTaskEvent({
@@ -801,32 +693,6 @@ test("task.create 返回 accepted 与 task_id 并持久化", async () => {
   assert.equal(result.task.title, "实现闸门");
   assert.equal(result.task.goal, "完成会话任务闸门");
   assert.equal(loadTasks().length, 1);
-});
-
-test("任务持久化额度优先执行模型策略并在更新后保留", async () => {
-  await resetLedger();
-  const policy = {
-    mode: "quota_preferred",
-    preferred_model: "gpt-5.3-codex-spark",
-    quota_limit_id: "codex_bengalfox",
-    fallback_on_exhaustion: true,
-    authorization_reason: "用户明确要求优先使用 Spark 额度",
-  };
-  const created = recordTaskEvent({
-    type: "task.create",
-    session_id: "sess-policy",
-    task_id: "task-policy",
-    title: "额度优先",
-    goal: "验证任务策略",
-    execution_model_policy: policy,
-  });
-  assert.deepEqual(created.task.executionModelPolicy, policy);
-  recordTaskEvent({ type: "task.update", session_id: "sess-policy", task_id: "task-policy", current_step: "继续执行" });
-  assert.deepEqual(loadTasks()[0].executionModelPolicy, policy);
-  assert.throws(
-    () => recordTaskEvent({ type: "task.update", session_id: "sess-policy", task_id: "task-policy", execution_model_policy: { mode: "quota_preferred", preferred_model: "x", quota_limit_id: "q", fallback_on_exhaustion: false } }),
-    (error) => error instanceof TaskLedgerError && error.statusCode === 400,
-  );
 });
 
 test("Context semantic task 跨 Turn 复用同一执行任务，只有 complete 才结束", async () => {
@@ -1563,151 +1429,6 @@ test("控制服务任务闸门 HTTP 协议：register→create→update→report
   assert.equal("verificationClaims" in paged.tasks[0], false, "摘要列表不应携带完整验证历史");
 });
 
-test("CLI delegation 附着单个正式主任务并独立记录 Run", async (context) => {
-  await resetLedger();
-  const legacyConfigPath = join(tempDir, "legacy-cli-roles.json");
-  const legacyConfig = structuredClone(currentRoleConfig);
-  legacyConfig.roles.executor.dispatch_channel = "cli";
-  await writeFile(legacyConfigPath, JSON.stringify(legacyConfig));
-  const { base, child } = await startControlServer({ TASKCENTER_MODEL_ROLE_CONFIG_PATH: legacyConfigPath });
-  context.after(() => child.kill("SIGTERM"));
-  await registerHttpSession(base, "session-main");
-  await registerHttpSession(base, "session-cli", { model: "gpt-5.3-codex-spark" });
-
-  const created = await fetch(`${base}/task-events`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({
-      type: "task.create",
-      event_id: "delegation-http-task-create",
-      session_id: "session-main",
-      task_id: "task-delegation-http",
-      title: "单正式任务",
-      goal: "让 CLI 附着主任务",
-      workspace: "/work",
-    }),
-  });
-  assert.equal(created.status, 201);
-  const grant = await fetch(`${base}/delegations/grant`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({
-      parent_session_id: "session-main",
-      task_id: "task-delegation-http",
-      event_id: "delegation-http-grant",
-      workspace: "/work",
-      scope: ["."],
-      allowed_tools: ["exec_command"],
-      executor_model: "gpt-5.3-codex-spark",
-      channel: "cli",
-      ttl_seconds: 600,
-    }),
-  });
-  assert.equal(grant.status, 201);
-  const grantPayload = await grant.json();
-  assert.ok(grantPayload.claimToken);
-
-  const claim = await fetch(`${base}/delegations/claim`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({ delegation_id: grantPayload.delegation.id, claim_token: grantPayload.claimToken, session_id: "session-cli", workspace: "/work" }),
-  });
-  const claimPayload = await claim.json();
-  assert.equal(claim.status, 200, claimPayload.error);
-  const resolved = await (await fetch(`${base}/delegations/resolve?session_id=session-cli&workspace=${encodeURIComponent("/work")}`)).json();
-  assert.equal(resolved.task.id, "task-delegation-http");
-
-  const phaseSubject = { type: "artifact", value: "delegated-snapshot", observed_at: "2026-09-02T01:00:00.000Z" };
-  const delegatedPhaseStart = await fetch(`${base}/task-events`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({
-      type: "phase.reported",
-      event_id: "delegation-phase-start",
-      task_id: "task-delegation-http",
-      session_id: "session-cli",
-      phase: "implementing",
-      transition: "started",
-      occurred_at: "2026-09-02T01:00:00.000Z",
-      subject_ref: phaseSubject,
-      reason: "CLI 开始实现",
-      activity_source: "delegated_executor",
-      activity_id: "delegated-run-1",
-      delegation_id: grantPayload.delegation.id,
-    }),
-  });
-  assert.equal(delegatedPhaseStart.status, 200, await delegatedPhaseStart.text());
-  const forgedDelegationPhase = await fetch(`${base}/task-events`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({
-      type: "phase.reported",
-      event_id: "delegation-phase-forged",
-      task_id: "task-delegation-http",
-      session_id: "session-cli",
-      phase: "implementing",
-      transition: "started",
-      occurred_at: "2026-09-02T01:01:00.000Z",
-      subject_ref: phaseSubject,
-      reason: "伪造 delegation",
-      activity_source: "delegated_executor",
-      activity_id: "forged-run",
-      delegation_id: "missing-delegation",
-    }),
-  });
-  assert.equal(forgedDelegationPhase.status, 404);
-
-  const forbiddenParentUpdate = await fetch(`${base}/task-events`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({ type: "task.update", event_id: "delegation-forged-parent-update", session_id: "session-cli", task_id: "task-delegation-http", status: "done_claimed" }),
-  });
-  assert.equal(forbiddenParentUpdate.status, 403);
-  const run = await fetch(`${base}/delegations/report`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({ delegation_id: grantPayload.delegation.id, session_id: "session-cli", workspace: "/work", event_id: "delegation-http-run", status: "succeeded", summary: "只上报运行结果", tests: ["node --test"] }),
-  });
-  assert.equal(run.status, 200);
-  const delegatedPhaseFinish = await fetch(`${base}/task-events`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({
-      type: "phase.reported",
-      event_id: "delegation-phase-finish",
-      task_id: "task-delegation-http",
-      session_id: "session-cli",
-      phase: "implementing",
-      transition: "finished",
-      occurred_at: "2026-09-02T01:10:00.000Z",
-      subject_ref: phaseSubject,
-      reason: "CLI 实现结束",
-      activity_source: "delegated_executor",
-      activity_id: "delegated-run-1",
-      delegation_id: grantPayload.delegation.id,
-    }),
-  });
-  assert.equal(delegatedPhaseFinish.status, 200, await delegatedPhaseFinish.text());
-  const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
-  assert.equal(tasks.length, 1);
-  assert.equal(tasks[0].id, "task-delegation-http");
-  assert.equal(tasks[0].status, "planned");
-  assert.equal(tasks[0].cliRuns.length, 1);
-  assert.equal(tasks[0].cliRuns[0].status, "succeeded");
-  assert.equal(tasks[0].phaseTiming.task_wall_ms, 600_000);
-  assert.equal(tasks[0].phaseTiming.executor_active_ms[`delegation:${grantPayload.delegation.id}`], 600_000);
-  const phaseReportResponse = await fetch(`${base}/tasks/task-delegation-http/phase-report?as_of=${encodeURIComponent("2026-09-02T01:10:00.000Z")}`);
-  assert.equal(phaseReportResponse.status, 200);
-  assert.equal((await phaseReportResponse.json()).phaseTiming.task_wall_ms, 600_000);
-  const invalidPhaseReport = await fetch(`${base}/tasks/task-delegation-http/phase-report?as_of=not-a-time`);
-  assert.equal(invalidPhaseReport.status, 400);
-  const summaryTasks = (await (await fetch(`${base}/tasks?view=summary&page=1&page_size=40`)).json()).tasks;
-  assert.equal(summaryTasks[0].cliRuns[0].status, "succeeded");
-  assert.equal("events" in summaryTasks[0].cliRuns[0], false, "摘要列表不携带 delegation 完整事件历史");
-  const sessions = (await (await fetch(`${base}/session-status`)).json()).sessions;
-  assert.equal(sessions.find((session) => session.sessionId === "session-cli").taskCount, 0);
-});
-
 test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审计", async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer();
@@ -1875,178 +1596,6 @@ test("活跃任务复用 Advisor 只读查询并把最终选择写入独立审�
   });
   const allDecisions = await allDecisionsResponse.json();
   assert.equal(allDecisions.summary.project_count, 1, "unknown project 不计入试点项目覆盖");
-});
-
-test("Review HTTP：done_claimed 无 active task 直接审查，lease 绑定且不新建 Task", async (context) => {
-  await resetLedger();
-  const { base, child } = await startControlServer();
-  context.after(() => child.kill("SIGTERM"));
-  const token = (await readFile(envPaths.TASKCENTER_MCP_TOKEN_PATH, "utf8")).trim();
-  const headers = { ...taskHeaders(), "X-TaskCenter-MCP-Token": token };
-  const post = async (path, body) => {
-    const response = await fetch(`${base}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
-    return { status: response.status, ...await response.json() };
-  };
-  const owner = "review-http-owner", reviewer = "review-http-reviewer", taskId = "review-http-task";
-  const reviewerModel = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles.reviewer.model;
-  await registerHttpSession(base, owner);
-  await registerHttpSession(base, reviewer, { model: reviewerModel });
-  const subject = { type: "git_commit", value: "review-http-subject", observed_at: new Date().toISOString() };
-  const created = await post("/task-events", { type: "task.create", task_id: taskId, session_id: owner, title: "Review HTTP", goal: "Review HTTP", workspace: "/work", subject_ref: subject });
-  assert.equal(created.accepted, true, created.error);
-  const closed = await post("/task-events", { type: "task.update", task_id: taskId, session_id: owner, status: "done_claimed", tests: ["fixture verified"] });
-  assert.equal(closed.accepted, true, closed.error);
-  const artifacts = { subject: { ref: subject.value }, bundle: { fingerprint: "bundle-http" }, rules: { fingerprint: "rules-http" } };
-  const request = { task_id: taskId, session_id: owner, task_class: "ocr_review", channel: "native", review_artifacts: artifacts };
-  assert.equal((await post("/routing/select", { ...request, session_id: "missing" })).code, "SESSION_NOT_REGISTERED");
-  assert.equal((await post("/routing/select", { ...request, task_id: "missing" })).code, "TASK_NOT_FOUND");
-  const selected = await post("/routing/select", request);
-  assert.equal(selected.accepted, true, selected.error);
-  const route = selected.route;
-  assert.equal(route.available, true);
-  const claimBody = { route_id: route.route_id, session_id: reviewer, claim_token: route.review_record.claim_token, sandbox: "read-only" };
-  const claimed = await post("/reviews/claim", claimBody);
-  assert.equal(claimed.accepted, true, claimed.error);
-  assert.equal(claimed.review_record.status, "running");
-  const noTask = await post("/task-events", { type: "task.create", task_id: "review-forbidden-child", session_id: reviewer, title: "forbidden" });
-  assert.equal(noTask.status, 403);
-  const report = { type: "review.reported", task_id: taskId, session_id: reviewer, event_id: "review-http-report", review_attestation: {
-    id: "review-http-attestation", route_id: route.route_id, review_artifacts: artifacts, reviewer: { type: "agent", id: reviewer, session_id: reviewer },
-    subject_ref: subject, scope: "full", review_contract_version: "v2", spec_verdict: "compliant", quality_verdict: "approved", verdict: "approved", unresolved_findings: 0, observed_at: new Date().toISOString(),
-  } };
-  const bypass = await post("/core/task-events", report);
-  assert.equal(bypass.status, 403, JSON.stringify(bypass));
-  const wrong = await post("/task-events", { ...report, session_id: owner });
-  assert.equal(wrong.code, "REVIEW_PERMISSION_DENIED");
-  const reported = await post("/task-events", report);
-  assert.equal(reported.accepted, true, JSON.stringify(reported));
-  assert.equal(reported.task.status, "done_claimed");
-  assert.equal(reported.task.reviewAttestations.length, 1);
-  assert.equal((await post("/task-events", report)).idempotent, true);
-  const released = await post("/routing/result", { route_id: route.route_id, session_id: owner, outcome: "succeeded" });
-  assert.equal(released.accepted, true, released.error);
-  assert.equal(released.health.find((item) => item.model === reviewerModel).active_executors, 0);
-  const detail = await (await fetch(`${base}/tasks/${taskId}`)).json();
-  assert.equal(detail.task.review_status, "approved");
-  const records = await (await fetch(`${base}/tasks/${taskId}/reviews`)).json();
-  assert.equal(records.reviews[0].status, "approved");
-  assert.equal(records.reviews[0].claim_token, undefined);
-  assert.equal((await (await fetch(`${base}/tasks`)).json()).tasks.length, 1);
-});
-
-test("路由控制 HTTP 原子发放租约、上报结果并写入任务审计", async (context) => {
-  await resetLedger();
-  const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_LUNA: "1" });
-  context.after(() => child.kill("SIGTERM"));
-  await registerHttpSession(base, "session-routing-control", { model: "gpt-user-selected-current" });
-  const created = await fetch(`${base}/task-events`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({ type: "task.create", event_id: "routing-control-task-create", session_id: "session-routing-control", task_id: "task-routing-control", title: "路由控制", goal: "验证路由控制面", workspace: "/work" }),
-  });
-  assert.equal(created.status, 201);
-
-  const selectedResponse = await fetch(`${base}/routing/select`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({ task_id: "task-routing-control", task_class: "implementation", channel: "native", available_native_models: nativeRuntimeModels, event_id: "routing-control-select" }),
-  });
-  const selected = await selectedResponse.json();
-  assert.equal(selectedResponse.status, 201, selected.error);
-  const roles = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles;
-  const implementationModel = roles.executor.task_class_models?.implementation || roles.executor.model;
-  assert.equal(selected.route.preferred_model, implementationModel);
-  assert.equal(selected.route.selected_model, implementationModel);
-  assert.equal(selected.route.orchestrator_model, "gpt-user-selected-current");
-  assert.equal(selected.route.reason, roles.executor.task_class_models?.implementation ? "executor_model_from_task_class:implementation" : "executor_model_from_config");
-  assert.equal(selected.roles.reviewer.model, roles.reviewer.model);
-  assert.equal(selected.route.available, true);
-
-  const resultResponse = await fetch(`${base}/routing/result`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({ route_id: selected.route.route_id, outcome: "succeeded", event_id: "routing-control-result", request_id: "request-routing-control" }),
-  });
-  const result = await resultResponse.json();
-  assert.equal(resultResponse.status, 200, result.error);
-  assert.equal(result.route.status, "succeeded");
-  assert.equal(result.health.find((item) => item.model === implementationModel).active_executors, 0);
-
-  const task = (await (await fetch(`${base}/tasks`)).json()).tasks.find((item) => item.id === "task-routing-control");
-  assert.equal(task.routing.routeId, selected.route.route_id);
-  assert.equal(task.routingHistory.length, 1);
-  assert.equal(task.routingResultHistory.length, 1);
-  assert.equal(task.routingHealth.state, "closed");
-  assert.equal(task.routingHealthHistory.length, 2);
-  assert.equal(task.status, "planned");
-
-  const observedAt = new Date().toISOString();
-  await writeFile(envPaths.TASKCENTER_USAGE_REPORT_PATH, JSON.stringify({ rate_limits: { by_limit_id: { codex_bengalfox: {
-    limit_id: "codex_bengalfox", limit_name: "GPT-5.3-Codex-Spark", observed_at: observedAt,
-    primary: { used_percent: 0, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 18_000 },
-    secondary: { used_percent: 0, window_minutes: 10080, resets_at: Math.floor(Date.now() / 1000) + 604_800 },
-  } } } }), "utf8");
-  const policyResponse = await fetch(`${base}/task-events`, {
-    method: "POST", headers: taskHeaders(), body: JSON.stringify({
-      type: "task.update", event_id: "routing-control-policy", session_id: "session-routing-control", task_id: "task-routing-control",
-      execution_model_policy: { mode: "quota_preferred", preferred_model: "gpt-5.3-codex-spark", quota_limit_id: "codex_bengalfox", fallback_on_exhaustion: true, authorization_reason: "用户指定" },
-    }),
-  });
-  assert.equal(policyResponse.status, 200);
-  const sparkResponse = await fetch(`${base}/routing/select`, {
-    method: "POST", headers: taskHeaders(), body: JSON.stringify({ task_id: "task-routing-control", task_class: "implementation", channel: "native", available_native_models: nativeRuntimeModels, event_id: "routing-control-spark" }),
-  });
-  const sparkRoute = await sparkResponse.json();
-  assert.equal(sparkResponse.status, 409);
-  assert.match(sparkRoute.error, /未配置为 manual_only/);
-});
-
-test("路由状态已持久化但审计首次失败时，同 event_id 可补偿重放且不重复", async (context) => {
-  await resetLedger();
-  const { base, child } = await startControlServer({ TASKCENTER_ROUTING_CONCURRENCY_GPT_5_6_LUNA: "1" });
-  context.after(async () => {
-    await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o600).catch(() => {});
-    child.kill("SIGTERM");
-  });
-  await registerHttpSession(base, "session-routing-audit-retry", { model: "gpt-5.6-sol" });
-  const created = await fetch(`${base}/task-events`, {
-    method: "POST",
-    headers: taskHeaders(),
-    body: JSON.stringify({ type: "task.create", event_id: "routing-audit-task-create", session_id: "session-routing-audit-retry", task_id: "task-routing-audit-retry", title: "路由审计补偿", goal: "验证审计补偿重放", workspace: "/work" }),
-  });
-  assert.equal(created.status, 201);
-
-  const selectBody = { task_id: "task-routing-audit-retry", task_class: "implementation", channel: "native", available_native_models: nativeRuntimeModels, event_id: "routing-audit-select", route_id: "route-audit-retry" };
-  await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o400);
-  const failedSelect = await fetch(`${base}/routing/select`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(selectBody) });
-  assert.equal(failedSelect.status, 500);
-  await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o600);
-  const replayedSelect = await fetch(`${base}/routing/select`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(selectBody) });
-  assert.equal(replayedSelect.status, 200);
-  assert.equal((await replayedSelect.json()).idempotent, true);
-  assert.equal((await fetch(`${base}/routing/select`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(selectBody) })).status, 200);
-
-  const resultBody = { route_id: "route-audit-retry", outcome: "succeeded", event_id: "routing-audit-result", request_id: "request-audit-retry" };
-  await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o400);
-  const failedResult = await fetch(`${base}/routing/result`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(resultBody) });
-  assert.equal(failedResult.status, 500);
-  await chmod(envPaths.TASKCENTER_TASK_EVENTS_PATH, 0o600);
-  const replayedResult = await fetch(`${base}/routing/result`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(resultBody) });
-  assert.equal(replayedResult.status, 200);
-  assert.equal((await replayedResult.json()).idempotent, true);
-  assert.equal((await fetch(`${base}/routing/result`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(resultBody) })).status, 200);
-
-  const auditEvents = (await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH, "utf8"))
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line))
-    .filter((event) => event.route_id === "route-audit-retry");
-  assert.deepEqual(auditEvents.map((event) => event.event_id).sort(), [
-    "routing-decision-route-audit-retry-leased",
-    "routing-health-route-audit-retry-leased",
-    "routing-health-route-audit-retry-succeeded",
-    "routing-result-route-audit-retry-succeeded",
-  ]);
 });
 
 test("控制服务只允许相同 event_id 的同事件补偿重放", async (context) => {
@@ -2238,7 +1787,7 @@ test("MCP verification report 在 Session 通知失败后保留账本并返回 w
     producer: "codex", evidence_ref: "summary:passed",
   };
   const first = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_verification_report", arguments: verification })));
-  assert.equal(first.accepted, true);
+  assert.equal(first.accepted, true, JSON.stringify(first));
   assert.deepEqual(first.warnings.map((warning) => warning.code), ["SESSION_NOTIFICATION_FAILED"]);
   assert.equal(loadTasks().find((task) => task.id === "verification-warning-task").verificationClaims.length, 1);
 
@@ -2300,7 +1849,7 @@ test("MCP Review attestation 先落账，通知失败降级且非法 v3 返回�
   };
 
   const first = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_review_report", arguments: attestation })));
-  assert.equal(first.accepted, true);
+  assert.equal(first.accepted, true, JSON.stringify(first));
   assert.equal(first.review_status, "passed");
   assert.deepEqual(first.warnings.map((warning) => warning.code), ["SESSION_NOTIFICATION_FAILED"]);
   assert.equal(loadTasks().find((task) => task.id === "review-warning-task").reviewAttestations.length, 1);
@@ -2328,7 +1877,6 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   context.after(() => child.kill("SIGTERM"));
 
   const gateSessionId = "019f0000-0000-7000-8000-000000000112";
-  const executorModel = JSON.parse(await readFile(new URL("../config/model-roles.json", import.meta.url), "utf8")).roles.executor.model;
 
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -2364,8 +1912,7 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     "taskcenter_session_register", "taskcenter_task_begin", "taskcenter_task_create", "taskcenter_task_update", "taskcenter_task_report",
     "taskcenter_task_close",
     "taskcenter_task_requirement_report", "taskcenter_task_verification_report", "taskcenter_task_review_report", "taskcenter_review_cycle_report", "taskcenter_task_phase_report", "taskcenter_task_diagnostic_report",
-    "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_task_export", "taskcenter_routing_record", "taskcenter_routing_select", "taskcenter_routing_result",
-    "taskcenter_delegation_grant", "taskcenter_delegation_claim", "taskcenter_cli_run_report", "taskcenter_delegation_revoke",
+    "taskcenter_task_completion_readiness", "taskcenter_task_completion_packet", "taskcenter_task_export",
     "taskcenter_task_query", "taskcenter_task_reuse_check", "taskcenter_task_reuse_decision_report", "taskcenter_task_reuse_decision_query",
     "taskcenter_session_status", "taskcenter_session_gate_exemption_status", "taskcenter_session_gate_exemption_set",
     "taskcenter_scheduled_readonly_scan_exemption_status", "taskcenter_scheduled_readonly_scan_exemption_set",
@@ -2726,40 +2273,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   const governance = JSON.parse(textOf(await client.callTool({ name: "taskcenter_governance_metrics", arguments: {} })));
   assert.equal(governance.schemaVersion, "taskcenter-governance-metrics-v2");
 
-  const routing = await client.callTool({
-    name: "taskcenter_routing_record",
-    arguments: {
-      session_id: "sess-mcp",
-      task_id: "task-mcp",
-      event_id: "mcp-routing-native",
-      routing_action: "delegate_native",
-      orchestrator_model: "gpt-5.6-sol",
-      preferred_executor_model: executorModel,
-      selected_executor_model: executorModel,
-      dispatch_channel: "native",
-      routing_reason: "边界清晰，优先原生派发。",
-      response_mode: "full",
-    },
-  });
-  const routingPayload = JSON.parse(textOf(routing));
-  assert.equal(routingPayload.accepted, true);
-  assert.equal(routingPayload.task.status, "planned");
-  assert.equal(routingPayload.task.routing.selectedExecutorModel, executorModel);
-  assert.equal(routingPayload.task.routing.taskClass, "general");
-
-  const selectedRoute = JSON.parse(textOf(await client.callTool({
-    name: "taskcenter_routing_select",
-    arguments: { task_id: "task-mcp", preferred_model: executorModel, task_class: "test", channel: "native", available_native_models: nativeRuntimeModels, route_id: "route-mcp-compat" },
-  })));
-  assert.equal(selectedRoute.route.route_id, "route-mcp-compat", "旧客户端不传 response_mode 时仍需取得路由租约");
-  assert.equal(selectedRoute.route.preferred_model, executorModel);
-  assert.equal(selectedRoute.route.selected_model, executorModel);
-  await client.callTool({ name: "taskcenter_routing_result", arguments: { route_id: selectedRoute.route.route_id, outcome: "succeeded" } });
-
-  const query = await client.callTool({ name: "taskcenter_task_query", arguments: { session_id: "sess-mcp" } });
-  const queryPayload = JSON.parse(textOf(query));
-  assert.equal(queryPayload.tasks.find((task) => task.id === "task-mcp").routing.dispatchChannel, "native");
-
+  const retired = (await client.listTools()).tools.filter(tool => /routing_|delegation_|cli_run_|review_claim|review_start|review_restore/.test(tool.name));
+  assert.deepEqual(retired, []);
   const update = await client.callTool({ name: "taskcenter_task_update", arguments: { session_id: "sess-mcp", task_id: "task-mcp", current_step: "已更新" } });
   assert.equal(JSON.parse(textOf(update)).accepted, true);
   const report = await client.callTool({ name: "taskcenter_task_report", arguments: { session_id: "sess-mcp", task_id: "task-mcp", status: "done_claimed", tests: ["MCP 闭环"] } });
@@ -3693,4 +3208,31 @@ test("迟到回报绑定原任务：切换任务后旧任务的验证回执仍�
   assert.equal(a.status, "planned", "验证回执不自动推进完成判定");
   assert.ok(!(b.verificationClaims || []).length, "B 不受迟到回执影响");
   assert.equal(b.status, "planned", "B 的账本保持独立");
+});
+
+test("模型治理退役：旧 API 返回 404，历史文件不参与主线运行", async (context) => {
+  await resetLedger();
+  const routing = '{"routes":[{"status":"active","task_id":"retired-task"}]}';
+  const delegations = '{"runs":[{"status":"active"}]}';
+  await writeFile(envPaths.TASKCENTER_ROUTING_CONTROL_PATH, routing);
+  await writeFile(envPaths.TASKCENTER_DELEGATIONS_PATH, delegations);
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  for (const [method, path] of [["GET", "/routing/health"], ["GET", "/routing/models"], ["POST", "/routing/select"], ["POST", "/routing/result"], ["POST", "/delegations/grant"], ["POST", "/delegations/claim"], ["GET", "/delegations/resolve?session_id=child"], ["POST", "/reviews/start"], ["POST", "/reviews/claim"], ["GET", "/reviews/session?session_id=child"], ["GET", "/tasks/retired-task/reviews"]]) {
+    const response = await fetch(`${base}${path}`, { method });
+    assert.equal(response.status, 404, `${method} ${path}`);
+  }
+  assert.equal((await fetch(`${base}/health`)).status, 200);
+  recordTaskEvent({ type: "session.register", session_id: "retired-main", agent: "codex", workspace: "/work" });
+  recordTaskEvent({ type: "task.create", session_id: "retired-main", task_id: "retired-task", title: "主线", goal: "继续主线" });
+  const tasks = JSON.parse(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"));
+  tasks[0].routingHistory = [{ selectedExecutorModel: "historical" }];
+  tasks[0].executionModelPolicy = { mode: "quota_preferred", preferred_model: "historical" };
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify(tasks));
+  recordTaskEvent({ type: "task.update", session_id: "retired-main", task_id: "retired-task", current_step: "无需路由" });
+  assert.equal(loadTasks()[0].routingHistory[0].selectedExecutorModel, "historical");
+  assert.equal(loadTasks()[0].currentStep, "无需路由");
+  assert.throws(() => recordTaskEvent({ type: "routing.decision", session_id: "retired-main", task_id: "retired-task" }), /类型无效/);
+  assert.equal(await readFile(envPaths.TASKCENTER_ROUTING_CONTROL_PATH, "utf8"), routing);
+  assert.equal(await readFile(envPaths.TASKCENTER_DELEGATIONS_PATH, "utf8"), delegations);
 });

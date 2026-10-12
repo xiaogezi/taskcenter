@@ -32,8 +32,6 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_TASK_REUSE_DECISIONS_PATH: join(dataRoot, "task-reuse-decisions.jsonl"),
     TASKCENTER_SESSION_REGISTRY_PATH: join(dataRoot, "session-registry.json"),
     TASKCENTER_SESSION_MERGES_PATH: join(dataRoot, "session-merges.json"),
-    TASKCENTER_DELEGATIONS_PATH: join(dataRoot, "delegations.json"),
-    TASKCENTER_ROUTING_CONTROL_PATH: join(dataRoot, "routing-control.json"),
     TASKCENTER_CONTEXT_TASK_MAP_PATH: join(dataRoot, "context-task-map.json"),
     TASKCENTER_CONTEXT_AUDIT_PATH: join(dataRoot, "context-sync-events.jsonl"),
     TASKCENTER_CONTEXT_MANAGEMENT_PILOT_EVENTS_PATH: join(dataRoot, "context-management-pilot-events.jsonl"),
@@ -48,8 +46,8 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_GOVERNANCE_HEALTH_PATH: join(runtimeRoot, "governance-worker-health.json"),
     TASKCENTER_TASK_EVENT_INDEX_PATH: join(runtimeRoot, "task-event-index.json"),
     TASKCENTER_CONTEXT_ROOT: resolve(controllerRoot, "..", "ProjectContextAgent"),
-    TASKCENTER_MODEL_ROLE_CONFIG_PATH: process.env.TASKCENTER_MODEL_ROLE_CONFIG_PATH
-      || join(controllerRoot, "config", "model-roles.json"),
+    TASKCENTER_AI_CONFIG_PATH: process.env.TASKCENTER_AI_CONFIG_PATH
+      || join(controllerRoot, "config", "ai-governance.json"),
   };
   if (config.candidateCodex) {
     environment.CODEX_HOME = resolve(config.candidateCodex);

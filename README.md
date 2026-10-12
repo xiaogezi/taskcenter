@@ -1,6 +1,6 @@
 # TaskCenter（任务中心）
 
-「AI 行为」页面 `/ai` 汇总治理分析、Jev 路由判断、Jev 观察日志、执行路由与执行器回执，支持来源筛选、分页和自动刷新。选定任务后可预览受限快照，确认发送给 `config/model-roles.json / ai_governance.cli_profile` 配置的模型服务，再运行完成证据分析或失败与阻塞复盘。快照不读取会话正文、文件或完整日志；本机路径被隐去，疑似密钥拒绝发送。Claude CLI 禁用工具、MCP、项目上下文与会话持久化，超时 120 秒、并发一；AI 缺失、配置/认证失败、超时或输出无效时自动回退现有完成就绪度规则，并记录失败与降级原因；AI 运行期间仍可直接使用规则检查。分析仅提供带引用的建议，不改变任务和验收状态，也不恢复普通 CLI delegation。
+「AI 行为」页面 `/ai` 汇总主线治理分析与 Jev 观察日志，支持分页和自动刷新。选定任务后预览受限快照，确认发送给 `config/ai-governance.json` 配置的模型服务，再分析完成证据或失败阻塞。快照不读取会话正文、文件或完整日志；本机路径被隐去，疑似密钥拒绝发送。Claude CLI 禁用工具、MCP、项目上下文与会话持久化，超时 120 秒、并发一；失败时回退规则检查。分析仅提供建议，不改变任务和验收状态。
 
 治理行为写入 `data/ai-activity.jsonl`（可通过 `TASKCENTER_AI_ACTIVITY_PATH` 隔离）；Jev 观察从 `TASKCENTER_JEV_RUNTIME_DIR/events.jsonl` 及上一轮日志读取。`GET /ai/activity`、`GET /ai/snapshot` 与受同源人工动作校验的 `POST /ai/analyze` 是工作台入口。页面仅展示平台已有记录，不暴露模型内部思维；未记录的用量和原因明确显示未知，历史保留范围遵循原来源，不重放旧任务。
 
@@ -18,8 +18,6 @@ TaskCenter 是一个本地优先、核心协议与平台解耦的任务治理看
 - 所有任务账本和运行状态仅保存在本机。
 - 以通用 `SubjectReference` 和 `ActorIdentity` 记录工作对象与参与者，不把 Git、Session 或单台机器作为核心前提。
 - 支持离线补录、通用验收，以及 JSON/Markdown Completion Packet 导出。
-- 作为轻量模型路由控制面保存熔断、并发租约、路由建议与审计，但不启动或管理 CLI。
-- 调度页展示拒绝原因、恢复步骤与验证方法；历史路由仅供参考，恢复指引不扩大任务权限。
 
 ## 隐私与安全边界
 
@@ -126,7 +124,6 @@ v2 任务不能通过普通 `taskcenter_task_report(done_claimed)` 绕过闭环�
 
 任意客户端创建的任务可由另一已启动客户端接手，复用同一 task ID；调用顺序和边界见 [跨客户端共享任务接手](docs/shared-task-handoff.md)。
 
-主会话也可通过 [可选 CLI 执行入口](docs/delegated-cli.md) 在原任务下授权 Kimi／Claude 执行；型号与推理档位集中配置，默认角色不变。
 
 注册用户级 MCP：
 
@@ -182,7 +179,7 @@ Codex 配置中的 `UserPromptSubmit` Hook 会在非门禁豁免 Session 没有�
 
 需要写入时由 Agent 主动登记并创建或复用任务后再调用工具，不应要求用户代为处理。L1 `fast` 默认不要求 verification plan 或 review；L2 `standard` 必须声明 verification plan、默认不要求独立 review；L3 `strict` 必须有 verification plan 和当前 Subject 的独立 review。Subject 更新会使旧验证和 Review 失效。CLI 没有 Agent 的路径可直接调用 Core HTTP/导入证据接口；它不依赖 Hook 或 MCP，恢复服务后再补录 `occurred_at` 与证据即可。`PreToolUse` 仍保留硬阻断作为兜底。只有显式加入“门禁豁免”白名单的精确 Session ID 才会跳过任务要求，不会按项目、目录或标题自动扩大豁免。
 
-任务创建、更新、报告、Subject、证据导入与验收等写入型 MCP 支持 `response_mode: "summary" | "full"`，缺省为 `summary`。摘要只返回 `accepted`、`task_id`、`status`、`verification_status`、`review_status` 和 `missing_count`；排障、query、export 或需要兼容旧全量回包时显式传 `full`。`routing_select` 与 delegation 控制面必须返回模型租约、`route_id` 或一次性 claim token，为避免旧执行器失效，其默认仍为 `full`。
+任务创建、更新、报告、Subject、证据导入与验收等写入型 MCP 支持 `response_mode: "summary" | "full"`，缺省为 `summary`。摘要只返回 `accepted`、`task_id`、`status`、`verification_status`、`review_status` 和 `missing_count`；排障、query、export 或需要兼容旧全量回包时显式传 `full`。
 
 同一语义需求在用户反馈、测试失败或 Review 后修订时继续复用原任务，通过 `taskcenter_task_subject_update` 更新 Subject；只补跑受影响验证并对增量 diff 复审。首次遗漏原因、防回归措施和完成度变化记录在原任务事件中，不为普通修订重复创建正式任务。
 
@@ -202,7 +199,7 @@ TaskCenter Core 不依赖 Codex、Context Agent、OCR、GitHub/GitLab、Worktree
 
 ### TaskCenter 与 ProjectContext 的职责边界
 
-TaskCenter 是执行合同、运行状态、验证、Review、验收与路由审计的权威来源。ProjectContext 管理项目事实、决策、待审核知识与跨 Session 上下文，其语义任务用于组织上下文，不应替代 TaskCenter 的执行状态。现有 `scripts/context-bridge.mjs` 与 completion adapter 已承载映射和 Completion Packet 投递；这是已有能力，而非新增桥接。
+TaskCenter 是执行合同、运行状态、验证、Review、验收的权威来源。ProjectContext 管理项目事实、决策、待审核知识与跨 Session 上下文，其语义任务用于组织上下文，不应替代 TaskCenter 的执行状态。现有 `scripts/context-bridge.mjs` 与 completion adapter 已承载映射和 Completion Packet 投递；这是已有能力，而非新增桥接。
 
 设置页的 Astra `context_management` 试点区按 TaskCenter 实际登记的 project/workspace 逐项读取项目级 `.codex/config.toml`，展示采集时间、仅新任务生效边界，以及启用后连续三个、带资格证据的自然长 Astra 任务指标。缺失、不可读或存在歧义时保持 `unknown`，不会推断成停用。启用、停用和刷新只写入 append-only intent 并唤醒现有 DevWorkbench 主脑；TaskCenter 不直接修改外部项目或 `~/.codex`。停用对当前任务属于软回退，关闭项目配置并新建 Astra 任务后才完成硬回退。目标项目以 TaskCenter MCP/Hook 协议向本机 `POST /context-management-pilots/intents/:intentId/result` 回写结果，并可用 `POST /context-management-pilots/trials` 提交试点证据。
 
@@ -218,99 +215,25 @@ TaskCenter 是执行合同、运行状态、验证、Review、验收与路由审
 2. 收到 `accepted=true` 与独立 `task_id` 后才能执行写操作。
    Codex 或 Git 创建关联 worktree 后，适配器会从 `.git` 指针自动识别主仓库、当前分支和 `execution_environment=worktree`。每个 worktree 保留独立 `workspace` 与 Subject，稳定 `project_id` 归并到同一项目；TaskCenter 不负责创建、合并或删除 worktree。Context bridge 同时把稳定 `project_id` 和具体 worktree workspace 传给 ProjectContext，使项目知识共享、执行证据隔离。
 3. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
-4. TaskCenter 可用时，当前主窗口模型在派发执行器前调用 `taskcenter_routing_select`。它会原子检查模型并发、`Closed/Open/Half-Open` 熔断状态并发放有 TTL 的执行租约；执行结束后调用 `taskcenter_routing_result` 释放租约并回报原始错误。TaskCenter 只给出强建议，不启动 CLI，也不取代当前主窗口模型的风险判断、整合和验收。
-   `/routing` 页面复用 `/usage-report` 与任务账本展示真实额度窗口、重置时间和最近调度记录；模型卡片的并发数字仅表示当前活跃租约，不是历史调用次数。模型未绑定额度池也不等于额度充足，缺失或过期快照会按未知状态展示。
-   主窗口负责理解、编排、整合和验收；普通执行通过 Codex 原生会话派发。`roles.executor.dispatch_channel=native` 禁止新 CLI 路由与授权，包含显式 CLI 请求和 Jev 失败降级。候选、偏好顺序、共享额度池和并发限制由集中配置统一定义；配置模型目录不代表实时宿主能力，实际型号由路由结合宿主提供的原生能力选择。
-   `native_models` 与 `roles.executor.native_models` 合并声明 canonical → runtime ID 与可用档位（同键以 executor 为准），调用方必须传入本轮实际派发工具支持的 `available_native_models`。模型选择器可见不等于工具可派发；没有可用候选时明确返回不可用，不退回 CLI。既有 MiMo 映射保留在顶层，新会话映射位于 executor 字段内；旧版本忽略新字段，避免热读配置时因 high 档位校验失败，也不丢失原有 MiMo 映射。两款 Kimi Coding 通过用户授权的 `model_reasoning_efforts` 使用 high，其余保持 low/medium，K3 原生采用 low。路由报告 canonical、runtime 与配置档位；原生 grant/claim 校验 canonical/runtime 对应的独立 Session 和有效租约，宿主按路由指定档位启动。
-   正式实例的 `TASKCENTER_MODEL_ROLE_CONFIG_PATH` 固定指向控制器工作区的可编辑 `config/model-roles.json`，release worktree 只承载代码，不成为模型策略副本。显式 `preferred_model` 仍优先于 task class 映射；retired 模型沿用既有归一化行为。`manual_only_models` 不进入自动角色池或普通 fallback，只有任务持久化 `execution_model_policy.mode=quota_preferred` 后才能使用。TaskCenter 按 `quota_limit_id` 读取独立额度池：新鲜且未耗尽时选择首选模型，明确耗尽时回到既有 executor 策略，缺失或过期时只在新派发边界做一次受并发限制的探测；额度失败不增加模型质量熔断计数。推理强度也由该配置控制：角色默认值为 `low`，仅 `task_class_reasoning_efforts` 或用户明确授权的 `model_reasoning_efforts` 可提升，路由结果与审计会保留实际强度。Reviewer 始终使用 reviewer 主模型并 fail closed，OCR 继续要求同一 Subject、Bundle 和规则证据，不接受 task class 映射或容量回退。
-   回滚时删除对应 `task_class_models` 映射并恢复原 JSON；新派发立即回到 executor 主模型，已发放租约按原策略结算。
-5. 当前主窗口模型有理由偏离建议，或 TaskCenter 暂时不可用而外部项目允许继续时，按静态规则执行并用 `taskcenter_routing_record` 记录 override；服务恢复后补录执行结果。TaskCenter 不得成为外部项目 build、test、commit 或 release 的单点依赖。本仓库自身启用 Hook 门禁时仍遵循 fail-closed 维护边界。
-6. OCR 独立审查保持 reviewer 独立性：TaskCenter 固定使用集中配置中的 reviewer 主模型并 fail closed，同时记录 `fallback_from`、`fallback_reason`、`retry_after_at` 及同一 Subject、OCR Bundle、规则的引用或 fingerprint。TaskCenter 只返回建议和写入审计；独立只读 Reviewer Session、相同 Bundle/规则加载和实际审查仍由 Agent/OCR Skill 完成。普通实现 CLI Run 不能冒充独立 OCR 审查通过。
-7. Agent 的 `done_claimed` 仅代表执行声明，提交时必须附带 `tests` 或 `evidence`；随后通过验收条件结果、Verification Claim 和独立 Review Attestation 计算 `completion_readiness`。
-8. `accepted` 只能由携带 `TASKCENTER_ACCEPTANCE_TOKEN` 的独立验收适配器通过 `taskcenter_task_acceptance_report` 上报；来源可以是 human、pull_request、ci、task_platform、context_agent、manual 或 other。普通执行 Agent、`task_report` 和浏览器操作均不能直接设置最终验收。
+4. 主模型自主决定模型与子代理的使用。TaskCenter 不选择、派发、登记、限制或管理子代理；主线 Hook 不再检查路由租约。
+5. Agent 的 `done_claimed` 仅代表执行声明，提交时必须附带 `tests` 或 `evidence`；随后通过验收条件结果、Verification Claim 和独立 Review Attestation 计算 `completion_readiness`。
+6. `accepted` 只能由携带 `TASKCENTER_ACCEPTANCE_TOKEN` 的独立验收适配器通过 `taskcenter_task_acceptance_report` 上报；来源可以是 human、pull_request、ci、task_platform、context_agent、manual 或 other。普通执行 Agent、`task_report` 和浏览器操作均不能直接设置最终验收。
 
-### Jev 参与派发前判断
+### 主线治理边界
 
-服务进程设置 `TASKCENTER_JEV_ROUTING=1` 并通过环境提供 `TYPESAFE_API_KEY` 后，普通 `/routing/select` 请求先让 Jev 判断任务类别与 `delegate/direct/needs_context`，再消费集中模型配置。请求可提供稳定的 `phase_id` 和简短 `phase_summary`；不发送代码、日志或完整会话。相同任务与阶段语义输入在进程内复用结果（包含失败与并发中的请求）；服务重启后可重新判断。
+模型调度页面、模型角色配置、路由租约、委派协议和托管 Reviewer 已彻底退役，旧 HTTP 路径返回 404，MCP 不再暴露对应工具。宿主原生子代理由主模型自主决定，TaskCenter Hook 在请求服务前识别并忽略它们；会话同步只收集主线。历史路由与委派文件不删除、不重放，也不继续更新。
 
-普通自动路由使用 `channel=other`，优先由 Jev 选择配置内的原生执行器；无可运行模型、能力缺失、容量或额度耗尽时，返回当前 Session 主模型的有效 `direct` 租约（`reason=main_model_fallback`），保留原始 `fallback_reason`，不占执行器容量、不回退 CLI。显式 `direct` 只需提供实际 `direct_reason` 留审计，不再要求一次性用户口令或限定例外；历史例外字段传入时仍校验格式。`needs_context` 交回主模型核对上下文、推进确定工作，并仅在确有必要时澄清。Jev 超时、缺 key 或响应无效沿用配置策略，执行器也不可用时由主模型兜底。
+主线任务登记、合同、所有权、进展、验证、完成声明和独立验收继续有效。外部 Review 由用户安排，已有 Review Attestation / Cycle 证据接口保留；平台不启动或管理 Reviewer。Review 不阻塞任务完成与已授权交付。Jev 观察只提供任务分类、续接、风险和输出建议，不参与模型选择。
 
-原生派发、登记、claim 或执行失败后，`routing_result` 保留失败事实并返回接管步骤：停止原执行器、确认不再写入、撤销 delegation，再携失败原因申请 `channel=direct`，主模型继续同一任务，无需重新请求用户授权。路由输入无效时修正参数或使用 direct 接管，不无限重试。接管不放宽任务身份、工作区、权限与安全约束，Reviewer 仍保持独立且 fail closed。TaskCenter 只返回路由和审计，不替主模型停止或启动进程；主模型必须消费 `next_action` 并完成接管。Codex Hook 仍检查有效路由。
-
-调度页的“恢复说明”区分当前指引、历史参考和适用性未知；“最近拒绝与恢复步骤”通过只读 `GET /gate-denials?limit=20` 展示安全记录（limit 1–50）。说明按当前策略生成，1 小时统计不代表历史时点；读取失败保留旧数据并明确提示。页面不执行恢复动作。Hook 拒绝上报失败时仍输出本地说明，但不宣称已记录或完成批量判断；控制面不可用时，本仓库维护只读并报告 `TASKCENTER_UNAVAILABLE`。执行器停止状态无法确认时，禁止接管同范围写入；租约过期和失败回报均不能证明进程已停止。
-
-这项能力只作用于实际提交的路由请求，不会替主代理启动进程，也不能拦截绕开路由的主模型操作。主代理须按项目规则在新执行阶段先请求判断。关闭环境开关只关闭 Jev 判断，仍遵守 native-only 配置；后续服务启动仍需提供开关和密钥环境，密钥不写入仓库。已连接的 MCP 客户端需要重新连接才能看到新增可选字段。
-
-主 Agent 派发普通原生执行器时不另建正式子任务：先取得 native route，再签发绑定该 `route_id` 的短期授权。执行器使用真实独立 Codex Session 登记并 claim；`executor_model` 使用 canonical ID，Session 模型必须等于 `native_model`。生命周期和证据沿用 `taskcenter_cli_run_report`，该 API 名称兼容历史 CLI，但同时承载 native 回执。CLI 历史记录、报告和撤销保留；当前策略拒绝新 CLI 授权。只有独立交付物、生命周期或验收边界才创建正式子任务。
-
-scope 为文件工具提供可执行的路径边界；可识别路径超出 scope 时 Hook 会阻断。任意 Shell 命令无法可靠静态证明实际写入路径，因此只有 scope 显式为整个 workspace（`.`）时才允许，同时仍受精确 workspace、Session、TTL 和 `allowed_tools` 约束。该机制是任务授权边界，不替代 Codex sandbox 或操作系统隔离。
-
-完成闭环包含四层独立状态：执行 `done_claimed`、验证 `verification_status`、审查 `review_status`、最终验收 `acceptance_status`。`done_claimed` 在 UI 中显示为“已声明完成”，不能等同于真正完成。`CompletionReadiness` 还返回当前 subject、机器可读 reason codes、缺失/失败条件、过期证据、未解决 findings 与 `completionClaim.allowed`；只有该字段为 `true` 时，调用方才可以向用户宣称任务真正完成。`strict` 默认要求当前 subject 的独立审查，但 Workspace Policy 可以显式调整。历史记录只追加，不覆盖。
-
-新版 Review Attestation 使用 `review_contract_version=v2`，由同一个独立 reviewer 按顺序提交 `spec_verdict`、`quality_verdict`、总体 `verdict` 和 `unverified_requirements`。总体 `approved` 仅在规格 `compliant`、质量 `approved`、没有未验证要求且没有未解决 finding 时成立。旧记录继续按 `legacy` 读取，不伪造缺失的双结论。
-
-OCR Review 与业务任务生命周期分离：已登记的任务所属 Session 可对 `in_progress`、`done_claimed`、`blocked` Task 调用 `taskcenter_routing_select(ocr_review|independent_review)`，无需 active Task，也不创建审查子任务。`blocked` 仅允许报告问题；该限制在领取和报告时重验，不能通过解除阻塞后复用诊断 lease 来批准。`planned`、`cancelled` 和不存在的 Task 不允许进入新 Review。
-
-路由请求必须提供 `review_artifacts.subject/bundle/rules`。Subject 的 ref 或 fingerprint 必须匹配当前 `SubjectReference.value`；路由冻结完整 SubjectReference，后续领取和报告对 type、value、repository、branch 精确比较。Bundle 和 Rules 使用不可变引用或 fingerprint，由独立 Reviewer 实际加载，报告中的三项证据必须与路由逐项一致；本地控制面不下载或执行引用内容。
-
-路由返回独立 `review_record` 和领取 capability。宿主使用集中配置的 reviewer 模型及 `read-only` 沙箱启动独立 Reviewer；Reviewer 登记后调用 `taskcenter_review_claim(route_id, claim_token, sandbox="read-only")`，随后通过 `taskcenter_task_review_report` 携带同一 `route_id`、`review_artifacts`、完整 `subject_ref` 上报。最后 `taskcenter_routing_result` 释放租约。MCP 从可信宿主绑定实际 Session，领取同时校验工作区、模型及与实现 Session 的独立性。同一 Reviewer Session 可领取多个 Task 的 Review；Hook 和账本禁止它创建业务任务或写入实现。Hook 是生命周期守卫，宿主仍须提供真正的只读沙箱。
-
-外部 Review 继续使用既有 route、独立 Session、review claim/start/report/finish 协议，保留身份、只读、Subject 和有效期校验。内置 reviewer-cli.mjs 启动入口已退休，旧调用明确报错，不读取请求或启动系统 Codex CLI。
-
-
-
-`GET /tasks/:id/reviews` 返回 `pending/running/approved/changes_requested/failed` Review Record；记录保存在本地 routing-control 状态中，与 Task 状态分开。Task 的新 `review_status` 聚合为 `not_started/pending/approved/changes_requested`，旧 `reviewStatus` 和 Attestation 字段继续保留。失败、过期或只有路由成功而没有报告不会变为 approved；要求 Review 的任务在新审查未完成时不能最终通过。
-
-拒绝响应保留旧客户端可读的 `error` 文本，新增 `code`（`SESSION_NOT_REGISTERED`、`TASK_NOT_FOUND`、`TASK_NOT_REVIEWABLE`、`SUBJECT_MISMATCH`、`REVIEW_ARTIFACTS_INCOMPLETE`、权限与证据不匹配码），并提供 `legacy_code=ACTIVE_FORMAL_TASK_REQUIRED` 兼容映射。模型/并发失败在路由的 `error_code` 中区分 `REVIEWER_UNAVAILABLE` 与 `REVIEWER_LEASE_UNAVAILABLE`，保留原始路由原因。正常 Review 不使用 `session_gate_exemption`。
-
-如果 Hook 明确输出“门禁豁免白名单放行”，当前 Session 可以不执行登记和建任务步骤。该例外只来自独立的门禁豁免白名单，不能由内容读取白名单推断；命令安全检查仍然有效。
-
-在已加载新版 MCP 的 Codex Session 中，可以直接对 Agent 说“查询当前 Session 的门禁豁免”“把当前 Session 加入门禁豁免”或“把当前 Session 退出门禁豁免”。Agent 分别调用 `taskcenter_session_gate_exemption_status` 或 `taskcenter_session_gate_exemption_set`；目标 Session ID 优先取自 Codex 为每次 MCP 请求注入的 `_meta.threadId`，仅为旧宿主兼容回退到进程环境变量。两路身份冲突、缺失或格式非法时均拒绝操作。工具不接受调用方指定其他 Session，内部控制端点还要求本机 MCP 进程凭据。加入前要求 Session 已登记，不创建正式任务，也不提供项目级、标题匹配或批量豁免。首次新增工具后需要新建或重启 Codex Session，让客户端重新加载 MCP 工具清单。
-
-MCP 工具：
-
-- `taskcenter_session_register`
-- `taskcenter_session_status`
-- `taskcenter_session_gate_exemption_status`
-- `taskcenter_session_gate_exemption_set`
-- `taskcenter_scheduled_readonly_scan_exemption_status`
-- `taskcenter_scheduled_readonly_scan_exemption_set`
-- `taskcenter_task_create`
-- `taskcenter_task_query`
-- `taskcenter_task_reuse_check`
-- `taskcenter_task_reuse_decision_report`
-- `taskcenter_task_reuse_decision_query`
-- `taskcenter_task_update`
-- `taskcenter_task_report`
-- `taskcenter_task_requirement_report`
-- `taskcenter_task_verification_report`
-- `taskcenter_task_review_report`
-- `taskcenter_review_cycle_report`
-- `taskcenter_task_phase_report`
-- `taskcenter_task_diagnostic_report`
-- `taskcenter_task_completion_readiness`
-- `taskcenter_task_completion_packet`
-- `taskcenter_task_subject_update`
-- `taskcenter_task_import_evidence`
-- `taskcenter_task_export`
-- `taskcenter_task_acceptance_report`（仅独立验收进程配置 Token）
-- `taskcenter_routing_record`
-- `taskcenter_routing_select`
-- `taskcenter_routing_result`
-- `taskcenter_delegation_grant`
-- `taskcenter_delegation_claim`
-- `taskcenter_cli_run_report`
-- `taskcenter_delegation_revoke`
-
-控制服务提供无 Session 依赖的 `POST /core/task-events`、`POST /tasks/import-evidence`、`GET /tasks/:id/phase-report`、`GET /tasks/:id/export?format=json|markdown`，以及受令牌保护的 `POST /task-acceptance-report`。任务复用 Advisor 使用 `POST /task-reuse/check` 做无写入查询，并以 `POST/GET /task-reuse/decisions` 独立记录和读取最终选择。旧 `POST /task-acceptance-sync` 继续作为 Context 兼容适配器。令牌只通过进程环境传递，不写入任务、事件、日志或仓库。
+核心 MCP 工具以 `taskcenter_session_register`、`taskcenter_task_begin`、`taskcenter_task_update`、`taskcenter_task_report`、`taskcenter_task_close`、验收条件、验证和独立验收报告为主。完整契约以 `scripts/taskcenter-mcp.mjs` 为准。
 
 ## 数据文件
 
-运行态写入 `data/`，并由 `.gitignore` 排除，包括内容读取白名单 `session-selection.json`、门禁豁免白名单 `gate-session-allowlist.json`、CLI 授权账本 `delegations.json`、append-only 复用决策账本 `task-reuse-decisions.jsonl`、路由派生状态 `routing-control.json` 与 `reflection-proposals.json`。`routing-control.json` 是控制服务单写者维护的可变派生状态；不可变任务事件与复用决策记录仍是审计依据，不承担锁或租约状态源职责。仓库只保留空白 seed、示例数据和空的 Session 合并配置。删除运行态前请确认范围；TaskCenter 不应删除或改写 `~/.codex` 下的会话与认证数据。
+运行态写入 `data/`，并由 `.gitignore` 排除，包括读取白名单、门禁豁免白名单、任务事件与投影、复用决策和改进提案。旧 `routing-control.json`、`delegations.json` 仅作历史留存，不读取或改写。删除运行态前请确认范围；TaskCenter 不应删除或改写 `~/.codex` 下的会话与认证数据。
 
 ## 开发与验证
 
-用量报告可通过 `node scripts/usage-report.mjs` 生成，默认只读取 `~/.codex/sessions/**/*.jsonl` 和本地任务账本；聚合使用每条记录的 `last_token_usage`，并按 `5h`、`24h`、`7d` 和 model/project/session/task 输出 input、cached input、output、average/P50/P95。增量索引还会按任务生命周期时间窗保留 lifetime 累计，任务表展示 input、cached input、output、reasoning 和 total；原始事件仍只保留 7 天，共享或重叠 Session 无法唯一归属时计入 `unattributed`，因此任务值是流程分析用估算而非账单数据。CLI delegation 的独立 Session 会归入父任务。报告支持注入 `sessionsRoot`、`ledger`、`rates`、`now`；全部未知费率时标记为 `unestimable`，混合已配置与未知费率（包括未配置的 Spark）时保留可估算部分并标记为 `partial`。
+用量报告可通过 `node scripts/usage-report.mjs` 生成，默认只读取 `~/.codex/sessions/**/*.jsonl` 和本地任务账本；聚合使用每条记录的 `last_token_usage`，并按 `5h`、`24h`、`7d` 和 model/project/session/task 输出 input、cached input、output、average/P50/P95。增量索引还会按任务生命周期时间窗保留 lifetime 累计，任务表展示 input、cached input、output、reasoning 和 total；原始事件仍只保留 7 天，共享或重叠 Session 无法唯一归属时计入 `unattributed`，因此任务值是流程分析用估算而非账单数据。历史独立 Session 的用量归属仅作被动统计，不建立新的委派关系。报告支持注入 `sessionsRoot`、`ledger`、`rates`、`now`；全部未知费率时标记为 `unestimable`，混合已配置与未知费率（包括未配置的 Spark）时保留可估算部分并标记为 `partial`。
 
 费率表位于 `config/model-rates.json`，只应填写模型提供方正式公布并经操作者确认的每百万 Token Credits；禁止用相近模型价格代填 Spark。`taskcenter_usage_report`、`taskcenter_session_lifecycle` 和 `taskcenter_governance_metrics` 分别提供用量、会话建议与试点指标。治理指标同时返回 Token 任务归属覆盖率；只有显式调用 `taskcenter_task_diagnostic_report` 的案例才进入调试观察聚合，记录根因耗时、假设数、失败修复、回滚和新鲜验证。这些数据只用于发现流程瓶颈和检验改进，不参与个人绩效、任务门禁或自动模型路由。生命周期建议不会强制中断，且“新建 Codex Session”不等于“新建 TaskCenter task”：同一交付继续复用原任务并携带 1–2KB handoff。
 
@@ -318,11 +241,11 @@ MCP 工具：
 
 Review 过程使用 `taskcenter_review_cycle_report` 按稳定 `cycle_id` 增量记录 `pending_review/reviewing/fixing/verifying/completed` 阶段、墙钟时间和调用方明确测得的 active time。`taskcenter_task_review_report` 的 v3 Attestation 通过 `cycle_id`、`review_scope=full|incremental`、`base_attestation_id`、文件集合与带 fingerprint 的 finding 关联复审；旧 Attestation 保持 `legacy` 或 v2 原样读取，不补造新字段。治理快照和 Completion Packet 会输出轮次、漏斗、P50/P95、finding 质量、fallback 与 `reviewLoopWarnings`；缺少阶段事件或 active time 时返回“数据不足”，这些指标只用于团队流程诊断，不用于 reviewer、模型或个人排名。
 
-任务阶段使用 `taskcenter_task_phase_report` 追加 `planning/implementing/verifying/reviewing/reworking/waiting_external` 的 `started/paused/resumed/finished` 事件。每条事件必须显式携带 `task_id`、`session_id`、`event_id`、`occurred_at`、`subject_ref`、`reason` 与 `activity_source`；同一执行跨 Session 续接时必须复用稳定的 `activity_id`，且新 Session 必须通过既有 Session merge、delegation 或 Review Cycle 身份获得任务授权。delegated executor 还必须引用已领取的 `delegation_id`。阶段账本只追加，重复 `event_id` 仅在语义完全相同时幂等。
+任务阶段使用 `taskcenter_task_phase_report` 追加 `planning/implementing/verifying/reviewing/reworking/waiting_external` 的 `started/paused/resumed/finished` 事件。每条事件必须显式携带 `task_id`、`session_id`、`event_id`、`occurred_at`、`subject_ref`、`reason` 与 `activity_source`；同一执行跨 Session 续接时必须复用稳定的 `activity_id`，且新 Session 必须通过既有 Session merge 或 Review Cycle 身份获得任务授权。阶段账本只追加，重复 `event_id` 仅在语义完全相同时幂等。
 
-`phaseTiming.task_wall_ms` 是所有已观测阶段区间的并集，多个执行器重叠时只计算一次；`executor_active_ms` 按 Session 或 delegation 累计，因此并行时总和可以大于任务墙钟。`phase_wait_ms` 与 `wait_breakdown_ms` 只统计明确上报的暂停、构建等待、外部等待和 Review 排队区间，不用 Token 或“墙钟减 active”猜测有效工时。Review、返工和 Review 后验证继续以现有 Review Cycle 时间为权威来源，阶段事件只补充边界与执行器归因，不重复计账。指定 `as_of` 时只聚合截止时刻已经发生的边界，跨越截止时间的区间会截断并标记 `partial`。旧任务或缺失字段返回 `unknown`/`partial` 和 `null`，不会把缺失数据伪装为零；这些数据只用于流程诊断，不参与绩效、任务门禁或验收。
+`phaseTiming.task_wall_ms` 是所有已观测阶段区间的并集，多个已记录活动重叠时只计算一次；`executor_active_ms` 按历史活动身份累计，因此并行时总和可以大于任务墙钟。`phase_wait_ms` 与 `wait_breakdown_ms` 只统计明确上报的暂停、构建等待、外部等待和 Review 排队区间，不用 Token 或“墙钟减 active”猜测有效工时。Review、返工和 Review 后验证继续以现有 Review Cycle 时间为权威来源，阶段事件只补充边界与活动归因，不重复计账。指定 `as_of` 时只聚合截止时刻已经发生的边界，跨越截止时间的区间会截断并标记 `partial`。旧任务或缺失字段返回 `unknown`/`partial` 和 `null`，不会把缺失数据伪装为零；这些数据只用于流程诊断，不参与绩效、任务门禁或验收。
 
-创建正式任务前可调用 `taskcenter_task_reuse_check`。Advisor 只读取已登记 Session 与可见任务投影，候选包含 `planned/in_progress/blocked/done_claimed`，默认排除取消、已验收、归档、移除、被替代和 Context 影子任务。相同 `context_task_id + workspace` 是最高优先级的召回证据，但只有同 Session、有效 delegation 或可验证的同 Owner 同时成立时才会形成强复用建议；身份无法确认时保持 `uncertain`。同项目、文本相似和 Subject/Worktree 关系只参与排序。语义相似度使用本地、确定性的 Unicode token overlap，不调用远程模型；同仓库、同 Session 或标题相似都不能单独产生强复用建议。请求的 `project_id` 必须与已登记 Session 一致；旧 Session 没有项目身份时明确降级为 `unknown`，不会采信调用方值或用目录名推断。返回结果始终标记 `advisory_only=true`，不会自动创建、合并、阻断或修改任务。
+创建正式任务前可调用 `taskcenter_task_reuse_check`。Advisor 只读取已登记 Session 与可见任务投影，候选包含 `planned/in_progress/blocked/done_claimed`，默认排除取消、已验收、归档、移除、被替代和 Context 影子任务。相同 `context_task_id + workspace` 是最高优先级的召回证据，但只有同 Session 或可验证的同 Owner 同时成立时才会形成强复用建议；身份无法确认时保持 `uncertain`。同项目、文本相似和 Subject/Worktree 关系只参与排序。语义相似度使用本地、确定性的 Unicode token overlap，不调用远程模型；同仓库、同 Session 或标题相似都不能单独产生强复用建议。请求的 `project_id` 必须与已登记 Session 一致；旧 Session 没有项目身份时明确降级为 `unknown`，不会采信调用方值或用目录名推断。返回结果始终标记 `advisory_only=true`，不会自动创建、合并、阻断或修改任务。
 
 调用方用 `taskcenter_task_reuse_decision_report` 把 Advisor 建议与最终 `reuse/create_new/uncertain` 选择写入独立 append-only 账本；覆盖 `reuse/uncertain` 建议而新建时必须填写 `force_new_reason`。相同 `event_id` 只有在语义完全一致时幂等，冲突重放会被拒绝；专用跨进程锁以及可从 JSONL 重建的 event-id、顺序、project 和 workspace 索引保证并发唯一性与有界逆序查询，JSONL 仍是唯一审计事实源。`taskcenter_task_reuse_decision_query` 通过本机 MCP 运行时令牌读取审计，用于试点评估；未知项目身份不计入项目覆盖。在完成 3 个项目、至少 10 次创建决策的观察前，不增加 Hook 提示、软门禁、自动阻断或自动合并。
 
@@ -349,7 +272,7 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 
 `task_close` 的生命周期建议不会执行压缩，也不会授权第二个任务。显式切换使用 `taskcenter-session-switch/v2`（旧版请求和 receipt 不再授权重绑）：
 
-1. 先关闭原任务。`done_claimed` 必须满足当前 `completionReadiness.completionClaim.allowed`；`cancelled` 必须有 `evidence` 和取消原因 `retrospective`。这不新增或替代独立验收。两条路径均要求当前 Subject 是 Git HEAD、工作区干净、没有活动 delegation。
+1. 先关闭原任务。`done_claimed` 必须满足当前 `completionReadiness.completionClaim.allowed`；`cancelled` 必须有 `evidence` 和取消原因 `retrospective`。这不新增或替代独立验收。两条路径均要求当前 Subject 是 Git HEAD、工作区干净。
 2. 调用 `taskcenter_session_switch_prepare`，提供 `task_id`、下一任务的 `next_task_id` / `next_goal` 和幂等 `event_id`。Session 身份从 MCP 宿主取得。完整任务恢复内容、task/client_session 归属、generation、Subject/revision、状态、下一目标和 15 分钟有效期持久化在检查点中，以 SHA-256 绑定，写入 flush 后必须重新读回校验。准备成功不代表压缩或恢复成功。
 3. 控制服务通过 `TASKCENTER_CODEX_APP_SERVER_URL` 显式配置**已有本机 App Server** 的 WebSocket 地址，例如 `ws://127.0.0.1:4500`；默认未配置，返回 `HOST_COMPACTION_CAPABILITY_UNAVAILABLE`。仅接受 `127.0.0.1` / `[::1]`，不接受凭据、查询参数或远端地址。适配器不会启动另一个 Codex 进程、恢复卸载的 Session 或读取认证信息；目标 thread 必须已加载、Session 身份及工作区一致，且支持实验接口 `thread/inject_items`。当前 Codex 桌面是否暴露这样的地址需由宿主确认，不能把示例地址当作已运行服务。
 4. 调用 `taskcenter_session_switch_confirm`，仅提供 `switch_id`，返回 `pending` 后结束当前 Turn，让宿主等待 Session 空闲。后台操作先从持久化存储读回检查点、实际注入完整恢复内容证明恢复接口可用，然后调用 `thread/compact/start`。只有同一 thread/turn/item 的 `contextCompaction` started/completed 和成功的 turn completion 才算压缩完成，`{}` 只表示启动确认。完成后的第一步重新读回同一检查点并验证 digest/generation，再注入完整内容；并发普通 Turn、错配、过期、损坏、断连或恢复错误均失败关闭。最后核对实际启动之后的本地 Session 压缩日志，才持久化绑定预检、恢复结果和完整性摘要的 receipt。后续调用可查询 `ready` / `failed`；`pending` 绝不授权重绑。自动压缩记录、Agent 自述、伪造启动回执均不能跳过宿主恢复链。

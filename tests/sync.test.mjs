@@ -221,9 +221,8 @@ test("sync 缺少权威标题时使用安全的项目元数据标题，不泄漏
       TASKCENTER_DASHBOARD_PATH: dashboardPath,
     });
     const dashboard = JSON.parse(readFileSync(dashboardPath, "utf8"));
-    assert.equal(dashboard.source.availableThreads[0].title, "ReqRadar · 019ffae8…");
-    assert.doesNotMatch(dashboard.source.availableThreads[0].title, /cyberrole-home-sections|01a01ee6/);
-    assert.equal(dashboard.threads[0].userRequirements, undefined);
+    assert.deepEqual(dashboard.source.availableThreads, [], "只有子代理时不创建主线记录");
+    assert.deepEqual(dashboard.threads, []);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

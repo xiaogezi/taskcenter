@@ -33,7 +33,7 @@ test("host-confirmed one-use switch preserves a sealed predecessor and fails clo
     const old = loadTasks().find((task) => task.id === "old");
     assert.throws(() => switchCheckpoint({ ...old, status: "done_claimed", completionReadiness: { completionClaim: { allowed: false } } }, [{ ...old, status: "done_claimed" }], loadSessionRegistry()[session_id]), /COMPLETION_NOT_READY/);
     assert.throws(() => switchCheckpoint(old, [old], { agent: "codex", workspace: "/other" }), /WORKSPACE_MISMATCH/);
-    assert.throws(() => switchCheckpoint(old, [old], loadSessionRegistry()[session_id], [{ status: "active" }]), /DELEGATION_ACTIVE/);
+    assert.doesNotThrow(() => switchCheckpoint(old, [old], loadSessionRegistry()[session_id], [{ status: "active" }]), "历史委派不阻塞主线切换");
     writeFileSync(join(workspace, "dirty"), "dirty");
     await assert.rejects(prepareSessionSwitch(request, sessions, checkpoint), /WORKSPACE_DIRTY/);
     rmSync(join(workspace, "dirty"));

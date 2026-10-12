@@ -10,7 +10,7 @@ test("任务工作区 URL 仅用列表条件构造请求 key", () => {
   assert.equal(taskListRequestKey(state), taskListRequestKey({ ...state, task: "t-2", tab: "activity" }));
 
   const withRoutingTab = parseTaskWorkspaceSearch("?task=task-taskcenter-ui-refresh-20260907&tab=routing&bucket=attention");
-  assert.equal(withRoutingTab.tab, "routing");
+  assert.equal(withRoutingTab.tab, "overview");
 });
 
 test("桌面详情展开时主工作区应开启三列网格", () => {
@@ -89,7 +89,7 @@ test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(isAllowedControlPath("/health", "GET"), true);
   assert.equal(isAllowedControlPath("/governance-metrics", "GET"), true);
   assert.equal(isAllowedControlPath("/governance-metrics", "POST"), false);
-  assert.equal(isAllowedControlPath("/routing/optional-astra-policy", "POST"), true);
+  assert.equal(isAllowedControlPath("/routing/optional-astra-policy", "POST"), false);
   assert.equal(isAllowedControlPath("/context-management-pilots", "GET"), true);
   assert.equal(isAllowedControlPath("/context-management-pilots/intents", "POST"), false);
   assert.equal(isAllowedControlPath("/routing/select", "POST"), false);
@@ -100,33 +100,6 @@ test("同源代理只允许明确的控制台路径和方法", () => {
   assert.equal(controlProxyTarget("/tasks", "?view=summary&project=/work&bucket=attention&query=api&page=2&page_size=50&ignored=yes")?.toString(), "http://127.0.0.1:3001/tasks?view=summary&project=%2Fwork&bucket=attention&query=api&page=2&page_size=50");
   assert.equal(controlProxyTarget("/tasks/task-1/events", "?limit=30")?.toString(), "http://127.0.0.1:3001/tasks/task-1/events?limit=30");
   assert.equal(controlProxyTarget("/tasks/task-1/actions", "", "POST")?.toString(), "http://127.0.0.1:3001/tasks/task-1/actions");
-});
-
-test("模型调度页展示额度、真实调度和刷新反馈", () => {
-  const source = readFileSync("features/console/ConsolePage.tsx", "utf8");
-  assert.match(source, /api<UsageData>\("\/usage-report"\)/);
-  const log = readFileSync("features/console/RoutingDecisions.tsx", "utf8");
-  assert.match(source, /<RoutingDecisions request=\{api\}/);
-  assert.match(log, /\/routing\/decisions\?limit=20/);
-  assert.match(source, /额度池：/);
-  assert.match(source, /刷新成功：/);
-  assert.match(source, /刷新失败：/);
-  assert.match(log, /暂无调度判断记录/);
-  assert.match(source, /历史快照（重置时间已过，当前额度未知）/);
-  assert.match(log, /Jev 判断和实际执行分别展示/);
-});
-
-test("模型调度页展示 24h 路由漏斗且与旧版全量 CLI 表区分", () => {
-  const source = readFileSync("features/console/ConsolePage.tsx", "utf8");
-  assert.match(source, /路由漏斗（最近 24 小时）/);
-  assert.match(source, /governance\?\.routingFunnel24h/);
-  assert.match(source, /Jev 评估决策/);
-  assert.match(source, /Jev delegate 的 direct 覆盖/);
-  assert.match(source, /legacy_generic: "旧式通用覆盖"/);
-  assert.match(source, /CLI 授权 \{funnel\.cliGrants/);
-  assert.match(source, /不表示一对一转化/);
-  assert.match(source, /暂无 24 小时路由漏斗数据/);
-  assert.doesNotMatch(source, /phase_summary_excerpt/);
 });
 
 test("会话与试点页面持续刷新标题并在卸载时清理轮询", () => {

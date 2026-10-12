@@ -39,16 +39,16 @@ test("治理调用校验快照授权、限制并发、记录成功失败且不�
   invalid.start(task, input); await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal((await readFile(path, "utf8")).trim().split("\n").map(JSON.parse).at(-1).status, "degraded");
 });
-test("统一行为涵盖两种 Jev、治理、路由和执行器，分页与筛选不混淆", async t => {
+test("统一行为涵盖主线 Jev 与治理，分页与筛选不混淆", async t => {
   const dir = await mkdtemp(join(tmpdir(), "ai-log-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, "activity"), jevPath = join(dir, "jev");
   await writeFile(path, `${JSON.stringify({ id: "g", source: "governance", at: "2026-10-12T00:00:00Z", task_id: "t", status: "succeeded" })}\n`);
   await writeFile(jevPath, `${JSON.stringify({ observed_at: "2026-10-12T00:00:01Z", task_id: "t", status: "skipped", reason: "busy" })}\n`);
   const options = { path, jevPath, routes: [{ route_id: "r", task_id: "t", created_at: "2026-10-12T00:00:02Z", status: "leased", jev_decision: { status: "succeeded", execution_choice: "delegate" } }], delegations: [{ id: "d", taskId: "t", createdAt: "2026-10-12T00:00:03Z", status: "issued" }] };
-  const first = await aiActivity({ ...options, params: new URLSearchParams({ limit: "2" }) });
-  const second = await aiActivity({ ...options, params: new URLSearchParams({ limit: "2", before: first.next_cursor }) });
-  assert.equal(new Set([...first.rows, ...second.rows].map(row => row.id)).size, 4);
-  assert.equal((await aiActivity({ ...options, params: new URLSearchParams({ source: "jev" }) })).rows.length, 2);
+  const first = await aiActivity({ ...options, params: new URLSearchParams({ limit: "1" }) });
+  const second = await aiActivity({ ...options, params: new URLSearchParams({ limit: "1", before: first.next_cursor }) });
+  assert.equal(new Set([...first.rows, ...second.rows].map(row => row.id)).size, 2);
+  assert.equal((await aiActivity({ ...options, params: new URLSearchParams({ source: "jev" }) })).rows.length, 1);
   await assert.rejects(aiActivity({ ...options, params: new URLSearchParams({ limit: "999" }) }), /参数/);
 });
 test("治理代理只允许固定路径与查询字段", () => {
@@ -73,4 +73,25 @@ test("CLI 缺失、认证失败、超时与模型不匹配均回退规则，不�
   runner.start(task, { kind: "blockers", confirm_data_scope: true, input_hash: governanceSnapshot(task, "blockers").input_hash });
   const rows = (await readFile(path, "utf8")).trim().split("\n").map(JSON.parse);
   assert.equal(rows.at(-1).fallback_reason, "AI_CONFIG_UNAVAILABLE");
+});
+
+test("主线 AI 推理独立于派发配置并禁用工具、MCP 和持久化", async t => {
+  const { runClaudeInference } = await import("../scripts/claude-inference.mjs");
+  const dir = await mkdtemp(join(tmpdir(), "ai-inference-cli-"));
+  const originalPath = process.env.PATH;
+  const entry = join(dir, "fixture.mjs");
+  const record = join(dir, "request.json");
+  await writeFile(entry, `import fs from 'node:fs'; let prompt=''; for await(const chunk of process.stdin) prompt+=chunk; fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),prompt})); console.log(JSON.stringify({subtype:'success',result:'ok',modelUsage:{fixture:{}},usage:{input_tokens:1}}));`);
+  if (process.platform === "win32") await writeFile(join(dir, "claude.cmd"), '@echo off\n"%dp0%/node.exe" "%dp0%/fixture.mjs" %*');
+  else await writeFile(join(dir, "claude"), `#!${process.execPath}\nimport './fixture.mjs';`, { mode: 0o700 });
+  process.env.PATH = dir;
+  t.after(async () => { process.env.PATH = originalPath; await rm(dir, { recursive: true, force: true }); });
+  assert.equal((await runClaudeInference({ profile: { model: "fixture", effort: "low" }, prompt: "bounded snapshot" })).text, "ok");
+  const request = JSON.parse(await readFile(record, "utf8"));
+  assert.equal(request.prompt, "bounded snapshot");
+  assert.notEqual(request.cwd, process.cwd());
+  for (const flag of ["--safe-mode", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]) assert.ok(request.args.includes(flag));
+  assert.equal(request.args[request.args.indexOf("--tools") + 1], "");
+  assert.deepEqual(JSON.parse(request.args[request.args.indexOf("--mcp-config") + 1]), { mcpServers: {} });
+  await assert.rejects(runClaudeInference({ profile: { model: "other", effort: "low" }, prompt: "bounded snapshot" }), /CLI_MODEL_MISMATCH/);
 });

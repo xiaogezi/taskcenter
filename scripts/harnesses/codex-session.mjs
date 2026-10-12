@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -50,37 +49,31 @@ export function defaultSessionsRoot() {
   return process.env.TASKCENTER_SESSIONS_ROOT || join(homedir(), ".codex", "sessions");
 }
 
+export function isSubagentSession(sessionId, agent, event = {}) {
+  // Claude provides agent_id on subagent hook events; Codex records its origin in session_meta.
+  if (agent === "claude") return typeof event.agent_id === "string" && Boolean(event.agent_id.trim());
+  if (agent !== "codex" || !sessionId) return false;
+  const path = findSessionPath(sessionId);
+  if (!path) return false;
+  let descriptor;
+  try {
+    descriptor = openSync(path, "r");
+    const buffer = Buffer.alloc(64 * 1024);
+    const bytes = readSync(descriptor, buffer, 0, buffer.length, 0);
+    const firstLine = buffer.subarray(0, bytes).toString("utf8").split("\n", 1)[0];
+    const item = JSON.parse(firstLine);
+    return item.type === "session_meta" && item.payload?.id === sessionId
+      && (item.payload.thread_source === "subagent" || Boolean(item.payload.source?.subagent));
+  } catch { return false; }
+  finally { if (descriptor !== undefined) closeSync(descriptor); }
+}
+
 export function findSessionPath(threadId, root = defaultSessionsRoot()) {
   const matches = collectFiles(
     root,
     (path) => path.endsWith(".jsonl") && path.includes(threadId),
   );
   return matches.sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)[0] || "";
-}
-
-export function directUserAuthorization(sessionPath, taskId, sessionId, taskCreatedAt, now = new Date().toISOString()) {
-  const ttlMs = 7_200_000;
-  const created = Date.parse(taskCreatedAt);
-  const current = Date.parse(now);
-  if (!sessionPath || !Number.isFinite(created) || !Number.isFinite(current)) return null;
-  let latest = null;
-  for (const line of readFileSync(sessionPath, "utf8").split(/\r?\n/)) {
-    if (!line) continue;
-    try {
-      const item = JSON.parse(line);
-      const timestamp = Date.parse(item.timestamp);
-      if (!Number.isFinite(timestamp) || timestamp < created || timestamp > current || current - timestamp >= ttlMs) continue;
-      const message = item.type === "event_msg" && item.payload?.type === "user_message" ? item.payload.message
-        : item.type === "response_item" && item.payload?.type === "message" && item.payload.role === "user"
-          ? (item.payload.content || []).map(part => part.text || "").join("") : "";
-      if (!/^(?:主模型直接执行吧|允许主模型直接执行|授权主模型直接执行)(?:[\s，。！!]|$)/.test(String(message).trim())) continue;
-      if (!latest || timestamp > latest.timestamp) latest = { timestamp, message: String(message) };
-    } catch { /* Ignore a partially written JSONL line. */ }
-  }
-  return latest ? {
-    fingerprint: createHash("sha256").update(`${taskId}:${sessionId}`).digest("hex"),
-    expiresAt: new Date(latest.timestamp + ttlMs).toISOString(),
-  } : null;
 }
 
 function collectFiles(root, predicate) {

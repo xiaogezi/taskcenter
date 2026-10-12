@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { taskTimeState } from "../app/task-time-state.mjs";
+import { isSubagentSession } from "./harnesses/codex-session.mjs";
 import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment } from "./governance-metrics.mjs";
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
@@ -34,6 +35,7 @@ const workspace = String(event.cwd || process.env.CLAUDE_PROJECT_DIR || process.
 let scheduledReadonly = scheduledReadonlyConfig();
 
 try {
+  if (isSubagentSession(sessionId, agent, event)) process.exit(0);
   if ((action === "pre-tool-use" || action === "scheduled-pre-tool-use") && isTrustedRecoveryCommand(event)) {
     console.log("TaskCenter 固定恢复命令放行");
     process.exit(0);
@@ -121,18 +123,6 @@ try {
       process.exit(0);
     }
     if (action === "scheduled-pre-tool-use") process.exit(0);
-    const reviewProfile = await readReviewProfile();
-    if (reviewProfile?.reviews?.length) {
-      const reviewTool = String(event.tool_name || "");
-      const reporting = ["taskcenter_task_review_report", "taskcenter_routing_result", "taskcenter_review_claim", "taskcenter_review_start", "taskcenter_review_finish"].some((name) => reviewTool.endsWith(name));
-      if (!reporting && !isReadOnlyInspection(event)) throw new Error("Reviewer Session 只允许确定性只读检查和 Review 报告；不得写代码、创建任务或调用执行器。");
-      console.log("TaskCenter 独立 Reviewer 只读通道通过；报告权限由服务端校验。");
-      process.exit(0);
-    }
-    if (/(?:^|__)taskcenter_(?:routing_select|routing_result|review_claim|review_start|review_finish|task_review_report)$/.test(String(event.tool_name || ""))) {
-      console.log("TaskCenter Review 路由通道放行；登记、任务和 lease 权限由服务端校验。");
-      process.exit(0);
-    }
     // A 404 means a pre-budget release, not permission to bypass its old gate.
     const prepared = await prepareCurrentTask();
     if (prepared) {
@@ -151,21 +141,9 @@ try {
       process.exit(0);
     }
     const task = await requireTask();
-    if (agent === "codex" && !task.delegation && isProjectExecution(event)) {
-      let active;
-      try {
-        active = await request("GET", `/routing/active?task_id=${encodeURIComponent(task.id)}&session_id=${encodeURIComponent(sessionId)}`);
-      } catch (error) {
-        // The healthy pre-deploy service does not expose this endpoint. Keep its existing task gate during rollout.
-        if (error.statusCode !== 404) throw error;
-      }
-      if (active && !(isDelegatedCliLaunch(event) ? active.cli : active.direct)) {
-        throw new Error("执行阶段缺少有效路由：先调用 taskcenter_routing_select；主模型直接执行须提供 direct_reason，原生执行器核对绑定的 route 与 claim。不回退 CLI。");
-      }
-    }
     await remindOverdueTask(task);
     await recordToolCall(task);
-    console.log(task.delegation ? `TaskCenter delegation 放行：${task.delegation.id} → ${task.id}` : "TaskCenter 任务门禁通过");
+    console.log("TaskCenter 任务门禁通过");
   } else {
     throw new Error(`未知 Hook 操作: ${action}`);
   }
@@ -762,7 +740,7 @@ async function isL0ReadOnlyInspection(payload) {
   if (!current || current.status !== "registered") return false;
   const tasks = await request("GET", "/tasks");
   const hasActiveTask = (tasks.tasks || []).some((task) => task.sessionId === sessionId && ["in_progress", "blocked", "planned"].includes(task.status));
-  return !hasActiveTask && !(await resolveCurrentDelegation())?.task;
+  return !hasActiveTask;
 }
 
 function isReadOnlyInspection(payload) {
@@ -776,21 +754,6 @@ function isReadOnlyInspection(payload) {
   if (!command) return false;
   const batch = inspectionBatch(command);
   return Boolean(batch?.every(({ words, heredoc }) => isReadOnlyCommand(words, heredoc, input.workdir || input.cwd || workspace)));
-}
-
-function isProjectExecution(payload) {
-  const name = String(payload.tool_name || payload.tool || payload.name || "");
-  if (["apply_patch", "Write", "Edit"].includes(name)) return true;
-  return ["Bash", "exec_command"].includes(name) && !isReadOnlyInspection(payload);
-}
-
-function isDelegatedCliLaunch(payload) {
-  const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
-  const command = String(input.cmd || input.command || payload.command || "").trim();
-  const match = /^node[ \t]+([A-Za-z0-9_./-]+)[ \t]+(?:--stdin|\/[^\s;&|`$]+\.json)$/.exec(command);
-  if (!match) return false;
-  const cwd = input.workdir || input.cwd || payload.cwd || workspace;
-  return canonicalExistingPath(resolveInputPath(match[1], cwd)) === canonicalExistingPath(resolve(projectRoot, "scripts/delegated-cli.mjs"));
 }
 
 function isReadOnlyCommand(words, heredoc, cwd = workspace) {
@@ -974,7 +937,7 @@ function isInteractiveExec(payload) {
     : {};
   const command = String(input.command || input.cmd || payload.command || "").trim();
   // tty 不是 Codex Bash Hook 的 canonical 字段，只把它作为其他客户端的附加信号。
-  if (input.tty === true) return !(isDelegatedCliLaunch(payload) && /[ \t]--stdin$/.test(command));
+  if (input.tty === true) return true;
   const batch = inspectionBatch(command);
   if (batch?.length === 1 && batch[0].heredoc) {
     const invocation = interpreterInvocation(batch[0].words.join(" "));
@@ -1140,17 +1103,6 @@ function samePath(left, right) {
 async function recordToolCall(task) {
   if (!event.tool_name && !event.tool && !event.name) return;
   try {
-    if (task.delegation) {
-      await request("POST", "/delegations/touch", {
-        delegation_id: task.delegation.id,
-        session_id: sessionId,
-        workspace,
-        tool_name: event.tool_name || event.tool || event.name,
-        tool_use_id: event.tool_use_id || event.call_id || "",
-        paths: delegationPaths(event),
-      });
-      return;
-    }
     await request("POST", "/task-events", {
       type: "tool.call",
       event_id: `hook-tool-${event.call_id || event.tool_use_id || `${sessionId}-${Date.now()}`}`,
@@ -1160,23 +1112,8 @@ async function recordToolCall(task) {
       tool_use_id: event.tool_use_id || event.call_id || "",
     });
   } catch (error) {
-    if (task.delegation) throw error;
     console.error(`TaskCenter Hook 警告：工具统计上报失败，已放行（${error.message}）`);
   }
-}
-
-function delegationPaths(payload) {
-  const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
-  const paths = [];
-  for (const key of ["path", "file_path", "filepath", "target_path", "output_path"]) {
-    if (typeof input[key] === "string" && input[key].trim()) paths.push(input[key].trim());
-  }
-  for (const key of ["paths", "file_paths"]) {
-    if (Array.isArray(input[key])) paths.push(...input[key].filter((item) => typeof item === "string"));
-  }
-  const patch = extractApplyPatch(payload);
-  for (const match of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/gm)) paths.push(match[1].trim());
-  return [...new Set(paths)].slice(0, 100);
 }
 
 async function remindOverdueTask(task) {
@@ -1238,7 +1175,7 @@ async function isGateAllowlistedSession() {
 }
 
 async function requireTask() {
-    if (preparedTask?.active_task) return { ...preparedTask.active_task, ...(preparedTask.delegation ? { delegation: preparedTask.delegation } : {}) };
+    if (preparedTask?.active_task) return preparedTask.active_task;
   const result = await request("GET", "/session-status");
   const current = Array.isArray(result.sessions)
     ? result.sessions.find((session) => session.sessionId === sessionId)
@@ -1251,9 +1188,7 @@ async function requireTask() {
   const rank = { in_progress: 3, blocked: 2, planned: 1 };
   const task = active.sort((left, right) => (rank[right.status] - rank[left.status]) || (Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || "")))[0];
   if (task) return task;
-  const delegated = await resolveCurrentDelegation();
-  if (delegated?.task && delegated?.delegation) return { ...delegated.task, delegation: delegated.delegation };
-  throw new Error("该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。当前 Session 无活跃任务或有效 delegation；实际执行、合并、验证或写入需调用 taskcenter_task_resume 接续同一交付，新的独立目标才创建任务。CLI 执行器应先领取 taskcenter_delegation_grant。");
+  throw new Error("该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。当前 Session 无活跃任务；实际执行、合并、验证或写入需调用 taskcenter_task_resume 接续同一交付，新的独立目标才创建任务。");
 }
 
 async function prepareCurrentTask() {
@@ -1268,11 +1203,6 @@ async function prepareCurrentTask() {
 }
 
 async function provideTaskPreparationContext() {
-  const reviewProfile = await readReviewProfile();
-  if (reviewProfile?.reviews?.length) {
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "当前 Session 是独立只读 Reviewer；复用已领取的 Review，不创建业务 Task。" } }));
-    return;
-  }
   const prepared = await prepareCurrentTask();
   if (prepared) {
     const continuation = !prepared.active_task && ["done_claimed", "verified"].includes(prepared.status)
@@ -1293,14 +1223,14 @@ async function provideTaskPreparationContext() {
       (task) => task.sessionId === sessionId && ["in_progress", "blocked", "planned"].includes(task.status),
     );
   }
-  if (activeTask || (await resolveCurrentDelegation())?.task) return;
+  if (activeTask) return;
   const registrationInstruction = current?.status === "registered"
     ? "当前 Session 已登记"
     : "先调用 taskcenter_session_register 登记当前真实 Session";
   const additionalContext = [
     `TaskCenter 任务准备提示：当前 Session 不在门禁豁免白名单且没有活跃正式任务；${registrationInstruction}。`,
     "如果本轮只做只读检查，可以直接继续。",
-    "如果本轮继续同一交付，调用 taskcenter_task_resume 接续原任务；新的独立目标才调用 taskcenter_task_begin。旧客户端可继续先登记再调用 taskcenter_task_create。如果是 CLI 派发执行器，应领取主 Agent 提供的 delegation，不要为普通 CLI Run 创建正式子任务。",
+    "如果本轮继续同一交付，调用 taskcenter_task_resume 接续原任务；新的独立目标才调用 taskcenter_task_begin。旧客户端可继续先登记再调用 taskcenter_task_create。",
     "不要先撞 PreToolUse 门禁，也不要要求用户手动创建任务、启动服务或批准提案。只有 TaskCenter MCP 确实不可用时，才限制为只读并报告 TASKCENTER_UNAVAILABLE。",
   ].join("\n");
   process.stdout.write(JSON.stringify({
@@ -1309,22 +1239,6 @@ async function provideTaskPreparationContext() {
       additionalContext,
     },
   }));
-}
-
-async function readReviewProfile() {
-  return request("GET", `/reviews/session?session_id=${encodeURIComponent(sessionId)}`).catch((error) => {
-    if (error.statusCode === 404) return null;
-    throw error;
-  });
-}
-
-async function resolveCurrentDelegation() {
-  try {
-    return await request("GET", `/delegations/resolve?session_id=${encodeURIComponent(sessionId)}&workspace=${encodeURIComponent(workspace)}`);
-  } catch (error) {
-    if (/接口不存在|\b404\b/.test(String(error.message || ""))) return null;
-    throw error;
-  }
 }
 
 async function request(method, path, body) {

@@ -20,7 +20,6 @@ import { randomUUID } from "node:crypto";
 import {
   DispatchError,
 } from "./dispatch-core.mjs";
-import { ModelRoleConfigError, modelManagementConfig, updateModelManagement, updateOptionalAstraPolicy } from "./model-role-config.mjs";
 import {
   defaultSessionsRoot,
 } from "./session-cli.mjs";
@@ -64,28 +63,6 @@ import {
   reconcileReflectionSessionSelection,
 } from "./reflection-engine.mjs";
 import { normalizeSessionAllowlist, readSessionAllowlist, sessionIdPattern, updateSessionAllowlist } from "./session-allowlist.mjs";
-import {
-  claimDelegation,
-  DelegationError,
-  delegationsPath,
-  grantDelegation,
-  listDelegations,
-  reportDelegation,
-  resolveDelegation,
-  revokeDelegation,
-  touchDelegation,
-} from "./delegation-store.mjs";
-import {
-  RoutingControlError,
-  routingControlPath,
-  routingHealth,
-  routingDecisions,
-  routingResult,
-  routingRoles,
-  routingSelect, activeExecutionRoute,
-  isReviewTaskClass, validateReviewRequest, claimReview, reportReview, reviewSessionRecords, reviewTaskRecords, routeForId,
-} from "./routing-control.mjs";
-import { prepareRoutingInput } from "./jev-routing.mjs";
 import { AiGovernanceError, aiActivity, createGovernanceRunner, governanceSnapshot } from "./ai-governance.mjs";
 import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.mjs";
 import { readRequestBudget } from "./request-budget.mjs";
@@ -193,7 +170,7 @@ const server = createServer(async (request, response) => {
       const heartbeat = inspectFile(watcherHeartbeatPath, true);
       const watcherFresh = heartbeat.readable && Date.now() - Date.parse(heartbeat.updatedAt) < 30_000;
       const memory = process.memoryUsage();
-      sendJson(response, 200, { ok: true, release: releaseInfo(), dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()), rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable, delegationsReadable: inspectFile(delegationsPath).readable, routingControlReadable: inspectFile(routingControlPath).readable }, metrics: { usage: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000), governance: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) }, routing: { models: routingHealth(), roles: routingRoles() }, watcher: { ...heartbeat, healthy: watcherFresh } });
+      sendJson(response, 200, { ok: true, release: releaseInfo(), dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()), rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable }, metrics: { usage: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000), governance: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) }, watcher: { ...heartbeat, healthy: watcherFresh } });
       return;
     }
     if (request.method === "POST" && request.url === "/sync") {
@@ -203,14 +180,7 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && /^\/ai\/activity(?:\?|$)/.test(request.url)) {
       const params = new URL(request.url, "http://localhost").searchParams;
-      const tasks = loadVisibleTasks(), routes = [];
-      let before = "";
-      do {
-        const page = routingDecisions({ limit: 100, before, tasks });
-        routes.push(...page.routes);
-        before = page.next_cursor;
-      } while (before);
-      sendJson(response, 200, await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, routes, delegations: listDelegations(), params, running: aiGovernance.running }));
+      sendJson(response, 200, await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, params, running: aiGovernance.running }));
       return;
     }
     if (request.method === "POST" && request.url === "/ai/analyze") {
@@ -236,7 +206,7 @@ const server = createServer(async (request, response) => {
       const params = new URL(request.url, "http://localhost").searchParams;
       const indexPath = resolve(process.env.TASKCENTER_USAGE_INDEX_PATH || join(dirname(usageReportPath), "usage-index.json"));
       const filtered = ["project", "session", "task"].some((key) => params.has(key));
-      sendJson(response, 200, queryUsageReport({ report: currentUsageReport(), index: filtered ? readSnapshot(indexPath, null) : null, tasks: filtered ? withDelegations(loadVisibleTasks()) : [], params }));
+      sendJson(response, 200, queryUsageReport({ report: currentUsageReport(), index: filtered ? readSnapshot(indexPath, null) : null, tasks: filtered ? loadVisibleTasks() : [], params }));
       return;
     }
     if (request.method === "POST" && ["/session-switch/prepare", "/session-switch/confirm"].includes(request.url)) {
@@ -246,7 +216,7 @@ const server = createServer(async (request, response) => {
         const tasks = loadTasks();
         const task = tasks.find((item) => item.id === id && item.sessionId === body.session_id);
         if (tasks.some((item) => item.id === body.next_task_id)) throw new TaskLedgerError(409, "SWITCH_TARGET_EXISTS");
-        return switchCheckpoint(task, tasks, loadSessionRegistry()[body.session_id], listDelegations(id));
+        return switchCheckpoint(task, tasks, loadSessionRegistry()[body.session_id], []);
       };
       if (request.url.endsWith("/prepare")) {
         sendJson(response, 200, { accepted: true, ...await prepareSessionSwitch(body, sessionsRoot, checkpoint) });
@@ -284,9 +254,6 @@ const server = createServer(async (request, response) => {
       const reopen = ["done_claimed", "verified"].includes(task.status);
       if (task.sessionId !== body.session_id || reopen) {
         if (task.sessionId !== body.expected_session_id) throw new TaskLedgerError(409, "SESSION_BINDING_CHANGED：请重新读取交接状态。");
-        if (task.sessionId !== body.session_id && listDelegations(task.id).some((item) => !item.expired && ["issued", "active"].includes(item.status))) {
-          throw new TaskLedgerError(409, "ACTIVE_DELEGATION_CONFLICT：请先结束或撤销原任务委派，再接手。");
-        }
         if (loadVisibleTasks().some((item) => item.id !== task.id && item.sessionId === body.session_id && ["planned", "in_progress", "blocked"].includes(item.status))) throw new TaskLedgerError(409, "ACTIVE_TASK_CONFLICT：目标 Session 已有其他活跃任务。");
         recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id, ...((reopen || task.sessionId !== body.session_id) ? { status: "in_progress" } : {}) }, { requireRegistered: true, authorizedResume: true });
       }
@@ -303,15 +270,12 @@ const server = createServer(async (request, response) => {
       const registry = loadSessionRegistry()[sessionId];
       if (!registry) throw new TaskLedgerError(409, "当前 Session 尚未登记。");
       const tasks = loadVisibleTasks().filter((task) => task.sessionId === sessionId).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-      const delegation = resolveDelegation(sessionId, params.get("workspace") || registry.workspace);
-      const delegatedTask = delegation ? loadTasks().find((item) => item.id === delegation.taskId && ["planned", "in_progress", "blocked"].includes(item.status)) : null;
-      const activeTask = tasks.find((item) => ["planned", "in_progress", "blocked"].includes(item.status)) || delegatedTask;
+      const activeTask = tasks.find((item) => ["planned", "in_progress", "blocked"].includes(item.status));
       const task = activeTask || tasks[0] || null;
       const budget = await readRequestBudget(sessionId, sessionsRoot, task);
       sendJson(response, 200, boundedResponse({
         session_id: sessionId, task_id: task?.id || null, status: task?.status || null,
         active_task: activeTask ? Object.fromEntries(["id", "sessionId", "status", "dueAt", "estimatedEffortMs", "activeDurationMs", "activeStartedAt"].map((key) => [key, activeTask[key]])) : null,
-        delegation: delegatedTask && !tasks.includes(activeTask) ? { id: delegation.id } : null,
         gate_allowlisted: readSessionAllowlist(gateSessionAllowlistPath).threadIds?.includes(sessionId) || false,
         scheduled_readonly: registry.scheduledReadonly || null,
         contract: task ? boundedResponse({ goal: task.goal, scope: task.scope, non_goals: task.nonGoals, acceptance_criteria: task.acceptanceCriteria, verification_plan: task.verificationPlan, subject: task.currentSubject, next_action: task.nextAction }, { maxBytes: budget.handoff_recommended || !activeTask ? 800 : 2600 }) : null,
@@ -403,7 +367,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && new URL(request.url, "http://localhost").pathname === "/gate-denials") {
       const query = new URL(request.url, "http://localhost").searchParams;
       const limit = query.has("limit") ? Number(query.get("limit")) : 20;
-      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new RoutingControlError(400, "拒绝记录条数须为 1–50。");
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new TaskLedgerError(400, "拒绝记录条数须为 1–50。");
       sendJson(response, 200, gateDenialSnapshot(gateDenialsPath, { limit }));
       return;
     }
@@ -533,12 +497,12 @@ const server = createServer(async (request, response) => {
         const taskId = url.searchParams.get("task_id") || "";
         const sessionId = url.searchParams.get("session_id") || "";
         if (taskId || sessionId) {
-          const matching = withDelegations(tasks.filter(task => (!taskId || task.id === taskId) && (!sessionId || task.sessionId === sessionId)));
+          const matching = tasks.filter(task => (!taskId || task.id === taskId) && (!sessionId || task.sessionId === sessionId));
           sendJson(response, 200, { tasks: url.searchParams.get("view") === "summary" ? matching.map(taskSummary) : matching });
           return;
         }
         if (!url.searchParams.size) {
-          sendJson(response, 200, { tasks: withDelegations(tasks) });
+          sendJson(response, 200, { tasks: tasks });
           return;
         }
         const sessionRegistry = loadSessionRegistry();
@@ -555,7 +519,7 @@ const server = createServer(async (request, response) => {
         const page = Math.max(1, Number.parseInt(url.searchParams.get("page") || "1", 10) || 1);
         const pageSize = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("page_size") || "40", 10) || 40));
         const start = (page - 1) * pageSize;
-        const pageTasks = withDelegations(filteredTasks.slice(start, start + pageSize));
+        const pageTasks = filteredTasks.slice(start, start + pageSize);
         const actionCounts = Object.fromEntries(["planned", "in_progress", "completed", "attention", "awaiting_verification", "awaiting_acceptance", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
         actionCounts.all = projectTasks.length;
         const projects = new Map();
@@ -579,7 +543,6 @@ const server = createServer(async (request, response) => {
       const advice = taskReuseCheck({ ...body, project_id: identity.projectIdentity.project_id }, {
         tasks: loadVisibleTasks(),
         sessionRegistry: identity.registry,
-        delegations: listDelegations(),
         canonicalSessionId,
         projectIdentity: identity.projectIdentity,
       });
@@ -608,246 +571,6 @@ const server = createServer(async (request, response) => {
       };
       const reuseDecisions = loadTaskReuseDecisions(decisionFilters);
       sendJson(response, 200, { decisions: reuseDecisions, summary: summarizeTaskReuseDecisions(reuseDecisions) });
-      return;
-    }
-    if (request.method === "GET" && request.url === "/routing/health") {
-      sendJson(response, 200, { models: routingHealth(), roles: routingRoles() });
-      return;
-    }
-    if (request.method === "GET" && request.url?.startsWith("/routing/active?")) {
-      const query = new URL(request.url, "http://localhost").searchParams;
-      const task = loadTasks().find((item) => item.id === query.get("task_id"));
-      if (!task || canonicalSessionId(task.sessionId) !== canonicalSessionId(query.get("session_id") || "")) {
-        throw new RoutingControlError(403, "当前 Session 无权查询该任务路由。");
-      }
-      sendJson(response, 200, activeExecutionRoute(task.id));
-      return;
-    }
-    if (request.method === "GET" && request.url === "/routing/models") {
-      sendJson(response, 200, modelManagementConfig());
-      return;
-    }
-    if (request.method === "GET" && new URL(request.url, "http://localhost").pathname === "/routing/decisions") {
-      const query = new URL(request.url, "http://localhost").searchParams;
-      const tasks = loadVisibleTasks();
-      const log = routingDecisions({ limit: Number(query.get("limit") || 20), before: query.get("before") || "", taskId: query.get("task_id") || "", tasks });
-      const titles = new Map(tasks.map(task => [task.id, task.title]));
-      sendJson(response, 200, { ...log, routes: log.routes.map(route => ({ ...route, task_title: titles.get(route.task_id) || route.task_id })) });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/routing/models") {
-      verifyTaskRequest(request);
-      const config = updateModelManagement(await readJsonBody(request));
-      sendJson(response, 200, { accepted: true, ...config });
-      return;
-    }
-    if (request.method === "GET" && request.url === "/routing/optional-astra-policy") {
-      const usage = currentUsageReport().rate_limits?.primary?.used_percent;
-      const policy = routingRoles().optional_astra_policy;
-      sendJson(response, 200, { policy, used_percent: Number.isFinite(Number(usage)) ? Number(usage) : null, optional_enhancement_allowed: Number.isFinite(Number(usage)) && Number(usage) <= policy.threshold_percent });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/routing/optional-astra-policy") {
-      verifyTaskRequest(request);
-      const body = await readJsonBody(request);
-      const policy = updateOptionalAstraPolicy(body, "local-ui");
-      sendJson(response, 200, { accepted: true, policy });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/routing/select") {
-      verifyTaskRequest(request);
-      const body = await readJsonBody(request);
-      const task = loadTasks().find((item) => item.id === body.task_id);
-      const reviewContext = isReviewTaskClass(body.task_class)
-        ? validateReviewRequest(body, task, loadSessionRegistry(), canonicalSessionId) : null;
-      if (reviewContext) verifyBoundMcpRequest(request);
-      if (!reviewContext && (!task || !["planned", "in_progress", "blocked"].includes(task.status))) throw new RoutingControlError(409, "routing_select 要求存在活跃正式任务。");
-
-      const sessionId = canonicalSessionId(task.sessionId);
-      const sessionModel = loadSessionRegistry()[sessionId]?.model;
-      const orchestratorModel = sessionModel && sessionModel !== "unknown"
-        ? sessionModel
-        : task.model && task.model !== "unknown" ? task.model : "";
-      if (!orchestratorModel) throw new RoutingControlError(409, "任务所属 Session 未登记当前主模型；请重新登记 Session 后再选择路由。");
-      const executionModelPolicy = task.executionModelPolicy || { mode: "auto" };
-      if (executionModelPolicy.mode === "quota_preferred" && body.preferred_model && body.preferred_model !== executionModelPolicy.preferred_model) {
-        throw new RoutingControlError(409, "routing_select 的 preferred_model 与任务持久化策略不一致。");
-      }
-      // 通过统一入口完成 direct_reason 门禁、Jev 评估与应用；伪造的 body.jev_decision 在此被剥离。
-      // Direct takeover uses the existing task authority, not a one-shot transcript phrase.
-      delete body.direct_authorization_fingerprint;
-      delete body.direct_authorization_expires_at;
-      if (body.channel === "direct") {
-        verifyBoundMcpRequest(request);
-        // Older healthy MCP runtimes omit caller session for ordinary routing until Codex restarts.
-        if (body.session_id && canonicalSessionId(body.session_id) !== sessionId) throw new RoutingControlError(403, "只有任务所属 Session 可申请主模型直接执行。", "DIRECT_AUTHORIZATION_DENIED");
-      }
-      const prepared = await prepareRoutingInput(body, task, { executionModelPolicy });
-      const quotaSnapshot = executionModelPolicy.quota_limit_id
-        ? currentUsageReport().rate_limits?.by_limit_id?.[executionModelPolicy.quota_limit_id] || null
-        : null;
-      const result = routingSelect({ ...prepared.input, session_id: sessionId, review_context: reviewContext, orchestrator_model: orchestratorModel, execution_model_policy: executionModelPolicy, quota_snapshot: quotaSnapshot }, undefined, prepared.jevDecision);
-      recordRoutingAudit(result.auditEvents, task);
-      sendJson(response, result.idempotent ? 200 : 201, { accepted: true, ...result, auditEvents: undefined });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/routing/result") {
-      verifyTaskRequest(request);
-      const body = await readJsonBody(request);
-      const route = routeForId(body.route_id);
-      if (route?.reviewRecord) {
-        verifyBoundMcpRequest(request);
-        const caller = canonicalSessionId(body.session_id || "");
-        if (!loadSessionRegistry()[caller]) throw new RoutingControlError(409, "当前 Session 尚未登记。", "SESSION_NOT_REGISTERED");
-        if (![route.reviewRecord.requester_session_id, route.reviewRecord.reviewer_session_id].includes(caller)) throw new RoutingControlError(403, "无权释放该 Review lease。", "REVIEW_PERMISSION_DENIED");
-      }
-      const result = routingResult(body);
-      const task = loadTasks().find((item) => item.id === result.route.task_id);
-      if (!task) throw new RoutingControlError(404, "路由关联任务不存在。");
-      recordRoutingAudit(result.auditEvents, task);
-      sendJson(response, 200, { accepted: true, ...result, auditEvents: undefined });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/reviews/start") {
-      verifyBoundMcpRequest(request);
-      const body = await readJsonBody(request);
-      const sessionId = canonicalSessionId(body.session_id || "");
-      const session = loadSessionRegistry()[sessionId];
-      if (body.manual) {
-        if (!session) throw new RoutingControlError(409, "请先登记真实 Reviewer Session、模型与工作区。", "SESSION_NOT_REGISTERED");
-        if (!body.route_id) {
-          const records = reviewSessionRecords(sessionId).filter((record) => record.status === "running" || (record.attestation_id && routeForId(record.route_id)?.status === "leased"));
-          if (records.length !== 1) throw new RoutingControlError(409, "没有唯一可恢复的审查授权；请提供所有者授予的 route_id。", "REVIEW_ROUTE_REQUIRED");
-          body.route_id = records[0].route_id;
-        }
-      }
-      const route = routeForId(body.route_id);
-      const task = loadTasks().find((item) => item.id === route?.taskId);
-      if (body.manual) {
-        const resuming = route?.reviewRecord?.reviewer_session_id === sessionId;
-        if (resuming && !body.claim_token) body.claim_token = route.reviewRecord.claim_token;
-        if (!resuming && body.sandbox !== "read-only") throw new RoutingControlError(403, "首次领取必须声明实际宿主为 read-only 沙箱。", "REVIEW_PERMISSION_DENIED");
-        body.workspace = session.workspace;
-        body.model = session.model;
-        body.sandbox = "read-only";
-      }
-      if (!task || body.claim_token !== route?.reviewRecord?.claim_token) throw new RoutingControlError(403, "Review capability 不匹配。", "REVIEW_PERMISSION_DENIED");
-      if (resolve(body.workspace || "") !== resolve(task.workspace || "") || body.model !== route.selectedModel || body.sandbox !== "read-only") throw new RoutingControlError(403, "Reviewer 启动配置与 Task 不匹配。", "REVIEW_PERMISSION_DENIED");
-      // Bootstrap uses the MCP host identity. Claim retains all lease checks.
-      if (!sessionId || sessionId === canonicalSessionId(task.sessionId) || (task.sessionHistory || []).some((id) => canonicalSessionId(id) === sessionId)) throw new RoutingControlError(403, "Reviewer 必须使用独立 Session。", "REVIEWER_NOT_INDEPENDENT");
-      const preview = JSON.parse(readFileSync(route.reviewArtifacts.bundle.ref, "utf8"));
-      if (!Array.isArray(preview.reviewable_files) || preview.reviewable_files.some((file) => typeof file.path !== "string")) throw new RoutingControlError(400, "Managed Review 需要 OCR JSON preview。", "REVIEW_ARTIFACTS_INCOMPLETE");
-      if (!body.manual) recordTaskEvent({ type: "session.register", session_id: sessionId, workspace: body.workspace, model: body.model, agent: "codex", provider: "openai" }, { requireRegistered: true });
-      const record = claimReview(body, task, loadSessionRegistry(), canonicalSessionId);
-      const reviewer = { type: "agent", id: sessionId, session_id: sessionId, provider: body.manual ? (session.provider || "unknown") : "openai" };
-      const cycleId = `managed-${route.id}`;
-      let cycle = task.reviewCycles?.find((item) => item.cycle_id === cycleId);
-      if (!cycle) {
-        const result = recordTaskEvent({ type: "review_cycle.reported", task_id: task.id, session_id: task.sessionId, review_cycle: { cycle_id: cycleId, subject_ref: record.subject_ref, reviewer, model: route.selectedModel, review_scope: "full", phase: "reviewing", wait_reason: body.manual ? "手动 Reviewer 授权接续" : `CLI fallback: ${String(body.native_unavailable_reason || "").slice(0, 400)}` } }, { requireRegistered: true });
-        cycle = result.task.reviewCycles.find((item) => item.cycle_id === cycleId);
-      }
-      const reported = task.reviewAttestations?.find((item) => item.route_id === route.id);
-      sendJson(response, 200, { accepted: true, context: { route_id: route.id, task_id: task.id, reviewer, subject_ref: record.subject_ref, review_artifacts: route.reviewArtifacts, cycle_id: cycle.cycle_id, cycle_number: cycle.cycle_number, files: preview.reviewable_files.map((file) => file.path), ...(reported ? { report_observed_at: reported.observed_at } : {}) } });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/reviews/claim") {
-      verifyBoundMcpRequest(request);
-      const body = await readJsonBody(request);
-      const route = routeForId(body.route_id);
-      const task = loadTasks().find((item) => item.id === route?.taskId);
-      sendJson(response, 200, { accepted: true, review_record: claimReview(body, task, loadSessionRegistry(), canonicalSessionId) });
-      return;
-    }
-    if (request.method === "GET" && request.url?.startsWith("/reviews/session?")) {
-      const url = new URL(request.url, `http://${host}:${port}`);
-      sendJson(response, 200, { reviews: reviewSessionRecords(canonicalSessionId(url.searchParams.get("session_id") || "")) });
-      return;
-    }
-    const delegationResolve = request.method === "GET" ? request.url?.match(/^\/delegations\/resolve\?session_id=([^&]+)&workspace=(.+)$/) : null;
-    if (delegationResolve) {
-      const sessionId = decodeURIComponent(delegationResolve[1]);
-      const workspace = decodeURIComponent(delegationResolve[2]);
-      const delegation = resolveDelegation(sessionId, workspace);
-      const task = delegation ? loadTasks().find((item) => item.id === delegation.taskId) : null;
-      const active = Boolean(task && ["planned", "in_progress", "blocked"].includes(task.status));
-      sendJson(response, 200, { delegation: active ? delegation : null, task: active ? task : null });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/delegations/grant") {
-      verifyTaskRequest(request);
-      const body = await readJsonBody(request);
-      const task = loadTasks().find((item) => item.id === body.task_id);
-      const parentSession = getSessionStatuses(availableSessionIds(), loadVisibleTasks()).find((item) => item.sessionId === body.parent_session_id);
-      if (!parentSession || parentSession.status !== "registered") throw new DelegationError(409, "主任务 Session 必须已登记。");
-      if (routingRoles().executor.dispatch_channel === "native" && body.channel !== "native") {
-        throw new DelegationError(409, "CLI_DISPATCH_DISABLED：普通执行仅允许原生会话授权。");
-      }
-      if (body.channel === "native") {
-        // 原生委派必须绑定一条有效的 native 路由：canonical 模型、任务与租约全部来自该路由。
-        const route = routeForId(body.route_id || "");
-        if (!route || route.status !== "leased" || Date.parse(route.expiresAt) <= Date.now()
-          || route.channel !== "native" || !route.nativeModel || route.taskId !== body.task_id
-          || route.selectedModel !== body.executor_model) {
-          throw new DelegationError(409, "NATIVE_ROUTE_MISMATCH：native delegation 需要与授权一致且有效的 native 路由。");
-        }
-      }
-      const result = grantDelegation(body, task ? { ...task, workspace: task.workspace || parentSession.workspace } : task);
-      sendJson(response, result.idempotent ? 200 : 201, { accepted: true, ...result });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/delegations/claim") {
-      verifyTaskRequest(request);
-      const body = await readJsonBody(request);
-      const session = getSessionStatuses(availableSessionIds(), loadVisibleTasks()).find((item) => item.sessionId === body.session_id);
-      const grant = listDelegations().find(item => item.id === body.delegation_id);
-      if (grant?.channel === "native") {
-        const route = routeForId(grant.routeId);
-        const parentTask = loadTasks().find((item) => item.id === grant.taskId);
-        if (!route || route.status !== "leased" || !route.available || Date.parse(route.expiresAt) <= Date.now()
-          || route.channel !== "native" || !route.nativeModel || route.taskId !== grant.taskId || route.selectedModel !== grant.executorModel
-          || (body.route_id && body.route_id !== grant.routeId) || (body.executor_model && body.executor_model !== grant.executorModel)
-          || session?.model !== route.nativeModel || session?.agent !== "codex"
-          || canonicalSessionId(body.session_id) === canonicalSessionId(grant.parentSessionId)
-          || !parentTask || !["planned", "in_progress", "blocked"].includes(parentTask.status)) {
-          throw new DelegationError(409, "NATIVE_ROUTE_MISMATCH：领取者必须是与有效绑定路由型号一致的独立 Codex Session。");
-        }
-      } else if (body.route_id) {
-        const route = routeForId(body.route_id);
-        const leaseInvalid = !route || route.status !== "leased" || Date.parse(route.expiresAt) <= Date.now()
-          || route.taskId !== grant?.taskId || route.selectedModel !== grant?.executorModel || route.selectedModel !== body.executor_model;
-        if (leaseInvalid || route?.channel !== "cli" || session?.model !== route?.selectedModel || (route?.harness && route?.harness !== session?.agent)) {
-          throw new DelegationError(409, "CLI_ROUTE_MISMATCH：需要与授权一致且有效的 CLI 路由。");
-        }
-      }
-      const result = claimDelegation(body, session);
-      sendJson(response, 200, { accepted: true, ...result });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/delegations/report") {
-      verifyTaskRequest(request);
-      const body = await readJsonBody(request);
-      const result = reportDelegation(body);
-      sendJson(response, 200, { accepted: true, ...result });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/delegations/touch") {
-      verifyTaskRequest(request);
-      const body = await readJsonBody(request);
-      const grant = listDelegations().find((item) => item.id === body.delegation_id);
-      if (grant?.channel === "native") {
-        const route = routeForId(grant.routeId);
-        if (!route || route.channel !== "native" || route.status !== "leased" || !route.available || Date.parse(route.expiresAt) <= Date.now()
-          || route.taskId !== grant.taskId || route.selectedModel !== grant.executorModel) {
-          throw new DelegationError(409, "NATIVE_ROUTE_MISMATCH：原生执行路由已结束或过期，不能继续使用授权。");
-        }
-      }
-      sendJson(response, 200, { accepted: true, ...touchDelegation(body) });
-      return;
-    }
-    if (request.method === "POST" && request.url === "/delegations/revoke") {
-      verifyTaskRequest(request);
-      const body = await readJsonBody(request);
-      sendJson(response, 200, { accepted: true, ...revokeDelegation(body) });
       return;
     }
     if (request.method === "GET" && request.url === "/reflections") {
@@ -933,13 +656,7 @@ const server = createServer(async (request, response) => {
       const session = loadSessionRegistry()[task.sessionId] || {};
       const workspace = task.workspace || session.workspace || "";
       const tokenUsage = (currentUsageReport().lifetime?.byTask || []).find((item) => item.id === task.id) || null;
-      sendJson(response, 200, { task: taskPresentation({ ...session, ...withDelegations([task])[0], workspace, tokenUsage }) });
-      return;
-    }
-    const taskReviewsMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/reviews$/) : null;
-    if (taskReviewsMatch) {
-      if (!loadTasks().some((task) => task.id === taskReviewsMatch[1])) throw new RoutingControlError(404, "审查任务不存在。", "TASK_NOT_FOUND");
-      sendJson(response, 200, { reviews: reviewTaskRecords(taskReviewsMatch[1]) });
+      sendJson(response, 200, { task: taskPresentation({ ...session, ...task, workspace, tokenUsage }) });
       return;
     }
     const taskEventsMatch = request.method === "GET" ? request.url?.match(/^\/tasks\/([A-Za-z0-9._-]+)\/events(?:\?limit=(\d+))?$/) : null;
@@ -1063,23 +780,7 @@ const server = createServer(async (request, response) => {
         throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
       }
       const sessionIds = availableSessionIds();
-      const commitEvent = (authorizedReviewLease = false) => recordTaskEvent(body, {
-        ...(reconcileLiveSessions ? { availableSessionIds: sessionIds } : {}),
-        requireRegistered: true,
-        authorizedReviewLease,
-      });
-      let result;
-      if (body.type === "review.reported" && body.review_attestation?.route_id) {
-        verifyBoundMcpRequest(request);
-        const task = loadTasks().find((item) => item.id === body.task_id);
-        const reported = task?.reviewAttestations?.find((item) => item.id === body.review_attestation.id && item.route_id === body.review_attestation.route_id);
-        // Older MCP clients regenerate this timestamp on retry; keep the immutable first report time.
-        if (reported) body.review_attestation.observed_at = reported.observed_at;
-        result = reportReview(body, task, () => commitEvent(true), canonicalSessionId);
-      } else {
-        if (body.type === "review.reported" && reviewSessionRecords(canonicalSessionId(body.session_id || "")).length) throw new RoutingControlError(403, "OCR Reviewer 必须绑定领取的 route_id。", "REVIEW_PERMISSION_DENIED");
-        result = commitEvent();
-      }
+      const result = recordTaskEvent(body, { ...(reconcileLiveSessions ? { availableSessionIds: sessionIds } : {}), requireRegistered: true });
       // 本地账本事件幂等不等于外部同步已成功。重复投递仍使用同一派生 event_id
       // 重试 Context MCP，由 Context 侧幂等键消除已成功的副作用并补偿超时/失败。
       const contextSync = await syncContextEvent(result.event, result.task);
@@ -1219,7 +920,7 @@ const server = createServer(async (request, response) => {
     }
     sendJson(response, 404, { error: "接口不存在。" });
   } catch (error) {
-    const known = error instanceof AiGovernanceError || error instanceof SessionSwitchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof DelegationError || error instanceof RoutingControlError || error instanceof TaskReuseAdvisorError || error instanceof ModelRoleConfigError || error instanceof ContextManagementPilotError;
+    const known = error instanceof AiGovernanceError || error instanceof SessionSwitchError || error instanceof DispatchError || error instanceof TaskLedgerError || error instanceof TaskReuseAdvisorError || error instanceof ContextManagementPilotError;
     const statusCode = known ? error.statusCode : 500;
     if (!known) {
       console.error("TaskCenter control error:", safeError(error));
@@ -1230,18 +931,6 @@ const server = createServer(async (request, response) => {
     });
   }
 });
-function recordRoutingAudit(events, task) {
-  for (const event of events || []) {
-    recordTaskEvent({
-      ...event,
-      session_id: task.sessionId,
-      agent: task.agent,
-      provider: task.provider,
-      model: task.model,
-      workspace: task.workspace,
-    });
-  }
-}
 
 function currentUsageReport() {
   return readSnapshot(usageReportPath, emptyUsageReport());
@@ -1268,24 +957,10 @@ function emptyUsageReport(now = Date.now()) {
   return { generatedAt, windows: { "5h": window("5h", 18_000_000), "24h": window("24h", 86_400_000), "7d": window("7d", 604_800_000) }, lifetime: { attribution: "estimated", method: "last_token_usage_by_task_lifecycle", bySession: [], byTask: [], totals: { id: "all", usage: { input: 0, cachedInput: 0, output: 0, reasoning: 0 }, totalTokens: 0, count: 0, attribution: "estimated" }, attributedTokenRatio: 0, missingTimestampEvents: 0 }, warnings: [], alerts: [], overall: { estimatedCredits: null, creditsEstimation: "unestimable", modelContinuations: 0, input: { average: null, p50: null, p95: null }, usage: { input: 0, cachedInput: 0, output: 0 } }, source: { mode: "snapshot_pending" } };
 }
 
-function withDelegations(tasks) {
-  const byTask = new Map();
-  for (const delegation of listDelegations()) {
-    const list = byTask.get(delegation.taskId) || [];
-    list.push(delegation);
-    byTask.set(delegation.taskId, list);
-  }
-  return tasks.map((task) => ({ ...task, cliRuns: byTask.get(task.id) || [] }));
-}
-
 function taskSummary(task) {
   const summary = { ...task };
   for (const key of ["requirementResults", "verificationClaims", "reviewAttestations", "diagnosticObservations", "acceptanceRecords", "subjectHistory", "phaseEvents", "evidence", "changedFiles", "tests"]) delete summary[key];
-  return { ...summary, estimateHistory: (task.estimateHistory || []).slice(-3), routingHistory: (task.routingHistory || []).slice(-3), cliRuns: (task.cliRuns || []).map(compactDelegationRun) };
-}
-
-function compactDelegationRun(run) {
-  return Object.fromEntries(["id", "status", "runStatus", "runStatusAt", "delegateSessionId", "executorModel", "scope", "toolCalls", "claimedAt", "lastObservedAt", "completedAt", "error"].flatMap((key) => run[key] === undefined ? [] : [[key, run[key]]]));
+  return { ...summary, estimateHistory: (task.estimateHistory || []).slice(-3) };
 }
 
 function metricSnapshotStatus(snapshotPath, healthPath, maxAgeMs) {

@@ -11,7 +11,6 @@ export const PHASES = [
 export const PHASE_TRANSITIONS = ["started", "paused", "resumed", "finished"];
 export const ACTIVITY_SOURCES = [
   "agent",
-  "delegated_executor",
   "review_cycle",
   "build_wait",
   "external_wait",
@@ -61,12 +60,7 @@ export function validatePhaseEvent(event, { taskId, previousEvents = [], reviewC
   if (taskId !== undefined && String(event.task_id) !== String(taskId)) fail("跨任务阶段事件。", 409);
   const occurredAt = Date.parse(event.occurred_at);
   if (!Number.isFinite(occurredAt)) fail("occurred_at 必须是有效 ISO 时间。");
-  if (event.activity_source === "delegated_executor" && !event.delegation_id) {
-    fail("delegated_executor 阶段事件必须提供 delegation_id。");
-  }
-  if (event.delegation_id && event.activity_source !== "delegated_executor") {
-    fail("delegation_id 只能用于 delegated_executor 活动来源。", 409);
-  }
+  if (event.delegation_id) fail("委派阶段事件已退役。", 400);
   if (event.activity_source === "review_cycle" && !event.review_cycle_id) {
     fail("review_cycle 阶段事件必须提供 review_cycle_id。");
   }

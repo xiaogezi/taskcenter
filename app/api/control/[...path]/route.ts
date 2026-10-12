@@ -3,7 +3,7 @@ import { controlProxyTarget } from "@/lib/control-proxy.mjs";
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
-  const requiresSameOrigin = path[0] === "ai" || (path[0] === "routing" && path[1] === "models") || (path[0] === "tasks" && path.at(-1) === "actions");
+  const requiresSameOrigin = path[0] === "ai" || (path[0] === "tasks" && path.at(-1) === "actions");
   if (request.method === "POST" && requiresSameOrigin && request.headers.get("origin") !== new URL(request.url).origin) {
     return NextResponse.json({ error: "操作必须来自当前工作台页面。" }, { status: 403 });
   }

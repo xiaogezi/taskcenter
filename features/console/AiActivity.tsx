@@ -5,7 +5,7 @@ type Request = <T>(path: string, init?: RequestInit) => Promise<T>;
 type Snapshot = { input_hash: string; references: Array<{ id: string; text: string }>; scope: string; truncated: boolean };
 type Row = { id: string; run_id?: string; source: string; at: string; task_id?: string; title: string; model: string; status: string; summary?: string; duration_ms?: number; usage?: Record<string, unknown>; snapshot?: Snapshot; input_hash?: string; prompt_version?: string; error?: string; fallback_reason?: string; result?: Record<string, unknown> };
 type Activity = { rows: Row[]; running: boolean; warnings: string[]; coverage: string; next_cursor?: string };
-const sources: Record<string, string> = { governance: "治理分析", jev: "Jev 判断", routing: "执行路由", executor: "执行器回执" };
+const sources: Record<string, string> = { governance: "治理分析", jev: "Jev 判断" };
 const statuses: Record<string, string> = { degraded: "规则降级", started: "已启动", succeeded: "成功", completed: "完成", failed: "失败", skipped: "跳过", unknown: "未知", issued: "授权已签发", leased: "路由已选择", active: "运行中", expired: "过期", cancelled: "取消", revoked: "撤销", actual_route: "实际路由" };
 
 export function AiActivity({ request }: { request: Request }) {
@@ -44,7 +44,7 @@ export function AiActivity({ request }: { request: Request }) {
     <p className="console-toolbar"><label>来源 <select value={source} onChange={event => { setSource(event.target.value); setBefore(""); }}><option value="">全部 AI 行为</option>{Object.entries(sources).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><span>{activity?.coverage}</span></p>{activity?.warnings.map(warning => <p role="alert" key={warning}>{warning}</p>)}
     <div className="ai-timeline">{rows.map(row => <article className={`console-card ai-event ${row.status === "failed" ? "ai-failed" : ""}`} key={row.id}>
       <div className="ai-event-heading"><strong>{sources[row.source]} · {row.title}</strong><span>{statuses[row.status] || row.status}</span></div><p><time dateTime={row.at}>{new Date(row.at).toLocaleString("zh-CN")}</time> · {row.model}{typeof row.duration_ms === "number" ? ` · ${(row.duration_ms / 1000).toFixed(2)} 秒` : " · 耗时未知"}</p><p>{row.task_id && <a href={`/tasks?task=${encodeURIComponent(row.task_id)}`}>{row.task_id}</a>} · {row.summary}</p>
-      {row.source === "jev" && row.result && <div className="ai-decision">{[["类别", row.result.task_class_choice], ["建议", row.result.execution_choice], ["模型", row.result.executor_model_choice], ["实际应用", row.result.execution_applied === true ? "已应用" : row.result.execution_applied === false ? "未应用" : "未知"]].map(([label, value]) => <span key={String(label)}>{String(label)}：{String(value ?? "未知")}</span>)}</div>}
+
       <details><summary>查看依据与结果</summary>{row.snapshot && <pre>{JSON.stringify(row.snapshot, null, 2)}</pre>}{row.result && <pre>{JSON.stringify(row.result, null, 2)}</pre>}<p>输入指纹：{row.input_hash || "未记录"} · Prompt：{row.prompt_version || "未记录"}</p><p>调用：{row.run_id || row.id} · 错误：{row.error || row.fallback_reason || "无"}</p><p>用量：{row.usage ? JSON.stringify(row.usage) : "未提供，不计为零"}</p></details>
     </article>)}</div>{!rows.length && <p>暂无符合筛选条件的 AI 行为。</p>}<footer className="task-pagination"><button disabled={!before} onClick={() => setBefore("")}>返回最新</button><button disabled={!activity?.next_cursor} onClick={() => setBefore(activity?.next_cursor || "")}>查看更早行为</button></footer>
   </>;

@@ -52,7 +52,6 @@ export function taskReuseCheck(input, options = {}) {
   const registry = options.sessionRegistry && typeof options.sessionRegistry === "object"
     ? options.sessionRegistry
     : {};
-  const delegations = Array.isArray(options.delegations) ? options.delegations : [];
   const canonicalizeSession = typeof options.canonicalSessionId === "function"
     ? options.canonicalSessionId
     : (value) => String(value || "");
@@ -70,7 +69,6 @@ export function taskReuseCheck(input, options = {}) {
     .map((task) => candidateFor(task, {
       request,
       registry,
-      delegations,
       canonicalizeSession,
       requestSessionId,
       requestWorkspace,
@@ -611,7 +609,6 @@ function candidateFor(task, context) {
   const {
     request,
     registry,
-    delegations,
     canonicalizeSession,
     requestSessionId,
     requestWorkspace,
@@ -627,11 +624,6 @@ function candidateFor(task, context) {
   const sameProject = Boolean(candidateProjectId && normalizedId(candidateProjectId) === normalizedId(request.project_id));
   const differentProject = Boolean(candidateProjectId && normalizedId(candidateProjectId) !== normalizedId(request.project_id));
   const sameSession = Boolean(requestSessionId && candidateSessionId === requestSessionId);
-  const relatedDelegation = delegations.some((delegation) =>
-    (delegation.taskId || delegation.task_id) === task.id
-      && canonicalizeSession(delegation.delegateSessionId || delegation.delegate_session_id) === requestSessionId
-      && delegation.expired !== true
-      && !["expired", "revoked"].includes(delegation.status));
   const candidateOwner = actorKey(task.ownerActor);
   const sameOwner = Boolean(candidateOwner && requesterOwners.has(candidateOwner));
   const differentOwner = Boolean(candidateOwner && requesterOwners.size && !sameOwner);
@@ -642,7 +634,6 @@ function candidateFor(task, context) {
   if (sameWorkspace) reasons.push("same_workspace");
   if (sameProject) reasons.push("same_project_id");
   if (sameSession) reasons.push("same_session");
-  if (relatedDelegation) reasons.push("related_delegation");
   if (sameOwner) reasons.push("same_owner");
   if (semanticSimilarity >= 0.6) reasons.push("semantic_similarity_high");
   else if (semanticSimilarity >= 0.3) reasons.push("semantic_similarity_moderate");
@@ -652,13 +643,13 @@ function candidateFor(task, context) {
   if (differentProject) conflicts.push("different_project_id");
   if (differentOwner) conflicts.push("different_owner");
 
-  const anchored = sameContext || sameWorkspace || sameProject || sameSession || relatedDelegation;
+  const anchored = sameContext || sameWorkspace || sameProject || sameSession;
   if (!anchored) return null;
   let confidence = 0;
   if (sameContext) confidence += 0.55;
   if (sameWorkspace) confidence += 0.2;
   if (sameProject) confidence += 0.08;
-  if (sameSession || relatedDelegation) confidence += 0.14;
+  if (sameSession) confidence += 0.14;
   if (sameOwner) confidence += 0.04;
   confidence += semanticSimilarity * 0.2;
   if (task.status === "done_claimed") confidence -= 0.03;
@@ -669,10 +660,10 @@ function candidateFor(task, context) {
   confidence = rounded(Math.max(0, Math.min(0.99, confidence)));
   if (confidence < 0.15) return null;
   const hasBoundaryConflict = differentContext || differentWorkspace || differentProject || differentOwner;
-  const identityAligned = sameSession || relatedDelegation || sameOwner;
+  const identityAligned = sameSession || sameOwner;
   const strongReuse = !hasBoundaryConflict && identityAligned && (
     (sameContext && sameWorkspace)
-      || (sameWorkspace && (sameSession || relatedDelegation) && semanticSimilarity >= 0.55)
+      || (sameWorkspace && sameSession && semanticSimilarity >= 0.55)
   );
   return {
     task_id: task.id,

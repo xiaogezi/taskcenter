@@ -28,7 +28,7 @@ export function switchTaskFingerprint(task) {
   return digest(persisted);
 }
 
-export function switchCheckpoint(task, tasks, registry, delegations = []) {
+export function switchCheckpoint(task, tasks, registry) {
   if (!task || !registry || registry.workspace !== task.workspace || registry.agent !== "codex") fail("SWITCH_SESSION_WORKSPACE_MISMATCH");
   const related = tasks.filter((item) => item.sessionId === task.sessionId || item.sessionHistory?.includes(task.sessionId));
   if (related.some((item) => !["done_claimed", "verified", "cancelled"].includes(item.status))) fail("SWITCH_ACTIVE_TASK");
@@ -36,7 +36,6 @@ export function switchCheckpoint(task, tasks, registry, delegations = []) {
   if (task.status === "cancelled") {
     if (!task.evidence?.length || !task.retrospective) fail("SWITCH_CANCELLATION_EVIDENCE_REQUIRED");
   } else if (!task.completionReadiness?.completionClaim?.allowed) fail("SWITCH_COMPLETION_NOT_READY");
-  if (delegations.some((item) => !["succeeded", "failed", "cancelled", "revoked", "expired"].includes(item.status) && !item.expired)) fail("SWITCH_DELEGATION_ACTIVE");
   const git = (...args) => execFileSync("git", ["-C", task.workspace, ...args], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] }).trim();
   if (git("status", "--porcelain", "--untracked-files=all")) fail("SWITCH_WORKSPACE_DIRTY");
   const revision = git("rev-parse", "HEAD");
