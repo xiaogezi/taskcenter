@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复正式 release 的 AI/Jev 日志目录绑定，恢复共享治理日志与已有 Jev 观察记录的读取；候选 release 继续隔离日志，并明确页面当前按需手动分析。
+
 - 确立“任务即契约：以契约约束执行，以持久状态管理过程，以证据判定完成”为底层原则，在项目定位与 Agent 协作规则中约束后续改动；保留宿主执行、独立验收及外部 Review 边界，不改变运行协议。
 
 - 彻底移除模型调度页面、角色配置、路由/委派/托管 Reviewer 的 HTTP/MCP、执行器与运行依赖。TaskCenter 只治理主线任务；子代理 Hook 在联网前放行，会话同步忽略子代理。保留任务合同、验证、独立验收、外部 Review 证据及历史数据。主线 AI 分析使用独立配置 `config/ai-governance.json`。

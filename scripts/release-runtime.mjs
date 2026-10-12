@@ -25,6 +25,9 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(dataRoot, "gate-session-allowlist.json"),
     TASKCENTER_REFLECTION_PROPOSALS_PATH: join(dataRoot, "reflection-proposals.json"),
     TASKCENTER_TASK_EVENTS_PATH: join(dataRoot, "task-events.jsonl"),
+    TASKCENTER_AI_ACTIVITY_PATH: join(dataRoot, "ai-activity.jsonl"),
+    TASKCENTER_JEV_RUNTIME_DIR: config.candidateCodex ? join(runtimeRoot, "jev-pilot")
+      : (options.baseEnvironment || process.env).TASKCENTER_JEV_RUNTIME_DIR || join(controllerRoot, ".local", "jev-pilot"),
     TASKCENTER_TASK_LEDGER_PATH: join(dataRoot, "task-ledger.json"),
     TASKCENTER_SESSION_SWITCH_PATH: join(dataRoot, "session-switch.jsonl"),
     TASKCENTER_TASK_EVENT_IDS_PATH: join(dataRoot, "task-event-ids.json"),
