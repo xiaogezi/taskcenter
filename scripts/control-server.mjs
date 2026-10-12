@@ -63,7 +63,7 @@ import {
   reconcileReflectionSessionSelection,
 } from "./reflection-engine.mjs";
 import { normalizeSessionAllowlist, readSessionAllowlist, sessionIdPattern, updateSessionAllowlist } from "./session-allowlist.mjs";
-import { AiGovernanceError, aiActivity, createGovernanceRunner, governanceSnapshot } from "./ai-governance.mjs";
+import { AiGovernanceError, aiActivity, createGovernanceRunner, governanceSnapshot, agentGuidance } from "./ai-governance.mjs";
 import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.mjs";
 import { readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
@@ -182,7 +182,7 @@ const server = createServer(async (request, response) => {
       const params = new URL(request.url, "http://localhost").searchParams;
       const observer = readSnapshot(join(resolve(process.env.TASKCENTER_RUNTIME_DIR || join(projectRoot, ".local/runtime")), "ai-observer-health.json"), { status: "stopped" });
       const stale = !observer.updated_at || Date.now() - Date.parse(observer.updated_at) > 15_000;
-      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, params, running: aiGovernance.running || (!stale && observer.status === "analyzing") }), observer: { ...observer, stale } });
+      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, params, tasks: loadVisibleTasks(), running: aiGovernance.running || (!stale && observer.status === "analyzing") }), observer: { ...observer, stale } });
       return;
     }
     if (request.method === "POST" && request.url === "/ai/analyze") {
@@ -282,6 +282,7 @@ const server = createServer(async (request, response) => {
         scheduled_readonly: registry.scheduledReadonly || null,
         contract: task ? boundedResponse({ goal: task.goal, scope: task.scope, non_goals: task.nonGoals, acceptance_criteria: task.acceptanceCriteria, verification_plan: task.verificationPlan, subject: task.currentSubject, next_action: task.nextAction }, { maxBytes: budget.handoff_recommended || !activeTask ? 800 : 2600 }) : null,
         handoff: task && (budget.handoff_recommended || !activeTask) ? machineHandoff(task) : null,
+        agent_guidance: task ? agentGuidance(task, aiActivityPath) : null,
         ...budget,
       }));
       return;
@@ -500,7 +501,7 @@ const server = createServer(async (request, response) => {
         const sessionId = url.searchParams.get("session_id") || "";
         if (taskId || sessionId) {
           const matching = tasks.filter(task => (!taskId || task.id === taskId) && (!sessionId || task.sessionId === sessionId));
-          sendJson(response, 200, { tasks: url.searchParams.get("view") === "summary" ? matching.map(taskSummary) : matching });
+          sendJson(response, 200, { tasks: url.searchParams.get("view") === "summary" ? matching.map(task => ({ ...taskSummary(task), agent_guidance: agentGuidance(task, taskId ? aiActivityPath : undefined) })) : matching });
           return;
         }
         if (!url.searchParams.size) {
@@ -720,7 +721,7 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody(request);
       if (body.status === "verified" || String(body.type || "").startsWith("acceptance.")) throw new TaskLedgerError(403, "核心事件通道不能自行提交最终验收。");
       const result = recordTaskEvent(body);
-      sendJson(response, body.type === "task.create" && !result.idempotent ? 201 : 200, { accepted: true, idempotent: Boolean(result.idempotent), event: result.event, task: result.task });
+      sendJson(response, body.type === "task.create" && !result.idempotent ? 201 : 200, { accepted: true, idempotent: Boolean(result.idempotent), event: result.event, task: result.task, agent_guidance: agentGuidance(result.task, aiActivityPath) });
       return;
     }
     if (request.method === "POST" && request.url === "/tasks/import-evidence") {
@@ -799,6 +800,7 @@ const server = createServer(async (request, response) => {
         idempotent: Boolean(result.idempotent),
         event: result.event,
         task: result.task,
+        agent_guidance: agentGuidance(result.task, aiActivityPath),
         contextSync,
         warnings,
       });

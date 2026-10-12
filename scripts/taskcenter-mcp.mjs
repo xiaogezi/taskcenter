@@ -551,7 +551,7 @@ async function queryTasks({ task_id, session_id, view } = {}) {
     if (!Number.isSafeInteger(payload.totalPages) || !payload.tasks.length) throw new Error("TaskCenter 任务分页响应无效。");
   }
   if (view !== "summary") return tasks;
-  const fields = ["id", "sessionId", "title", "goal", "status", "currentStep", "nextAction", "blocker", "verificationStatus", "reviewStatus", "acceptanceStatus", "currentSubject", "updatedAt"];
+  const fields = ["id", "sessionId", "title", "goal", "status", "currentStep", "nextAction", "blocker", "verificationStatus", "reviewStatus", "acceptanceStatus", "currentSubject", "updatedAt", "agent_guidance"];
   return tasks.map(task => ({
     ...Object.fromEntries(fields.filter(key => Object.hasOwn(task, key)).map(key => [key, task[key]])),
     completionReasons: task.completionReadiness?.reasons || [],
@@ -639,6 +639,7 @@ function compactResult(payload) {
     completion_claim_allowed: readiness.completionClaim?.allowed === true,
   };
   if (payload?.session_lifecycle) compact.session_lifecycle = payload.session_lifecycle;
+  if (payload?.agent_guidance) compact.agent_guidance = payload.agent_guidance;
   if (payload?.route) compact.route = payload.route;
   // 通知属于账本写入后的可补偿副作用；摘要回包也必须让调用方看见失败警告。
   if (Array.isArray(payload?.warnings) && payload.warnings.length) compact.warnings = payload.warnings;

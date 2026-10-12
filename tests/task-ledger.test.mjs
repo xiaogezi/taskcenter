@@ -27,6 +27,7 @@ const envPaths = {
   TASKCENTER_USAGE_REPORT_PATH: join(tempDir, "usage-report.json"),
   TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(tempDir, "gate-session-allowlist.json"),
   TASKCENTER_MCP_TOKEN_PATH: join(tempDir, "mcp-token"),
+  TASKCENTER_AI_ACTIVITY_PATH: join(tempDir, "ai-activity.jsonl"),
 };
 for (const [key, value] of Object.entries(envPaths)) {
   process.env[key] = value;
@@ -95,6 +96,13 @@ test("Control API 返回单任务完整详情，摘要列表仍不携带证据",
     }),
   });
   assert.equal(created.status, 201);
+  const receipt = await created.json();
+  assert.equal(receipt.agent_guidance.advisory_only, true);
+  assert.ok(receipt.agent_guidance.steps[0].action);
+  const prepared = await (await fetch(`${base}/task-prepare?session_id=task-detail-session`)).json();
+  assert.equal(prepared.agent_guidance.task_id, "task-detail-1");
+  const guided = await (await fetch(`${base}/tasks?task_id=task-detail-1&view=summary`)).json();
+  assert.equal(guided.tasks[0].agent_guidance.advisory_only, true);
   const detail = await (await fetch(`${base}/tasks/task-detail-1`)).json();
   assert.deepEqual(detail.task.evidence, ["probe:detail"]);
   assert.equal(detail.task.tokenUsage.totalTokens, 224);
@@ -2217,10 +2225,12 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   });
   const compactText = textOf(compact);
   const compactPayload = JSON.parse(compactText);
-  assert.deepEqual(Object.keys(compactPayload).sort(), ["accepted", "completion_claim_allowed", "missing_count", "review_status", "status", "task_id", "verification_status"]);
+  assert.deepEqual(Object.keys(compactPayload).sort(), ["accepted", "agent_guidance", "completion_claim_allowed", "missing_count", "review_status", "status", "task_id", "verification_status"]);
+  assert.equal(compactPayload.agent_guidance.advisory_only, true);
+  assert.ok(compactPayload.agent_guidance.steps.length);
   assert.equal(compactPayload.completion_claim_allowed, false);
   assert.equal(compactPayload.task_id, "task-mcp");
-  assert.ok(compactText.length < textOf(create).length / 2, "默认摘要应显著小于 full 回包");
+  assert.ok(compactText.length < textOf(create).length, "摘要保留协作建议但不携带完整任务");
 
   await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: "sess-mcp-close-owner", workspace: "/work", agent: "codex" } });
   await client.callTool({
