@@ -130,6 +130,20 @@ test("主动处置依据明确回合结束收口 Run，保持契约与归属并�
   assert.equal(loadTasks()[0].runs.at(-1).ended_at, "");
 });
 
+test("异步核对期间任务更新时不写入过期运行事实", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", task_id: "async-inspect", session_id: "async-session", title: "异步核实", goal: "目标", status: "in_progress" });
+  const result = await runReconciliation({ availableSessionIds: ["async-session"], inspectSession: async () => {
+    await new Promise(setImmediate);
+    recordTaskEvent({ type: "task.update", event_id: "concurrent-update", task_id: "async-inspect", session_id: "async-session", current_step: "并发新进展" });
+    return { busy: false, lastTerminal: { type: "task_complete", at: new Date(Date.now() + 1000).toISOString(), turn_id: "old-turn" } };
+  } });
+  assert.deepEqual(result.actions, []);
+  const task = loadTasks()[0];
+  assert.equal(task.currentStep, "并发新进展");
+  assert.equal(task.runs.at(-1).ended_at, "");
+});
+
 test("当前忙碌、旧结束事件、缺失会话和CLI活跃不会被错误收口或取消", async () => {
   await resetLedger();
   recordTaskEvent({ type: "task.create", task_id: "auto-busy", session_id: "busy-session", status: "in_progress" });

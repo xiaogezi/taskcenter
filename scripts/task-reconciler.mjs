@@ -9,7 +9,7 @@ import { setImmediate } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { taskReconcilePath } from "./task-ledger.mjs";
 import { reconcileTasks, loadTasks, recordTaskEvent, isContextShadowTask } from "./task-ledger.mjs";
-import { inspectSessionState } from "./harnesses/codex-session.mjs";
+import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
 import { computeCompletionReadiness, sameSubject } from "./completion-state.mjs";
 
 const ACTIVE_TASK_STATUSES = new Set(["planned", "in_progress", "blocked"]);
@@ -56,7 +56,7 @@ function findingsForTask(task) {
 // 运行一次对账：收口脱离会话的运行（幂等），并生成缺项清单。
 // 返回 { reconciled, findings, actions }；逐条让出事件循环，不阻塞控制请求。
 let reconciling = false;
-export async function runReconciliation({ availableSessionIds = [], inspectSession = inspectSessionState } = {}) {
+export async function runReconciliation({ availableSessionIds = [], inspectSession = inspectSessionStateAsync } = {}) {
   if (reconciling) return { reconciled: [], findings: [], actions: [], observedAt: new Date().toISOString() };
   reconciling = true;
   try {
@@ -74,7 +74,10 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       let terminal = null, basis = "";
       if (running.length || !runs.length) {
         let session;
-        try { session = inspectSession(task.sessionId); } catch { session = null; }
+        try { session = await inspectSession(task.sessionId); } catch { session = null; }
+        // Session I/O yields; a concurrent task update invalidates the inspected snapshot.
+        const current = loadTasks().find(item => item.id === task.id);
+        if (!current || current.lastEventId !== task.lastEventId) continue;
         if (session?.busy) continue;
         if (session?.lastTerminal && Number.isFinite(Date.parse(startedAt))
           && Date.parse(session.lastTerminal.at) >= Date.parse(startedAt)) {

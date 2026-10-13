@@ -11,6 +11,7 @@ import {
 } from "../scripts/dispatch-core.mjs";
 import { createPilotIntent, updatePilotIntent } from "../scripts/context-management-pilot.mjs";
 import { inspectSessionState } from "../scripts/session-cli.mjs";
+import { inspectSessionStateAsync } from "../scripts/harnesses/codex-session.mjs";
 
 const threadId = "00000000-0000-4000-8000-000000000001";
 
@@ -109,12 +110,14 @@ test("Session 生命周期按未结束 turn 判断忙碌状态", async () => {
   ].join("\n"));
 
   assert.equal(inspectSessionState(threadId, sessionsRoot).busy, true);
+  assert.deepEqual(await inspectSessionStateAsync(threadId, sessionsRoot), inspectSessionState(threadId, sessionsRoot));
   await writeFile(sessionPath, `${await readFile(sessionPath, "utf8")}${JSON.stringify({
     timestamp: "2026-07-19T00:00:03.000Z",
     type: "event_msg",
     payload: { type: "task_complete", turn_id: "turn-2" },
   })}\n`);
   assert.equal(inspectSessionState(threadId, sessionsRoot).busy, false);
+  assert.deepEqual(await inspectSessionStateAsync(threadId, sessionsRoot), inspectSessionState(threadId, sessionsRoot));
 });
 
 test("人工完成、移除和恢复会持久化需求覆盖", async (context) => {

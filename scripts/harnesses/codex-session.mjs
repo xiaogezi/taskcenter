@@ -1,4 +1,6 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -9,43 +11,54 @@ const terminalEvents = new Set([
   "turn_failed",
 ]);
 
-export function inspectSessionState(threadId, sessionsRoot = defaultSessionsRoot()) {
-  const sessionPath = findSessionPath(threadId, sessionsRoot);
-  if (!sessionPath) {
-    throw new Error("找不到目标 Session 的本地会话文件");
-  }
-
+function sessionAccumulator(sessionPath) {
   const activeTurns = new Map();
   let lastTerminal = null;
-  for (const line of readFileSync(sessionPath, "utf8").split(/\r?\n/)) {
-    if (!line) continue;
+  return { consume(line) {
+    if (!line) return;
     let item;
     try {
       item = JSON.parse(line);
     } catch {
-      continue;
+      return;
     }
-    if (item.type !== "event_msg") continue;
+    if (item.type !== "event_msg") return;
     const event = item.payload || {};
     const turnId = String(event.turn_id || "");
-    if (!turnId) continue;
+    if (!turnId) return;
     if (event.type === "task_started") {
       activeTurns.set(turnId, item.timestamp || "");
     } else if (terminalEvents.has(event.type)) {
       activeTurns.delete(turnId);
       if (Number.isFinite(Date.parse(item.timestamp))) lastTerminal = { type: event.type, at: item.timestamp, turn_id: turnId };
     }
-  }
+  }, result() {
+    const pending = [...activeTurns.entries()]
+      .map(([turnId, startedAt]) => ({ turnId, startedAt }))
+      .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+    return { sessionPath, busy: pending.length > 0, activeTurns: pending, lastTerminal };
+  } };
+}
 
-  const pending = [...activeTurns.entries()]
-    .map(([turnId, startedAt]) => ({ turnId, startedAt }))
-    .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
-  return {
-    sessionPath,
-    busy: pending.length > 0,
-    activeTurns: pending,
-    lastTerminal,
-  };
+export function inspectSessionState(threadId, sessionsRoot = defaultSessionsRoot()) {
+  const sessionPath = findSessionPath(threadId, sessionsRoot);
+  if (!sessionPath) throw new Error("找不到目标 Session 的本地会话文件");
+  const state = sessionAccumulator(sessionPath);
+  for (const line of readFileSync(sessionPath, "utf8").split(/\r?\n/)) state.consume(line);
+  return state.result();
+}
+
+export async function inspectSessionStateAsync(threadId, sessionsRoot = defaultSessionsRoot()) {
+  const sessionPath = findSessionPath(threadId, sessionsRoot);
+  if (!sessionPath) throw new Error("找不到目标 Session 的本地会话文件");
+  const state = sessionAccumulator(sessionPath);
+  const stream = createReadStream(sessionPath, { encoding: "utf8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  stream.on("error", error => lines.emit("error", error));
+  try {
+    for await (const line of lines) state.consume(line);
+    return state.result();
+  } finally { lines.close(); stream.destroy(); }
 }
 
 export function defaultSessionsRoot() {
