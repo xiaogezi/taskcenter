@@ -11,6 +11,28 @@ import { loadVisibleTasks } from "./task-ledger.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 import { claudeSettings } from "./print-integrations.mjs";
 import { terminateProcessTree, isProcessTreeAlive } from "./process-tree.mjs";
+import { hasSuspectedSecret } from "./jev-advisor.mjs";
+
+export function safeActionText(value) {
+  const text = typeof value === "string" ? value : "";
+  if (hasSuspectedSecret(text) || /\b(?:sk-|Bearer\s+)[A-Za-z0-9_-]{12,}|-----BEGIN.*PRIVATE KEY|https?:\/\/[^\s/]+:[^\s/]+@|(?:password|token|secret|api[_-]?key|authorization)["']?\s*[:= ]/i.test(text)) return "[敏感参数已隐藏]";
+  return text.replace(/(?:\/Users\/|\/home\/)[^\s"']+/g, "[local-path]").replace(/\s+/g, " ").slice(0, 500);
+}
+
+export function maintenanceOperation(name, input = {}) {
+  const labels = { Bash: "运行命令", Read: "读取文件", Edit: "修改文件", Write: "写入文件", Glob: "查找文件", Grep: "搜索内容" };
+  const target = name === "Bash" ? input.command : ["Read", "Edit", "Write"].includes(name) ? input.file_path : ["Glob", "Grep"].includes(name) ? input.pattern : input.current_step || input.next_action || input.task_id;
+  return `${labels[name] || safeActionText(name)}${target ? `：${safeActionText(target)}` : ""}`;
+}
+
+export function currentMaintenanceAction(actions, tasks, observer, stale) {
+  const action = Object.values(actions).find(item => item.status === "running") || (!observer.current_task_id ? Object.values(actions).filter(item => item.latest_operation).sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] : null);
+  const task = tasks.find(item => item.id === (action?.task_id || observer.current_task_id));
+  if (!task) return null;
+  return { task_id: task.id, title: safeActionText(task.title), phase: stale ? "stale" : action?.status === "running" ? "executing" : action ? action.status : observer.status,
+    reason: safeActionText(action?.analysis?.summary || task.goal), step: safeActionText(task.currentStep), next_action: safeActionText(task.nextAction),
+    operation: action?.latest_operation || null };
+}
 
 const activeStatuses = new Set(["planned", "in_progress", "blocked"]);
 const finished = task => task && ["done_claimed", "verified"].includes(task.status)
@@ -36,6 +58,7 @@ export async function runClaudeMaintenance({ task, action, profile, record, onSp
 任务快照：${JSON.stringify(governanceSnapshot(task, "evidence"))}
 本次治理分析：${JSON.stringify(action.analysis)}`;
   let child, timer, result, count = 0, aborted = false;
+  const operations = new Map();
   const stop = () => { aborted = true; if (child?.pid) void terminateProcessTree(child.pid, { force: true }).catch(() => {}); };
   if (signal?.aborted) throw new Error("AI_ACTION_CANCELLED");
   child = spawn(executable.command, args, { cwd: task.workspace, env: environment, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "ignore"] });
@@ -58,11 +81,16 @@ export async function runClaudeMaintenance({ task, action, profile, record, onSp
       if (row.type === "assistant") for (const block of row.message?.content || []) {
         if (block.type !== "tool_use") continue;
         count++;
-        // Only tool metadata is persisted; command outputs may contain credentials.
-        await record({ status: "tool_started", summary: `执行工具：${String(block.name).slice(0, 160)}`, result: { tool: String(block.name).slice(0, 160), tool_use_id: block.id } });
+        const operation = maintenanceOperation(block.name, block.input);
+        operations.set(block.id, operation);
+        await record({ status: "tool_started", summary: operation, result: { tool: safeActionText(block.name), tool_use_id: block.id } });
       }
       if (row.type === "user") for (const block of row.message?.content || []) {
-        if (block.type === "tool_result") await record({ status: block.is_error ? "tool_failed" : "tool_completed", summary: block.is_error ? "工具返回错误，Agent 将核对并恢复" : "工具已返回，等待任务效果验证", result: { tool_use_id: block.tool_use_id } });
+        if (block.type === "tool_result") {
+          const operation = operations.get(block.tool_use_id) || "工具操作";
+          await record({ status: block.is_error ? "tool_failed" : "tool_completed", summary: `${operation} · ${block.is_error ? "返回错误，正在核对恢复" : "已返回，任务效果待验证"}`, result: { tool_use_id: block.tool_use_id } });
+          operations.delete(block.tool_use_id);
+        }
       }
       if (row.type === "result") result = row;
     }
@@ -86,7 +114,13 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
   const save = () => writeJsonAtomic(statePath, state);
   let active = false;
   const health = { status: "idle", task_id: null };
-  const emit = (action, row) => record({ id: `${action.id}:${randomUUID()}`, run_id: action.id, source: "maintenance", task_id: action.task_id, at: new Date(now()).toISOString(), title: "系统维护行动", model: action.model, ...row });
+  const emit = async (action, row) => {
+    const at = new Date(now()).toISOString();
+    action.updated_at = at;
+    action.latest_operation = { summary: row.summary, status: row.status, at };
+    await save();
+    return record({ id: `${action.id}:${randomUUID()}`, run_id: action.id, source: "maintenance", task_id: action.task_id, at, title: safeActionText(tasks().find(task => task.id === action.task_id)?.title) || "系统维护行动", model: action.model, ...row });
+  };
   return {
     health,
     async enqueue(task, analysis, profile) {

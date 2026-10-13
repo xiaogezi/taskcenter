@@ -3,7 +3,30 @@ import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import { createMaintenanceWorker } from "../scripts/ai-maintenance.mjs";
+import { createMaintenanceWorker, maintenanceOperation, currentMaintenanceAction } from "../scripts/ai-maintenance.mjs";
+
+test("操作摘要白名单保留对象，隐藏敏感参数且不包含写入正文", () => {
+  assert.equal(maintenanceOperation("Bash", { command: "npm test" }), "运行命令：npm test");
+  assert.equal(maintenanceOperation("Write", { file_path: "health.txt", content: "private data" }), "写入文件：health.txt");
+  assert.equal(maintenanceOperation("Read", { file_path: "/Users/gezi/private.txt" }), "读取文件：[local-path]");
+  assert.match(maintenanceOperation("Bash", { command: "echo token=abc" }), /敏感参数已隐藏/);
+  assert.match(maintenanceOperation("Bash", { command: "x".repeat(600) + " Bearer abcdefghijklmnop" }), /敏感参数已隐藏/);
+});
+
+test("当前行动来自账本阶段，过期心跳不宣称正在执行", () => {
+  const actions = { task: { task_id: "task", status: "running", analysis: { summary: "发现异常" }, latest_operation: { summary: "运行命令：npm test" } } };
+  const tasks = [{ id: "task", title: "修复服务", currentStep: "验证修复", nextAction: "提交证据" }];
+  assert.equal(currentMaintenanceAction(actions, tasks, {}, false).title, "修复服务");
+  assert.equal(currentMaintenanceAction(actions, tasks, {}, false).step, "验证修复");
+  assert.equal(currentMaintenanceAction(actions, tasks, {}, true).phase, "stale");
+  assert.equal(currentMaintenanceAction({}, tasks, {}, false), null);
+});
+
+test("工具进展实时持久化并可跨请求展示", async t => {
+  const f = await fixture(t, { execute: async ({ record }) => { await record({ status: "tool_started", summary: "运行命令：npm test" }); assert.equal((await f.state()).actions.task.latest_operation.summary, "运行命令：npm test"); return { tool_calls: 1 }; } });
+  await f.worker.enqueue(task, analysis, profile); await f.worker.tick(profile);
+  assert.equal(f.rows.find(row => row.status === "tool_started").title, "维护");
+});
 
 const profile = { model: "test", effort: "low", automatic: { actions: true } };
 const task = { id: "task", sessionId: "original", lastEventId: "event-1", workspace: "/project", title: "维护", goal: "修复异常", status: "in_progress" };

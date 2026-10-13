@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { currentMaintenanceAction } from "./ai-maintenance.mjs";
 import {
   DispatchError,
 } from "./dispatch-core.mjs";
@@ -192,7 +193,7 @@ const server = createServer(async (request, response) => {
       const tasks = loadVisibleTasks();
       const pending = work ? work.task_ids.filter(id => tasks.some(task => task.id === id && !task.archivedAt && ["planned", "in_progress", "blocked"].includes(task.status)) && state.tasks[id]?.request_id !== work.id).length : 0;
       const counts = Object.values(maintenance.actions).reduce((counts, item) => { counts[item.status] = (counts[item.status] || 0) + 1; return counts; }, {});
-      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks, running: aiGovernance.running || (!stale && (observer.status === "analyzing" || observer.maintenance?.status === "executing")) }), observer: { ...observer, stale }, maintenance: counts, work: work ? { id: work.id, at: work.at, total: work.task_ids.length, pending } : null });
+      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks, running: aiGovernance.running || (!stale && (observer.status === "analyzing" || observer.maintenance?.status === "executing")) }), current_action: currentMaintenanceAction(maintenance.actions, tasks, observer, stale), observer: { ...observer, stale }, maintenance: counts, work: work ? { id: work.id, at: work.at, total: work.task_ids.length, pending } : null });
       return;
     }
     if (request.method === "POST" && request.url === "/ai/work") {
