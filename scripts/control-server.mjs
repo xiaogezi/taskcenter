@@ -188,9 +188,11 @@ const server = createServer(async (request, response) => {
       const stale = !observer.updated_at || Date.now() - Date.parse(observer.updated_at) > 15_000;
       const work = readSnapshot(join(aiRuntime, "ai-work-request.json"), null);
       const state = readSnapshot(join(aiRuntime, "ai-observer-state.json"), { tasks: {} });
+      const maintenance = readSnapshot(join(aiRuntime, "ai-maintenance-state.json"), { actions: {} });
       const tasks = loadVisibleTasks();
       const pending = work ? work.task_ids.filter(id => tasks.some(task => task.id === id && !task.archivedAt && ["planned", "in_progress", "blocked"].includes(task.status)) && state.tasks[id]?.request_id !== work.id).length : 0;
-      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks, running: aiGovernance.running || (!stale && observer.status === "analyzing") }), observer: { ...observer, stale }, work: work ? { id: work.id, at: work.at, total: work.task_ids.length, pending } : null });
+      const counts = Object.values(maintenance.actions).reduce((counts, item) => { counts[item.status] = (counts[item.status] || 0) + 1; return counts; }, {});
+      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks, running: aiGovernance.running || (!stale && (observer.status === "analyzing" || observer.maintenance?.status === "executing")) }), observer: { ...observer, stale }, maintenance: counts, work: work ? { id: work.id, at: work.at, total: work.task_ids.length, pending } : null });
       return;
     }
     if (request.method === "POST" && request.url === "/ai/work") {
@@ -270,6 +272,7 @@ const server = createServer(async (request, response) => {
       const task = loadVisibleTasks().find((item) => item.id === body.task_id);
       const registry = loadSessionRegistry()[body.session_id];
       if (!task || !registry) throw new TaskLedgerError(409, "恢复需要已有 task_id 和已登记的真实 Session。");
+      if (body.expected_event_id && task.lastEventId !== body.expected_event_id) throw new TaskLedgerError(409, "TASK_CHANGED：任务已变化，请重新核对现场后接续。");
       if (registry.workspace !== task.workspace) throw new TaskLedgerError(409, "恢复 Session 的 workspace 与合同不一致。");
       if (["cancelled", "removed"].includes(task.status)) throw new TaskLedgerError(409, "TASK_NOT_RESUMABLE：已取消或移除任务不能接手。");
       const reopen = ["done_claimed", "verified"].includes(task.status);

@@ -4,13 +4,14 @@
 // 触发点：运行结束 / 回执到达时立即处理；服务启动时恢复未处理记录；低频扫描补漏。
 // 日常只读查询不经过本模块，不会出现“打开任务页面就改变账本”的副作用。
 import { readFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { taskReconcilePath } from "./task-ledger.mjs";
 import { reconcileTasks, loadTasks, recordTaskEvent, isContextShadowTask } from "./task-ledger.mjs";
 import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
 import { computeCompletionReadiness, sameSubject } from "./completion-state.mjs";
+import { isProcessTreeAlive } from "./process-tree.mjs";
 
 const ACTIVE_TASK_STATUSES = new Set(["planned", "in_progress", "blocked"]);
 
@@ -56,7 +57,7 @@ function findingsForTask(task) {
 // 运行一次对账：收口脱离会话的运行（幂等），并生成缺项清单。
 // 返回 { reconciled, findings, actions }；逐条让出事件循环，不阻塞控制请求。
 let reconciling = false;
-export async function runReconciliation({ availableSessionIds = [], inspectSession = inspectSessionStateAsync } = {}) {
+export async function runReconciliation({ availableSessionIds = [], inspectSession = inspectSessionStateAsync, maintenancePath = join(resolve(process.env.TASKCENTER_RUNTIME_DIR || join(import.meta.dirname, "../.local/runtime")), "ai-maintenance-state.json") } = {}) {
   if (reconciling) return { reconciled: [], findings: [], actions: [], observedAt: new Date().toISOString() };
   reconciling = true;
   try {
@@ -67,6 +68,11 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       await setImmediate();
       const task = loadTasks().find(task => task.id === taskId);
       if (!task || task.archivedAt || !ACTIVE_TASK_STATUSES.has(task.status)) continue;
+      // A live maintenance host owns execution just like any other client.
+      try {
+        const action = JSON.parse(readFileSync(maintenancePath, "utf8")).actions?.[task.id];
+        if (action?.status === "running" && isProcessTreeAlive(action.pid)) continue;
+      } catch (error) { if (error.code !== "ENOENT") continue; }
       // CLI Runs are owned by their host; the session reconciler cannot terminate them.
       if (task.cliRuns?.some(run => run.status === "active")) continue;
       const runs = task.runs || [], running = activeRuns(task);

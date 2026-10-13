@@ -7,6 +7,7 @@ import { runClaudeInference } from "./claude-inference.mjs";
 import { auditWriter, evaluate } from "./jev-advisor.mjs";
 import { loadVisibleTasks } from "./task-ledger.mjs";
 import { writeJsonAtomic } from "./usage-index.mjs";
+import { createMaintenanceWorker } from "./ai-maintenance.mjs";
 
 const choices = {
   observe: "任务正常推进，无明确异常或需要复核的交付，继续观察。",
@@ -49,7 +50,7 @@ export async function requestAutomaticWork({ tasks, workspace, profile, runtime,
   return { ...request, reused: false };
 }
 
-export async function createAutomaticObserver({ workspace, statePath, record, recordJev, infer = runClaudeInference, judge, now = Date.now }) {
+export async function createAutomaticObserver({ workspace, statePath, record, recordJev, infer = runClaudeInference, judge, enqueue, now = Date.now }) {
   const state = await readableJson(statePath, { tasks: {}, cooldown_until: 0 });
   if (!state.tasks || typeof state.tasks !== "object" || Array.isArray(state.tasks)) throw new Error("AI_STATE_INVALID");
   let initialized = false, active = false;
@@ -81,7 +82,7 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
           continue;
         }
         const previous = state.tasks[task.id];
-        if (!forced && (previous?.hash === snapshot.input_hash || (previous && now() - previous.handled_at < 60_000))) continue;
+        if (!forced && ((previous?.hash === snapshot.input_hash && (!profile.automatic?.actions || previous.actions_enabled)) || (previous && now() - previous.handled_at < 60_000))) continue;
         candidates.push({ task, snapshot, previous, forced });
       }
       initialized = true;
@@ -116,6 +117,7 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
           const result = validateGovernanceResult(value, snapshot);
           validateGovernanceResult({ ...value, next_steps: [value.reason] }, snapshot);
           await emit({ status: value.decision === "observe" ? "skipped" : "succeeded", model: receipt.model, decision: value.decision, decision_reason: value.reason, summary: result.summary, result, usage: receipt.usage, duration_ms: Math.round(performance.now() - started) });
+          if (value.decision !== "observe" && enqueue) await enqueue(task, result, profile);
         }
       } catch (error) {
         if (error.name === "AbortError") {
@@ -128,8 +130,9 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
         const decision = task.status === "blocked" || task.blocker ? "blockers" : "evidence";
         const result = ruleResult(task, decision);
         await emit({ status: "degraded", model: "rules", decision, decision_reason: "AI 不可用，按已登记状态执行规则检查", summary: result.summary, result, fallback_reason: code, duration_ms: Math.round(performance.now() - started) });
+        if (enqueue) await enqueue(task, result, profile);
       } finally {
-        if (!cancelled) state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now(), snapshot_version: snapshotVersion, request_id: forced ? request.id : previous?.request_id };
+        if (!cancelled) state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now(), snapshot_version: snapshotVersion, actions_enabled: Boolean(profile.automatic?.actions), request_id: forced ? request.id : previous?.request_id };
         await save();
         active = false; health.status = "watching"; health.current_task_id = null;
         health.pending_tasks = Math.max(0, health.pending_tasks - 1);
@@ -144,22 +147,26 @@ async function main() {
   const runtime = resolve(process.env.TASKCENTER_RUNTIME_DIR || join(root, ".local/runtime"));
   const workspace = resolve(process.env.TASKCENTER_AI_WORKSPACE || root);
   const healthPath = join(runtime, "ai-observer-health.json");
-  let observer;
+  let observer, maintenance, scope;
   const shutdown = new AbortController();
   const stop = () => shutdown.abort();
   process.once("SIGTERM", stop); process.once("SIGINT", stop);
-  const heartbeat = async () => writeJsonAtomic(healthPath, { ...(observer?.health || { status: "starting", workspace }), updated_at: new Date().toISOString() });
+  const heartbeat = async () => writeJsonAtomic(healthPath, { ...(observer?.health || { status: "starting", workspace }), maintenance: maintenance?.health, scope, updated_at: new Date().toISOString() });
   const timer = setInterval(() => { void heartbeat().catch(() => {}); }, 1000);
   try {
     const profile = await readableJson(process.env.TASKCENTER_AI_CONFIG_PATH || join(root, "config/ai-governance.json"), {});
+    scope = profile.automatic?.scope || "current_project";
     if (profile.automatic?.enabled !== true || process.env.TASKCENTER_DISPATCH_DRY_RUN === "1" || process.env.TASKCENTER_AI_OBSERVER_DISABLED === "1") {
       await writeJsonAtomic(healthPath, { status: "disabled", workspace, updated_at: new Date().toISOString(), reason: "自动治理未启用或候选隔离环境" });
       return;
     }
     if (profile.harness !== "claude" || typeof profile.model !== "string" || !profile.model.trim() || !["low", "medium"].includes(profile.effort)) throw new Error("AI_CONFIG_UNAVAILABLE");
-    observer = await createAutomaticObserver({ workspace, statePath: join(runtime, "ai-observer-state.json"), record: auditWriter(process.env.TASKCENTER_AI_ACTIVITY_PATH || join(root, "data/ai-activity.jsonl")), recordJev: auditWriter(join(process.env.TASKCENTER_JEV_RUNTIME_DIR || join(root, ".local/jev-pilot"), "events.jsonl")), infer: args => runClaudeInference({ ...args, signal: shutdown.signal }), judge: process.env.TYPESAFE_API_KEY ? request => evaluate(request, { apiKey: process.env.TYPESAFE_API_KEY }) : null });
+    const record = auditWriter(process.env.TASKCENTER_AI_ACTIVITY_PATH || join(root, "data/ai-activity.jsonl"));
+    maintenance = await createMaintenanceWorker({ statePath: join(runtime, "ai-maintenance-state.json"), record, signal: shutdown.signal });
+    observer = await createAutomaticObserver({ workspace, statePath: join(runtime, "ai-observer-state.json"), record, recordJev: auditWriter(join(process.env.TASKCENTER_JEV_RUNTIME_DIR || join(root, ".local/jev-pilot"), "events.jsonl")), infer: args => runClaudeInference({ ...args, signal: shutdown.signal }), judge: process.env.TYPESAFE_API_KEY ? request => evaluate(request, { apiKey: process.env.TYPESAFE_API_KEY }) : null, enqueue: (...args) => maintenance.enqueue(...args) });
     while (!shutdown.signal.aborted) {
       await observer.tick(loadVisibleTasks(), profile, await readableJson(join(runtime, "ai-work-request.json"), null));
+      await maintenance.tick(profile);
       await new Promise(accept => setTimeout(accept, 3000));
     }
   } catch {

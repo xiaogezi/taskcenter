@@ -3,6 +3,8 @@ import test from "node:test";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { terminateProcessTree } from "../scripts/process-tree.mjs";
 
 const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-reconciler-"));
 const envPaths = {
@@ -31,6 +33,19 @@ async function resetLedger() {
     await rm(path, { force: true });
   }
 }
+
+test("运行中的真实维护宿主不被本地对账误记为中断", async t => {
+  await resetLedger();
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: process.platform !== "win32", stdio: "ignore" });
+  await new Promise((accept, reject) => { child.once("spawn", accept); child.once("error", reject); });
+  t.after(() => terminateProcessTree(child.pid, { force: true }));
+  const path = join(tempDir, "maintenance.json");
+  recordTaskEvent({ type: "task.create", task_id: "maintenance-active", session_id: "maint-session", title: "维护运行", goal: "目标", status: "in_progress" });
+  await writeFile(path, JSON.stringify({ actions: { "maintenance-active": { status: "running", pid: child.pid } } }));
+  const result = await runReconciliation({ availableSessionIds: ["maint-session"], maintenancePath: path, inspectSession: () => { assert.fail("不能检查并收口活跃维护宿主"); } });
+  assert.equal(result.actions.length, 0);
+  assert.equal(loadTasks()[0].executionReconciliation, null);
+});
 
 test("对账器：不调用 task_close 的任务在会话脱离后被收口并生成待确认缺项，不伪造完成", async () => {
   await resetLedger();

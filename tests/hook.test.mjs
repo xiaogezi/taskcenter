@@ -1031,7 +1031,8 @@ test("跨客户端共享任务保留创建者和证据，接手后旧 Session �
     assert.equal(created.accepted, true, JSON.stringify(created));
     const task_id = created.task.id;
     const resume = () => post("/task-resume", { session_id: target, task_id, expected_session_id: source });
-    assert.equal((await resume()).status, 200);
+    assert.equal((await post("/task-resume", { session_id: target, task_id, expected_session_id: source, expected_event_id: "stale-analysis-event" })).status, 409);
+    assert.equal((await post("/task-resume", { session_id: target, task_id, expected_session_id: source, expected_event_id: created.task.lastEventId })).status, 200);
     assert.equal((await resume()).status, 200);
     const task = (await (await fetch(`${base}/tasks`)).json()).tasks.find(item => item.id === task_id);
     assert.equal(task.creatorActor.id, source);

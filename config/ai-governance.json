@@ -3,5 +3,5 @@
   "model": "deepseek-v4-flash",
   "provider": "deepseek",
   "effort": "low",
-  "automatic": { "enabled": true }
+  "automatic": { "enabled": true, "scope": "all_projects", "actions": true }
 }

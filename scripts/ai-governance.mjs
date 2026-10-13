@@ -160,7 +160,7 @@ export function createGovernanceRunner({ path, infer = runClaudeInference, profi
 export async function aiActivity({ path, jevPath, reconciliationPath, params = new URLSearchParams(), running = false, tasks = [] }) {
   const source = params.get("source") || "", taskId = params.get("task_id") || "", before = params.get("before") || "";
   const limit = Number(params.get("limit") || 30);
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (source && !["governance", "jev", "reconciliation"].includes(source))) throw new AiGovernanceError(400, "行为筛选参数无效。");
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (source && !["governance", "jev", "reconciliation", "maintenance"].includes(source))) throw new AiGovernanceError(400, "行为筛选参数无效。");
   let boundary;
   try { boundary = before ? JSON.parse(Buffer.from(before, "base64url").toString()) : null; } catch { throw new AiGovernanceError(400, "行为游标无效。"); }
   if (boundary && (!Array.isArray(boundary) || boundary.length !== 2 || boundary.some(item => typeof item !== "string"))) throw new AiGovernanceError(400, "行为游标无效。");
@@ -204,5 +204,5 @@ export async function aiActivity({ path, jevPath, reconciliationPath, params = n
     try { if (row.snapshot?.state_fingerprint) changed = row.snapshot.state_fingerprint !== governanceSnapshot(task, row.kind || "evidence").state_fingerprint; } catch { /* No secret fields in the derived view. */ }
     row.follow_up = { status: task.status, updated_at: task.updatedAt, changed_since_analysis: changed, verification_status: task.verificationStatus || "unknown", acceptance_status: task.acceptanceStatus || "pending", remaining_steps: collaborationRules(task).steps, attribution: "任务账本后续事实；未确认 Agent 采纳建议，不能据此推断因果或独立验收。" };
   }
-  return { rows: page, running, next_cursor: rows.length > limit ? Buffer.from(JSON.stringify([last.at, last.id])).toString("base64url") : null, warnings: [...new Set(warnings)], coverage: "TaskCenter 主线治理调用、自主任务处置及当前/上一轮 Jev 观察日志；不包含模型内部思维或平台外调用。" };
+  return { rows: page, running, next_cursor: rows.length > limit ? Buffer.from(JSON.stringify([last.at, last.id])).toString("base64url") : null, warnings: [...new Set(warnings)], coverage: "TaskCenter 治理、维护工具调用与效果回执、自主对账及 Jev 判断；不包含模型内部思维或平台外调用。" };
 }

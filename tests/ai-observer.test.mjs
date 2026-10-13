@@ -39,6 +39,17 @@ test("Jev 自主选择继续观察时不调用 CLI，保留原始判断", async 
   assert.equal(f.calls(), 0); assert.equal(f.rows.at(-1).decision, "observe"); assert.equal(f.rows.at(-1).status, "skipped"); assert.equal(f.jev[0].usage.input_tokens, 10);
 });
 
+test("自主分析与模型降级都连接行动队列，observe 不触发行动", async t => {
+  const queued = [];
+  const f = await fixture(t, { enqueue: async (...args) => queued.push(args) });
+  await f.observer.tick([task], profile);
+  assert.equal(queued.length, 1); assert.equal(queued[0][0].id, task.id);
+  const degraded = await fixture(t, { enqueue: async (...args) => queued.push(args), infer: async () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); } });
+  await degraded.observer.tick([task], profile); assert.equal(queued.length, 2);
+  const observe = await fixture(t, { enqueue: async (...args) => queued.push(args), judge: async () => ({ status: "succeeded", model: "jev", answers: { participation: { choice: "observe" } } }) });
+  await observe.observer.tick([task], profile); assert.equal(queued.length, 2);
+});
+
 test("主动处理持久排队，重复请求复用，重启后每项仅处理一次", async t => {
   const f = await fixture(t);
   const runtime = join(f.options.statePath, "..");

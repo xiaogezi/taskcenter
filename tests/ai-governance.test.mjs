@@ -49,6 +49,9 @@ test("统一行为涵盖主线 Jev 与治理，分页与筛选不混淆", async 
   const second = await aiActivity({ ...options, params: new URLSearchParams({ limit: "1", before: first.next_cursor }) });
   assert.equal(new Set([...first.rows, ...second.rows].map(row => row.id)).size, 2);
   assert.equal((await aiActivity({ ...options, params: new URLSearchParams({ source: "jev" }) })).rows.length, 1);
+  await writeFile(path, `${JSON.stringify({ id: "maintenance", source: "maintenance", at: "2026-10-12T00:00:04Z", task_id: "t", status: "tool_completed", result: { tool_use_id: "tool-1" } })}\n`, { flag: "a" });
+  const actions = await aiActivity({ ...options, params: new URLSearchParams({ source: "maintenance" }) });
+  assert.equal(actions.rows.length, 1); assert.equal(actions.rows[0].result.tool_use_id, "tool-1");
   await assert.rejects(aiActivity({ ...options, params: new URLSearchParams({ limit: "999" }) }), /参数/);
 });
 test("治理代理只允许固定路径与查询字段", () => {
