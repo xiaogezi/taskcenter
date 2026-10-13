@@ -329,6 +329,7 @@ async function startControlServer(options = {}) {
       TASKCENTER_JEV_ROUTING: "0",
       TASKCENTER_SESSIONS_ROOT: join(tempDir, "sessions"),
       TASKCENTER_MODEL_RATES_PATH: join(tempDir, "model-rates.json"),
+      TASKCENTER_RUNTIME_DIR: join(tempDir, "runtime"),
       ...envPaths,
       ...options,
     },
@@ -337,6 +338,28 @@ async function startControlServer(options = {}) {
   await waitForReady(child);
   return { port, child, base: `http://127.0.0.1:${port}` };
 }
+
+test("主动处理入口校验人工来源，本地对账与持久队列可见且重复请求复用", async t => {
+  await resetLedger();
+  const { base, child } = await startControlServer({ TASKCENTER_AI_WORKSPACE: "/work" });
+  t.after(() => child.kill());
+  await registerHttpSession(base, "ai-work-session");
+  const created = await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.create", event_id: "ai-work-create", task_id: "ai-work-task", session_id: "ai-work-session", workspace: "/work", title: "主动核实", goal: "核实待确认交付", evidence: ["probe:work"] }) });
+  assert.equal(created.status, 201);
+  const denied = await fetch(`${base}/ai/work`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(denied.status, 403);
+  const init = { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost:3000", "x-taskcenter-action": "delegate" }, body: "{}" };
+  const response = await fetch(`${base}/ai/work`, init);
+  assert.equal(response.status, 202);
+  const first = await response.json();
+  assert.equal(first.queued, 1);
+  const second = await (await fetch(`${base}/ai/work`, init)).json();
+  assert.equal(second.request_id, first.request_id);
+  assert.equal(second.reused, true);
+  const activity = await (await fetch(`${base}/ai/activity`)).json();
+  assert.equal(activity.work.pending, 1);
+  assert.equal(activity.rows.filter(row => row.id === first.request_id).length, 1);
+});
 
 function taskHeaders() {
   return {

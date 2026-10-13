@@ -48,6 +48,8 @@ import {
   TaskLedgerError,
 } from "./task-ledger.mjs";
 import { runReconciliation, queryFindings, lastReconciliation } from "./task-reconciler.mjs";
+import { requestAutomaticWork } from "./ai-observer.mjs";
+import { auditWriter } from "./jev-advisor.mjs";
 import {
   loadTaskReuseDecisions,
   recordTaskReuseDecision,
@@ -103,6 +105,8 @@ const contextManagementPilotPath = pilotEventsPath(projectRoot);
 const aiActivityPath = resolve(process.env.TASKCENTER_AI_ACTIVITY_PATH || join(projectRoot, "data", "ai-activity.jsonl"));
 const jevActivityPath = join(resolve(process.env.TASKCENTER_JEV_RUNTIME_DIR || join(projectRoot, ".local", "jev-pilot")), "events.jsonl");
 const aiGovernance = createGovernanceRunner({ path: aiActivityPath });
+const aiRuntime = resolve(process.env.TASKCENTER_RUNTIME_DIR || join(projectRoot, ".local/runtime"));
+let proactiveWork = null;
 const host = "127.0.0.1";
 function releaseInfo() {
   const revision = String(process.env.TASKCENTER_RELEASE_REVISION || "").trim();
@@ -182,7 +186,24 @@ const server = createServer(async (request, response) => {
       const params = new URL(request.url, "http://localhost").searchParams;
       const observer = readSnapshot(join(resolve(process.env.TASKCENTER_RUNTIME_DIR || join(projectRoot, ".local/runtime")), "ai-observer-health.json"), { status: "stopped" });
       const stale = !observer.updated_at || Date.now() - Date.parse(observer.updated_at) > 15_000;
-      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks: loadVisibleTasks(), running: aiGovernance.running || (!stale && observer.status === "analyzing") }), observer: { ...observer, stale } });
+      const work = readSnapshot(join(aiRuntime, "ai-work-request.json"), null);
+      const state = readSnapshot(join(aiRuntime, "ai-observer-state.json"), { tasks: {} });
+      const tasks = loadVisibleTasks();
+      const pending = work ? work.task_ids.filter(id => tasks.some(task => task.id === id && !task.archivedAt && ["planned", "in_progress", "blocked"].includes(task.status)) && state.tasks[id]?.request_id !== work.id).length : 0;
+      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks, running: aiGovernance.running || (!stale && observer.status === "analyzing") }), observer: { ...observer, stale }, work: work ? { id: work.id, at: work.at, total: work.task_ids.length, pending } : null });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/ai/work") {
+      verifyManualTaskAction(request);
+      await readJsonBody(request);
+      if (!proactiveWork) proactiveWork = (async () => {
+        const reconciliation = await runReconciliation({ availableSessionIds: availableSessionIds() });
+        const profile = readSnapshot(resolve(process.env.TASKCENTER_AI_CONFIG_PATH || join(projectRoot, "config/ai-governance.json")), {});
+        const work = await requestAutomaticWork({ tasks: loadVisibleTasks(), workspace: resolve(process.env.TASKCENTER_AI_WORKSPACE || projectRoot), profile, runtime: aiRuntime });
+        if (!work.reused) await auditWriter(aiActivityPath)({ id: work.id, at: work.at, source: "governance", title: "立即主动处理", mode: "automatic", trigger: "manual_work", status: "succeeded", model: "rules", summary: `本地对账已执行，实际处置 ${reconciliation.actions.length} 条；已排队核实 ${work.task_ids.length} 条任务。`, result: { queued: work.task_ids.length, actions: reconciliation.actions, findings: reconciliation.findings.length } });
+        return { accepted: true, request_id: work.id, queued: work.task_ids.length, reused: work.reused, actions: reconciliation.actions.length };
+      })().finally(() => { proactiveWork = null; });
+      sendJson(response, 202, await proactiveWork);
       return;
     }
     if (request.method === "POST" && request.url === "/ai/analyze") {

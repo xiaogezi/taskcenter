@@ -52,7 +52,7 @@ test("统一行为涵盖主线 Jev 与治理，分页与筛选不混淆", async 
   await assert.rejects(aiActivity({ ...options, params: new URLSearchParams({ limit: "999" }) }), /参数/);
 });
 test("治理代理只允许固定路径与查询字段", () => {
-  assert.equal(isAllowedControlPath("/ai/analyze", "POST"), true); assert.equal(isAllowedControlPath("/ai/execute", "POST"), false);
+  assert.equal(isAllowedControlPath("/ai/analyze", "POST"), true); assert.equal(isAllowedControlPath("/ai/work", "POST"), true); assert.equal(isAllowedControlPath("/ai/work", "GET"), false); assert.equal(isAllowedControlPath("/ai/execute", "POST"), false);
   assert.equal(controlProxyTarget("/ai/activity", "?source=jev&limit=20&command=rm")?.search, "?source=jev&limit=20");
 });
 

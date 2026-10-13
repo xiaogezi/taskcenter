@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createAutomaticObserver } from "../scripts/ai-observer.mjs";
+import { createAutomaticObserver, requestAutomaticWork } from "../scripts/ai-observer.mjs";
 
 const profile = { model: "deepseek-test", effort: "low" };
 const task = { id: "current", workspace: "/project", title: "修复导出", goal: "导出全部记录", status: "in_progress", evidence: ["两条而非三条"], currentStep: "检查缺行" };
@@ -13,7 +13,7 @@ const result = { decision: "evidence", reason: "期望与结果有差异", summa
 async function fixture(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), "ai-observer-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const rows = [], jev = []; let time = 1_000_000, calls = 0;
-  const options = { workspace: "/project", statePath: join(dir, "state.json"), record: async row => rows.push(row), recordJev: async row => jev.push(row), now: () => time, infer: async () => { calls++; return { text: JSON.stringify(result), model: profile.model }; }, ...overrides };
+  const options = { workspace: "/project", statePath: join(dir, "ai-observer-state.json"), record: async row => rows.push(row), recordJev: async row => jev.push(row), now: () => time, infer: async () => { calls++; return { text: JSON.stringify(result), model: profile.model }; }, ...overrides };
   const observer = await createAutomaticObserver(options);
   return { observer, rows, jev, options, advance: ms => { time += ms; }, calls: () => calls };
 }
@@ -37,6 +37,46 @@ test("Jev 自主选择继续观察时不调用 CLI，保留原始判断", async 
   const f = await fixture(t, { judge: async () => judgement });
   await f.observer.tick([task], profile);
   assert.equal(f.calls(), 0); assert.equal(f.rows.at(-1).decision, "observe"); assert.equal(f.rows.at(-1).status, "skipped"); assert.equal(f.jev[0].usage.input_tokens, 10);
+});
+
+test("主动处理持久排队，重复请求复用，重启后每项仅处理一次", async t => {
+  const f = await fixture(t);
+  const runtime = join(f.options.statePath, "..");
+  const args = { tasks: [task, { ...task, id: "foreign", workspace: "/other" }], workspace: "/project", profile, runtime };
+  const first = await requestAutomaticWork(args);
+  assert.deepEqual(first.task_ids, [task.id]);
+  assert.equal((await requestAutomaticWork(args)).id, first.id);
+  await f.observer.tick(args.tasks, profile, first);
+  assert.equal(f.rows.at(-1).trigger, "manual_work");
+  const restarted = await createAutomaticObserver(f.options);
+  await restarted.tick(args.tasks, profile, first);
+  assert.equal(f.calls(), 1);
+  const next = await requestAutomaticWork(args);
+  assert.notEqual(next.id, first.id);
+  await restarted.tick(args.tasks, profile, next);
+  assert.equal(f.calls(), 2);
+});
+
+test("全项目范围显式启用且待确认任务优先，不被 Jev observe 忽略", async t => {
+  const f = await fixture(t, { judge: async () => ({ status: "succeeded", model: "jev", answers: { participation: { choice: "observe" } } }) });
+  const foreign = { ...task, id: "foreign", workspace: "/other", executionReconciliation: { state: "execution_unconfirmed", basis: "run:completed" } };
+  const all = { ...profile, automatic: { scope: "all_projects" } };
+  await f.observer.tick([task, foreign], all);
+  assert.equal(f.calls(), 1);
+  assert.equal(f.rows.at(-1).task_id, foreign.id);
+  assert.equal(f.rows.at(-1).decision, "evidence");
+});
+
+test("主动处理 CLI 失败仍消化队列并记录降级，不改变任务", async t => {
+  const f = await fixture(t, { infer: async () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); } });
+  const tasks = [task, { ...task, id: "second" }];
+  const request = { id: "request-test", task_ids: tasks.map(item => item.id) };
+  await f.observer.tick(tasks, profile, request);
+  await f.observer.tick(tasks, profile, request);
+  assert.equal(f.rows.filter(row => row.status === "degraded").length, 2);
+  await f.observer.tick(tasks, profile, request);
+  assert.equal(f.rows.filter(row => row.status === "degraded").length, 2);
+  assert.equal(task.status, "in_progress");
 });
 test("快照版本升级仅重建已结束历史的基线，之后真实变化仍参与", async t => {
   const f = await fixture(t);
