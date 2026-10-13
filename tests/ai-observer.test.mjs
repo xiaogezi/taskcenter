@@ -67,6 +67,26 @@ test("全项目范围显式启用且待确认任务优先，不被 Jev observe �
   assert.equal(f.rows.at(-1).decision, "evidence");
 });
 
+test("慢对账不阻塞受理，后台成功和失败分别留回执", async t => {
+  const f = await fixture(t);
+  const rows = []; let finish;
+  const work = await requestAutomaticWork({ tasks: [task], workspace: "/project", profile, runtime: join(f.options.statePath, ".."), record: async row => rows.push(row), reconcile: () => new Promise(resolve => { finish = resolve; }) });
+  assert.equal(rows[0].status, "started");
+  assert.equal(JSON.parse(await readFile(join(f.options.statePath, "..", "ai-work-request.json"), "utf8")).id, work.id);
+  await new Promise(setImmediate);
+  assert.equal(typeof finish, "function");
+  assert.equal(rows.length, 1, "对账仍未完成时请求已经返回且持久化");
+  finish({ actions: [{ task_id: task.id, action: "recovery_pending" }], findings: [] });
+  await new Promise(setImmediate);
+  assert.equal(rows.at(-1).status, "succeeded");
+  assert.equal(rows.at(-1).result.actions.length, 1);
+  const failed = await fixture(t);
+  await requestAutomaticWork({ tasks: [task], workspace: "/project", profile, runtime: join(failed.options.statePath, ".."), record: async row => rows.push(row), reconcile: async () => { throw new Error("probe"); } });
+  await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.equal(rows.at(-1).status, "failed");
+  assert.equal(rows.at(-1).error, "RECONCILIATION_FAILED");
+});
+
 test("主动处理 CLI 失败仍消化队列并记录降级，不改变任务", async t => {
   const f = await fixture(t, { infer: async () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); } });
   const tasks = [task, { ...task, id: "second" }];

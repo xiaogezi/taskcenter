@@ -17,9 +17,10 @@ export function AiActivity({ request }: { request: Request }) {
   const [tasks, setTasks] = useState<Array<{ id: string; title: string }>>([]);
   const [snapshot, setSnapshot] = useState<Snapshot>(); const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false); const [notice, setNotice] = useState("");
+  const [activityError, setActivityError] = useState("");
   const load = useCallback(async () => {
-    try { setActivity(await request<Activity>(`/ai/activity?${new URLSearchParams({ limit: "30", source, before })}`)); }
-    catch (error) { setNotice(error instanceof Error ? error.message : "行为读取失败"); }
+    try { setActivity(await request<Activity>(`/ai/activity?${new URLSearchParams({ limit: "30", source, before })}`)); setActivityError(""); }
+    catch (error) { setActivityError(error instanceof Error ? error.message : "行为读取失败"); }
   }, [request, source, before]);
   useEffect(() => { const initial = window.setTimeout(load, 0), timer = window.setInterval(load, 5000); return () => { window.clearTimeout(initial); window.clearInterval(timer); }; }, [load]);
   useEffect(() => { void request<{ tasks: Array<{ id: string; title: string }> }>("/tasks?view=summary&page_size=100").then(data => setTasks(data.tasks || [])).catch(() => setNotice("任务列表读取失败；可直接输入任务 ID")); }, [request]);
@@ -39,15 +40,15 @@ export function AiActivity({ request }: { request: Request }) {
   const work = async () => {
     setBusy(true);
     try {
-      const result = await request<{ queued: number; reused: boolean; actions: number }>("/ai/work", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: "{}" });
-      setNotice(`${result.reused ? "继续已有处理轮次" : "已启动主动处理"}：本地实际处置 ${result.actions} 条，核实队列 ${result.queued} 条。`);
+      const result = await request<{ queued: number; reused: boolean }>("/ai/work", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: "{}" });
+      setNotice(`${result.reused ? "继续已有处理轮次" : "已受理主动处理"}：核实队列 ${result.queued} 条；本地对账在后台执行，实际结果会出现在下方时间线。`);
       setBefore(""); await load();
     } catch (error) { setNotice(error instanceof Error ? error.message : "主动处理启动失败"); }
     finally { setBusy(false); }
   };
   return <>
     <header className="task-header"><div><p>AI ACTIVITY</p><h1>AI 行为</h1><small>主动核对积压与运行事实，查看实际处置、分析建议和结果。</small></div><div><button disabled={busy} onClick={() => void work()}>{busy ? "正在受理…" : "立即主动处理"}</button><button onClick={() => { setBefore(""); void load(); }}>刷新</button></div></header>
-    <p role="status">{notice}</p>{activity?.work && <p>本轮核实：已处理 {activity.work.total - activity.work.pending} / {activity.work.total} 条。结果包括分析、规则降级与跳过，不代表业务任务完成。</p>}
+    <p role="status">{notice}</p>{activityError && <p role="alert">时间线刷新失败：{activityError}；已受理请求的后台处理不受此提示影响。</p>}{activity?.work && <p>本轮核实：已处理 {activity.work.total - activity.work.pending} / {activity.work.total} 条。结果包括分析、规则降级与跳过，不代表业务任务完成。</p>}
     <section className="console-card ai-analysis"><h2>自主治理</h2><p role="status">{!activity ? "正在读取观察器状态…" : activity.observer?.stale ? "观察器心跳已停止，主线工具仍可使用" : activity.observer?.status === "analyzing" ? "AI 正在自主判断与分析" : activity.observer?.status === "watching" ? "正在自动观察任务变化" : "自动观察器未运行"}</p><p>分析范围：当前项目的新事件与活跃任务；确定性对账覆盖未归档任务。无需选择任务 ID。</p><p>待判断：{activity?.observer?.pending_tasks ?? "未知"} · 当前任务：{activity?.observer?.current_task_id || "无"}</p>{activity?.observer?.reason && <p>{activity.observer.reason}</p>}<small>模型不可用时仍自动对账、收口有明确结束证据的 Run 并登记恢复动作；交付证据满足契约时补齐完成声明，验收由独立授权主体完成。</small></section>
     <details className="console-card ai-analysis"><summary>手动补充分析</summary><h2>分析任务</h2><div className="console-toolbar">
       <label>任务 <input list="ai-tasks" value={taskId} disabled={busy} placeholder="选择或输入任务 ID" onChange={event => { setTaskId(event.target.value); setSnapshot(undefined); setConfirmed(false); }} /></label><datalist id="ai-tasks">{tasks.map(task => <option key={task.id} value={task.id}>{task.title}</option>)}</datalist>

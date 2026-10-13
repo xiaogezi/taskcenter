@@ -197,11 +197,9 @@ const server = createServer(async (request, response) => {
       verifyManualTaskAction(request);
       await readJsonBody(request);
       if (!proactiveWork) proactiveWork = (async () => {
-        const reconciliation = await runReconciliation({ availableSessionIds: availableSessionIds() });
         const profile = readSnapshot(resolve(process.env.TASKCENTER_AI_CONFIG_PATH || join(projectRoot, "config/ai-governance.json")), {});
-        const work = await requestAutomaticWork({ tasks: loadVisibleTasks(), workspace: resolve(process.env.TASKCENTER_AI_WORKSPACE || projectRoot), profile, runtime: aiRuntime });
-        if (!work.reused) await auditWriter(aiActivityPath)({ id: work.id, at: work.at, source: "governance", title: "立即主动处理", mode: "automatic", trigger: "manual_work", status: "succeeded", model: "rules", summary: `本地对账已执行，实际处置 ${reconciliation.actions.length} 条；已排队核实 ${work.task_ids.length} 条任务。`, result: { queued: work.task_ids.length, actions: reconciliation.actions, findings: reconciliation.findings.length } });
-        return { accepted: true, request_id: work.id, queued: work.task_ids.length, reused: work.reused, actions: reconciliation.actions.length };
+        const work = await requestAutomaticWork({ tasks: loadVisibleTasks(), workspace: resolve(process.env.TASKCENTER_AI_WORKSPACE || projectRoot), profile, runtime: aiRuntime, record: auditWriter(aiActivityPath), reconcile: () => runReconciliation({ availableSessionIds: availableSessionIds() }) });
+        return { accepted: true, request_id: work.id, queued: work.task_ids.length, reused: work.reused };
       })().finally(() => { proactiveWork = null; });
       sendJson(response, 202, await proactiveWork);
       return;

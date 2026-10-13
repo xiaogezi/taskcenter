@@ -25,7 +25,7 @@ export function automaticCandidates(tasks, workspace, profile) {
     && (profile.automatic?.scope === "all_projects" || resolve(task.workspace) === resolve(workspace)));
 }
 
-export async function requestAutomaticWork({ tasks, workspace, profile, runtime }) {
+export async function requestAutomaticWork({ tasks, workspace, profile, runtime, reconcile, record }) {
   const path = join(runtime, "ai-work-request.json");
   const previous = await readableJson(path, null);
   const state = await readableJson(join(runtime, "ai-observer-state.json"), { tasks: {} });
@@ -35,6 +35,17 @@ export async function requestAutomaticWork({ tasks, workspace, profile, runtime 
   }
   const request = { id: `work-${randomUUID()}`, at: new Date().toISOString(), task_ids: eligible.map(task => task.id) };
   await writeJsonAtomic(path, request);
+  if (record) await record({ id: request.id, at: request.at, source: "governance", title: "立即主动处理", mode: "automatic", trigger: "manual_work", status: "started", model: "rules", summary: `请求已持久登记，排队核实 ${request.task_ids.length} 条任务；本地对账在后台执行。` });
+  if (reconcile && record) setImmediate(() => {
+    void (async () => {
+      try {
+        const result = await reconcile();
+        await record({ id: `${request.id}:reconciliation`, at: new Date().toISOString(), source: "governance", title: "主动处理 · 本地对账", mode: "automatic", trigger: "manual_work", status: "succeeded", model: "rules", summary: `本地对账完成，实际处置 ${result.actions.length} 条，发现 ${result.findings.length} 条缺项。`, result: { actions: result.actions, findings: result.findings.length } });
+      } catch {
+        await record({ id: `${request.id}:reconciliation`, at: new Date().toISOString(), source: "governance", title: "主动处理 · 本地对账", status: "failed", model: "rules", summary: "本地对账失败，保留原任务；核实队列仍已登记。", error: "RECONCILIATION_FAILED" });
+      }
+    })().catch(() => {});
+  });
   return { ...request, reused: false };
 }
 
