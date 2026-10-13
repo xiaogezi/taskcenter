@@ -88,7 +88,8 @@ export async function prepareSessionSwitch(input, root, checkpoint) {
     return requestFor(raced.switch_id, input.session_id);
   }
   requireNoPending();
-  const prepared_at = new Date().toISOString(), expires_at = new Date(Date.now() + 15 * 60_000).toISOString();
+  const preparedTime = Date.now();
+  const prepared_at = new Date(preparedTime).toISOString(), expires_at = new Date(preparedTime + 15 * 60_000).toISOString();
   const generation = 1 + Math.max(0, ...journal().filter((item) => item.kind === "prepared" && item.session_id === input.session_id).map((item) => item.generation || 0));
   const recovery = { protocol: "taskcenter-recovery/v1", task_id: input.task_id, client_session_id: input.session_id,
     generation, subject: current.recovery_task.currentSubject, revision: current.revision, workspace: current.workspace,

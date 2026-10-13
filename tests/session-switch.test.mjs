@@ -41,6 +41,7 @@ test("host-confirmed one-use switch preserves a sealed predecessor and fails clo
     assert.equal(loadSessionRegistry()[session_id].workspace, workspace);
     const [prepared, duplicate] = await Promise.all([prepareSessionSwitch(request, sessions, checkpoint), prepareSessionSwitch(request, sessions, checkpoint)]);
     assert.equal(prepared.switch_id, duplicate.switch_id);
+    assert.equal(Date.parse(prepared.expires_at) - Date.parse(prepared.prepared_at), 15 * 60_000);
     assert.equal(prepared.host_action.executed, false);
     await assert.rejects(prepareSessionSwitch({ ...request, event_id: "competing" }, sessions, checkpoint), /PENDING_REQUEST_EXISTS/);
     await assert.rejects(prepareSessionSwitch({ ...request, next_goal: "tampered" }, sessions, checkpoint), /EVENT_CONFLICT/);
