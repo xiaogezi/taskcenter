@@ -5,6 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 
+export function parseInferenceJson(text) {
+  const fenced = typeof text === "string" && text.trim().match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
+  return JSON.parse(fenced ? fenced[1] : text);
+}
+
 // Inference has no tools, project context, persistent session, or delegation authority.
 export async function runClaudeInference({ profile, prompt, signal }) {
   const cwd = await mkdtemp(join(tmpdir(), "taskcenter-inference-"));

@@ -28,6 +28,19 @@ for (const [key, value] of Object.entries(envPaths)) {
 const { runReconciliation, queryFindings, lastReconciliation } = await import("../scripts/task-reconciler.mjs");
 const { recordTaskEvent, loadTasks } = await import("../scripts/task-ledger.mjs");
 
+test("最近对账从尾部跨块读取，跳过损坏与超大行并保留UTF-8", async () => {
+  const record = { type: "reconciliation.run", observedAt: "latest", text: "中文".repeat(40_000) };
+  const path = envPaths.TASKCENTER_TASK_RECONCILE_PATH;
+  await writeFile(path, `${JSON.stringify(record)}\n${"x".repeat(2 * 1024 * 1024 + 100)}\n{broken\n${JSON.stringify({ type: "other" })}\n`);
+  assert.deepEqual(lastReconciliation(), record);
+  await writeFile(path, JSON.stringify(record));
+  assert.deepEqual(lastReconciliation(), record);
+  await writeFile(path, "{broken\n");
+  assert.equal(lastReconciliation(), null);
+  await rm(path);
+  assert.equal(lastReconciliation(), null);
+});
+
 async function resetLedger() {
   for (const path of Object.values(envPaths)) {
     await rm(path, { force: true });

@@ -3,7 +3,7 @@
 //
 // 触发点：运行结束 / 回执到达时立即处理；服务启动时恢复未处理记录；低频扫描补漏。
 // 日常只读查询不经过本模块，不会出现“打开任务页面就改变账本”的副作用。
-import { readFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync, mkdirSync, openSync, closeSync, fstatSync, readSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { createHash } from "node:crypto";
@@ -145,14 +145,31 @@ export function queryFindings() {
 
 export function lastReconciliation() {
   if (!existsSync(taskReconcilePath)) return null;
-  const lines = readFileSync(taskReconcilePath, "utf8").split("\n").filter(Boolean);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    try {
-      const record = JSON.parse(lines[index]);
-      if (record.type === "reconciliation.run") return record;
-    } catch {
-      // 忽略损坏行继续向前找。
+  const descriptor = openSync(taskReconcilePath, "r");
+  try {
+    let position = fstatSync(descriptor).size;
+    let suffix = Buffer.alloc(0), oversized = false;
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    while (position > 0) {
+      const length = Math.min(position, chunk.length);
+      position -= length;
+      const count = readSync(descriptor, chunk, 0, length, position);
+      const block = Buffer.concat([chunk.subarray(0, count), suffix]);
+      let end = block.length;
+      for (let index = block.length - 1; index >= -1; index--) {
+        if (index === -1 && position > 0) break;
+        if (index >= 0 && block[index] !== 10) continue;
+        if (!oversized) try {
+          const record = JSON.parse(block.subarray(index + 1, end).toString("utf8"));
+          if (record?.type === "reconciliation.run") return record;
+        } catch { /* Ignore corrupt audit rows and continue backwards. */ }
+        oversized = false;
+        end = index;
+      }
+      // Match the JSONL reader's 2 MiB row budget; audit history itself is never truncated.
+      oversized ||= end > 2 * 1024 * 1024;
+      suffix = oversized ? Buffer.alloc(0) : Buffer.from(block.subarray(0, end));
     }
-  }
+  } finally { closeSync(descriptor); }
   return null;
 }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { parseInferenceJson } from "../scripts/claude-inference.mjs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,4 +115,8 @@ test("实际处置日志加入AI时间线，可按任务与来源查询成功和
   const receipt = await aiActivity({ ...options, params: new URLSearchParams({ task_id: "lost" }), tasks: [{ id: "lost", executionReconciliation: { event_id: "reconcile-lost", observed_at: "2026-10-12T00:00:01Z", state: "recovery_pending", basis: "session_end_unconfirmed", next_action: "恢复原任务" } }] });
   assert.equal(receipt.rows[0].id, "reconcile-lost");
   assert.equal(receipt.rows[0].result.next_action, "恢复原任务");
+});
+test("推理JSON兼容完整代码块，仍拒绝散文、多个代码块和无效JSON", () => {
+  for (const text of ['{"ok":true}', '```json\n{"ok":true}\n```', '  ```\n{"ok":true}\n```  ']) assert.deepEqual(parseInferenceJson(text), { ok: true });
+  for (const text of ['解释\n```json\n{"ok":true}\n```', '```json\n{}\n```\n```json\n{}\n```', '```json\ninvalid\n```']) assert.throws(() => parseInferenceJson(text));
 });

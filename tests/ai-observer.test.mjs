@@ -26,7 +26,7 @@ test("意图持久化、同目标复用，未完成时不同目标明确拒绝�
 
 test("用户意图传入分析及维护，不被 Jev observe 忽略，保存模型理解与结果", async t => {
   let prompt, queued;
-  const f = await fixture(t, { judge: async () => ({ status: "succeeded", answers: { participation: { choice: "observe" } } }), infer: async args => { prompt = args.prompt; return { text: JSON.stringify({ ...result, intent_understanding: "你希望修复导出缺行，我会核对完整性" }), model: profile.model }; }, enqueue: async (...args) => { queued = args; } });
+  const f = await fixture(t, { judge: async () => ({ status: "succeeded", answers: { participation: { choice: "observe" } } }), infer: async args => { prompt = args.prompt; return { text: `\`\`\`json\n${JSON.stringify({ ...result, intent_understanding: "你希望修复导出缺行，我会核对完整性" })}\n\`\`\``, model: profile.model }; }, enqueue: async (...args) => { queued = args; } });
   const work = { id: "intent-round", task_ids: [task.id], intent: "优先修复导出" };
   await f.observer.tick([task], profile, work);
   assert.ok(prompt.includes(work.intent));

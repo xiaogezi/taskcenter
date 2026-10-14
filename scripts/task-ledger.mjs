@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { taskTimeState, STALE_TASK_MS } from "../app/task-time-state.mjs";
@@ -1292,7 +1292,17 @@ function touchSession(event) {
 function persistTasks(tasks) {
   mkdirSync(dirname(taskLedgerPath), { recursive: true });
   const temporaryPath = `${taskLedgerPath}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(tasks, null, 2)}\n`, { mode: 0o600 });
+  // Serialize one task at a time so UTF-8 encoding never flattens a full ledger copy.
+  const descriptor = openSync(temporaryPath, "w", 0o600);
+  try {
+    writeFileSync(descriptor, "[\n");
+    for (let index = 0; index < tasks.length; index++) {
+      const buffer = Buffer.from(`${index ? ",\n" : ""}${JSON.stringify(tasks[index])}`);
+      let offset = 0;
+      while (offset < buffer.length) offset += writeSync(descriptor, buffer, offset, buffer.length - offset);
+    }
+    writeFileSync(descriptor, "\n]\n");
+  } finally { closeSync(descriptor); }
   renameSync(temporaryPath, taskLedgerPath);
   ledgerCache = null;
   normalizedTasksCache = null;
