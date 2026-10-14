@@ -86,7 +86,10 @@ test("缺失会话的待验收和已结束任务也归档，完成与验收状�
     const old = new Date(Date.now() - 600_000).toISOString();
     await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([{ ...loadTasks()[0], status, updatedAt: old, executionReconciliation: { basis: "session_missing", state: "recovery_pending" } }]));
     const before = loadTasks()[0];
-    await runReconciliation({ availableSessionIds: ["owner"], inspectSession: async () => { throw Object.assign(new Error("cleared"), { code: "CODEX_SESSION_NOT_FOUND" }); } });
+    await runReconciliation({ availableSessionIds: ["owner"], inspectSession: async (_id, _root, options) => {
+      assert.equal(options.presenceOnly, ["done_claimed", "verified", "cancelled"].includes(status));
+      throw Object.assign(new Error("cleared"), { code: "CODEX_SESSION_NOT_FOUND" });
+    } });
     const after = loadTasks()[0];
     assert.ok(after.archivedAt, status); assert.equal(after.status, status);
     assert.equal(after.acceptanceStatus, before.acceptanceStatus); assert.equal(after.verificationStatus, before.verificationStatus);

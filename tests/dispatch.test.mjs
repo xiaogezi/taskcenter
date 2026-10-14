@@ -21,6 +21,12 @@ test("会话根目录可读时缺失才明确判为清除，源目录缺失保�
   assert.throws(() => inspectSessionState(threadId, root), { code: "CODEX_SESSION_NOT_FOUND" });
   await assert.rejects(inspectSessionStateAsync(threadId, root), { code: "CODEX_SESSION_NOT_FOUND" });
   await assert.rejects(inspectSessionStateAsync(threadId, join(root, "unavailable")), error => error.code === "ENOENT");
+  await assert.rejects(inspectSessionStateAsync(threadId, root, { presenceOnly: true }), { code: "CODEX_SESSION_NOT_FOUND" });
+  await assert.rejects(inspectSessionStateAsync(threadId, join(root, "unavailable"), { presenceOnly: true }), error => error.code === "ENOENT");
+  const path = join(root, `${threadId}.jsonl`);
+  await writeFile(path, JSON.stringify({ type: "event_msg", timestamp: new Date().toISOString(), payload: { type: "task_started", turn_id: "active" } }));
+  assert.deepEqual(await inspectSessionStateAsync(threadId, root, { presenceOnly: true }), { sessionPath: path });
+  assert.equal((await inspectSessionStateAsync(threadId, root)).busy, true);
 });
 
 async function createFixture() {

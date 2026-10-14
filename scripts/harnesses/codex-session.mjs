@@ -49,10 +49,11 @@ export function inspectSessionState(threadId, sessionsRoot = defaultSessionsRoot
   return state.result();
 }
 
-export async function inspectSessionStateAsync(threadId, sessionsRoot = defaultSessionsRoot()) {
+export async function inspectSessionStateAsync(threadId, sessionsRoot = defaultSessionsRoot(), { presenceOnly = false } = {}) {
   readdirSync(sessionsRoot);
   const sessionPath = findSessionPath(threadId, sessionsRoot);
   if (!sessionPath) throw Object.assign(new Error("找不到目标 Session 的本地会话文件"), { code: "CODEX_SESSION_NOT_FOUND" });
+  if (presenceOnly) return { sessionPath };
   const state = sessionAccumulator(sessionPath);
   const stream = createReadStream(sessionPath, { encoding: "utf8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });

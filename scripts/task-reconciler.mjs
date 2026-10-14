@@ -81,7 +81,8 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       let terminal = null, basis = "", sessionMissing = false;
       if (running.length || !runs.length || task.agent === "codex") {
         let session;
-        try { session = await inspectSession(task.sessionId); }
+        // 已结束任务只判断会话缺失；无需重读历史内容推断执行结果。
+        try { session = await inspectSession(task.sessionId, undefined, { presenceOnly: !ACTIVE_TASK_STATUSES.has(task.status) }); }
         catch (error) { sessionMissing = task.agent === "codex" && error.code === "CODEX_SESSION_NOT_FOUND"; session = null; }
         // Session I/O yields; a concurrent task update invalidates the inspected snapshot.
         const current = loadTasks().find(item => item.id === task.id);
