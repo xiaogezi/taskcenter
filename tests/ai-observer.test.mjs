@@ -11,6 +11,29 @@ const profile = { model: "deepseek-test", effort: "low" };
 const task = { id: "current", workspace: "/project", title: "修复导出", goal: "导出全部记录", status: "in_progress", evidence: ["两条而非三条"], currentStep: "检查缺行" };
 const result = { decision: "evidence", reason: "期望与结果有差异", summary: "缺少完整导出证据", findings: [{ severity: "medium", basis: "observed", message: "导出数量不同", evidence_refs: ["evidence:1"] }], next_steps: ["复核数量"] };
 
+test("CLI失败后冷却期不重复推理，重启与冷却结束仍接续原目标", async t => {
+  let calls = 0;
+  const f = await fixture(t, { infer: async () => {
+    if (++calls === 1) throw new Error("temporary failure");
+    return { text: JSON.stringify({ ...result, intent_understanding: "继续原目标" }), model: profile.model };
+  } });
+  const request = { id: "retry-intent", task_ids: [task.id], intent: "核对导出" };
+  await f.observer.tick([task], profile, request);
+  assert.equal(f.rows.at(-1).status, "degraded");
+  const restarted = await createAutomaticObserver(f.options);
+  f.advance(299_999);
+  await restarted.tick([task], profile, request);
+  assert.equal(calls, 1);
+  f.advance(1);
+  await restarted.tick([task], profile, request);
+  assert.equal(calls, 2);
+  assert.equal(f.rows.at(-1).status, "succeeded");
+  assert.equal(f.rows.at(-1).intent, request.intent);
+  await restarted.tick([task], profile, request);
+  assert.equal(calls, 2);
+  assert.equal(JSON.parse(await readFile(f.options.statePath, "utf8")).tasks[task.id].retry_at, undefined);
+});
+
 test("意图持久化、同目标复用，未完成时不同目标明确拒绝，敏感输入不落盘", async t => {
   const f = await fixture(t);
   const args = { tasks: [task], workspace: "/project", profile, runtime: join(f.options.statePath, ".."), intent: " 优先修复导出 " };

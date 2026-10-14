@@ -66,7 +66,9 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
       for (const task of tasks) {
         if (!task.workspace || (profile.automatic?.scope !== "all_projects" && resolve(task.workspace) !== resolve(workspace)) || task.archivedAt) continue;
         if (![...activeStatuses, "done_claimed"].includes(task.status)) continue;
-        const forced = Boolean(request?.task_ids.includes(task.id) && state.tasks[task.id]?.request_id !== request.id);
+        const previous = state.tasks[task.id];
+        const retryDue = Boolean(previous?.retry_at && now() >= previous.retry_at);
+        const forced = Boolean(request?.task_ids.includes(task.id) && (previous?.request_id !== request.id || retryDue));
         let snapshot;
         try { snapshot = governanceSnapshot(task, "evidence"); }
         catch (error) {
@@ -83,8 +85,7 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
           state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now(), snapshot_version: snapshotVersion };
           continue;
         }
-        const previous = state.tasks[task.id];
-        if (!forced && ((previous?.hash === snapshot.input_hash && (!profile.automatic?.actions || previous.actions_enabled)) || (previous && now() - previous.handled_at < 60_000))) continue;
+        if (!forced && ((previous?.hash === snapshot.input_hash && !retryDue && (!profile.automatic?.actions || previous.actions_enabled)) || (previous && now() - previous.handled_at < 60_000))) continue;
         candidates.push({ task, snapshot, previous, forced });
       }
       initialized = true;
@@ -99,7 +100,7 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
       let outcome;
       const emit = row => { if (["succeeded", "skipped", "degraded"].includes(row.status)) outcome = { summary: row.summary, understanding: row.result?.intent_understanding, decision: row.decision, status: row.status }; return record({ ...base, id: `${runId}:${row.status}`, at: new Date(now()).toISOString(), ...row }); };
       active = true;
-      let cancelled = false;
+      let cancelled = false, retryAt;
       health.current_task_id = task.id; health.status = "analyzing";
       const started = performance.now();
       try {
@@ -135,12 +136,13 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
         }
         const code = error.code === "ENOENT" ? "AI_CLI_UNAVAILABLE" : error.killed ? "AI_TIMEOUT" : ["AI_COOLDOWN", "AI_INVALID_OUTPUT", "CLI_MODEL_MISMATCH"].includes(error.message) ? error.message : "AI_CALL_FAILED";
         if (code !== "AI_COOLDOWN") state.cooldown_until = now() + 300_000;
+        retryAt = state.cooldown_until;
         const decision = task.status === "blocked" || task.blocker ? "blockers" : "evidence";
         const result = ruleResult(task, decision);
         await emit({ status: "degraded", model: "rules", decision, decision_reason: "AI 不可用，按已登记状态执行规则检查", summary: result.summary, result, fallback_reason: code, duration_ms: Math.round(performance.now() - started) });
         if (enqueue) await enqueue(task, result, profile, work);
       } finally {
-        if (!cancelled) state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now(), snapshot_version: snapshotVersion, actions_enabled: Boolean(profile.automatic?.actions), work_result: forced ? outcome : previous?.work_result, request_id: forced ? request.id : previous?.request_id };
+        if (!cancelled) state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now(), snapshot_version: snapshotVersion, actions_enabled: Boolean(profile.automatic?.actions), retry_at: retryAt, work_result: forced ? outcome : previous?.work_result, request_id: forced ? request.id : previous?.request_id };
         await save();
         active = false; health.status = "watching"; health.current_task_id = null;
         health.pending_tasks = Math.max(0, health.pending_tasks - 1);
