@@ -42,7 +42,8 @@ function usePending() {
 }
 
 function useUrlState(name: string, fallback: string) {
-  const [value, setValue] = useState(() => typeof window === "undefined" ? fallback : new URLSearchParams(window.location.search).get(name) || fallback);
+  const [value, setValue] = useState(fallback);
+  useEffect(() => { const timer = window.setTimeout(() => setValue(new URLSearchParams(window.location.search).get(name) || fallback), 0); return () => window.clearTimeout(timer); }, [name, fallback]);
   const update = (next: string) => { const params = new URLSearchParams(window.location.search); if (next === fallback) params.delete(name); else params.set(name, next); window.history.pushState({}, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`); setValue(next); };
   return [value, update] as const;
 }
