@@ -77,24 +77,26 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       if (task.cliRuns?.some(run => run.status === "active")) continue;
       const runs = task.runs || [], running = activeRuns(task);
       const startedAt = runs.at(-1)?.started_at || task.activeStartedAt || task.createdAt;
-      let terminal = null, basis = "";
-      if (running.length || !runs.length) {
+      let terminal = null, basis = "", sessionMissing = false;
+      if (running.length || !runs.length || task.agent === "codex") {
         let session;
-        try { session = await inspectSession(task.sessionId); } catch { session = null; }
+        try { session = await inspectSession(task.sessionId); }
+        catch (error) { sessionMissing = task.agent === "codex" && error.code === "CODEX_SESSION_NOT_FOUND"; session = null; }
         // Session I/O yields; a concurrent task update invalidates the inspected snapshot.
         const current = loadTasks().find(item => item.id === task.id);
         if (!current || current.lastEventId !== task.lastEventId) continue;
         if (session?.busy) continue;
-        if (session?.lastTerminal && Number.isFinite(Date.parse(startedAt))
+        if (sessionMissing) basis = "session_missing";
+        else if (session?.lastTerminal && Number.isFinite(Date.parse(startedAt))
           && Date.parse(session.lastTerminal.at) >= Date.parse(startedAt)) {
           terminal = session.lastTerminal;
           basis = `session:${task.sessionId}/turn:${terminal.turn_id}/${terminal.type}@${terminal.at}`;
-        } else basis = !runs.length ? "legacy_run_missing" : "session_end_unconfirmed";
+        } else basis = !runs.length ? "legacy_run_missing" : running.length ? "session_end_unconfirmed" : task.executionReconciliation?.terminal?.at === runs.at(-1).ended_at ? task.executionReconciliation.basis : `run:${runs.at(-1).run_id}/${runs.at(-1).ended_reason}@${runs.at(-1).ended_at}`;
       } else basis = task.executionReconciliation?.terminal?.at === runs.at(-1).ended_at
         ? task.executionReconciliation.basis
         : `run:${runs.at(-1).run_id}/${runs.at(-1).ended_reason}@${runs.at(-1).ended_at}`;
-      const state = terminal || (!running.length && runs.length) ? "execution_unconfirmed" : "recovery_pending";
-      const nextAction = "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
+      const state = sessionMissing ? "recovery_pending" : terminal || (!running.length && runs.length) ? "execution_unconfirmed" : "recovery_pending";
+      const nextAction = sessionMissing ? "原会话文件已清除；核对运行者与现有产物后，由维护宿主使用新 Session 接续原任务和契约。" : "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
       const id = `reconcile-${createHash("sha256").update(JSON.stringify([task.id, startedAt, basis, task.currentSubject])).digest("hex")}`;
       const completion = computeCompletionReadiness({ ...task, status: "done_claimed" });
       const fresh = [...(task.requirementResults || []), ...(task.verificationClaims || [])]

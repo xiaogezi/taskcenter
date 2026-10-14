@@ -128,6 +128,7 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
           await emit({ status: value.decision === "observe" ? "skipped" : "succeeded", model: receipt.model, decision: value.decision, decision_reason: value.reason, summary: result.summary, result, usage: receipt.usage, duration_ms: Math.round(performance.now() - started) });
           if (value.decision !== "observe" && enqueue) await enqueue(task, result, profile, work);
         }
+        if (task.executionReconciliation?.basis === "session_missing" && outcome?.decision === "observe" && enqueue) await enqueue(task, ruleResult(task, "blockers"), profile, work);
       } catch (error) {
         if (error.name === "AbortError") {
           cancelled = true;

@@ -11,6 +11,14 @@ const profile = { model: "deepseek-test", effort: "low" };
 const task = { id: "current", workspace: "/project", title: "修复导出", goal: "导出全部记录", status: "in_progress", evidence: ["两条而非三条"], currentStep: "检查缺行" };
 const result = { decision: "evidence", reason: "期望与结果有差异", summary: "缺少完整导出证据", findings: [{ severity: "medium", basis: "observed", message: "导出数量不同", evidence_refs: ["evidence:1"] }], next_steps: ["复核数量"] };
 
+test("确认会话清除的恢复事实不被observe建议吞掉，仍进入受保护维护队列", async t => {
+  let queued;
+  const f = await fixture(t, { infer: async () => ({ text: JSON.stringify({ ...result, decision: "observe", findings: [], next_steps: [] }) }), enqueue: async (...args) => { queued = args; } });
+  const orphan = { ...task, executionReconciliation: { basis: "session_missing", state: "recovery_pending" } };
+  await f.observer.tick([orphan], profile);
+  assert.equal(queued[0].id, task.id);
+});
+
 test("CLI失败后冷却期不重复推理，重启与冷却结束仍接续原目标", async t => {
   let calls = 0;
   const f = await fixture(t, { infer: async () => {

@@ -115,6 +115,8 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
   const save = () => writeJsonAtomic(statePath, state);
   let active = false;
   const health = { status: "idle", task_id: null };
+  // A cleared Codex session needs a persisted observation and five quiet minutes before takeover.
+  const missingOwner = task => task.agent === "codex" && task.executionReconciliation?.basis === "session_missing" && now() - Date.parse(task.updatedAt || task.createdAt) >= 300_000;
   const emit = async (action, row) => {
     const at = new Date(now()).toISOString();
     action.updated_at = at;
@@ -133,7 +135,7 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
         if (work?.request_id && old.request_id !== work.request_id) { old.pending_work = { analysis, work: { ...work, intent } }; await save(); }
         return;
       }
-      if (old && ["queued", "retry_wait"].includes(old.status) && (!work?.request_id || old.request_id === work.request_id)) return;
+      if (old && old.input_hash === snapshot.input_hash && ["queued", "retry_wait"].includes(old.status) && (!work?.request_id || old.request_id === work.request_id)) return;
       if (old?.input_hash === snapshot.input_hash && old.status !== "attention" && (!work?.request_id || old.request_id === work.request_id)) return;
       const action = { id: `action-${randomUUID()}`, task_id: task.id, session_id: randomUUID(), expected_event_id: task.lastEventId, input_hash: snapshot.input_hash,
         analysis, intent, request_id: work?.request_id, model: profile.model, status: "queued", attempts: 0, updated_at: new Date(now()).toISOString(),
@@ -172,11 +174,14 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
           if (task.cliRuns?.some(run => run.status === "active")) continue;
           let safe = (task.sessionId === action.session_id && action.attempts > 0) || task.sessionId === action.stopped_session_id;
           if (!safe) {
-            try { const session = await inspect(task.sessionId); safe = !session.busy && Boolean(session.lastTerminal); } catch { safe = false; }
+            try { const session = await inspect(task.sessionId); safe = !session.busy && Boolean(session.lastTerminal); }
+            catch (error) { safe = error.code === "CODEX_SESSION_NOT_FOUND" && missingOwner(task); }
           }
           // Check all other active owners in this workspace before handing it to a CLI.
           if (safe) for (const other of tasks().filter(item => item.id !== task.id && item.workspace === task.workspace && activeStatuses.has(item.status))) {
-            try { if ((await inspect(other.sessionId)).busy) safe = false; } catch { safe = false; }
+            if (other.cliRuns?.some(run => run.status === "active")) { safe = false; break; }
+            try { if ((await inspect(other.sessionId)).busy) safe = false; }
+            catch (error) { if (error.code !== "CODEX_SESSION_NOT_FOUND" || !missingOwner(other)) safe = false; }
           }
           if (!safe) {
             action.retry_at = now() + 60_000;

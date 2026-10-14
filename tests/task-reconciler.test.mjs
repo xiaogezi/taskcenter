@@ -28,6 +28,19 @@ for (const [key, value] of Object.entries(envPaths)) {
 const { runReconciliation, queryFindings, lastReconciliation } = await import("../scripts/task-reconciler.mjs");
 const { recordTaskEvent, loadTasks } = await import("../scripts/task-ledger.mjs");
 
+test("确认会话清除持久登记原任务恢复依据，重复对账不重复产生动作", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", task_id: "cleared", session_id: "cleared-session", agent: "codex", goal: "保留原目标", title: "会话清除" });
+  const inspectSession = async () => { throw Object.assign(new Error("cleared"), { code: "CODEX_SESSION_NOT_FOUND" }); };
+  await runReconciliation({ availableSessionIds: [], inspectSession });
+  const task = loadTasks().find(task => task.id === "cleared");
+  assert.equal(task.executionReconciliation.basis, "session_missing");
+  assert.equal(task.executionReconciliation.state, "recovery_pending");
+  assert.equal(task.goal, "保留原目标");
+  assert.equal(task.sessionId, "cleared-session");
+  assert.equal((await runReconciliation({ availableSessionIds: [], inspectSession })).actions.length, 0);
+});
+
 test("最近对账从尾部跨块读取，跳过损坏与超大行并保留UTF-8", async () => {
   const record = { type: "reconciliation.run", observedAt: "latest", text: "中文".repeat(40_000) };
   const path = envPaths.TASKCENTER_TASK_RECONCILE_PATH;

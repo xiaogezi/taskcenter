@@ -32,6 +32,40 @@ const profile = { model: "test", effort: "low", automatic: { actions: true } };
 const task = { id: "task", sessionId: "original", lastEventId: "event-1", workspace: "/project", title: "维护", goal: "修复异常", status: "in_progress" };
 const analysis = { summary: "核对异常", next_steps: ["检查现场"] };
 
+test("确认清除且稳定的Codex会话可接续原任务，同工作区孤儿不阻挡", async t => {
+  const orphan = { ...task, agent: "codex", updatedAt: new Date(0).toISOString(), executionReconciliation: { basis: "session_missing" } };
+  const f = await fixture(t, { tasks: () => [orphan, { ...orphan, id: "other", sessionId: "other" }], inspect: async () => { throw Object.assign(new Error("cleared"), { code: "CODEX_SESSION_NOT_FOUND" }); } });
+  await f.worker.enqueue(orphan, analysis, profile); await f.worker.tick(profile);
+  assert.equal(f.calls(), 1);
+  const action = (await f.state()).actions.task;
+  assert.equal(action.task_id, task.id);
+  assert.notEqual(action.session_id, task.sessionId);
+});
+
+test("源不可读、未确认、近期变化、非Codex及其他活跃执行者都不允许孤儿接管", async t => {
+  const orphan = { ...task, agent: "codex", updatedAt: new Date(0).toISOString(), executionReconciliation: { basis: "session_missing" } };
+  for (const scenario of ["unreadable", "unconfirmed", "recent", "claude", "busy", "cli"]) {
+    const current = { ...orphan, ...(scenario === "recent" ? { updatedAt: new Date(999_999).toISOString() } : scenario === "claude" ? { agent: "claude" } : scenario === "unconfirmed" ? { executionReconciliation: undefined } : {}) };
+    const other = { ...orphan, id: "other", sessionId: "other", ...(scenario === "cli" ? { cliRuns: [{ status: "active" }] } : {}) };
+    const f = await fixture(t, { tasks: () => [current, other], inspect: async id => {
+      if (scenario === "busy" && id === "other") return { busy: true };
+      throw Object.assign(new Error("read"), { code: scenario === "unreadable" ? "EACCES" : "CODEX_SESSION_NOT_FOUND" });
+    } });
+    await f.worker.enqueue(current, analysis, profile); await f.worker.tick(profile);
+    assert.equal(f.calls(), 0, scenario);
+  }
+});
+
+test("待执行的旧分析被新快照替换，不因旧事件变化取消唯一恢复机会", async t => {
+  const f = await fixture(t);
+  await f.worker.enqueue(task, analysis, profile);
+  const changed = { ...task, lastEventId: "reconciled", executionReconciliation: { basis: "session_missing" } };
+  f.update(changed);
+  await f.worker.enqueue(changed, analysis, profile);
+  await f.worker.tick(profile);
+  assert.equal(f.calls(), 1);
+});
+
 test("维护队列持久保存本轮目标，CLI 执行器收到同一目标", async t => {
   let received;
   const f = await fixture(t, { execute: async ({ action }) => { received = action; return { tool_calls: 1 }; } });

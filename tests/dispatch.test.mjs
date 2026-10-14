@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,6 +14,14 @@ import { inspectSessionState } from "../scripts/session-cli.mjs";
 import { inspectSessionStateAsync } from "../scripts/harnesses/codex-session.mjs";
 
 const threadId = "00000000-0000-4000-8000-000000000001";
+
+test("会话根目录可读时缺失才明确判为清除，源目录缺失保持未知", async t => {
+  const root = await mkdtemp(join(tmpdir(), "missing-session-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.throws(() => inspectSessionState(threadId, root), { code: "CODEX_SESSION_NOT_FOUND" });
+  await assert.rejects(inspectSessionStateAsync(threadId, root), { code: "CODEX_SESSION_NOT_FOUND" });
+  await assert.rejects(inspectSessionStateAsync(threadId, join(root, "unavailable")), error => error.code === "ENOENT");
+});
 
 async function createFixture() {
   const directory = await mkdtemp(join(tmpdir(), "taskcenter-dispatch-"));
