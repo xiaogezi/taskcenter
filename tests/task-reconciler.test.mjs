@@ -93,6 +93,39 @@ test("历史未知客户端使用真实登记会话确认Codex，但不覆盖明
   }
 });
 
+test("已结束的会话和历史无Run失效承载自动归档，来源变化与实际执行仍保护", async () => {
+  for (const scenario of ["ended", "claude", "unknown", "busy", "source_recent", "task_recent", "cli", "run_active", "new_terminal", "unreadable", "planned"]) {
+    await resetLedger();
+    const legacy = ["claude", "unknown", "planned"].includes(scenario);
+    const agent = legacy ? scenario === "unknown" ? "unknown" : "claude" : "codex";
+    recordTaskEvent({ type: "session.register", session_id: "idle-owner", agent });
+    recordTaskEvent({ type: "task.create", task_id: "idle-task", session_id: "idle-owner", agent, status: "in_progress", goal: "原目标", evidence: ["原证据"] });
+    const old = new Date(Date.now() - 600_000).toISOString();
+    const terminal = { type: "task_complete", turn_id: "old-turn", at: old };
+    const before = { ...loadTasks()[0], updatedAt: scenario === "task_recent" ? new Date().toISOString() : old,
+      status: scenario === "planned" ? "planned" : "in_progress",
+      runs: legacy ? [] : [{ run_id: "old-run", started_at: old, ended_at: scenario === "run_active" ? "" : old, ended_reason: "task_complete" }],
+      executionReconciliation: { state: legacy ? "recovery_pending" : "execution_unconfirmed", basis: legacy ? "legacy_run_missing" : "session:old", terminal: legacy ? null : terminal },
+      ...(scenario === "cli" ? { cliRuns: [{ status: "active" }] } : {}) };
+    await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([before]));
+    await writeFile(envPaths.TASKCENTER_SESSION_REGISTRY_PATH, JSON.stringify({ "idle-owner": { sessionId: "idle-owner", agent, lastSeenAt: scenario === "source_recent" ? new Date().toISOString() : old } }));
+    const result = await runReconciliation({ availableSessionIds: ["idle-owner"], inspectSession: async () => {
+      if (scenario === "unreadable") throw Object.assign(new Error("unreadable"), { code: "EACCES" });
+      return { busy: scenario === "busy", lastTerminal: legacy ? null : scenario === "new_terminal" ? { ...terminal, turn_id: "new-turn" } : terminal };
+    } });
+    const after = loadTasks()[0];
+    const archived = ["ended", "claude", "unknown"].includes(scenario);
+    assert.equal(Boolean(after.archivedAt), archived, scenario);
+    assert.equal(after.status, before.status); assert.equal(after.agent, before.agent);
+    assert.deepEqual(after.evidence, before.evidence); assert.equal(after.acceptanceStatus, before.acceptanceStatus);
+    if (archived) {
+      assert.equal(after.executionReconciliation.basis, "owner_inactive");
+      assert.equal(result.actions[0].action, "orphan_archived");
+      assert.equal((await runReconciliation({ availableSessionIds: ["idle-owner"], inspectSession: () => assert.fail("已归档不再读取") })).actions.length, 0);
+    }
+  }
+});
+
 test("缺失会话的待验收和已结束任务也归档，完成与验收状态保持原样", async () => {
   for (const status of ["planned", "blocked", "done_claimed", "verified", "cancelled"]) {
     await resetLedger();

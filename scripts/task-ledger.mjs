@@ -149,6 +149,18 @@ export function taskSessionAgent(task) {
     : loadSessionRegistry()[canonicalSessionId(task.sessionId)]?.agent || "unknown";
 }
 
+export function inactiveOwnerArchiveReady(task, terminal, now = Date.now()) {
+  if (task.status !== "in_progress" || task.cliRuns?.some(run => run.status === "active")
+    || task.runs?.some(run => !run.ended_at)) return false;
+  const source = loadSessionRegistry()[canonicalSessionId(task.sessionId)];
+  const quietSince = Math.max(Date.parse(task.updatedAt || task.createdAt), Date.parse(source?.lastSeenAt || task.createdAt));
+  if (!Number.isFinite(quietSince) || now - quietSince < 300_000) return false;
+  const prior = task.executionReconciliation;
+  if (terminal) return Boolean(prior?.terminal && ["at", "type", "turn_id"].every(key => prior.terminal[key] === terminal[key]));
+  return Boolean(source && taskSessionAgent(task) !== "codex" && !task.runs?.length
+    && ["legacy_run_missing", "owner_inactive"].includes(prior?.basis));
+}
+
 export function loadVisibleTasks() {
   return loadTasks().filter((task) => !task.archivedAt && !isContextShadowTask(task));
 }
@@ -1074,10 +1086,12 @@ function applyEvent(current, event) {
     if (observation.terminal && (!Number.isFinite(Date.parse(observation.terminal.at))
       || !["task_complete", "task_failed", "turn_aborted", "turn_failed"].includes(observation.terminal.type)
       || runs.some(run => Date.parse(run.started_at) > Date.parse(observation.terminal.at)))) throw new TaskLedgerError(400, "运行结束事实无效。");
-    if (event.archived_at && (taskSessionAgent(current) !== "codex" || observation.basis !== "session_missing"
-      || current.executionReconciliation?.basis !== "session_missing" || event.archived_at === "__UNARCHIVE__"
+    const missingOwner = taskSessionAgent(current) === "codex" && observation.basis === "session_missing"
+      && current.executionReconciliation?.basis === "session_missing";
+    const inactiveOwner = observation.basis === "owner_inactive" && inactiveOwnerArchiveReady(current, observation.terminal, Date.parse(event.created_at));
+    if (event.archived_at && ((!missingOwner && !inactiveOwner) || event.archived_at === "__UNARCHIVE__"
       || !(Date.parse(event.created_at) - Date.parse(current.updatedAt || current.createdAt) >= 300_000)
-      || current.cliRuns?.some(run => run.status === "active"))) throw new TaskLedgerError(409, "孤儿归档需要已确认的会话缺失、静默期及无活跃CLI。");
+      || current.cliRuns?.some(run => run.status === "active"))) throw new TaskLedgerError(409, "孤儿归档需要持久承载失效事实、静默期及无活跃CLI。");
     const next = { ...current, runs, executionReconciliation: { ...observation, event_id: event.event_id, observed_at: event.created_at }, updatedAt: event.created_at, lastEventId: event.event_id };
     if (event.archived_at) {
       next.archivedAt = event.archived_at;
@@ -1278,7 +1292,8 @@ function auditState(task) {
 }
 
 function touchSession(event) {
-  if (!event.session_id) return;
+  // 机械观测不代表原宿主仍活跃，不能刷新其来源活跃时间。
+  if (!event.session_id || event.type === "task.execution_reconciled") return;
   const registry = loadSessionRegistry();
   const current = registry[event.session_id];
   if (event.type === "session.register" || current) {

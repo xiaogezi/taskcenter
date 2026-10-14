@@ -125,7 +125,7 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
   const worker = {
     health,
     async enqueue(task, analysis, profile, work) {
-      if (profile.automatic?.actions !== true || task.archivedAt || task.executionReconciliation?.basis === "session_missing" || !activeStatuses.has(task.status)) return;
+      if (profile.automatic?.actions !== true || task.archivedAt || ["session_missing", "owner_inactive"].includes(task.executionReconciliation?.basis) || !activeStatuses.has(task.status)) return;
       const snapshot = governanceSnapshot(task, "evidence");
       const old = state.actions[task.id];
       const intent = validateWorkIntent(work?.intent);
@@ -162,9 +162,9 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
           }
           if (!["queued", "retry_wait", "attention"].includes(action.status)) continue;
           let task = tasks().find(item => item.id === action.task_id);
-          if (finished(task) || !task || task.archivedAt || task.executionReconciliation?.basis === "session_missing" || !activeStatuses.has(task.status)) {
+          if (finished(task) || !task || task.archivedAt || ["session_missing", "owner_inactive"].includes(task.executionReconciliation?.basis) || !activeStatuses.has(task.status)) {
             action.status = finished(task) ? "completed" : "cancelled"; await save();
-            await emit(action, { status: action.status, summary: finished(task) ? "执行前核对：交付证据已就绪" : "任务已结束、归档或原会话缺失，取消待执行动作，未启动接续" }); continue;
+            await emit(action, { status: action.status, summary: finished(task) ? "执行前核对：交付证据已就绪" : "任务已结束、归档或原执行承载失效，取消待执行动作，未启动接续" }); continue;
           }
           if ((action.status === "attention" && (!action.pid || action.attempts >= 3)) || now() < (action.retry_at || 0)) continue;
           if (action.attempts === 0 && task.lastEventId !== action.expected_event_id) {

@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { taskReconcilePath } from "./task-ledger.mjs";
-import { reconcileTasks, loadTasks, recordTaskEvent, isContextShadowTask, taskSessionAgent } from "./task-ledger.mjs";
+import { reconcileTasks, loadTasks, recordTaskEvent, isContextShadowTask, taskSessionAgent, inactiveOwnerArchiveReady } from "./task-ledger.mjs";
 import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
 import { computeCompletionReadiness, sameSubject } from "./completion-state.mjs";
 import { isProcessTreeAlive } from "./process-tree.mjs";
@@ -78,12 +78,15 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       if (task.cliRuns?.some(run => run.status === "active")) continue;
       const runs = task.runs || [], running = activeRuns(task);
       const startedAt = runs.at(-1)?.started_at || task.activeStartedAt || task.createdAt;
-      let terminal = null, basis = "", sessionMissing = false;
+      let terminal = null, basis = "", sessionMissing = false, sessionReadFailed = false;
       if (running.length || !runs.length || taskSessionAgent(task) === "codex") {
         let session;
         // 已结束任务只判断会话缺失；无需重读历史内容推断执行结果。
-        try { session = await inspectSession(task.sessionId, undefined, { presenceOnly: !ACTIVE_TASK_STATUSES.has(task.status) }); }
-        catch (error) { sessionMissing = taskSessionAgent(task) === "codex" && error.code === "CODEX_SESSION_NOT_FOUND"; session = null; }
+        try {
+          if (taskSessionAgent(task) === "codex" || inspectSession !== inspectSessionStateAsync)
+            session = await inspectSession(task.sessionId, undefined, { presenceOnly: !ACTIVE_TASK_STATUSES.has(task.status) });
+        }
+        catch (error) { sessionReadFailed = true; sessionMissing = taskSessionAgent(task) === "codex" && error.code === "CODEX_SESSION_NOT_FOUND"; session = null; }
         // Session I/O yields; a concurrent task update invalidates the inspected snapshot.
         const current = loadTasks().find(item => item.id === task.id);
         if (!current || current.lastEventId !== task.lastEventId) continue;
@@ -98,9 +101,11 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
         ? task.executionReconciliation.basis
         : `run:${runs.at(-1).run_id}/${runs.at(-1).ended_reason}@${runs.at(-1).ended_at}`;
       if (!ACTIVE_TASK_STATUSES.has(task.status) && !sessionMissing) continue;
+      const inactiveOwner = !sessionMissing && !sessionReadFailed && inactiveOwnerArchiveReady(task, terminal);
+      if (inactiveOwner) basis = "owner_inactive";
       const state = sessionMissing ? "recovery_pending" : terminal || (!running.length && runs.length) ? "execution_unconfirmed" : "recovery_pending";
-      const archive = sessionMissing && task.executionReconciliation?.basis === "session_missing" && Date.now() - Date.parse(task.updatedAt || task.createdAt) >= 300_000;
-      const nextAction = sessionMissing ? archive ? "原会话确认缺失且无活跃执行者，任务已自动归档；契约、证据及未完成状态保留，需要继续时先取消归档并绑定真实 Session。" : "原会话文件缺失，等待五分钟静默核对；无活跃执行者时默认归档，保留契约、证据及未完成状态。" : "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
+      const archive = inactiveOwner || (sessionMissing && task.executionReconciliation?.basis === "session_missing" && Date.now() - Date.parse(task.updatedAt || task.createdAt) >= 300_000);
+      const nextAction = archive ? "原执行承载已失效且无活跃执行者，任务已自动归档；契约、证据及未完成状态保留，需要继续时先取消归档并绑定真实 Session。" : sessionMissing ? "原会话文件缺失，等待五分钟静默核对；无活跃执行者时默认归档，保留契约、证据及未完成状态。" : "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
       const id = `reconcile-${createHash("sha256").update(JSON.stringify([task.id, startedAt, basis, task.currentSubject, archive ? task.lastEventId : ""])).digest("hex")}`;
       const completion = computeCompletionReadiness({ ...task, status: "done_claimed" });
       const fresh = [...(task.requirementResults || []), ...(task.verificationClaims || [])]
@@ -109,7 +114,7 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
           && sameSubject(item.subject_ref, task.currentSubject));
       const completedRun = terminal?.type === "task_complete" || (!running.length && runs.at(-1)?.ended_reason === "completed");
       try {
-        if (!sessionMissing && completedRun && task.currentSubject?.type !== "none" && task.currentSubject && task.evidence?.length && fresh && completion.completionClaim.allowed) {
+        if (!archive && !sessionMissing && completedRun && task.currentSubject?.type !== "none" && task.currentSubject && task.evidence?.length && fresh && completion.completionClaim.allowed) {
           const result = recordTaskEvent({ type: "task.close", event_id: `${id}-close`, task_id: task.id, session_id: task.sessionId, status: "done_claimed", subject_ref: task.currentSubject, tests: task.tests || [], evidence: task.evidence, current_step: "自动对账：当前版本交付证据满足契约，补齐完成声明", next_action: "由独立授权主体验收；自动对账不代替验收。" });
           if (!result.idempotent) actions.push({ event_id: result.event.event_id, task_id: task.id, action: "delivery_reconciled", status: "succeeded", basis });
         } else if (archive || task.executionReconciliation?.basis !== basis) {

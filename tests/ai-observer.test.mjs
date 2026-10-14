@@ -14,11 +14,13 @@ const result = { decision: "evidence", reason: "期望与结果有差异", summa
 test("确认会话缺失由本地对账归档，不调用模型或进入接续队列", async t => {
   let queued;
   const f = await fixture(t, { infer: async () => assert.fail("确定性归档无需模型"), enqueue: async (...args) => { queued = args; } });
-  const orphan = { ...task, executionReconciliation: { basis: "session_missing", state: "recovery_pending" } };
-  await f.observer.tick([orphan], profile);
-  assert.equal(queued, undefined);
-  const work = await requestAutomaticWork({ tasks: [orphan], workspace: "/project", profile, runtime: join(f.options.statePath, "..") });
-  assert.deepEqual(work.task_ids, []);
+  for (const basis of ["session_missing", "owner_inactive"]) {
+    const orphan = { ...task, executionReconciliation: { basis, state: "recovery_pending" } };
+    await f.observer.tick([orphan], profile);
+    assert.equal(queued, undefined);
+    const work = await requestAutomaticWork({ tasks: [orphan], workspace: "/project", profile, runtime: join(f.options.statePath, "..") });
+    assert.deepEqual(work.task_ids, []);
+  }
 });
 
 test("CLI失败后冷却期不重复推理，重启与冷却结束仍接续原目标", async t => {
