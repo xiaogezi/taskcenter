@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { taskReconcilePath } from "./task-ledger.mjs";
-import { reconcileTasks, loadTasks, recordTaskEvent, isContextShadowTask } from "./task-ledger.mjs";
+import { reconcileTasks, loadTasks, recordTaskEvent, isContextShadowTask, taskSessionAgent } from "./task-ledger.mjs";
 import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
 import { computeCompletionReadiness, sameSubject } from "./completion-state.mjs";
 import { isProcessTreeAlive } from "./process-tree.mjs";
@@ -79,11 +79,11 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       const runs = task.runs || [], running = activeRuns(task);
       const startedAt = runs.at(-1)?.started_at || task.activeStartedAt || task.createdAt;
       let terminal = null, basis = "", sessionMissing = false;
-      if (running.length || !runs.length || task.agent === "codex") {
+      if (running.length || !runs.length || taskSessionAgent(task) === "codex") {
         let session;
         // 已结束任务只判断会话缺失；无需重读历史内容推断执行结果。
         try { session = await inspectSession(task.sessionId, undefined, { presenceOnly: !ACTIVE_TASK_STATUSES.has(task.status) }); }
-        catch (error) { sessionMissing = task.agent === "codex" && error.code === "CODEX_SESSION_NOT_FOUND"; session = null; }
+        catch (error) { sessionMissing = taskSessionAgent(task) === "codex" && error.code === "CODEX_SESSION_NOT_FOUND"; session = null; }
         // Session I/O yields; a concurrent task update invalidates the inspected snapshot.
         const current = loadTasks().find(item => item.id === task.id);
         if (!current || current.lastEventId !== task.lastEventId) continue;

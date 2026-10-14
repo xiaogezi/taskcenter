@@ -144,6 +144,11 @@ export function isContextShadowTask(taskOrId) {
   return contextShadowPattern.test(String(taskId || ""));
 }
 
+export function taskSessionAgent(task) {
+  return task.agent && task.agent !== "unknown" ? task.agent
+    : loadSessionRegistry()[canonicalSessionId(task.sessionId)]?.agent || "unknown";
+}
+
 export function loadVisibleTasks() {
   return loadTasks().filter((task) => !task.archivedAt && !isContextShadowTask(task));
 }
@@ -1061,7 +1066,7 @@ function normalizeEvent(input, current = null, legacyText = false) {
 function applyEvent(current, event) {
   if (event.type === "task.execution_reconciled") {
     const observation = event.execution_observation;
-    if (!current || (!activeTaskStatuses.has(current.status) && !(current.agent === "codex" && observation?.basis === "session_missing" && ["done_claimed", "verified", "cancelled"].includes(current.status)))
+    if (!current || (!activeTaskStatuses.has(current.status) && !(taskSessionAgent(current) === "codex" && observation?.basis === "session_missing" && ["done_claimed", "verified", "cancelled"].includes(current.status)))
       || !["execution_unconfirmed", "recovery_pending"].includes(observation?.state)
       || !observation.basis || !observation.next_action) throw new TaskLedgerError(400, "执行对账事实无效。");
     const runs = (current.runs || []).map(run => observation.terminal && !run.ended_at
@@ -1069,7 +1074,7 @@ function applyEvent(current, event) {
     if (observation.terminal && (!Number.isFinite(Date.parse(observation.terminal.at))
       || !["task_complete", "task_failed", "turn_aborted", "turn_failed"].includes(observation.terminal.type)
       || runs.some(run => Date.parse(run.started_at) > Date.parse(observation.terminal.at)))) throw new TaskLedgerError(400, "运行结束事实无效。");
-    if (event.archived_at && (current.agent !== "codex" || observation.basis !== "session_missing"
+    if (event.archived_at && (taskSessionAgent(current) !== "codex" || observation.basis !== "session_missing"
       || current.executionReconciliation?.basis !== "session_missing" || event.archived_at === "__UNARCHIVE__"
       || !(Date.parse(event.created_at) - Date.parse(current.updatedAt || current.createdAt) >= 300_000)
       || current.cliRuns?.some(run => run.status === "active"))) throw new TaskLedgerError(409, "孤儿归档需要已确认的会话缺失、静默期及无活跃CLI。");

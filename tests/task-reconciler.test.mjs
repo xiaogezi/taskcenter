@@ -78,6 +78,21 @@ test("读取失败、状态未确认、活跃CLI、非Codex和忙碌会话不被
   assert.throws(() => recordTaskEvent(input, { internalReconciliation: true }), /孤儿归档/);
 });
 
+test("历史未知客户端使用真实登记会话确认Codex，但不覆盖明确客户端或猜测来源", async () => {
+  for (const [agent, registeredAgent, shouldArchive] of [["unknown", "codex", true], ["unknown", "unknown", false], ["unknown", "claude", false], ["claude", "codex", false]]) {
+    await resetLedger();
+    recordTaskEvent({ type: "session.register", session_id: "legacy-owner", agent: registeredAgent });
+    recordTaskEvent({ type: "task.create", task_id: "legacy-owner-task", session_id: "legacy-owner", agent: registeredAgent, goal: "历史任务" });
+    const before = { ...loadTasks()[0], agent, updatedAt: new Date(Date.now() - 600_000).toISOString(), executionReconciliation: { basis: "session_missing", state: "recovery_pending" } };
+    await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([before]));
+    await runReconciliation({ availableSessionIds: ["legacy-owner"], inspectSession: async () => { throw Object.assign(new Error("missing"), { code: "CODEX_SESSION_NOT_FOUND" }); } });
+    const after = loadTasks()[0];
+    assert.equal(Boolean(after.archivedAt), shouldArchive);
+    assert.equal(after.agent, agent);
+    assert.equal(after.status, before.status);
+  }
+});
+
 test("缺失会话的待验收和已结束任务也归档，完成与验收状态保持原样", async () => {
   for (const status of ["planned", "blocked", "done_claimed", "verified", "cancelled"]) {
     await resetLedger();
