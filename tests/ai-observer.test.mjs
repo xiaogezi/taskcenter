@@ -10,6 +10,42 @@ import { createAutomaticObserver, requestAutomaticWork } from "../scripts/ai-obs
 const profile = { model: "deepseek-test", effort: "low" };
 const task = { id: "current", workspace: "/project", title: "修复导出", goal: "导出全部记录", status: "in_progress", evidence: ["两条而非三条"], currentStep: "检查缺行" };
 const result = { decision: "evidence", reason: "期望与结果有差异", summary: "缺少完整导出证据", findings: [{ severity: "medium", basis: "observed", message: "导出数量不同", evidence_refs: ["evidence:1"] }], next_steps: ["复核数量"] };
+
+test("意图持久化、同目标复用，未完成时不同目标明确拒绝，敏感输入不落盘", async t => {
+  const f = await fixture(t);
+  const args = { tasks: [task], workspace: "/project", profile, runtime: join(f.options.statePath, ".."), intent: " 优先修复导出 " };
+  const first = await requestAutomaticWork(args);
+  assert.equal(first.intent, "优先修复导出");
+  assert.equal((await requestAutomaticWork(args)).id, first.id);
+  await assert.rejects(requestAutomaticWork({ ...args, intent: "处理其他任务" }), { statusCode: 409 });
+  await assert.rejects(requestAutomaticWork({ ...args, intent: "api_key=abcdefghijklmnop" }), { code: "AI_SUSPECTED_SECRET" });
+  await assert.rejects(requestAutomaticWork({ ...args, intent: "x".repeat(2001) }), { statusCode: 400 });
+  await assert.rejects(requestAutomaticWork({ ...args, intent: { text: "目标" } }), { statusCode: 400 });
+  assert.equal(JSON.parse(await readFile(join(args.runtime, "ai-work-request.json"), "utf8")).intent, first.intent);
+});
+
+test("用户意图传入分析及维护，不被 Jev observe 忽略，保存模型理解与结果", async t => {
+  let prompt, queued;
+  const f = await fixture(t, { judge: async () => ({ status: "succeeded", answers: { participation: { choice: "observe" } } }), infer: async args => { prompt = args.prompt; return { text: JSON.stringify({ ...result, intent_understanding: "你希望修复导出缺行，我会核对完整性" }), model: profile.model }; }, enqueue: async (...args) => { queued = args; } });
+  const work = { id: "intent-round", task_ids: [task.id], intent: "优先修复导出" };
+  await f.observer.tick([task], profile, work);
+  assert.ok(prompt.includes(work.intent));
+  assert.equal(queued[3].intent, work.intent);
+  assert.equal(queued[3].request_id, work.id);
+  const saved = JSON.parse(await readFile(f.options.statePath, "utf8")).tasks[task.id];
+  assert.match(saved.work_result.understanding, /修复导出/);
+  assert.equal(saved.work_result.status, "succeeded");
+  assert.notEqual(f.rows[0].input_hash, f.rows[0].snapshot.input_hash);
+});
+
+test("模型理解含凭据时拒绝保存，规则降级仍保留用户目标", async t => {
+  let queued;
+  const f = await fixture(t, { infer: async () => ({ text: JSON.stringify({ ...result, intent_understanding: "api_key=abcdefghijklmnop" }) }), enqueue: async (...args) => { queued = args; } });
+  await f.observer.tick([task], profile, { id: "intent-round", task_ids: [task.id], intent: "修复导出" });
+  assert.equal(f.rows.at(-1).status, "degraded");
+  assert.equal(queued[3].intent, "修复导出");
+  assert.ok(!JSON.stringify(f.rows).includes("abcdefghijklmnop"));
+});
 async function fixture(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), "ai-observer-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const rows = [], jev = []; let time = 1_000_000, calls = 0;

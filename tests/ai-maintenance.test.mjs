@@ -31,6 +31,24 @@ test("工具进展实时持久化并可跨请求展示", async t => {
 const profile = { model: "test", effort: "low", automatic: { actions: true } };
 const task = { id: "task", sessionId: "original", lastEventId: "event-1", workspace: "/project", title: "维护", goal: "修复异常", status: "in_progress" };
 const analysis = { summary: "核对异常", next_steps: ["检查现场"] };
+
+test("维护队列持久保存本轮目标，CLI 执行器收到同一目标", async t => {
+  let received;
+  const f = await fixture(t, { execute: async ({ action }) => { received = action; return { tool_calls: 1 }; } });
+  await f.worker.enqueue(task, analysis, profile, { request_id: "round", intent: "修复异常" });
+  await f.worker.tick(profile);
+  assert.equal(received.intent, "修复异常"); assert.equal(received.request_id, "round");
+});
+
+test("运行中的维护保留新目标，完成后核对接续且不抢占当前执行", async t => {
+  let f, calls = 0;
+  f = await fixture(t, { execute: async ({ action }) => { calls++; if (calls === 1) await f.worker.enqueue(task, analysis, profile, { request_id: "new", intent: "检查缺项" }); else assert.equal(action.intent, "检查缺项"); return { tool_calls: 1 }; } });
+  await f.worker.enqueue(task, analysis, profile); await f.worker.tick(profile);
+  assert.equal(calls, 1);
+  assert.equal((await f.state()).actions.task.pending_work.work.intent, "检查缺项");
+  await f.worker.tick(profile); await f.worker.tick(profile);
+  assert.equal(calls, 2);
+});
 async function fixture(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), "ai-maintenance-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const rows = []; let current = { ...task }, time = 1_000_000, calls = 0;

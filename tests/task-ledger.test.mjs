@@ -356,8 +356,13 @@ test("主动处理入口校验人工来源，本地对账与持久队列可见�
   const second = await (await fetch(`${base}/ai/work`, init)).json();
   assert.equal(second.request_id, first.request_id);
   assert.equal(second.reused, true);
+  const changed = await fetch(`${base}/ai/work`, { ...init, body: JSON.stringify({ intent: "优先恢复导出" }) });
+  assert.equal(changed.status, 409);
+  const unsafe = await fetch(`${base}/ai/work`, { ...init, body: JSON.stringify({ intent: "api_key=abcdefghijklmnop" }) });
+  assert.equal(unsafe.status, 400);
   const activity = await (await fetch(`${base}/ai/activity`)).json();
   assert.equal(activity.work.pending, 1);
+  assert.equal(activity.work.intent, "");
   assert.equal(activity.rows.filter(row => row.id === first.request_id).length, 1);
 });
 

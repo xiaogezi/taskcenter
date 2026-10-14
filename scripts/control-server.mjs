@@ -17,7 +17,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { currentMaintenanceAction } from "./ai-maintenance.mjs";
+import { currentMaintenanceAction, safeActionText } from "./ai-maintenance.mjs";
 import {
   DispatchError,
 } from "./dispatch-core.mjs";
@@ -193,18 +193,20 @@ const server = createServer(async (request, response) => {
       const tasks = loadVisibleTasks();
       const pending = work ? work.task_ids.filter(id => tasks.some(task => task.id === id && !task.archivedAt && ["planned", "in_progress", "blocked"].includes(task.status)) && state.tasks[id]?.request_id !== work.id).length : 0;
       const counts = Object.values(maintenance.actions).reduce((counts, item) => { counts[item.status] = (counts[item.status] || 0) + 1; return counts; }, {});
-      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks, running: aiGovernance.running || (!stale && (observer.status === "analyzing" || observer.maintenance?.status === "executing")) }), current_action: currentMaintenanceAction(maintenance.actions, tasks, observer, stale), observer: { ...observer, stale }, maintenance: counts, work: work ? { id: work.id, at: work.at, total: work.task_ids.length, pending } : null });
+      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks, running: aiGovernance.running || (!stale && (observer.status === "analyzing" || observer.maintenance?.status === "executing")) }), current_action: currentMaintenanceAction(maintenance.actions, tasks, observer, stale), observer: { ...observer, stale }, maintenance: counts, work: work ? { id: work.id, at: work.at, total: work.task_ids.length, pending, intent: work.intent || "", results: tasks.filter(task => work.task_ids.includes(task.id) && state.tasks[task.id]?.request_id === work.id).slice(0, 10).map(task => ({ task_id: task.id, title: safeActionText(task.title), ...state.tasks[task.id]?.work_result, action: maintenance.actions[task.id]?.request_id === work.id ? maintenance.actions[task.id].latest_operation?.summary : null })) } : null });
       return;
     }
     if (request.method === "POST" && request.url === "/ai/work") {
       verifyManualTaskAction(request);
-      await readJsonBody(request);
-      if (!proactiveWork) proactiveWork = (async () => {
+      const body = await readJsonBody(request);
+      const operation = (proactiveWork || Promise.resolve()).catch(() => {}).then(async () => {
         const profile = readSnapshot(resolve(process.env.TASKCENTER_AI_CONFIG_PATH || join(projectRoot, "config/ai-governance.json")), {});
-        const work = await requestAutomaticWork({ tasks: loadVisibleTasks(), workspace: resolve(process.env.TASKCENTER_AI_WORKSPACE || projectRoot), profile, runtime: aiRuntime, record: auditWriter(aiActivityPath), reconcile: () => runReconciliation({ availableSessionIds: availableSessionIds() }) });
-        return { accepted: true, request_id: work.id, queued: work.task_ids.length, reused: work.reused };
-      })().finally(() => { proactiveWork = null; });
-      sendJson(response, 202, await proactiveWork);
+        const work = await requestAutomaticWork({ tasks: loadVisibleTasks(), workspace: resolve(process.env.TASKCENTER_AI_WORKSPACE || projectRoot), profile, runtime: aiRuntime, intent: body.intent, record: auditWriter(aiActivityPath), reconcile: () => runReconciliation({ availableSessionIds: availableSessionIds() }) });
+        return { accepted: true, request_id: work.id, queued: work.task_ids.length, reused: work.reused, intent: work.intent };
+      });
+      proactiveWork = operation;
+      try { sendJson(response, 202, await operation); }
+      finally { if (proactiveWork === operation) proactiveWork = null; }
       return;
     }
     if (request.method === "POST" && request.url === "/ai/analyze") {

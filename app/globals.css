@@ -63,3 +63,5 @@ button { cursor: pointer; }
 .ai-decision { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .ai-decision span { background: #f2f4f8; padding: 6px 10px; border-radius: 6px; }
 .ai-event details { margin-top: 12px; }
+
+.ai-analysis textarea { display: block; width: 100%; margin: 10px 0; padding: 10px; border: 1px solid #dce1e9; border-radius: 6px; font: inherit; resize: vertical; }

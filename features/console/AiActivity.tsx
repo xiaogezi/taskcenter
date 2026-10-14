@@ -5,7 +5,7 @@ type Request = <T>(path: string, init?: RequestInit) => Promise<T>;
 type Snapshot = { input_hash: string; references: Array<{ id: string; text: string }>; scope: string; truncated: boolean };
 type FollowUp = { status: string; updated_at?: string; changed_since_analysis: boolean | null; verification_status: string; acceptance_status: string; attribution: string; remaining_steps: Array<{ id: string; action: string; tool: string; reason: string }> };
 type Row = { id: string; run_id?: string; source: string; at: string; task_id?: string; title: string; model: string; status: string; mode?: string; trigger?: string; decision?: string; decision_reason?: string; summary?: string; duration_ms?: number; usage?: Record<string, unknown>; snapshot?: Snapshot; input_hash?: string; prompt_version?: string; error?: string; fallback_reason?: string; result?: Record<string, unknown>; follow_up?: FollowUp };
-type Activity = { current_action?: { task_id: string; title: string; phase: string; reason: string; step: string; next_action: string; operation?: { summary: string; status: string; at: string } } | null; rows: Row[]; running: boolean; warnings: string[]; coverage: string; next_cursor?: string; maintenance?: Record<string, number>; work?: { id: string; total: number; pending: number }; observer?: { status: string; stale?: boolean; scope?: string; maintenance?: { status: string; task_id?: string }; workspace?: string; current_task_id?: string; pending_tasks?: number; reason?: string; last_result_at?: string } };
+type Activity = { current_action?: { task_id: string; title: string; phase: string; reason: string; step: string; next_action: string; intent?: string; understanding?: string; operation?: { summary: string; status: string; at: string } } | null; rows: Row[]; running: boolean; warnings: string[]; coverage: string; next_cursor?: string; maintenance?: Record<string, number>; work?: { id: string; total: number; pending: number; intent?: string; results?: Array<{ task_id: string; title: string; understanding?: string; summary?: string; status?: string; action?: string }> }; observer?: { status: string; stale?: boolean; scope?: string; maintenance?: { status: string; task_id?: string }; workspace?: string; current_task_id?: string; pending_tasks?: number; reason?: string; last_result_at?: string } };
 const decisions: Record<string, string> = { observe: "继续观察", evidence: "分析完成证据", blockers: "复盘失败阻塞" };
 const sources: Record<string, string> = { governance: "治理分析", jev: "Jev 判断", reconciliation: "自主处置", maintenance: "维护行动" };
 const statuses: Record<string, string> = { degraded: "规则降级", started: "已启动", succeeded: "成功", completed: "完成", failed: "失败", skipped: "跳过", unknown: "未知", issued: "授权已签发", leased: "路由已选择", active: "运行中", expired: "过期", cancelled: "取消", revoked: "撤销", actual_route: "实际路由" };
@@ -17,6 +17,7 @@ export function AiActivity({ request }: { request: Request }) {
   const [taskId, setTaskId] = useState(""); const [kind, setKind] = useState("evidence");
   const [tasks, setTasks] = useState<Array<{ id: string; title: string }>>([]);
   const [snapshot, setSnapshot] = useState<Snapshot>(); const [confirmed, setConfirmed] = useState(false);
+  const [intent, setIntent] = useState("");
   const [busy, setBusy] = useState(false); const [notice, setNotice] = useState("");
   const [activityError, setActivityError] = useState("");
   const load = useCallback(async () => {
@@ -40,19 +41,24 @@ export function AiActivity({ request }: { request: Request }) {
   const rows = activity?.rows || [];
   const work = async () => {
     setBusy(true);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 12_000);
     try {
-      const result = await request<{ queued: number; reused: boolean }>("/ai/work", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: "{}" });
+      const result = await request<{ queued: number; reused: boolean; intent: string }>("/ai/work", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: JSON.stringify({ intent }), signal: controller.signal });
       setNotice(`${result.reused ? "继续已有处理轮次" : "已受理主动处理"}：核实队列 ${result.queued} 条；本地对账在后台执行，实际结果会出现在下方时间线。`);
-      setBefore(""); await load();
-    } catch (error) { setNotice(error instanceof Error ? error.message : "主动处理启动失败"); }
-    finally { setBusy(false); }
+      setBefore(""); void load();
+    } catch (error) { setNotice(error instanceof Error && error.name === "AbortError" ? "受理响应超时，结果待核对；请刷新查看已登记轮次，同一目标重试会复用请求。" : error instanceof Error ? error.message : "主动处理启动失败"); }
+    finally { window.clearTimeout(timer); setBusy(false); }
   };
   return <>
     <header className="task-header"><div><p>AI ACTIVITY</p><h1>AI 行为</h1><small>发现异常、执行维护、验证效果；每一步保存真实回执。</small></div><div><button disabled={busy} onClick={() => void work()}>{busy ? "正在受理…" : "立即主动处理"}</button><button onClick={() => { setBefore(""); void load(); }}>刷新</button></div></header>
+    <section className="console-card ai-analysis"><label htmlFor="ai-work-intent">告诉 AI，你希望解决什么（可选）</label><textarea id="ai-work-intent" value={intent} maxLength={2000} rows={3} disabled={busy} placeholder="例如：优先处理长期没有推进的任务，能恢复的继续执行，无法恢复的说明原因和下一步。" onChange={event => setIntent(event.target.value)} /><small>留空进行自主巡检；填写后作为本轮目标，AI 在现有任务契约内判断并行动。</small></section>
     <p role="status">{notice}</p>{activityError && <p role="alert">时间线刷新失败：{activityError}；已受理请求的后台处理不受此提示影响。</p>}{activity?.work && <p>本轮核实：已处理 {activity.work.total - activity.work.pending} / {activity.work.total} 条。结果包括分析、规则降级与跳过，不代表业务任务完成。</p>}
+    {activity?.work && <section className="console-card ai-analysis" aria-label="本轮目标与结果"><h2>本轮目标与结果</h2><p>你的目标：{activity.work.intent || "自主巡检"}</p><p>{activity.work.pending ? `正在逐项分析，剩余 ${activity.work.pending} 项` : activity.work.total ? "本轮分析已结束，维护行动按实际回执跟进" : "没有可关联的活跃任务，尚未执行维护"}</p><details><summary>逐项查看 AI 理解、结果与行动</summary>{activity.work.results?.map(result => <article key={result.task_id}><h3><a href={`/tasks?task=${encodeURIComponent(result.task_id)}`}>{result.title}</a></h3><p>AI 理解：{result.understanding || (result.status === "degraded" ? "模型不可用，尚未形成意图理解；已进行规则检查" : "本轮未记录意图理解")}</p><p>分析结果：{result.summary || "尚未记录"}</p><p>行动回执：{result.action || "此任务暂无本轮维护回执，分析不代表已执行"}</p></article>)}</details><small>最多显示本轮前 10 项分析结果；完整过程见时间线。</small></section>}
     <section className="console-card ai-analysis" aria-label="AI 当前行动"><h2>AI 现在在做什么</h2>{activity?.current_action ? <>
       <h3><a href={`/tasks?task=${encodeURIComponent(activity.current_action.task_id)}`}>{activity.current_action.title || "未命名任务"}</a></h3>
       <p role="status">{activity.current_action.phase === "executing" ? "正在执行维护" : activity.current_action.phase === "analyzing" ? "正在分析" : activity.current_action.phase === "stale" ? "心跳已过期，以下为最后记录" : `最近行动：${statuses[activity.current_action.phase] || activity.current_action.phase}`}</p>
+      {activity.current_action.intent && <p>本次行动目标：{activity.current_action.intent}</p>}{activity.current_action.understanding && <p>AI 理解：{activity.current_action.understanding}</p>}
       <p>处理原因：{activity.current_action.reason || "尚未记录"}</p><p>当前步骤：{activity.current_action.step || "正在核对任务，尚未登记阶段"}</p>
       <p>最近操作：{activity.current_action.operation?.summary || "此行动尚无操作详情记录"}</p>{activity.current_action.operation && <small>记录于 {new Date(activity.current_action.operation.at).toLocaleString("zh-CN")}</small>}
       <p>下一步：{activity.current_action.next_action || "等待执行者登记下一步"}</p>

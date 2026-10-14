@@ -47,6 +47,7 @@ next-env.d.ts
 /data/logs/
 /data/task-events.jsonl
 /data/ai-activity.jsonl
+/data/ai-activity.jsonl.1
 /data/task-ledger.json
 /data/task-event-ids.json
 /data/task-reconcile.jsonl

@@ -17,6 +17,12 @@ const clean = value => String(value ?? "").slice(0, 2000);
 const containsSecret = value => hasSuspectedSecret(value) || /\b(?:sk-|Bearer\s+)[A-Za-z0-9_-]{12,}|-----BEGIN.*PRIVATE KEY|https?:\/\/[^\s/]+:[^\s/]+@/i.test(JSON.stringify(value));
 const redactPaths = text => text.replace(/(?:\/Users\/|\/home\/|[A-Z]:\\Users\\)[^\s"']+/g, "[local-path]");
 
+export function validateWorkIntent(value = "") {
+  if (typeof value !== "string" || value.length > 2000) throw new AiGovernanceError(400, "处理目标须为不超过 2000 字的文本。");
+  if (containsSecret(value)) throw new AiGovernanceError(400, "处理目标疑似包含凭据，请移除后提交。", "AI_SUSPECTED_SECRET");
+  return redactPaths(value.trim());
+}
+
 export function governanceSnapshot(task, kind) {
   if (!task || !Object.hasOwn(kinds, kind)) throw new AiGovernanceError(400, "请选择有效任务和分析类型。");
   const selected = { title: task.title, goal: task.goal, status: task.status, blocker: task.blocker, current_step: task.currentStep, next_action: task.nextAction, contract_version: task.contractVersion, workflow_profile: task.workflowProfile, scope: task.scope, non_goals: task.nonGoals, plan: task.plan, verification_plan: task.verificationPlan, criteria: task.acceptanceCriteria, requirements: task.acceptanceRequirements, tests: task.tests, evidence: task.evidence, verifications: task.verificationClaims, results: task.requirementResults, subject: task.currentSubject, ...(task.executionReconciliation ? { execution_reconciliation: task.executionReconciliation } : {}) };
