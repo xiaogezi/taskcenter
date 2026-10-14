@@ -22,7 +22,7 @@ const readableJson = async (path, fallback) => {
 };
 
 export function automaticCandidates(tasks, workspace, profile) {
-  return tasks.filter(task => !task.archivedAt && activeStatuses.has(task.status) && task.workspace
+  return tasks.filter(task => !task.archivedAt && task.executionReconciliation?.basis !== "session_missing" && activeStatuses.has(task.status) && task.workspace
     && (profile.automatic?.scope === "all_projects" || resolve(task.workspace) === resolve(workspace)));
 }
 
@@ -64,7 +64,7 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
       if (active) return;
       const candidates = [];
       for (const task of tasks) {
-        if (!task.workspace || (profile.automatic?.scope !== "all_projects" && resolve(task.workspace) !== resolve(workspace)) || task.archivedAt) continue;
+        if (!task.workspace || (profile.automatic?.scope !== "all_projects" && resolve(task.workspace) !== resolve(workspace)) || task.archivedAt || task.executionReconciliation?.basis === "session_missing") continue;
         if (![...activeStatuses, "done_claimed"].includes(task.status)) continue;
         const previous = state.tasks[task.id];
         const retryDue = Boolean(previous?.retry_at && now() >= previous.retry_at);
@@ -128,7 +128,6 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
           await emit({ status: value.decision === "observe" ? "skipped" : "succeeded", model: receipt.model, decision: value.decision, decision_reason: value.reason, summary: result.summary, result, usage: receipt.usage, duration_ms: Math.round(performance.now() - started) });
           if (value.decision !== "observe" && enqueue) await enqueue(task, result, profile, work);
         }
-        if (task.executionReconciliation?.basis === "session_missing" && outcome?.decision === "observe" && enqueue) await enqueue(task, ruleResult(task, "blockers"), profile, work);
       } catch (error) {
         if (error.name === "AbortError") {
           cancelled = true;

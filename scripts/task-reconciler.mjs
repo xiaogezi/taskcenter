@@ -14,6 +14,7 @@ import { computeCompletionReadiness, sameSubject } from "./completion-state.mjs"
 import { isProcessTreeAlive } from "./process-tree.mjs";
 
 const ACTIVE_TASK_STATUSES = new Set(["planned", "in_progress", "blocked"]);
+const RECONCILABLE_TASK_STATUSES = new Set([...ACTIVE_TASK_STATUSES, "done_claimed", "verified", "cancelled"]);
 
 function activeRuns(task) {
   return (task.runs || []).filter((run) => !run.ended_at);
@@ -63,11 +64,11 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
   try {
     const reconciled = reconcileTasks(availableSessionIds);
     const actions = [];
-    const candidates = loadTasks().filter(task => !task.archivedAt && !isContextShadowTask(task) && ACTIVE_TASK_STATUSES.has(task.status)).map(task => task.id);
+    const candidates = loadTasks().filter(task => !task.archivedAt && !isContextShadowTask(task) && RECONCILABLE_TASK_STATUSES.has(task.status)).map(task => task.id);
     for (const taskId of candidates) {
       await setImmediate();
       const task = loadTasks().find(task => task.id === taskId);
-      if (!task || task.archivedAt || !ACTIVE_TASK_STATUSES.has(task.status)) continue;
+      if (!task || task.archivedAt || !RECONCILABLE_TASK_STATUSES.has(task.status)) continue;
       // A live maintenance host owns execution just like any other client.
       try {
         const action = JSON.parse(readFileSync(maintenancePath, "utf8")).actions?.[task.id];
@@ -95,9 +96,11 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       } else basis = task.executionReconciliation?.terminal?.at === runs.at(-1).ended_at
         ? task.executionReconciliation.basis
         : `run:${runs.at(-1).run_id}/${runs.at(-1).ended_reason}@${runs.at(-1).ended_at}`;
+      if (!ACTIVE_TASK_STATUSES.has(task.status) && !sessionMissing) continue;
       const state = sessionMissing ? "recovery_pending" : terminal || (!running.length && runs.length) ? "execution_unconfirmed" : "recovery_pending";
-      const nextAction = sessionMissing ? "原会话文件已清除；核对运行者与现有产物后，由维护宿主使用新 Session 接续原任务和契约。" : "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
-      const id = `reconcile-${createHash("sha256").update(JSON.stringify([task.id, startedAt, basis, task.currentSubject])).digest("hex")}`;
+      const archive = sessionMissing && task.executionReconciliation?.basis === "session_missing" && Date.now() - Date.parse(task.updatedAt || task.createdAt) >= 300_000;
+      const nextAction = sessionMissing ? archive ? "原会话确认缺失且无活跃执行者，任务已自动归档；契约、证据及未完成状态保留，需要继续时先取消归档并绑定真实 Session。" : "原会话文件缺失，等待五分钟静默核对；无活跃执行者时默认归档，保留契约、证据及未完成状态。" : "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
+      const id = `reconcile-${createHash("sha256").update(JSON.stringify([task.id, startedAt, basis, task.currentSubject, archive ? task.lastEventId : ""])).digest("hex")}`;
       const completion = computeCompletionReadiness({ ...task, status: "done_claimed" });
       const fresh = [...(task.requirementResults || []), ...(task.verificationClaims || [])]
         .filter(item => item.status === "passed" || item.status === "not_applicable")
@@ -105,12 +108,12 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
           && sameSubject(item.subject_ref, task.currentSubject));
       const completedRun = terminal?.type === "task_complete" || (!running.length && runs.at(-1)?.ended_reason === "completed");
       try {
-        if (completedRun && task.currentSubject?.type !== "none" && task.currentSubject && task.evidence?.length && fresh && completion.completionClaim.allowed) {
+        if (!sessionMissing && completedRun && task.currentSubject?.type !== "none" && task.currentSubject && task.evidence?.length && fresh && completion.completionClaim.allowed) {
           const result = recordTaskEvent({ type: "task.close", event_id: `${id}-close`, task_id: task.id, session_id: task.sessionId, status: "done_claimed", subject_ref: task.currentSubject, tests: task.tests || [], evidence: task.evidence, current_step: "自动对账：当前版本交付证据满足契约，补齐完成声明", next_action: "由独立授权主体验收；自动对账不代替验收。" });
           if (!result.idempotent) actions.push({ event_id: result.event.event_id, task_id: task.id, action: "delivery_reconciled", status: "succeeded", basis });
-        } else if (task.executionReconciliation?.basis !== basis) {
-          const result = recordTaskEvent({ type: "task.execution_reconciled", event_id: id, task_id: task.id, session_id: task.sessionId, execution_observation: { state, basis, terminal, next_action: nextAction } }, { internalReconciliation: true });
-          if (!result.idempotent) actions.push({ event_id: result.event.event_id, task_id: task.id, action: state, status: "succeeded", basis });
+        } else if (archive || task.executionReconciliation?.basis !== basis) {
+          const result = recordTaskEvent({ type: "task.execution_reconciled", event_id: id, task_id: task.id, session_id: task.sessionId, ...(archive ? { archived_at: new Date().toISOString() } : {}), execution_observation: { state, basis, terminal, next_action: nextAction } }, { internalReconciliation: true });
+          if (!result.idempotent) actions.push({ event_id: result.event.event_id, task_id: task.id, action: archive ? "orphan_archived" : state, status: "succeeded", basis });
         }
       } catch (error) {
         actions.push({ task_id: task.id, action: state, status: "failed", basis, error: error.message });

@@ -115,8 +115,6 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
   const save = () => writeJsonAtomic(statePath, state);
   let active = false;
   const health = { status: "idle", task_id: null };
-  // A cleared Codex session needs a persisted observation and five quiet minutes before takeover.
-  const missingOwner = task => task.agent === "codex" && task.executionReconciliation?.basis === "session_missing" && now() - Date.parse(task.updatedAt || task.createdAt) >= 300_000;
   const emit = async (action, row) => {
     const at = new Date(now()).toISOString();
     action.updated_at = at;
@@ -127,7 +125,7 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
   const worker = {
     health,
     async enqueue(task, analysis, profile, work) {
-      if (profile.automatic?.actions !== true || !activeStatuses.has(task.status)) return;
+      if (profile.automatic?.actions !== true || task.archivedAt || task.executionReconciliation?.basis === "session_missing" || !activeStatuses.has(task.status)) return;
       const snapshot = governanceSnapshot(task, "evidence");
       const old = state.actions[task.id];
       const intent = validateWorkIntent(work?.intent);
@@ -162,12 +160,13 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
             await save(); await emit(action, { status: action.status, summary: finished(task) ? "恢复核对：任务已有满足契约的交付证据" : "执行中断，结果未知；已保留回执，需核对产物后接续，未盲目重放" });
             continue;
           }
-          if (!["queued", "retry_wait", "attention"].includes(action.status) || (action.status === "attention" && (!action.pid || action.attempts >= 3)) || now() < (action.retry_at || 0)) continue;
+          if (!["queued", "retry_wait", "attention"].includes(action.status)) continue;
           let task = tasks().find(item => item.id === action.task_id);
-          if (finished(task) || !task || task.archivedAt || !activeStatuses.has(task.status)) {
+          if (finished(task) || !task || task.archivedAt || task.executionReconciliation?.basis === "session_missing" || !activeStatuses.has(task.status)) {
             action.status = finished(task) ? "completed" : "cancelled"; await save();
-            await emit(action, { status: action.status, summary: finished(task) ? "执行前核对：交付证据已就绪" : "任务已结束或移出治理范围，取消待执行动作" }); continue;
+            await emit(action, { status: action.status, summary: finished(task) ? "执行前核对：交付证据已就绪" : "任务已结束、归档或原会话缺失，取消待执行动作，未启动接续" }); continue;
           }
+          if ((action.status === "attention" && (!action.pid || action.attempts >= 3)) || now() < (action.retry_at || 0)) continue;
           if (action.attempts === 0 && task.lastEventId !== action.expected_event_id) {
             action.status = "cancelled"; await save(); await emit(action, { status: "cancelled", summary: "任务已变化，旧分析不再执行，等待新快照判断" }); continue;
           }
@@ -175,13 +174,13 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
           let safe = (task.sessionId === action.session_id && action.attempts > 0) || task.sessionId === action.stopped_session_id;
           if (!safe) {
             try { const session = await inspect(task.sessionId); safe = !session.busy && Boolean(session.lastTerminal); }
-            catch (error) { safe = error.code === "CODEX_SESSION_NOT_FOUND" && missingOwner(task); }
+            catch { safe = false; }
           }
           // Check all other active owners in this workspace before handing it to a CLI.
-          if (safe) for (const other of tasks().filter(item => item.id !== task.id && item.workspace === task.workspace && activeStatuses.has(item.status))) {
+          if (safe) for (const other of tasks().filter(item => item.id !== task.id && !item.archivedAt && item.workspace === task.workspace && activeStatuses.has(item.status))) {
             if (other.cliRuns?.some(run => run.status === "active")) { safe = false; break; }
             try { if ((await inspect(other.sessionId)).busy) safe = false; }
-            catch (error) { if (error.code !== "CODEX_SESSION_NOT_FOUND" || !missingOwner(other)) safe = false; }
+            catch { safe = false; }
           }
           if (!safe) {
             action.retry_at = now() + 60_000;

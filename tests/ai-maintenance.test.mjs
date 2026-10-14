@@ -32,14 +32,30 @@ const profile = { model: "test", effort: "low", automatic: { actions: true } };
 const task = { id: "task", sessionId: "original", lastEventId: "event-1", workspace: "/project", title: "维护", goal: "修复异常", status: "in_progress" };
 const analysis = { summary: "核对异常", next_steps: ["检查现场"] };
 
-test("确认清除且稳定的Codex会话可接续原任务，同工作区孤儿不阻挡", async t => {
+test("确认缺失的会话不再默认接续，归档也不会进入维护队列", async t => {
   const orphan = { ...task, agent: "codex", updatedAt: new Date(0).toISOString(), executionReconciliation: { basis: "session_missing" } };
   const f = await fixture(t, { tasks: () => [orphan, { ...orphan, id: "other", sessionId: "other" }], inspect: async () => { throw Object.assign(new Error("cleared"), { code: "CODEX_SESSION_NOT_FOUND" }); } });
   await f.worker.enqueue(orphan, analysis, profile); await f.worker.tick(profile);
+  assert.equal(f.calls(), 0);
+  assert.equal(f.rows.length, 0);
+  await f.worker.enqueue({ ...task, archivedAt: new Date().toISOString() }, analysis, profile);
+  assert.equal(f.rows.length, 0);
+});
+
+test("旧队列即使处于冷却或attention也撤销缺失会话动作，已归档孤儿不挡其他任务", async t => {
+  for (const status of ["queued", "retry_wait", "attention"]) {
+    const f = await fixture(t);
+    await f.worker.enqueue(task, analysis, profile);
+    const state = await f.state(); state.actions.task.status = status; state.actions.task.retry_at = 9_000_000;
+    await writeFile(f.options.statePath, JSON.stringify(state));
+    f.update({ executionReconciliation: { basis: "session_missing" } });
+    const restarted = await createMaintenanceWorker(f.options);
+    await restarted.tick(profile);
+    assert.equal((await f.state()).actions.task.status, "cancelled"); assert.equal(f.calls(), 0);
+  }
+  const f = await fixture(t, { tasks: () => [task, { ...task, id: "archived", archivedAt: "past" }], inspect: async id => { assert.equal(id, task.sessionId); return { busy: false, lastTerminal: { type: "turn_aborted" } }; } });
+  await f.worker.enqueue(task, analysis, profile); await f.worker.tick(profile);
   assert.equal(f.calls(), 1);
-  const action = (await f.state()).actions.task;
-  assert.equal(action.task_id, task.id);
-  assert.notEqual(action.session_id, task.sessionId);
 });
 
 test("源不可读、未确认、近期变化、非Codex及其他活跃执行者都不允许孤儿接管", async t => {
@@ -59,7 +75,7 @@ test("源不可读、未确认、近期变化、非Codex及其他活跃执行者
 test("待执行的旧分析被新快照替换，不因旧事件变化取消唯一恢复机会", async t => {
   const f = await fixture(t);
   await f.worker.enqueue(task, analysis, profile);
-  const changed = { ...task, lastEventId: "reconciled", executionReconciliation: { basis: "session_missing" } };
+  const changed = { ...task, lastEventId: "reconciled", executionReconciliation: { basis: "session_end_unconfirmed" } };
   f.update(changed);
   await f.worker.enqueue(changed, analysis, profile);
   await f.worker.tick(profile);

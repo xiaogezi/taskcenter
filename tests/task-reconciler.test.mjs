@@ -28,9 +28,10 @@ for (const [key, value] of Object.entries(envPaths)) {
 const { runReconciliation, queryFindings, lastReconciliation } = await import("../scripts/task-reconciler.mjs");
 const { recordTaskEvent, loadTasks } = await import("../scripts/task-ledger.mjs");
 
-test("确认会话清除持久登记原任务恢复依据，重复对账不重复产生动作", async () => {
+test("确认会话清除先登记，静默后归档保留原状态与证据，重复对账幂等且可恢复", async () => {
   await resetLedger();
-  recordTaskEvent({ type: "task.create", task_id: "cleared", session_id: "cleared-session", agent: "codex", goal: "保留原目标", title: "会话清除" });
+  recordTaskEvent({ type: "session.register", session_id: "cleared-session", agent: "codex" });
+  recordTaskEvent({ type: "task.create", task_id: "cleared", session_id: "cleared-session", agent: "codex", status: "in_progress", goal: "保留原目标", title: "会话清除", evidence: ["原产物"], acceptance_criteria: ["原标准"] });
   const inspectSession = async () => { throw Object.assign(new Error("cleared"), { code: "CODEX_SESSION_NOT_FOUND" }); };
   await runReconciliation({ availableSessionIds: [], inspectSession });
   const task = loadTasks().find(task => task.id === "cleared");
@@ -38,7 +39,58 @@ test("确认会话清除持久登记原任务恢复依据，重复对账不重�
   assert.equal(task.executionReconciliation.state, "recovery_pending");
   assert.equal(task.goal, "保留原目标");
   assert.equal(task.sessionId, "cleared-session");
+  assert.ok(!task.archivedAt);
   assert.equal((await runReconciliation({ availableSessionIds: [], inspectSession })).actions.length, 0);
+  const old = new Date(Date.now() - 600_000).toISOString();
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([{ ...task, updatedAt: old, activeStartedAt: old }]));
+  const archived = await runReconciliation({ availableSessionIds: [], inspectSession });
+  const saved = loadTasks()[0];
+  assert.equal(archived.actions[0].action, "orphan_archived");
+  assert.ok(saved.archivedAt); assert.equal(saved.status, "in_progress");
+  assert.deepEqual(saved.evidence, task.evidence); assert.deepEqual(saved.acceptanceCriteria, task.acceptanceCriteria);
+  assert.equal(saved.goal, task.goal); assert.equal(saved.acceptanceStatus, task.acceptanceStatus);
+  assert.equal(saved.runs.at(-1).ended_reason, "session_detached"); assert.equal(saved.activeStartedAt, "");
+  assert.equal(saved.lastEventId, archived.actions[0].event_id);
+  assert.equal((await runReconciliation({ availableSessionIds: [], inspectSession })).actions.length, 0);
+  recordTaskEvent({ type: "task.create", task_id: "new-task", session_id: "cleared-session", agent: "codex", goal: "新目标" });
+  assert.throws(() => recordTaskEvent({ type: "task.review", task_id: "cleared", session_id: "cleared-session", archived_at: "__UNARCHIVE__" }), /ACTIVE_TASK_CONFLICT/);
+  recordTaskEvent({ type: "task.update", task_id: "new-task", session_id: "cleared-session", status: "cancelled" });
+  recordTaskEvent({ type: "task.review", task_id: "cleared", session_id: "cleared-session", archived_at: "__UNARCHIVE__" });
+  const restored = loadTasks().find(t => t.id === "cleared");
+  assert.ok(!restored.archivedAt); assert.ok(restored.activeStartedAt); assert.equal(restored.status, "in_progress");
+});
+
+test("读取失败、状态未确认、活跃CLI、非Codex和忙碌会话不被归档，外部不能伪造内部归档", async () => {
+  for (const scenario of ["unreadable", "unconfirmed", "cli", "claude", "busy", "recent"]) {
+    await resetLedger();
+    recordTaskEvent({ type: "session.register", session_id: "protected", agent: "codex" });
+    recordTaskEvent({ type: "task.create", task_id: "protected", session_id: "protected", agent: "codex", status: "in_progress", title: "保护", goal: "保留" });
+    const task = loadTasks()[0], old = new Date(Date.now() - 600_000).toISOString();
+    await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([{ ...task, updatedAt: scenario === "recent" ? new Date().toISOString() : old, executionReconciliation: scenario === "unconfirmed" ? null : { basis: "session_missing", state: "recovery_pending" }, ...(scenario === "cli" ? { cliRuns: [{ status: "active" }] } : scenario === "claude" ? { agent: "claude" } : {}) }]));
+    await runReconciliation({ availableSessionIds: [task.sessionId], inspectSession: async () => {
+      if (scenario === "busy") return { busy: true };
+      throw Object.assign(new Error("read"), { code: scenario === "unreadable" ? "EACCES" : "CODEX_SESSION_NOT_FOUND" });
+    } });
+    assert.ok(!loadTasks()[0].archivedAt, scenario);
+  }
+  const input = { type: "task.execution_reconciled", task_id: "protected", session_id: "protected", archived_at: new Date().toISOString(), execution_observation: { basis: "session_missing", state: "recovery_pending", next_action: "归档" } };
+  assert.throws(() => recordTaskEvent(input), /内部/);
+  assert.throws(() => recordTaskEvent(input, { internalReconciliation: true }), /孤儿归档/);
+});
+
+test("缺失会话的待验收和已结束任务也归档，完成与验收状态保持原样", async () => {
+  for (const status of ["planned", "blocked", "done_claimed", "verified", "cancelled"]) {
+    await resetLedger();
+    recordTaskEvent({ type: "session.register", session_id: "owner", agent: "codex" });
+    recordTaskEvent({ type: "task.create", task_id: "original", session_id: "owner", agent: "codex", goal: "原目标" });
+    const old = new Date(Date.now() - 600_000).toISOString();
+    await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([{ ...loadTasks()[0], status, updatedAt: old, executionReconciliation: { basis: "session_missing", state: "recovery_pending" } }]));
+    const before = loadTasks()[0];
+    await runReconciliation({ availableSessionIds: ["owner"], inspectSession: async () => { throw Object.assign(new Error("cleared"), { code: "CODEX_SESSION_NOT_FOUND" }); } });
+    const after = loadTasks()[0];
+    assert.ok(after.archivedAt, status); assert.equal(after.status, status);
+    assert.equal(after.acceptanceStatus, before.acceptanceStatus); assert.equal(after.verificationStatus, before.verificationStatus);
+  }
 });
 
 test("最近对账从尾部跨块读取，跳过损坏与超大行并保留UTF-8", async () => {

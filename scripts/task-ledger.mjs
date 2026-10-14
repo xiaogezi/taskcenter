@@ -333,7 +333,7 @@ export function reconcileTasks(availableSessionIds) {
   const registered = new Set(Object.keys(loadSessionRegistry()).map(canonicalSessionId));
   const tasks = readLedger();
   const stale = tasks.filter((task) => {
-    if (task.status === "removed") return false;
+    if (task.status === "removed" || task.archivedAt) return false;
     const sessionId = canonicalSessionId(task.sessionId);
     if (!sessionId) return false;
     return !task.sessionDetachedAt && !available.has(sessionId) && !registered.has(sessionId);
@@ -512,8 +512,8 @@ export function recordTaskEvent(input, options = {}) {
     : event.type === "task.reminder"
       ? current
       : applyEvent(current, event);
-  const activeConflict = next && !isContextShadowTask(next) && activeTaskStatuses.has(next.status)
-    ? tasks.find((task) => task.id !== next.id && !isContextShadowTask(task) && task.sessionId === next.sessionId && activeTaskStatuses.has(task.status))
+  const activeConflict = next && !next.archivedAt && !isContextShadowTask(next) && activeTaskStatuses.has(next.status)
+    ? tasks.find((task) => task.id !== next.id && !task.archivedAt && !isContextShadowTask(task) && task.sessionId === next.sessionId && activeTaskStatuses.has(task.status))
     : null;
   if (activeConflict) throw new TaskLedgerError(409, `ACTIVE_TASK_CONFLICT：当前 Session 已有活跃任务 ${activeConflict.id}。`);
   if (previousTaskId) {
@@ -837,11 +837,11 @@ export function ensureContextTask(input) {
   const mapped = loadTasks()
     .filter((task) => task.sessionId === sessionId && task.contextTaskId === contextTaskId)
     .sort((left, right) => Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || ""));
-  const activeFormal = mapped.find((task) => !isContextShadowTask(task) && activeTaskStatuses.has(task.status));
+  const activeFormal = mapped.find((task) => !task.archivedAt && !isContextShadowTask(task) && activeTaskStatuses.has(task.status));
   if (activeFormal) {
     return { task: activeFormal, created: false, resumed: true, reactivated: false };
   }
-  const shadows = mapped.filter((task) => isContextShadowTask(task) && !task.supersededBy);
+  const shadows = mapped.filter((task) => !task.archivedAt && isContextShadowTask(task) && !task.supersededBy);
   const activeShadow = shadows.find((task) => activeTaskStatuses.has(task.status));
   if (activeShadow) {
     return { task: activeShadow, created: false, resumed: true, reactivated: false };
@@ -1061,7 +1061,7 @@ function normalizeEvent(input, current = null, legacyText = false) {
 function applyEvent(current, event) {
   if (event.type === "task.execution_reconciled") {
     const observation = event.execution_observation;
-    if (!current || !["in_progress", "planned", "blocked"].includes(current.status)
+    if (!current || (!activeTaskStatuses.has(current.status) && !(current.agent === "codex" && observation?.basis === "session_missing" && ["done_claimed", "verified", "cancelled"].includes(current.status)))
       || !["execution_unconfirmed", "recovery_pending"].includes(observation?.state)
       || !observation.basis || !observation.next_action) throw new TaskLedgerError(400, "执行对账事实无效。");
     const runs = (current.runs || []).map(run => observation.terminal && !run.ended_at
@@ -1069,7 +1069,17 @@ function applyEvent(current, event) {
     if (observation.terminal && (!Number.isFinite(Date.parse(observation.terminal.at))
       || !["task_complete", "task_failed", "turn_aborted", "turn_failed"].includes(observation.terminal.type)
       || runs.some(run => Date.parse(run.started_at) > Date.parse(observation.terminal.at)))) throw new TaskLedgerError(400, "运行结束事实无效。");
-    return withCompletionState({ ...current, runs, executionReconciliation: { ...observation, event_id: event.event_id, observed_at: event.created_at }, updatedAt: event.created_at, lastEventId: event.event_id });
+    if (event.archived_at && (current.agent !== "codex" || observation.basis !== "session_missing"
+      || current.executionReconciliation?.basis !== "session_missing" || event.archived_at === "__UNARCHIVE__"
+      || !(Date.parse(event.created_at) - Date.parse(current.updatedAt || current.createdAt) >= 300_000)
+      || current.cliRuns?.some(run => run.status === "active"))) throw new TaskLedgerError(409, "孤儿归档需要已确认的会话缺失、静默期及无活跃CLI。");
+    const next = { ...current, runs, executionReconciliation: { ...observation, event_id: event.event_id, observed_at: event.created_at }, updatedAt: event.created_at, lastEventId: event.event_id };
+    if (event.archived_at) {
+      next.archivedAt = event.archived_at;
+      const detached = withRunClosed({ ...next, sessionDetachedAt: current.sessionDetachedAt || event.created_at }, event, event.created_at, "session_detached");
+      return withCompletionState(applyTimingTransition(current, current, detached, event, event.created_at));
+    }
+    return withCompletionState(next);
   }
   const alreadyTerminal = ["done_claimed", "verified", "cancelled"].includes(current?.status);
   const supersedingActiveShadow = event.status === "cancelled" && Boolean(event.superseded_by);
@@ -1332,27 +1342,28 @@ function applyTimingTransition(current, base, next, event, now) {
   const migrating = base.timingModelVersion !== "estimate-calibration-v1";
   const previousStatus = current?.status || "planned";
   const statusChanged = previousStatus !== next.status;
+  const archiving = !base.archivedAt && Boolean(next.archivedAt), restoring = Boolean(base.archivedAt) && !next.archivedAt;
   let activeDurationMs = safeDuration(base.activeDurationMs);
   let blockedDurationMs = safeDuration(base.blockedDurationMs);
   let activeStartedAt = base.activeStartedAt || "";
   let blockedStartedAt = base.blockedStartedAt || "";
-  if (statusChanged && previousStatus === "in_progress" && activeStartedAt) {
+  if ((statusChanged || archiving) && previousStatus === "in_progress" && activeStartedAt) {
     activeDurationMs += durationBetween(activeStartedAt, now);
     activeStartedAt = "";
   }
-  if (statusChanged && previousStatus === "blocked" && blockedStartedAt) {
+  if ((statusChanged || archiving) && previousStatus === "blocked" && blockedStartedAt) {
     blockedDurationMs += durationBetween(blockedStartedAt, now);
     blockedStartedAt = "";
   }
   let firstStartedAt = base.firstStartedAt || (migrating ? base.startedAt || "" : "");
-  if (statusChanged && next.status === "in_progress") {
+  if ((statusChanged || restoring) && next.status === "in_progress" && !next.archivedAt) {
     activeStartedAt = now;
     firstStartedAt ||= now;
-  } else if (statusChanged && next.status === "blocked") {
+  } else if ((statusChanged || restoring) && next.status === "blocked" && !next.archivedAt) {
     blockedStartedAt = now;
   }
-  if (migrating && next.status === "in_progress" && !activeStartedAt) activeStartedAt = now;
-  if (migrating && next.status === "blocked" && !blockedStartedAt) blockedStartedAt = now;
+  if (migrating && !next.archivedAt && next.status === "in_progress" && !activeStartedAt) activeStartedAt = now;
+  if (migrating && !next.archivedAt && next.status === "blocked" && !blockedStartedAt) blockedStartedAt = now;
   const incomingDue = event.due_at || "";
   const dueChanged = Boolean(incomingDue) && incomingDue !== (base.dueAt || "");
   const incomingExpectedAt = event.expected_at || "";
