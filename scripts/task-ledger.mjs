@@ -1261,7 +1261,7 @@ function runSummary(task) {
 
 // 打开一个 Run：同 session 延续当前 Run；切换到新 session 时结束旧 Run（handoff）并新开。
 function withRunOpened(task, event, now) {
-  task = { ...task, executionReconciliation: null };
+  task = { ...task, executionReconciliation: null, sessionDetachedAt: "" };
   const runs = [...(task.runs || [])];
   const last = runs[runs.length - 1];
   if (last && !last.ended_at && last.session_id === event.session_id) return task;

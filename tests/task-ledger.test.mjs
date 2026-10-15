@@ -198,7 +198,9 @@ test("Control API task_id 精准查询、session 交集、view 与归档可见�
   });
   assert.equal(archive.status, 200);
   const archived = await (await fetch(`${base}/tasks?task_id=precise-target`)).json();
-  assert.deepEqual(archived.tasks, [], "归档可见性保持原 loadVisibleTasks 语义");
+  assert.equal(archived.tasks[0].id, "precise-target", "精确ID查询保留归档任务，支持恢复原合同");
+  assert.ok(archived.tasks[0].archivedAt);
+  assert.equal((await (await fetch(`${base}/tasks?session_id=precise-session`)).json()).tasks.length, 0, "普通Session列表仍隐藏归档项");
 });
 
 async function resetLedger() {

@@ -272,17 +272,17 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/task-resume") {
       verifyTaskRequest(request);
       const body = await readJsonBody(request);
-      const task = loadVisibleTasks().find((item) => item.id === body.task_id);
+      const task = loadTasks().find((item) => item.id === body.task_id);
       const registry = loadSessionRegistry()[body.session_id];
       if (!task || !registry) throw new TaskLedgerError(409, "恢复需要已有 task_id 和已登记的真实 Session。");
       if (body.expected_event_id && task.lastEventId !== body.expected_event_id) throw new TaskLedgerError(409, "TASK_CHANGED：任务已变化，请重新核对现场后接续。");
       if (registry.workspace !== task.workspace) throw new TaskLedgerError(409, "恢复 Session 的 workspace 与合同不一致。");
       if (["cancelled", "removed"].includes(task.status)) throw new TaskLedgerError(409, "TASK_NOT_RESUMABLE：已取消或移除任务不能接手。");
-      const reopen = ["done_claimed", "verified"].includes(task.status);
+      const reopen = Boolean(task.archivedAt) || ["done_claimed", "verified"].includes(task.status);
       if (task.sessionId !== body.session_id || reopen) {
         if (task.sessionId !== body.expected_session_id) throw new TaskLedgerError(409, "SESSION_BINDING_CHANGED：请重新读取交接状态。");
         if (loadVisibleTasks().some((item) => item.id !== task.id && item.sessionId === body.session_id && ["planned", "in_progress", "blocked"].includes(item.status))) throw new TaskLedgerError(409, "ACTIVE_TASK_CONFLICT：目标 Session 已有其他活跃任务。");
-        recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id, ...((reopen || task.sessionId !== body.session_id) ? { status: "in_progress" } : {}) }, { requireRegistered: true, authorizedResume: true });
+        recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id, ...(task.archivedAt ? { archived_at: "__UNARCHIVE__" } : {}), ...((reopen || task.sessionId !== body.session_id) ? { status: "in_progress" } : {}) }, { requireRegistered: true, authorizedResume: true });
       }
       request.method = "GET";
       request.url = `/task-prepare?session_id=${encodeURIComponent(body.session_id)}`;
@@ -522,8 +522,8 @@ const server = createServer(async (request, response) => {
         // 交给下方 task 子资源路由。
       } else {
         const usageByTask = new Map((currentUsageReport().lifetime?.byTask || []).map((item) => [item.id, item]));
-        const tasks = loadVisibleTasks().slice().reverse().map((task) => ({ ...task, tokenUsage: usageByTask.get(task.id) || null }));
         const taskId = url.searchParams.get("task_id") || "";
+        const tasks = (taskId ? loadTasks() : loadVisibleTasks()).slice().reverse().map((task) => ({ ...task, tokenUsage: usageByTask.get(task.id) || null }));
         const sessionId = url.searchParams.get("session_id") || "";
         if (taskId || sessionId) {
           const matching = tasks.filter(task => (!taskId || task.id === taskId) && (!sessionId || task.sessionId === sessionId));

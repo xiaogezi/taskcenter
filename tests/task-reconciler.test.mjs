@@ -55,9 +55,14 @@ test("确认会话清除先登记，静默后归档保留原状态与证据，�
   recordTaskEvent({ type: "task.create", task_id: "new-task", session_id: "cleared-session", agent: "codex", goal: "新目标" });
   assert.throws(() => recordTaskEvent({ type: "task.review", task_id: "cleared", session_id: "cleared-session", archived_at: "__UNARCHIVE__" }), /ACTIVE_TASK_CONFLICT/);
   recordTaskEvent({ type: "task.update", task_id: "new-task", session_id: "cleared-session", status: "cancelled" });
-  recordTaskEvent({ type: "task.review", task_id: "cleared", session_id: "cleared-session", archived_at: "__UNARCHIVE__" });
+  recordTaskEvent({ type: "task.resume", task_id: "cleared", session_id: "cleared-session", archived_at: "__UNARCHIVE__" }, { authorizedResume: true });
   const restored = loadTasks().find(t => t.id === "cleared");
   assert.ok(!restored.archivedAt); assert.ok(restored.activeStartedAt); assert.equal(restored.status, "in_progress");
+  assert.equal(restored.executionReconciliation, null); assert.equal(restored.sessionDetachedAt, "");
+  assert.equal(restored.runs.at(-1).ended_at, "");
+  await runReconciliation({ availableSessionIds: ["cleared-session"], inspectSession: async () => ({ busy: false, lastTerminal: { type: "task_complete", at: old, turn_id: "old-turn" } }) });
+  assert.ok(!loadTasks().find(t => t.id === "cleared").archivedAt);
+  assert.equal(loadTasks().find(t => t.id === "cleared").runs.at(-1).ended_at, "");
 });
 
 test("读取失败、状态未确认、活跃CLI、非Codex和忙碌会话不被归档，外部不能伪造内部归档", async () => {

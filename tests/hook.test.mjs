@@ -1049,6 +1049,44 @@ test("跨客户端共享任务保留创建者和证据，接手后旧 Session �
   }
 });
 
+test("归档任务精确查询可见，原Session受控恢复保留事实并重新打开Run", async () => {
+  const session_id = "archived-resume-owner";
+  const headers = { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" };
+  const post = (path, body) => fetch(`${base}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+  await runHook("session-start", "codex", { session_id, cwd: "/work" });
+  await runHook("session-start", "codex", { session_id: "archived-other-workspace", cwd: "/other" });
+  const created = await (await post("/task-events", { type: "task.create", session_id, workspace: "/work", title: "恢复原合同", goal: "原目标", scope: ["probe"], plan: ["执行"], non_goals: [], acceptance_criteria: ["原标准"], contract_version: "v2", workflow_profile: "fast", review_policy: "recommended", status: "in_progress", evidence: ["原证据"] })).json();
+  assert.equal(created.accepted, true, JSON.stringify(created));
+  const task_id = created.task.id;
+  const before = { ...created.task, archivedAt: new Date().toISOString(), sessionDetachedAt: new Date().toISOString(), executionReconciliation: { basis: "owner_inactive", state: "execution_unconfirmed" }, runs: created.task.runs.map(run => ({ ...run, ended_at: new Date().toISOString(), ended_reason: "session_detached" })) };
+  const tasks = JSON.parse(await readFile(paths.TASKCENTER_TASK_LEDGER_PATH, "utf8"));
+  await writeFile(paths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify(tasks.map(task => task.id === task_id ? before : task)));
+  const query = async (suffix = "") => (await (await fetch(`${base}/tasks${suffix}`)).json()).tasks;
+  assert.equal((await query()).some(task => task.id === task_id), false);
+  assert.equal((await query(`?task_id=${task_id}`))[0].id, task_id);
+  assert.deepEqual(await query(`?task_id=${task_id}&session_id=wrong`), []);
+  const input = { session_id, task_id, expected_session_id: session_id };
+  for (const invalid of [{ expected_session_id: "wrong" }, { expected_event_id: "stale" }, { session_id: "not-registered" }, { session_id: "archived-other-workspace" }]) {
+    assert.equal((await post("/task-resume", { ...input, ...invalid })).status, 409);
+  }
+  const conflict = await (await post("/task-events", { type: "task.create", session_id, workspace: "/work", title: "另一个任务", goal: "另一个目标" })).json();
+  assert.equal(conflict.accepted, true);
+  assert.equal((await post("/task-resume", input)).status, 409);
+  await post("/task-events", { type: "task.update", session_id, task_id: conflict.task.id, status: "cancelled" });
+  const response = await post("/task-resume", input);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).active_task.id, task_id);
+  const restored = (await query(`?task_id=${task_id}`))[0];
+  assert.equal(restored.archivedAt, ""); assert.equal(restored.sessionDetachedAt, "");
+  assert.equal(restored.executionReconciliation, null);
+  assert.equal(restored.runs.length, before.runs.length + 1);
+  assert.equal(restored.runs.at(-1).ended_at, "");
+  for (const field of ["goal", "scope", "acceptanceCriteria", "currentSubject", "requirementResults", "verificationClaims", "acceptanceStatus", "evidence"]) assert.deepEqual(restored[field], before[field], field);
+  assert.equal((await post("/task-resume", input)).status, 200);
+  assert.deepEqual((await query(`?task_id=${task_id}`))[0].runs, restored.runs);
+  assert.equal((await runHook("pre-tool-use", "codex", { session_id, cwd: "/work", tool_name: "Write", tool_input: { file_path: "/work/probe", content: "test" } })).code, 0);
+});
+
 test("Context task ensure 跨 Turn 幂等复用，complete 后可按仍活跃语义重新进入", async () => {
   const body = {
     context_task_id: "context-hook-semantic",
