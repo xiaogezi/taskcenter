@@ -1089,8 +1089,10 @@ function applyEvent(current, event) {
     const missingOwner = taskSessionAgent(current) === "codex" && observation.basis === "session_missing"
       && current.executionReconciliation?.basis === "session_missing";
     const inactiveOwner = observation.basis === "owner_inactive" && inactiveOwnerArchiveReady(current, observation.terminal, Date.parse(event.created_at));
-    if (event.archived_at && ((!missingOwner && !inactiveOwner) || event.archived_at === "__UNARCHIVE__"
-      || !(Date.parse(event.created_at) - Date.parse(current.updatedAt || current.createdAt) >= 300_000)
+    const manualArchive = observation.basis === "manual_archive" && event.event_id.startsWith("manual-") && current.status === "in_progress" && Boolean(observation.terminal)
+      && Date.parse(observation.terminal.at) >= Date.parse(current.runs?.at(-1)?.started_at || current.activeStartedAt || current.createdAt);
+    if (event.archived_at && ((!missingOwner && !inactiveOwner && !manualArchive) || event.archived_at === "__UNARCHIVE__"
+      || (!manualArchive && !(Date.parse(event.created_at) - Date.parse(current.updatedAt || current.createdAt) >= 300_000))
       || current.cliRuns?.some(run => run.status === "active"))) throw new TaskLedgerError(409, "孤儿归档需要持久承载失效事实、静默期及无活跃CLI。");
     const next = { ...current, runs, executionReconciliation: { ...observation, event_id: event.event_id, observed_at: event.created_at }, updatedAt: event.created_at, lastEventId: event.event_id };
     if (event.archived_at) {

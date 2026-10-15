@@ -18,6 +18,8 @@ import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { currentMaintenanceAction, safeActionText } from "./ai-maintenance.mjs";
+import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
+import { isProcessTreeAlive } from "./process-tree.mjs";
 import {
   DispatchError,
 } from "./dispatch-core.mjs";
@@ -46,6 +48,7 @@ import {
   taskEventsPath,
   taskLedgerPath,
   taskReconcilePath,
+  taskSessionAgent,
   TaskLedgerError,
 } from "./task-ledger.mjs";
 import { runReconciliation, queryFindings, lastReconciliation } from "./task-reconciler.mjs";
@@ -846,7 +849,7 @@ const server = createServer(async (request, response) => {
       }
       const currentTask = loadTasks().find((item) => item.id === taskId);
       if (action === "verify" && currentTask?.requirementId) verifyRequirementExists(currentTask.requirementId.replace(/^promoted-/, ""));
-      const result = applyManualTaskAction(taskId, action, body.reason, body.expectedAt, body.estimatedEffortMinutes);
+      const result = await applyManualTaskAction(taskId, action, body.reason, body.expectedAt, body.estimatedEffortMinutes);
       const contextSync = await syncContextEvent(result.event, result.task);
       if (action === "verify" && result.task.requirementId) {
         const requirementId = result.task.requirementId.replace(/^promoted-/, "");
@@ -1259,7 +1262,7 @@ function verifyManualTaskAction(request) {
   }
 }
 
-function applyManualTaskAction(taskId, action, reason = "", expectedAt = "", estimatedEffortMinutes = undefined) {
+async function applyManualTaskAction(taskId, action, reason = "", expectedAt = "", estimatedEffortMinutes = undefined) {
   const tasks = loadTasks();
   const task = tasks.find((item) => item.id === taskId);
   if (!task) {
@@ -1272,7 +1275,20 @@ function applyManualTaskAction(taskId, action, reason = "", expectedAt = "", est
     throw new TaskLedgerError(409, "v2 任务必须通过独立授权的通用验收 API 完成最终验收。");
   }
   if (action === "archive" && !["done_claimed", "verified", "cancelled"].includes(task.status)) {
-    throw new TaskLedgerError(409, "只有已完成、已验收或已取消任务可以归档。");
+    if (task.status !== "in_progress" || task.cliRuns?.some(run => run.status === "active")) throw new TaskLedgerError(409, "任务仍有活跃执行或尚未开始，不能按孤儿任务归档。");
+    if (taskSessionAgent(task) !== "codex") throw new TaskLedgerError(409, "缺少可核实的执行结束记录，暂不能归档。");
+    let session;
+    try { session = await inspectSessionStateAsync(task.sessionId, sessionsRoot); }
+    catch { throw new TaskLedgerError(409, "无法读取会话执行记录，暂不能归档；会话缺失由自动对账处理。"); }
+    if (loadTasks().find(item => item.id === taskId)?.lastEventId !== task.lastEventId) throw new TaskLedgerError(409, "任务已变化，请刷新后重新核对。");
+    let maintenance;
+    try { maintenance = JSON.parse(readFileSync(join(aiRuntime, "ai-maintenance-state.json"), "utf8")).actions?.[task.id]; }
+    catch (error) { if (error.code !== "ENOENT") throw new TaskLedgerError(409, "无法核对维护宿主，请稍后重试。"); }
+    if (maintenance?.status === "running" && isProcessTreeAlive(maintenance.pid)) throw new TaskLedgerError(409, "维护 Agent 正在执行，暂不能归档。");
+    const startedAt = task.runs?.at(-1)?.started_at || task.activeStartedAt || task.createdAt;
+    if (session.busy || !session.lastTerminal || !(Date.parse(session.lastTerminal.at) >= Date.parse(startedAt))) throw new TaskLedgerError(409, "会话仍在执行或尚无本次运行的结束证据，暂不能归档。");
+    const result = recordTaskEvent({ type: "task.execution_reconciled", event_id: `manual-${randomUUID()}`, task_id: taskId, session_id: task.sessionId, archived_at: new Date().toISOString(), execution_observation: { state: "execution_unconfirmed", basis: "manual_archive", terminal: session.lastTerminal, next_action: "人工核实运行已结束后归档；原合同、执行状态、证据与未验收事实保留。" } }, { internalReconciliation: true });
+    return { event: result.event, task: result.task };
   }
   const effortMinutes = Number(estimatedEffortMinutes);
   const hasEffort = Number.isFinite(effortMinutes) && effortMinutes > 0;

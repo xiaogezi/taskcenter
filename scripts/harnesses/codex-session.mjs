@@ -34,6 +34,8 @@ function sessionAccumulator(sessionPath) {
     }
   }, result() {
     const pending = [...activeTurns.entries()]
+      // 同一 Session 已完成更新回合时，旧回合缺失结束事件不应永久占用执行权。
+      .filter(([, startedAt]) => !lastTerminal || !Number.isFinite(Date.parse(startedAt)) || Date.parse(startedAt) >= Date.parse(lastTerminal.at))
       .map(([turnId, startedAt]) => ({ turnId, startedAt }))
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
     return { sessionPath, busy: pending.length > 0, activeTurns: pending, lastTerminal };

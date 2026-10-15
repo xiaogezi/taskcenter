@@ -37,6 +37,7 @@ export function TaskWorkspace() {
   const [loadedListKey, setLoadedListKey] = useState("");
   const [pollTick, setPollTick] = useState(0);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const actionInFlight = useRef(false);
@@ -128,7 +129,7 @@ export function TaskWorkspace() {
     actionInFlight.current = true;
     setActingTaskId(task.id);
     setNotice("");
-    setError("");
+    setActionError("");
     try {
       const response = await fetch(`/api/control/tasks/${encodeURIComponent(task.id)}/actions`, { method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Action": "delegate" }, body: JSON.stringify({ action }) });
       const body = await response.json();
@@ -137,7 +138,7 @@ export function TaskWorkspace() {
       if (action === "archive") update({ task: task.id, tab: "overview" });
       setPollTick((current) => current + 1);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "任务操作失败");
+      setActionError(cause instanceof Error ? cause.message : "任务操作失败");
     } finally {
       actionInFlight.current = false;
       setActingTaskId("");
@@ -161,7 +162,7 @@ export function TaskWorkspace() {
     <section className="task-main"><header className="task-header"><div><p>LOCAL CONTROL API</p><h1>任务工作区</h1><small>任务事实、证据与活动均来自本地 Control API。</small></div><button disabled={refreshing || loading} onClick={() => { setRefreshing(true); setPollTick(current => current + 1); }}>{refreshing ? "刷新中…" : "刷新"}</button></header>
       <section className="task-stats" aria-label="任务统计">{([['planned','新建'],['in_progress','执行中'],['execution_unconfirmed','执行待确认'],['completed','已完成'],['all','全部']] as const).map(([bucket, label]) => <button className={state.bucket === bucket ? "selected" : ""} key={bucket} onClick={() => update({ bucket, page: 1 })}><strong>{counts[bucket] ?? "未知"}</strong><span>{label}</span></button>)}</section>
       <section className="task-filters"><select value={state.project} onChange={(event) => update({ project: event.target.value, page: 1 })}><option value="all">全部项目</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.label}</option>)}</select><input value={state.query} onChange={(event) => update({ query: event.target.value, page: 1 })} placeholder="搜索标题、ID 或目标" /><span>共 {payload.total ?? "未知"} 条</span></section>
-      {notice && <p role="status">{notice}</p>}{error && <p className="task-error" role="status">{error}</p>}<div className="task-table-wrap"><table className="task-table"><thead><tr><th>状态</th><th>任务名称</th><th>项目</th><th>当前阶段</th><th>Token</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{loading && !tasks.length ? <tr><td colSpan={7}>正在加载真实任务摘要…</td></tr> : tasks.length ? tasks.map((task) => {
+      {notice && <p role="status">{notice}</p>}{actionError && <p className="task-error" role="alert">{actionError}</p>}{error && <p className="task-error" role="status">{error}</p>}<div className="task-table-wrap"><table className="task-table"><thead><tr><th>状态</th><th>任务名称</th><th>项目</th><th>当前阶段</th><th>Token</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{loading && !tasks.length ? <tr><td colSpan={7}>正在加载真实任务摘要…</td></tr> : tasks.length ? tasks.map((task) => {
         const actions = taskActions(task) as TaskRowAction[];
         return <tr key={task.id} className={state.task === task.id ? "selected" : ""} onClick={() => update({ task: task.id, tab: "overview" })}>
           <td><span className={`status-chip status-${text(task.status)}`}>{labels[displayStatus(task)] || text(task.status)}</span>{(task.actionReasons || []).length > 0 && <small className="attention">需处理</small>}</td>

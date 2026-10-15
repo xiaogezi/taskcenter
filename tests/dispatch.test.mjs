@@ -117,6 +117,7 @@ test("Session 生命周期按未结束 turn 判断忙碌状态", async () => {
   const sessionPath = join(sessionsRoot, `rollout-${threadId}.jsonl`);
   await mkdir(sessionsRoot, { recursive: true });
   await writeFile(sessionPath, [
+    JSON.stringify({ timestamp: "2026-07-18T00:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "historic-missing-end" } }),
     JSON.stringify({ timestamp: "2026-07-19T00:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }),
     JSON.stringify({ timestamp: "2026-07-19T00:00:01.000Z", type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1" } }),
     JSON.stringify({ timestamp: "2026-07-19T00:00:02.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn-2" } }),

@@ -3076,6 +3076,41 @@ test("控制服务 verify/reject 校验状态并写入审核结果", async (cont
   assert.equal(overrides["req-http-review"].hidden, false);
 });
 
+test("人工孤儿归档核对真实运行，保护活跃会话CLI和维护宿主并保留合同事实", async context => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  const maintenanceHost = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+  context.after(() => maintenanceHost.kill("SIGTERM"));
+  const headers = { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-TaskCenter-Action": "delegate" };
+  const sessions = join(tempDir, "sessions"), maintenance = join(tempDir, "runtime", "ai-maintenance-state.json");
+  await mkdir(sessions, { recursive: true });
+  for (const scenario of ["ended", "busy", "cli", "maintenance", "unreadable", "old-terminal"]) {
+    const id = `manual-orphan-${scenario}`;
+    recordTaskEvent({ type: "session.register", session_id: id, agent: "codex", workspace: "/work" });
+    const before = recordTaskEvent({ type: "task.create", task_id: id, session_id: id, agent: "codex", status: "in_progress", goal: "保留原合同", evidence: ["原交付证据"], acceptance_criteria: ["原条件"] }).task;
+    const terminalAt = scenario === "old-terminal" ? "2000-01-02T00:00:00.000Z" : new Date().toISOString();
+    const lines = [
+      { timestamp: "2000-01-01T00:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "historic-unclosed" } },
+      { timestamp: terminalAt, type: "event_msg", payload: { type: "task_complete", turn_id: "latest-finished" } },
+      ...(scenario === "busy" ? [{ timestamp: new Date(Date.now() + 1000).toISOString(), type: "event_msg", payload: { type: "task_started", turn_id: "actual-running" } }] : []),
+    ];
+    if (scenario !== "unreadable") await writeFile(join(sessions, `${id}.jsonl`), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+    if (scenario === "cli") await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify(loadTasks().map(task => task.id === id ? { ...task, cliRuns: [{ status: "active" }] } : task)));
+    await writeFile(maintenance, JSON.stringify({ actions: scenario === "maintenance" ? { [id]: { status: "running", pid: maintenanceHost.pid } } : {} }));
+    const response = await fetch(`${base}/tasks/${id}/actions`, { method: "POST", headers, body: JSON.stringify({ action: "archive" }) });
+    assert.equal(response.status, scenario === "ended" ? 200 : 409, scenario);
+    const after = loadTasks().find(task => task.id === id);
+    assert.equal(Boolean(after.archivedAt), scenario === "ended", scenario);
+    for (const field of ["status", "goal", "acceptanceCriteria", "evidence", "currentSubject", "verificationClaims", "acceptanceRecords"]) assert.deepEqual(after[field], before[field], `${scenario}/${field}`);
+    if (scenario === "ended") {
+      assert.equal(after.runs.at(-1).ended_at, terminalAt);
+      assert.equal(after.executionReconciliation.basis, "manual_archive");
+      assert.equal(after.activeStartedAt, "");
+    }
+  }
+});
+
 test("控制服务 schedule/archive/unarchive HTTP 闭环", async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer();
