@@ -137,7 +137,8 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
       if (old?.input_hash === snapshot.input_hash && old.status !== "attention" && (!work?.request_id || old.request_id === work.request_id)) return;
       const action = { id: `action-${randomUUID()}`, task_id: task.id, session_id: randomUUID(), expected_event_id: task.lastEventId, input_hash: snapshot.input_hash,
         analysis, intent, request_id: work?.request_id, model: profile.model, status: "queued", attempts: 0, updated_at: new Date(now()).toISOString(),
-        stopped_session_id: old?.pid && !isProcessTreeAlive(old.pid) && old.status !== "running" ? old.session_id : undefined };
+        recovery_session_id: old && old.status !== "running" && !isProcessTreeAlive(old.pid)
+          && ((old.attempts > 0 && task.sessionId === old.session_id) || task.sessionId === old.recovery_session_id) ? task.sessionId : undefined };
       state.actions[task.id] = action; await save();
       await emit(action, { status: "queued", summary: "治理分析已进入实际行动队列，等待核对原执行者状态", result: { analysis, expected_event_id: action.expected_event_id } });
     },
@@ -171,11 +172,9 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
             action.status = "cancelled"; await save(); await emit(action, { status: "cancelled", summary: "任务已变化，旧分析不再执行，等待新快照判断" }); continue;
           }
           if (task.cliRuns?.some(run => run.status === "active")) continue;
-          let safe = (task.sessionId === action.session_id && action.attempts > 0) || task.sessionId === action.stopped_session_id;
-          if (!safe) {
-            try { const session = await inspect(task.sessionId); safe = !session.busy && Boolean(session.lastTerminal); }
-            catch { safe = false; }
-          }
+          // A completed turn is not a handoff; only recover this worker's own prior host.
+          let safe = ((task.sessionId === action.session_id && action.attempts > 0) || task.sessionId === action.recovery_session_id)
+            && !isProcessTreeAlive(action.pid);
           // Check all other active owners in this workspace before handing it to a CLI.
           if (safe) for (const other of tasks().filter(item => item.id !== task.id && !item.archivedAt && item.workspace === task.workspace && activeStatuses.has(item.status))) {
             if (other.cliRuns?.some(run => run.status === "active")) { safe = false; break; }
@@ -184,7 +183,7 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
           }
           if (!safe) {
             action.retry_at = now() + 60_000;
-            if (!action.wait_recorded) { action.wait_recorded = true; await emit(action, { status: "waiting_owner", summary: "原 Agent 仍在运行或状态未确认；保留行动，其他任务继续处理" }); }
+            if (!action.wait_recorded) { action.wait_recorded = true; await emit(action, { status: "waiting_owner", summary: "保留原会话任务归属，未确认维护自身恢复条件或存在活跃执行者；一轮结束不代表移交，其他任务继续处理" }); }
             await save(); continue;
           }
           const current = tasks().find(item => item.id === task.id);
@@ -195,7 +194,7 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
           health.status = "executing"; health.task_id = task.id;
           try {
             // Every retry has a fresh real host identity; task_resume transfers ownership.
-            action.stopped_session_id = task.sessionId;
+            action.recovery_session_id = task.sessionId;
             action.session_id = randomUUID(); await save();
             const receipt = await execute({ task, action, profile, signal, record: row => emit(action, row), onSpawn: async pid => { action.pid = pid; await save(); } });
             const updated = tasks().find(item => item.id === task.id);

@@ -32,9 +32,59 @@ const profile = { model: "test", effort: "low", automatic: { actions: true } };
 const task = { id: "task", sessionId: "original", lastEventId: "event-1", workspace: "/project", title: "维护", goal: "修复异常", status: "in_progress" };
 const analysis = { summary: "核对异常", next_steps: ["检查现场"] };
 
+test("普通会话一轮结束、终止或空闲都不授权自动转移任务归属", async t => {
+  for (const type of ["task_complete", "turn_aborted"]) {
+    const f = await fixture(t, { maintenanceOwned: false, inspect: async () => ({ busy: false, lastTerminal: { type } }) });
+    await f.worker.enqueue(task, analysis, profile, { request_id: "manual-work", intent: "检查缺项" });
+    await f.worker.tick(profile);
+    assert.equal(f.calls(), 0, type);
+    assert.equal(f.rows.at(-1).status, "waiting_owner");
+    assert.match(f.rows.at(-1).summary, /归属|移交/);
+    f.advance(300_001); await f.worker.tick(profile);
+    assert.equal(f.calls(), 0);
+  }
+});
+
+test("旧失败行动的stopped_session_id不能授权接走原会话任务", async t => {
+  const f = await fixture(t);
+  await writeFile(f.options.statePath, JSON.stringify({ actions: { task: {
+    id: "old-action", task_id: task.id, status: "retry_wait", attempts: 1,
+    session_id: "failed-maintenance", stopped_session_id: task.sessionId,
+  } } }));
+  const restarted = await createMaintenanceWorker(f.options);
+  await restarted.tick(profile);
+  assert.equal(f.calls(), 0);
+  assert.equal(f.rows.at(-1).status, "waiting_owner");
+});
+
+test("维护自身恢复可跨重启，但归属回到普通会话后停止重试", async t => {
+  let calls = 0;
+  const f = await fixture(t, { execute: async ({ action }) => {
+    calls++; f.update({ sessionId: action.session_id });
+    throw Object.assign(new Error("missing"), { code: "ENOENT" });
+  } });
+  await f.worker.enqueue(task, analysis, profile); await f.worker.tick(profile);
+  assert.equal(calls, 1);
+  f.advance(300_001);
+  const restarted = await createMaintenanceWorker(f.options);
+  await restarted.tick(profile);
+  assert.equal(calls, 2);
+  f.update({ sessionId: "user-returned", lastEventId: "user-resumed" });
+  f.advance(300_001); await restarted.tick(profile);
+  assert.equal(calls, 2);
+  assert.equal(f.rows.at(-1).status, "waiting_owner");
+});
+
+test("维护自身恢复也保护同工作区活跃宿主", async t => {
+  const f = await fixture(t, { tasks: () => [task, { ...task, id: "other", sessionId: "busy-owner" }], inspect: async () => ({ busy: true }) });
+  await f.worker.enqueue(task, analysis, profile); await f.worker.tick(profile);
+  assert.equal(f.calls(), 0);
+  assert.equal(f.rows.at(-1).status, "waiting_owner");
+});
+
 test("确认缺失的会话不再默认接续，归档也不会进入维护队列", async t => {
   const orphan = { ...task, agent: "codex", updatedAt: new Date(0).toISOString(), executionReconciliation: { basis: "session_missing" } };
-  const f = await fixture(t, { tasks: () => [orphan, { ...orphan, id: "other", sessionId: "other" }], inspect: async () => { throw Object.assign(new Error("cleared"), { code: "CODEX_SESSION_NOT_FOUND" }); } });
+  const f = await fixture(t, { maintenanceOwned: false, tasks: () => [orphan, { ...orphan, id: "other", sessionId: "other" }], inspect: async () => { throw Object.assign(new Error("cleared"), { code: "CODEX_SESSION_NOT_FOUND" }); } });
   for (const basis of ["session_missing", "owner_inactive"]) {
     await f.worker.enqueue({ ...orphan, executionReconciliation: { basis } }, analysis, profile); await f.worker.tick(profile);
   }
@@ -94,7 +144,7 @@ test("维护队列持久保存本轮目标，CLI 执行器收到同一目标", a
 
 test("运行中的维护保留新目标，完成后核对接续且不抢占当前执行", async t => {
   let f, calls = 0;
-  f = await fixture(t, { execute: async ({ action }) => { calls++; if (calls === 1) await f.worker.enqueue(task, analysis, profile, { request_id: "new", intent: "检查缺项" }); else assert.equal(action.intent, "检查缺项"); return { tool_calls: 1 }; } });
+  f = await fixture(t, { execute: async ({ action, onSpawn }) => { calls++; f.update({ sessionId: action.session_id }); await onSpawn(99999999); if (calls === 1) await f.worker.enqueue(task, analysis, profile, { request_id: "new", intent: "检查缺项" }); else assert.equal(action.intent, "检查缺项"); return { tool_calls: 1 }; } });
   await f.worker.enqueue(task, analysis, profile); await f.worker.tick(profile);
   assert.equal(calls, 1);
   assert.equal((await f.state()).actions.task.pending_work.work.intent, "检查缺项");
@@ -104,9 +154,15 @@ test("运行中的维护保留新目标，完成后核对接续且不抢占当�
 async function fixture(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), "ai-maintenance-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const rows = []; let current = { ...task }, time = 1_000_000, calls = 0;
+  const { maintenanceOwned = true, ...workerOverrides } = overrides;
   const options = { statePath: join(dir, "actions.json"), record: async row => rows.push(row), tasks: () => [current], now: () => time,
     inspect: async () => ({ busy: false, lastTerminal: { type: "turn_aborted" } }),
-    execute: async () => { calls++; return { tool_calls: 1 }; }, ...overrides };
+    execute: async () => { calls++; return { tool_calls: 1 }; }, ...workerOverrides };
+  // Execution tests recover a task already owned by a prior maintenance host.
+  if (maintenanceOwned) await writeFile(options.statePath, JSON.stringify({ actions: { task: {
+    id: "prior-maintenance", task_id: task.id, session_id: task.sessionId,
+    attempts: 1, status: "attention", pid: 99999999,
+  } } }));
   return { options, worker: await createMaintenanceWorker(options), rows, calls: () => calls, update: value => { current = { ...current, ...value }; }, advance: ms => { time += ms; }, state: async () => JSON.parse(await readFile(options.statePath, "utf8")) };
 }
 
@@ -135,7 +191,7 @@ test("CLI 不可用持久保留，冷却后重试，主线无需等待模型", a
 });
 
 test("不抢占运行中的宿主；任务变化撤销旧行动", async t => {
-  const f = await fixture(t, { inspect: async () => ({ busy: true }) });
+  const f = await fixture(t, { maintenanceOwned: false, inspect: async () => ({ busy: true }) });
   await f.worker.enqueue(task, analysis, profile); await f.worker.tick(profile);
   assert.equal(f.calls(), 0); assert.equal(f.rows.at(-1).status, "waiting_owner");
   f.update({ lastEventId: "event-2" }); f.advance(60_001); await f.worker.tick(profile);
