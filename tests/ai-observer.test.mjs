@@ -8,8 +8,59 @@ import test from "node:test";
 import { createAutomaticObserver, requestAutomaticWork } from "../scripts/ai-observer.mjs";
 
 const profile = { model: "deepseek-test", effort: "low" };
-const task = { id: "current", workspace: "/project", title: "修复导出", goal: "导出全部记录", status: "in_progress", evidence: ["两条而非三条"], currentStep: "检查缺行" };
+const task = { id: "current", workspace: "/project", title: "修复导出", goal: "导出全部记录", status: "blocked", blocker: "导出缺行", evidence: ["两条而非三条"], currentStep: "检查缺行" };
 const result = { decision: "evidence", reason: "期望与结果有差异", summary: "缺少完整导出证据", findings: [{ severity: "medium", basis: "observed", message: "导出数量不同", evidence_refs: ["evidence:1"] }], next_steps: ["复核数量"] };
+
+test("正常计划和执行进度仅本地观察，不调用任何模型", async t => {
+  const f = await fixture(t, { judge: async () => assert.fail("正常进度无需Jev") });
+  for (const status of ["planned", "in_progress"]) {
+    for (let i = 0; i < 3; i++) {
+      f.advance(60_001);
+      await f.observer.tick([{ ...task, status, blocker: "", currentStep: `步骤${i}`, currentSubject: { type: "git_commit", value: String(i) } }], profile);
+    }
+  }
+  assert.equal(f.calls(), 0);
+  assert.equal(f.rows.length, 1);
+  assert.equal(f.rows[0].model, "rules");
+});
+
+test("同一阻塞不因进度Subject和证据更新反复分析，真实新阻塞仍参与", async t => {
+  const f = await fixture(t);
+  await f.observer.tick([task], profile);
+  const restarted = await createAutomaticObserver(f.options);
+  for (let i = 0; i < 3; i++) {
+    f.advance(300_001);
+    await restarted.tick([{ ...task, currentStep: `步骤${i}`, evidence: [`证据${i}`], currentSubject: { type: "git_commit", value: String(i) } }], profile);
+  }
+  assert.equal(f.calls(), 1);
+  f.advance(60_001);
+  await restarted.tick([{ ...task, blocker: "新阻塞：权限缺失" }], profile);
+  assert.equal(f.calls(), 2);
+});
+
+test("自动分析失败不对相同异常无限重试，主动请求仍可明确重试", async t => {
+  let calls = 0;
+  const f = await fixture(t, { infer: async () => { calls++; throw new Error("failed"); } });
+  await f.observer.tick([task], profile);
+  const restarted = await createAutomaticObserver(f.options);
+  for (let i = 0; i < 3; i++) {
+    f.advance(300_001); await restarted.tick([task], profile);
+  }
+  assert.equal(calls, 1);
+  await restarted.tick([task], profile, { id: "explicit-retry", task_ids: [task.id], intent: "重试核对导出" });
+  assert.equal(calls, 2);
+});
+
+test("待收尾任务只因真实缺项变化重新分析，不因Subject观察时间重复调用", async t => {
+  const f = await fixture(t);
+  const done = { ...task, status: "done_claimed", blocker: "", currentSubject: { type: "git_commit", value: "commit-1", observed_at: "2026-10-15T00:00:00Z" } };
+  await f.observer.tick([task], profile);
+  f.advance(60_001); await f.observer.tick([done], profile);
+  assert.equal(f.calls(), 2);
+  f.advance(60_001);
+  await f.observer.tick([{ ...done, currentSubject: { ...done.currentSubject, observed_at: "2026-10-15T01:00:00Z" } }], profile);
+  assert.equal(f.calls(), 2);
+});
 
 test("确认会话缺失由本地对账归档，不调用模型或进入接续队列", async t => {
   let queued;
@@ -63,7 +114,7 @@ test("用户意图传入分析及维护，不被 Jev observe 忽略，保存模�
   let prompt, queued;
   const f = await fixture(t, { judge: async () => ({ status: "succeeded", answers: { participation: { choice: "observe" } } }), infer: async args => { prompt = args.prompt; return { text: `\`\`\`json\n${JSON.stringify({ ...result, intent_understanding: "你希望修复导出缺行，我会核对完整性" })}\n\`\`\``, model: profile.model }; }, enqueue: async (...args) => { queued = args; } });
   const work = { id: "intent-round", task_ids: [task.id], intent: "优先修复导出" };
-  await f.observer.tick([task], profile, work);
+  await f.observer.tick([{ ...task, status: "in_progress", blocker: "" }], profile, work);
   assert.ok(prompt.includes(work.intent));
   assert.equal(queued[3].intent, work.intent);
   assert.equal(queued[3].request_id, work.id);
@@ -178,7 +229,7 @@ test("主动处理 CLI 失败仍消化队列并记录降级，不改变任务", 
   assert.equal(f.rows.filter(row => row.status === "degraded").length, 2);
   await f.observer.tick(tasks, profile, request);
   assert.equal(f.rows.filter(row => row.status === "degraded").length, 2);
-  assert.equal(task.status, "in_progress");
+  assert.equal(task.status, "blocked");
 });
 test("快照版本升级仅重建已结束历史的基线，之后真实变化仍参与", async t => {
   const f = await fixture(t);
@@ -189,7 +240,7 @@ test("快照版本升级仅重建已结束历史的基线，之后真实变化�
   assert.equal(f.calls(), 0); assert.equal(f.rows.length, 0);
   assert.equal(JSON.parse(await readFile(f.options.statePath, "utf8")).tasks.past.snapshot_version, "collaboration-v1");
   f.advance(60_001);
-  await observer.tick([{ ...past, evidence: ["新增实际证据"] }], profile);
+  await observer.tick([{ ...past, blocker: "新增实际失败，需要复核", evidence: ["新增实际证据"] }], profile);
   assert.equal(f.calls(), 1);
 });
 test("CLI 缺失只失败一次，其他快照规则降级，冷却不阻塞或改写任务", async t => {
