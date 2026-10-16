@@ -1,15 +1,15 @@
-import { realpathSync, statSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { isTrustedCliEntry } from "./trusted-cli-identity.mjs";
 
 // Only the reviewed uv installation is trusted; PATH and arbitrary same-name scripts are not.
 export function isReadOnlyDevKit(tokens, { cwd, workspace, home = homedir() }) {
   if (!["env", "/usr/bin/env"].includes(tokens[0]) || tokens[1] !== "PYTHONDONTWRITEBYTECODE=1") return false;
   const installed = join(home, ".local/share/uv/tools/devkit-assets/bin/dev-kit");
-  if (![installed, join(home, ".local/bin/dev-kit")].includes(tokens[2])) return false;
+  if (!isTrustedCliEntry(tokens[2], { installed, aliases: [join(home, ".local/bin/dev-kit")] })) return false;
   let root;
   try {
-    if (realpathSync(tokens[2]) !== realpathSync(installed) || !statSync(installed).isFile() || !(statSync(installed).mode & 0o111)) return false;
     root = realpathSync(workspace);
     const location = relative(root, realpathSync(cwd));
     if (location === ".." || location.startsWith("../") || isAbsolute(location)) return false;

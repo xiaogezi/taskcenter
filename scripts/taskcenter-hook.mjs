@@ -12,7 +12,7 @@ import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment } f
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
-import { isReadOnlyDevKit } from "./devkit-inspection.mjs";
+import { inspectTrustedCli } from "./trusted-cli-inspection.mjs";
 import { assertNoSymlinks, auditAutomationMemory, automationMemoryBinding, inspectAutomationMemoryPatch } from "./automation-memory.mjs";
 
 class ControlUnavailableError extends Error {}
@@ -757,6 +757,8 @@ function isReadOnlyInspection(payload) {
 }
 
 function isReadOnlyCommand(words, heredoc, cwd = workspace) {
+  const trusted = inspectTrustedCli(words, { cwd, workspace });
+  if (trusted !== null) return !heredoc && trusted;
   const tokens = [...words];
   if (basename(tokens[0]) === "rtk") {
     tokens.shift();
@@ -765,7 +767,7 @@ function isReadOnlyCommand(words, heredoc, cwd = workspace) {
   const executable = basename(tokens[0]);
   const args = tokens.slice(1);
   if (heredoc && executable !== "cat") return false;
-  if (executable === "env") return isReadOnlyDevKit(tokens, { cwd, workspace });
+  if (executable === "env") return false;
   if (isCliVersionQuery(executable, args)) return true;
   if (["which", "command", "type"].includes(executable)) {
     // `command NAME` executes NAME; only its explicit lookup forms are read-only.
@@ -1188,7 +1190,7 @@ async function requireTask() {
   const rank = { in_progress: 3, blocked: 2, planned: 1 };
   const task = active.sort((left, right) => (rank[right.status] - rank[left.status]) || (Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || "")))[0];
   if (task) return task;
-  throw new Error("该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。当前 Session 无活跃任务；实际执行、合并、验证或写入需调用 taskcenter_task_resume 接续同一交付，新的独立目标才创建任务。");
+  throw new Error("该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。受信 CLI 须匹配已审核安装入口、产物版本及精确只读参数；升级或新增 CLI 应修复适配器，不为纯查询创建无关任务。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。当前 Session 无活跃任务；实际执行、合并、验证或写入需调用 taskcenter_task_resume 接续同一交付，新的独立目标才创建任务。");
 }
 
 async function prepareCurrentTask() {

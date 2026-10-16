@@ -215,6 +215,8 @@ TaskCenter Core 不依赖 Codex、Context Agent、OCR、GitHub/GitLab、Worktree
 
 ### 只读诊断与闭环引用
 
+受信 CLI 通过 `scripts/trusted-cli-inspection.mjs` 统一分派审核适配器，必须同时满足固定安装入口身份和精确参数白名单，不按任意程序的 `--help` / `--version` 放行。DevKit 保留原有 `env PYTHONDONTWRITEBYTECODE=1` 及受限只读动作；DCB 仅支持已审核 SHA-256 的 `0.4.0-alpha.1` 安装产物（含 Skill 的 `bin/dcb`、`~/.local/bin/dcb` 软链接），允许单独 `--version` / `--help`、`doctor --project-root WORKSPACE`、`interaction query|graph|check`。交互查询须指定现存的绝对 `--interaction-map`，可读取项目外独立 map；项目根须对应当前登记工作区，query 必须精确选择 screen 或 entity 及方向。支持直接入口或 `rtk proxy`；伪入口、替换二进制、额外环境变量、未知参数、写入和 preview 分支均拒绝。CLI 升级后须复核源码及产物摘要后更新适配器，不能自动扩大权限。Hook 是生命周期守卫，不是进程级文件沙箱。
+
 已登记但没有活跃任务的普通 Session 可使用 L0 只读查询，包括带引号的正则检索（如 `rtk rg 'foo|bar' README.md`）、`rtk proxy` 包装以及固定 `adb devices [-l]` / `adb version` 探针。引号内的正则符号按字面参数处理；管道、重定向、命令替换、变量展开、不完整引号和执行型参数继续拒绝。`npm run service:status` 不属于固定只读探针，因为任意工作区的同名 npm script 可执行任意代码。L0 不等同于文件系统沙箱，也不会恢复 Codex 尚未挂载的 MCP；服务不可用仍遵循离线恢复门禁。
 
 闭环的两个 `requirement_id` 指向不同集合：`close_requirements[].requirement_id` 引用 `acceptance_criteria[].id`；`close_verifications[].requirement_id` 引用 `verification_plan[].id`，其 `kind` 必须匹配计划。Claim 自身 `id` 是唯一证据记录 ID。引用错误返回 `UNKNOWN_ACCEPTANCE_REFERENCE` / `UNKNOWN_VERIFICATION_REFERENCE` 和合法 ID，类型不符返回 `VERIFICATION_KIND_MISMATCH`。应在一次 `task_close` 中提交整包证据。请求校验失败后可修正再提交；已成功落账的 event_id 只能重放相同内容，不能用幂等键覆盖已记录事实。
