@@ -22,6 +22,28 @@ const readableJson = async (path, fallback) => {
   catch (error) { if (error.code === "ENOENT") return fallback; throw error; }
 };
 
+function anomalySignal(task) {
+  const readiness = computeCompletionReadiness(task);
+  const blocker = String(task.blocker || "").trim().replace(/\s+/g, " ");
+  if (task.status !== "blocked" && !blocker && !readiness.failedRequirements.length) return "observe";
+  return createHash("sha256").update(JSON.stringify({ blocker: blocker || (task.status === "blocked" ? "blocked" : ""),
+    failed: [...readiness.failedRequirements].sort(),
+    failures: [...(task.verificationClaims || []), ...(task.requirementResults || [])].filter(row => row.status === "failed")
+      .map(row => [row.requirement_id, row.kind, row.summary || row.note || ""]).sort(),
+  })).digest("hex");
+}
+
+function matchesIntent(task, intent) {
+  // Match explicit names before spending tokens; ambiguous descriptions need clarification.
+  const text = intent.trim().toLocaleLowerCase();
+  const title = String(task.title || "").trim().toLocaleLowerCase();
+  return text.includes(task.id.toLocaleLowerCase()) || title.length >= 2 && (text.includes(title) || text.length >= 2 && title.includes(text));
+}
+
+function handledSignal(previous, signal) {
+  return previous?.automatic_signal === signal || previous?.handled_signals?.includes(signal);
+}
+
 export function automaticCandidates(tasks, workspace, profile) {
   return tasks.filter(task => !task.archivedAt && !["session_missing", "owner_inactive"].includes(task.executionReconciliation?.basis) && activeStatuses.has(task.status) && task.workspace
     && (profile.automatic?.scope === "all_projects" || resolve(task.workspace) === resolve(workspace)));
@@ -32,14 +54,19 @@ export async function requestAutomaticWork({ tasks, workspace, profile, runtime,
   const path = join(runtime, "ai-work-request.json");
   const previous = await readableJson(path, null);
   const state = await readableJson(join(runtime, "ai-observer-state.json"), { tasks: {} });
-  const eligible = automaticCandidates(tasks, workspace, profile);
-  if (previous && eligible.some(task => previous.task_ids.includes(task.id) && state.tasks[task.id]?.request_id !== previous.id)) {
+  const candidates = automaticCandidates(tasks, workspace, profile);
+  if (previous && candidates.some(task => previous.task_ids.includes(task.id) && (!previous.intent || matchesIntent(task, previous.intent)) && state.tasks[task.id]?.request_id !== previous.id)) {
     if ((previous.intent || "") !== intent) throw new AiGovernanceError(409, "上一轮目标仍在分析，请等待分析结束后提交新目标；输入已保留。");
     return { ...previous, reused: true };
   }
+  const eligible = candidates.filter(task => {
+    if (intent) return matchesIntent(task, intent);
+    const signal = anomalySignal(task);
+    return signal !== "observe" && !handledSignal(state.tasks[task.id], signal);
+  });
   const request = { id: `work-${randomUUID()}`, at: new Date().toISOString(), intent, task_ids: eligible.map(task => task.id) };
   await writeJsonAtomic(path, request);
-  if (record) await record({ id: request.id, at: request.at, source: "governance", title: "立即主动处理", mode: "automatic", trigger: "manual_work", status: "started", model: "rules", summary: `请求已持久登记，排队核实 ${request.task_ids.length} 条任务；本地对账在后台执行。`, result: { intent } });
+  if (record) await record({ id: request.id, at: request.at, source: "governance", title: "立即主动处理", mode: "automatic", trigger: "manual_work", status: request.task_ids.length ? "started" : "skipped", model: "rules", summary: request.task_ids.length ? `已关联 ${request.task_ids.length} 条${intent ? "目标任务" : "新异常任务"}；本地对账在后台执行。` : intent ? "未找到能明确关联的任务名称，请补充任务名称；未调用模型，本地对账继续。" : "没有新的明确异常；未调用模型，本地对账继续。", result: { intent } });
   if (reconcile && record) setImmediate(() => {
     void (async () => {
       try {
@@ -68,8 +95,15 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
         if (!task.workspace || (profile.automatic?.scope !== "all_projects" && resolve(task.workspace) !== resolve(workspace)) || task.archivedAt || ["session_missing", "owner_inactive"].includes(task.executionReconciliation?.basis)) continue;
         if (![...activeStatuses, "done_claimed"].includes(task.status)) continue;
         const previous = state.tasks[task.id];
-        const retryDue = Boolean(previous?.retry_at && now() >= previous.retry_at);
-        const forced = Boolean(request?.task_ids.includes(task.id) && (previous?.request_id !== request.id || retryDue));
+        const requested = Boolean(request?.task_ids.includes(task.id) && previous?.request_id !== request.id);
+        const intent = request?.intent || "";
+        const forced = requested && Boolean(intent) && matchesIntent(task, intent);
+        const automaticSignal = anomalySignal(task);
+        if (requested && !forced && (intent || automaticSignal === "observe" || handledSignal(previous, automaticSignal))) {
+          state.tasks[task.id] = { ...previous, request_id: request.id, retry_at: undefined,
+            work_result: { status: "skipped", summary: intent ? "目标未明确关联此任务，未调用模型。" : "无新的明确异常，未调用模型。" } };
+          continue;
+        }
         let snapshot;
         try { snapshot = governanceSnapshot(task, "evidence"); }
         catch (error) {
@@ -82,41 +116,32 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
           }
           continue;
         }
-        const readiness = computeCompletionReadiness(task);
-        const abnormal = task.status === "blocked" || task.blocker || task.executionReconciliation || readiness.failedRequirements.length
-          || (task.status === "done_claimed" && !readiness.completionClaim.allowed);
-        // Routine progress and timestamps are not new anomalies or reasons to spend again.
-        const automaticSignal = !abnormal ? "observe"
-          : createHash("sha256").update(JSON.stringify({ status: task.status, blocker: task.blocker || "", failed: readiness.failedRequirements,
-            completion: task.status === "done_claimed" ? { missing: readiness.missingRequirements, stale: readiness.staleEvidence,
-              subject: { type: task.currentSubject?.type, value: task.currentSubject?.value } } : undefined,
-            reconciliation: task.executionReconciliation ? { basis: task.executionReconciliation.basis, state: task.executionReconciliation.state } : null })).digest("hex");
-        if (!forced && !abnormal) {
+        if (!forced && automaticSignal === "observe") {
           if (previous?.automatic_signal !== "observe") await record({ id: `ai-${randomUUID()}`, source: "governance", at: new Date(now()).toISOString(), task_id: task.id, title: "自动治理 · 本地观察", mode: "automatic", status: "skipped", model: "rules", summary: "正常推进或交付条件已满足；未调用模型，进度更新不重复分析。" });
           state.tasks[task.id] = { ...previous, hash: snapshot.input_hash, automatic_signal: automaticSignal, handled_at: now(), snapshot_version: snapshotVersion };
           continue;
         }
-        if (!forced && previous?.automatic_signal === automaticSignal) continue;
+        if (!forced && handledSignal(previous, automaticSignal)) continue;
         if (!forced && !initialized && !activeStatuses.has(task.status) && state.tasks[task.id]?.snapshot_version !== snapshotVersion) {
           state.tasks[task.id] = { hash: snapshot.input_hash, handled_at: now(), snapshot_version: snapshotVersion };
           continue;
         }
-        if (!forced && ((previous?.hash === snapshot.input_hash && !retryDue && (!profile.automatic?.actions || previous.actions_enabled)) || (previous && now() - previous.handled_at < 60_000))) continue;
-        candidates.push({ task, snapshot, previous, forced, automaticSignal });
+        if (!forced && ((previous?.hash === snapshot.input_hash && (!profile.automatic?.actions || previous.actions_enabled)) || (previous && now() - previous.handled_at < 60_000))) continue;
+        candidates.push({ task, snapshot, previous, requested, automaticSignal });
       }
       initialized = true;
       health.pending_tasks = candidates.length;
       await save();
       if (!candidates.length) return;
-      candidates.sort((a, b) => Number(b.forced) - Number(a.forced) || Number(Boolean(b.task.executionReconciliation)) - Number(Boolean(a.task.executionReconciliation)) || Number(a.previous?.handled_at || 0) - Number(b.previous?.handled_at || 0));
-      const { task, snapshot, previous, forced, automaticSignal } = candidates[0];
-      const work = forced ? { request_id: request.id, intent: validateWorkIntent(request.intent) } : null;
+      candidates.sort((a, b) => Number(b.requested) - Number(a.requested) || Number(a.previous?.handled_at || 0) - Number(b.previous?.handled_at || 0));
+      const { task, snapshot, previous, requested, automaticSignal } = candidates[0];
+      const work = requested ? { request_id: request.id, intent: validateWorkIntent(request.intent) } : null;
       const runId = `ai-${randomUUID()}`;
-      const base = { run_id: runId, source: "governance", task_id: task.id, title: "自动治理", mode: "automatic", trigger: forced ? "manual_work" : previous ? "task_changed" : "active_task", request_id: work?.request_id, intent: work?.intent, event_id: task.lastEventId, input_hash: work?.intent ? createHash("sha256").update(JSON.stringify({ snapshot, intent: work.intent })).digest("hex") : snapshot.input_hash, prompt_version: "automatic-v3", snapshot };
+      const base = { run_id: runId, source: "governance", task_id: task.id, title: "自动治理", mode: "automatic", trigger: requested ? "manual_work" : previous ? "task_changed" : "active_task", request_id: work?.request_id, intent: work?.intent, event_id: task.lastEventId, input_hash: work?.intent ? createHash("sha256").update(JSON.stringify({ snapshot, intent: work.intent })).digest("hex") : snapshot.input_hash, prompt_version: "automatic-v3", snapshot };
       let outcome;
       const emit = row => { if (["succeeded", "skipped", "degraded"].includes(row.status)) outcome = { summary: row.summary, understanding: row.result?.intent_understanding, decision: row.decision, status: row.status }; return record({ ...base, id: `${runId}:${row.status}`, at: new Date(now()).toISOString(), ...row }); };
       active = true;
-      let cancelled = false, retryAt;
+      let cancelled = false;
       health.current_task_id = task.id; health.status = "analyzing";
       const started = performance.now();
       try {
@@ -128,7 +153,6 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
         if (judgement.status === "failed") state.jev_cooldown_until = now() + 300_000;
         await recordJev({ ...judgement, task_id: task.id, event_id: task.lastEventId, lines: ["participation"], input_hash: snapshot.input_hash, prompt_version: "automatic-v3" });
         if (judgement.status === "succeeded") decision = judgement.answers.participation.choice;
-        if (task.executionReconciliation) decision = "evidence";
         if (decision === "observe" && !work?.intent) {
           await emit({ status: "skipped", model: judgement.model, decision, decision_reason: choices.observe, summary: "Jev 判断无需深入分析，继续观察", result: judgement.answers });
         } else {
@@ -152,13 +176,15 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
         }
         const code = error.code === "ENOENT" ? "AI_CLI_UNAVAILABLE" : error.killed ? "AI_TIMEOUT" : ["AI_COOLDOWN", "AI_INVALID_OUTPUT", "CLI_MODEL_MISMATCH"].includes(error.message) ? error.message : "AI_CALL_FAILED";
         if (code !== "AI_COOLDOWN") state.cooldown_until = now() + 300_000;
-        retryAt = state.cooldown_until;
+        // An explicit new request may retry; a timer must not respend on the same failure.
         const decision = task.status === "blocked" || task.blocker ? "blockers" : "evidence";
         const result = ruleResult(task, decision);
         await emit({ status: "degraded", model: "rules", decision, decision_reason: "AI 不可用，按已登记状态执行规则检查", summary: result.summary, result, fallback_reason: code, duration_ms: Math.round(performance.now() - started) });
         if (enqueue) await enqueue(task, result, profile, work);
       } finally {
-        if (!cancelled) state.tasks[task.id] = { hash: snapshot.input_hash, automatic_signal: automaticSignal, handled_at: now(), snapshot_version: snapshotVersion, actions_enabled: Boolean(profile.automatic?.actions), retry_at: retryAt, work_result: forced ? outcome : previous?.work_result, request_id: forced ? request.id : previous?.request_id };
+        if (!cancelled) state.tasks[task.id] = { hash: snapshot.input_hash, automatic_signal: automaticSignal,
+          handled_signals: [...new Set([...(previous?.handled_signals || []), ...[previous?.automatic_signal, automaticSignal].filter(signal => signal && signal !== "observe")])],
+          handled_at: now(), snapshot_version: snapshotVersion, actions_enabled: Boolean(profile.automatic?.actions), work_result: requested ? outcome : previous?.work_result, request_id: requested ? request.id : previous?.request_id };
         await save();
         active = false; health.status = "watching"; health.current_task_id = null;
         health.pending_tasks = Math.max(0, health.pending_tasks - 1);

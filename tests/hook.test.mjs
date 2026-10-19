@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
@@ -598,14 +598,21 @@ test("L0 无任务 DevKit 仅放行可信入口的受限只读参数", async () 
   } finally { await rm(fixture, { recursive: true, force: true }); }
 });
 
-const dcbEntry = join(homedir(), ".codex/skills/android-ui-implement/bin/dcb");
-test("L0 DCB 原 Skill 入口可查询且不创建任务，伪入口和混合写入仍拒绝", { skip: !existsSync(dcbEntry) }, async () => {
-  const workspace = await realpath(await mkdtemp(join(tmpdir(), "hook-dcb-")));
+const auditedDcb = join(homedir(), ".local/share/android-ui-dcb/releases/0.4.0-alpha.1-67e73ab4e599d2c9/dcb");
+test("L0 DCB 原 Skill 入口可查询且不创建任务，伪入口和混合写入仍拒绝", { skip: !existsSync(auditedDcb) }, async () => {
+  const fixture = await realpath(await mkdtemp(join(tmpdir(), "hook-dcb-")));
   try {
+    const workspace = join(fixture, "repo"), home = join(fixture, "home");
+    const installed = join(home, ".local/share/android-ui-dcb/releases/0.4.0-alpha.1-67e73ab4e599d2c9/dcb");
+    const dcbEntry = join(home, ".codex/skills/android-ui-implement/bin/dcb");
+    for (const path of [workspace, dirname(installed), dirname(dcbEntry)]) await mkdir(path, { recursive: true });
+    await copyFile(auditedDcb, installed);
+    await symlink(installed, dcbEntry);
+    const env = { HOME: home };
     const session_id = "dcb-l0-session";
     const map = join(workspace, "map.json");
     await writeFile(map, "{}");
-    assert.equal((await runHook("session-start", "codex", { session_id, cwd: workspace })).code, 0);
+    assert.equal((await runHook("session-start", "codex", { session_id, cwd: workspace }, [], base, env)).code, 0);
     const graph = `interaction graph --project-root . --interaction-map ${map}`;
     for (const [cmd, code] of [
       [`${dcbEntry} --version`, 0], [`rtk proxy ${dcbEntry} --version`, 0],
@@ -618,13 +625,13 @@ test("L0 DCB 原 Skill 入口可查询且不创建任务，伪入口和混合写
       [`/tmp/dcb --version`, 2], [`/tmp/rtk proxy ${dcbEntry} --version`, 2],
       [`env INJECT=1 ${dcbEntry} --version`, 2],
     ]) {
-      const result = await runHook("pre-tool-use", "codex", { session_id, cwd: workspace, tool_name: "exec_command", tool_input: { cmd } });
+      const result = await runHook("pre-tool-use", "codex", { session_id, cwd: workspace, tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
       assert.equal(result.code, code, `${cmd}\n${result.stderr}`);
       if (code === 0) assert.match(result.stdout, /L0/);
     }
     const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
     assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
-  } finally { await rm(workspace, { recursive: true, force: true }); }
+  } finally { await rm(fixture, { recursive: true, force: true }); }
 });
 
 test("L0 worktree list 支持原生和 RTK，拒绝写操作及混合命令", async () => {

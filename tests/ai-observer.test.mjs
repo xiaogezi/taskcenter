@@ -38,6 +38,77 @@ test("同一阻塞不因进度Subject和证据更新反复分析，真实新阻�
   assert.equal(f.calls(), 2);
 });
 
+test("回合结束和恢复记录反复变化不把正常长测变成模型任务", async t => {
+  const f = await fixture(t, { judge: async () => assert.fail("生命周期对账无需Jev") });
+  for (let i = 0; i < 47; i++) {
+    f.advance(60_001);
+    const observer = i % 2 ? await createAutomaticObserver(f.options) : f.observer;
+    await observer.tick([{ ...task, status: "in_progress", blocker: "", currentStep: `长测进度${i}`,
+      executionReconciliation: i % 3 ? { state: "execution_unconfirmed", basis: `turn:completed-${i}` } : undefined,
+      currentSubject: { type: "git_commit", value: String(i) } }], profile);
+  }
+  assert.equal(f.calls(), 0);
+});
+
+test("异常解除再恢复、其他异常插入及进程重启均不重开已处理信号", async t => {
+  const f = await fixture(t);
+  for (const blocker of [task.blocker, "", task.blocker, "权限错误", task.blocker]) {
+    f.advance(60_001);
+    const observer = await createAutomaticObserver(f.options);
+    await observer.tick([{ ...task, status: blocker ? "blocked" : "in_progress", blocker }], profile);
+  }
+  assert.equal(f.calls(), 2);
+});
+
+test("真正的验证失败按失败诊断去重，新失败事实可重新分析", async t => {
+  const f = await fixture(t);
+  const subject = { type: "git_commit", value: "a".repeat(40) };
+  const failed = { ...task, status: "in_progress", blocker: "", currentSubject: subject,
+    verificationPlan: [{ id: "test", kind: "test", required: true }],
+    verificationClaims: [{ id: "claim", requirement_id: "test", kind: "test", subject_ref: subject, status: "failed", summary: "导出缺行" }] };
+  await f.observer.tick([failed], profile);
+  f.advance(60_001);
+  await f.observer.tick([{ ...failed, currentStep: "继续定位", evidence: ["新进度"] }], profile);
+  assert.equal(f.calls(), 1);
+  f.advance(60_001);
+  await f.observer.tick([{ ...failed, verificationClaims: [{ ...failed.verificationClaims[0], summary: "新事实：连接被拒绝" }] }], profile);
+  assert.equal(f.calls(), 2);
+});
+
+test("主动目标只关联明确名称，无匹配和正常空白巡检均给本地回执", async t => {
+  let calls = 0;
+  const f = await fixture(t, { infer: async () => { calls++; return { text: JSON.stringify({ ...result, intent_understanding: "处理修复导出任务" }), model: profile.model }; } });
+  const rows = [], runtime = join(f.options.statePath, "..");
+  const tasks = [task, { ...task, id: "other", title: "整理磁盘" }].map(item => ({ ...item, status: "in_progress", blocker: "" }));
+  const args = { tasks, runtime, workspace: "/project", profile, record: async row => rows.push(row) };
+  const unknown = await requestAutomaticWork({ ...args, intent: "三个新建任务为什么一直没处理" });
+  assert.deepEqual(unknown.task_ids, []);
+  assert.match(rows.at(-1).summary, /未找到.*未调用模型/);
+  const empty = await requestAutomaticWork(args);
+  assert.deepEqual(empty.task_ids, []);
+  const work = await requestAutomaticWork({ ...args, intent: "优先修复导出，核对缺行" });
+  assert.deepEqual(work.task_ids, [task.id]);
+  await f.observer.tick(tasks, profile, work);
+  assert.equal(calls, 1);
+  assert.equal(f.rows.at(-1).task_id, task.id);
+});
+
+test("升级前已排入的广泛意图队列也不能继续遍历无关任务", async t => {
+  const f = await fixture(t, { judge: async () => assert.fail("无关目标不判断") });
+  const tasks = [task, { ...task, id: "other", title: "整理磁盘" }].map(item => ({ ...item, status: "in_progress", blocker: "" }));
+  const request = { id: "legacy-broad-request", task_ids: tasks.map(item => item.id), intent: "三个新建任务为什么一直没处理" };
+  await f.observer.tick(tasks, profile, request);
+  const restarted = await createAutomaticObserver(f.options);
+  await restarted.tick(tasks, profile, request);
+  assert.equal(f.calls(), 0);
+  assert.equal(f.jev.length, 0);
+  const saved = JSON.parse(await readFile(f.options.statePath, "utf8"));
+  for (const item of tasks) {
+    assert.equal(saved.tasks[item.id].request_id, request.id);
+    assert.equal(saved.tasks[item.id].work_result.status, "skipped");
+  }
+});
+
 test("自动分析失败不对相同异常无限重试，主动请求仍可明确重试", async t => {
   let calls = 0;
   const f = await fixture(t, { infer: async () => { calls++; throw new Error("failed"); } });
@@ -47,19 +118,19 @@ test("自动分析失败不对相同异常无限重试，主动请求仍可明�
     f.advance(300_001); await restarted.tick([task], profile);
   }
   assert.equal(calls, 1);
-  await restarted.tick([task], profile, { id: "explicit-retry", task_ids: [task.id], intent: "重试核对导出" });
+  await restarted.tick([task], profile, { id: "explicit-retry", task_ids: [task.id], intent: "重试修复导出" });
   assert.equal(calls, 2);
 });
 
-test("待收尾任务只因真实缺项变化重新分析，不因Subject观察时间重复调用", async t => {
+test("缺少完成登记与Subject变化由本地处理，不自动调用模型", async t => {
   const f = await fixture(t);
   const done = { ...task, status: "done_claimed", blocker: "", currentSubject: { type: "git_commit", value: "commit-1", observed_at: "2026-10-15T00:00:00Z" } };
   await f.observer.tick([task], profile);
   f.advance(60_001); await f.observer.tick([done], profile);
-  assert.equal(f.calls(), 2);
+  assert.equal(f.calls(), 1);
   f.advance(60_001);
   await f.observer.tick([{ ...done, currentSubject: { ...done.currentSubject, observed_at: "2026-10-15T01:00:00Z" } }], profile);
-  assert.equal(f.calls(), 2);
+  assert.equal(f.calls(), 1);
 });
 
 test("确认会话缺失由本地对账归档，不调用模型或进入接续队列", async t => {
@@ -74,13 +145,13 @@ test("确认会话缺失由本地对账归档，不调用模型或进入接续�
   }
 });
 
-test("CLI失败后冷却期不重复推理，重启与冷却结束仍接续原目标", async t => {
+test("CLI失败后重启和冷却结束不重复推理，新明确请求才能重试", async t => {
   let calls = 0;
   const f = await fixture(t, { infer: async () => {
     if (++calls === 1) throw new Error("temporary failure");
     return { text: JSON.stringify({ ...result, intent_understanding: "继续原目标" }), model: profile.model };
   } });
-  const request = { id: "retry-intent", task_ids: [task.id], intent: "核对导出" };
+  const request = { id: "retry-intent", task_ids: [task.id], intent: "核对修复导出" };
   await f.observer.tick([task], profile, request);
   assert.equal(f.rows.at(-1).status, "degraded");
   const restarted = await createAutomaticObserver(f.options);
@@ -89,10 +160,12 @@ test("CLI失败后冷却期不重复推理，重启与冷却结束仍接续原�
   assert.equal(calls, 1);
   f.advance(1);
   await restarted.tick([task], profile, request);
+  assert.equal(calls, 1);
+  await restarted.tick([task], profile, { ...request, id: "explicit-new-retry" });
   assert.equal(calls, 2);
   assert.equal(f.rows.at(-1).status, "succeeded");
   assert.equal(f.rows.at(-1).intent, request.intent);
-  await restarted.tick([task], profile, request);
+  await restarted.tick([task], profile, { ...request, id: "explicit-new-retry" });
   assert.equal(calls, 2);
   assert.equal(JSON.parse(await readFile(f.options.statePath, "utf8")).tasks[task.id].retry_at, undefined);
 });
@@ -186,18 +259,18 @@ test("主动处理持久排队，重复请求复用，重启后每项仅处理�
   assert.equal(f.calls(), 1);
   const next = await requestAutomaticWork(args);
   assert.notEqual(next.id, first.id);
+  assert.deepEqual(next.task_ids, [], "空白按钮不重开相同异常");
   await restarted.tick(args.tasks, profile, next);
-  assert.equal(f.calls(), 2);
+  assert.equal(f.calls(), 1);
 });
 
-test("全项目范围显式启用且待确认任务优先，不被 Jev observe 忽略", async t => {
+test("执行待确认不覆盖Jev观察判断，也不优先启动推理", async t => {
   const f = await fixture(t, { judge: async () => ({ status: "succeeded", model: "jev", answers: { participation: { choice: "observe" } } }) });
   const foreign = { ...task, id: "foreign", workspace: "/other", executionReconciliation: { state: "execution_unconfirmed", basis: "run:completed" } };
   const all = { ...profile, automatic: { scope: "all_projects" } };
   await f.observer.tick([task, foreign], all);
-  assert.equal(f.calls(), 1);
-  assert.equal(f.rows.at(-1).task_id, foreign.id);
-  assert.equal(f.rows.at(-1).decision, "evidence");
+  assert.equal(f.calls(), 0);
+  assert.equal(f.rows.at(-1).decision, "observe");
 });
 
 test("慢对账不阻塞受理，后台成功和失败分别留回执", async t => {

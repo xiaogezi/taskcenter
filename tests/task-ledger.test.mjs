@@ -350,7 +350,9 @@ test("主动处理入口校验人工来源，本地对账与持久队列可见�
   assert.equal(created.status, 201);
   const denied = await fetch(`${base}/ai/work`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 403);
-  const init = { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost:3000", "x-taskcenter-action": "delegate" }, body: "{}" };
+  const init = { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost:3000", "x-taskcenter-action": "delegate" }, body: JSON.stringify({ intent: "优先主动核实" }) };
+  const noAnomaly = await (await fetch(`${base}/ai/work`, { ...init, body: "{}" })).json();
+  assert.equal(noAnomaly.queued, 0, "正常planned任务不触发空白主动分析");
   const response = await fetch(`${base}/ai/work`, init);
   assert.equal(response.status, 202);
   const first = await response.json();
@@ -364,7 +366,7 @@ test("主动处理入口校验人工来源，本地对账与持久队列可见�
   assert.equal(unsafe.status, 400);
   const activity = await (await fetch(`${base}/ai/activity`)).json();
   assert.equal(activity.work.pending, 1);
-  assert.equal(activity.work.intent, "");
+  assert.equal(activity.work.intent, "优先主动核实");
   assert.equal(activity.rows.filter(row => row.id === first.request_id).length, 1);
 });
 
