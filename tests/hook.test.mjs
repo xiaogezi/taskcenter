@@ -603,6 +603,11 @@ test("L0 AWS 无任务可执行精确诊断，写入与覆写拒绝", { skip: !e
   const session_id = "aws-l0-session";
   await runHook("session-start", "codex", { session_id, cwd: "/work" });
   for (const [cmd, code] of [
+    ["rtk proxy aws --version", 0],
+    ["/opt/homebrew/bin/aws --version", 0],
+    ["rtk proxy aws --version --debug", 2],
+    ["aws --version --output=json", 2],
+    ["/tmp/aws --version", 2],
     ["rtk proxy aws sts get-caller-identity", 0],
     ["/opt/homebrew/bin/aws sts get-caller-identity --output=json", 0],
     ["aws logs filter-log-events --log-group-name /ecs/app --start-time 1700000000000 --end-time 1700000060000 --limit 100 --no-paginate", 0],

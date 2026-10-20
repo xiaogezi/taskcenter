@@ -13,6 +13,7 @@ export function isReadOnlyAws(tokens) {
     : tokens[0];
   if (!isTrustedCliEntry(entry, { installed, aliases: ["/opt/homebrew/bin/aws"] })) return false;
   const args = tokens.slice(1), values = new Map(), positionals = [];
+  if (args.length === 1 && args[0] === "--version") return true;
   const flags = new Set(["--no-cli-pager", "--no-paginate"]);
   const options = new Set(["--region", "--profile", "--output", "--query", "--log-group-name", "--log-stream-name", "--filter-pattern", "--start-time", "--end-time", "--limit", "--cluster", "--tasks", "--services", "--service-name", "--desired-status", "--max-results"]);
   for (let i = 0; i < args.length; i++) {
