@@ -2,9 +2,10 @@ import { basename } from "node:path";
 import { isReadOnlyDevKit } from "./devkit-inspection.mjs";
 import { isReadOnlyDcb } from "./dcb-inspection.mjs";
 import { isReadOnlyAws } from "./aws-inspection.mjs";
+import { isReadOnlySsh } from "./ssh-inspection.mjs";
 
 // Adapters audit identity and exact arguments; unknown CLIs keep the existing L0 rules.
-const adapters = { "dev-kit": isReadOnlyDevKit, dcb: isReadOnlyDcb, aws: isReadOnlyAws };
+const adapters = { "dev-kit": isReadOnlyDevKit, dcb: isReadOnlyDcb, aws: isReadOnlyAws, ssh: isReadOnlySsh };
 export function inspectTrustedCli(words, context) {
   const tokens = [...words];
   let validWrapper = true;

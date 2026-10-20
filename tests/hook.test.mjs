@@ -599,6 +599,29 @@ test("L0 无任务 DevKit 仅放行可信入口的受限只读参数", async () 
 });
 
 const auditedDcb = join(homedir(), ".local/share/android-ui-dcb/releases/0.4.0-alpha.1-67e73ab4e599d2c9/dcb");
+test("L0 固定 SSH 检查无需建任务，远端 shell 和覆写拒绝", async () => {
+  const session_id = "ssh-l0-session";
+  const prefix = "rtk proxy ssh -o BatchMode=yes -o ConnectTimeout=10 instory@instoryMacmini.local";
+  await runHook("session-start", "codex", { session_id, cwd: "/work" });
+  for (const [cmd, code] of [
+    [`${prefix} hostname`, 0], [`${prefix} 'uptime'`, 0],
+    [`${prefix} 'git --no-optional-locks -c core.fsmonitor=false -C /Users/instory/Services/instory-lan/src/instory status --short'`, 0],
+    [`${prefix} 'docker ps --format={{.Names}}'`, 0],
+    [`${prefix} 'curl -q --max-time 10 http://127.0.0.1:8500/readyz'`, 0],
+    [`${prefix} 'hostname; touch /tmp/x'`, 2], [`${prefix} 'hostname && reboot'`, 2],
+    [`${prefix} 'hostname $(touch /tmp/x)'`, 2], [`${prefix} 'hostname > /tmp/x'`, 2],
+    [`${prefix} hostname > sentinel`, 2], [`${prefix} hostname; touch sentinel`, 2],
+    [`${prefix} 'cat /Users/instory/.ssh/id_ed25519'`, 2],
+    ["ssh -o ProxyCommand=evil -o BatchMode=yes -o ConnectTimeout=10 instory@instoryMacmini.local hostname", 2],
+  ]) {
+    const result = await runHook("pre-tool-use", "codex", { session_id, cwd: "/work", tool_name: "exec_command", tool_input: { cmd } });
+    assert.equal(result.code, code, `${cmd}\n${result.stderr}`);
+    if (code === 0) assert.match(result.stdout, /L0/);
+  }
+  const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+  assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
+});
+
 test("L0 AWS 无任务可执行精确诊断，写入与覆写拒绝", { skip: !existsSync("/opt/homebrew/opt/awscli/bin/aws") }, async () => {
   const session_id = "aws-l0-session";
   await runHook("session-start", "codex", { session_id, cwd: "/work" });
