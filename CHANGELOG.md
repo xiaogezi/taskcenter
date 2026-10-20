@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- AWS 诊断接入受信 CLI L0：仅允许可信 Homebrew 入口的 STS 身份查询、单日内最多 1000 条且禁止自动分页的 CloudWatch Logs 查询，以及限定 ECS 状态查询；ECS 详情强制安全字段投影，拒绝写操作、未知参数、凭据导出与 endpoint 覆写，支持 RTK proxy。
+
 - AI 治理仅由明确阻塞或验证失败触发：正常回合结束、执行待确认及单纯缺少完成证据均走本地规则；异常信号跨恢复与重启持久去重，新增失败诊断才重新分析。主动按钮留空只处理新异常，填写目标时先匹配明确任务名称，无法关联则给本地回执，不遍历无关任务；推理失败不再定时重试，可通过新的明确目标请求重试，本地治理持续可用。
 
 - 统一受信 CLI 的 L0 只读适配：保留 DevKit 的固定安装入口与精确参数校验，接入经 SHA-256 校验的 DCB 版本、doctor 及 interaction 查询。已登记且无任务的 Session 无需为这些查询创建任务；伪入口、升级替换、额外参数、写入及会写状态的 preview 仍拒绝，不扩大 CLI 整体豁免。
