@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复同一 Session 恢复未完成任务时未重开 Run：恢复已收口运行会记录新 Run 并清除旧执行对账标记，执行状态重新计入“执行中”；活跃 Run 重复恢复保持幂等，归属与冲突校验继续保留。
+
 - 历史 `planned` 任务纳入失效承载归档：仅在登记来源与任务持续静默、已记录无 Run、无活跃 CLI／维护宿主时收口，保留原计划、契约和证据；未收口 Run、未知结束状态及读取异常继续保护。主动治理明确携带已按 ID／名称关联的任务身份，区分治理问题与原业务目标，避免单条快照缺少其他任务时误判为无关。
 
 - 修复固定 Instory Mac mini 的 SSH 只读检查被 L0 拒绝：仅可信系统 SSH、固定目标与非交互超时参数可查询主机信息、LAN 指定目录、Core/Admin Git 状态与 SHA、进程/容器摘要及本机健康 GET；远端命令按实际拼接后的 shell 文本校验，拒绝转发、配置覆写、凭据读取、写入及注入，支持 RTK proxy。

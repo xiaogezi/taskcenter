@@ -3169,6 +3169,33 @@ test("Codex Session 可顺序承载多个任务，但同一时间只允许一个
   assert.match((await third.json()).error, /ACTIVE_TASK_CONFLICT/);
 });
 
+test("同 Session HTTP 恢复重开已收口 Run，清除旧对账且重复恢复幂等", async context => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "same-resume");
+  recordTaskEvent({ type: "task.create", task_id: "same-resume-task", session_id: "same-resume", workspace: "/work", status: "in_progress" });
+  recordTaskEvent({ type: "task.execution_reconciled", task_id: "same-resume-task", session_id: "same-resume", execution_observation: { state: "execution_unconfirmed", basis: "previous-turn", terminal: { type: "task_complete", at: new Date().toISOString(), turn_id: "previous" }, next_action: "恢复原任务" } }, { internalReconciliation: true });
+  const before = loadTasks()[0];
+  assert.ok(before.runs[0].ended_at);
+  assert.equal((await (await fetch(`${base}/tasks?view=summary`)).json()).actionCounts.execution_unconfirmed, 1);
+  const resume = () => fetch(`${base}/task-resume`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ session_id: "same-resume", expected_session_id: "same-resume", task_id: before.id }) });
+  assert.equal((await resume()).status, 200);
+  const resumed = loadTasks()[0];
+  assert.equal(resumed.status, "in_progress");
+  assert.equal(resumed.executionReconciliation, null);
+  assert.equal(resumed.sessionDetachedAt, "");
+  assert.equal(resumed.runs.length, 2);
+  assert.deepEqual(resumed.runs[0], before.runs[0]);
+  assert.equal(resumed.runs[1].ended_at, "");
+  const counts = (await (await fetch(`${base}/tasks?view=summary`)).json()).actionCounts;
+  assert.equal(counts.in_progress, 1);
+  assert.equal(counts.execution_unconfirmed, 0);
+  assert.equal((await resume()).status, 200);
+  assert.deepEqual(loadTasks()[0].runs, resumed.runs);
+  assert.equal(loadTasks()[0].lastEventId, resumed.lastEventId);
+});
+
 test("Bug 退休：历史字段保留、通用就绪一致、新写入与旧接口拒绝", async context => {
   await resetLedger();
   const subject = { type: "git_commit", value: "a".repeat(40), observed_at: new Date().toISOString() };

@@ -282,10 +282,11 @@ const server = createServer(async (request, response) => {
       if (registry.workspace !== task.workspace) throw new TaskLedgerError(409, "恢复 Session 的 workspace 与合同不一致。");
       if (["cancelled", "removed"].includes(task.status)) throw new TaskLedgerError(409, "TASK_NOT_RESUMABLE：已取消或移除任务不能接手。");
       const reopen = Boolean(task.archivedAt) || ["done_claimed", "verified"].includes(task.status);
-      if (task.sessionId !== body.session_id || reopen) {
+      const resumeExecution = !task.runs?.some(run => !run.ended_at) || Boolean(task.executionReconciliation) || Boolean(task.sessionDetachedAt);
+      if (task.sessionId !== body.session_id || reopen || resumeExecution) {
         if (task.sessionId !== body.expected_session_id) throw new TaskLedgerError(409, "SESSION_BINDING_CHANGED：请重新读取交接状态。");
         if (loadVisibleTasks().some((item) => item.id !== task.id && item.sessionId === body.session_id && ["planned", "in_progress", "blocked"].includes(item.status))) throw new TaskLedgerError(409, "ACTIVE_TASK_CONFLICT：目标 Session 已有其他活跃任务。");
-        recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id, ...(task.archivedAt ? { archived_at: "__UNARCHIVE__" } : {}), ...((reopen || task.sessionId !== body.session_id) ? { status: "in_progress" } : {}) }, { requireRegistered: true, authorizedResume: true });
+        recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id, ...(task.archivedAt ? { archived_at: "__UNARCHIVE__" } : {}), status: "in_progress" }, { requireRegistered: true, authorizedResume: true });
       }
       request.method = "GET";
       request.url = `/task-prepare?session_id=${encodeURIComponent(body.session_id)}`;
