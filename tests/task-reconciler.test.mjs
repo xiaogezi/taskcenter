@@ -119,7 +119,7 @@ test("已结束的会话和历史无Run失效承载自动归档，来源变化�
       return { busy: scenario === "busy", lastTerminal: legacy ? null : scenario === "new_terminal" ? { ...terminal, turn_id: "new-turn" } : terminal };
     } });
     const after = loadTasks()[0];
-    const archived = ["ended", "claude", "unknown"].includes(scenario);
+    const archived = ["ended", "claude", "unknown", "planned"].includes(scenario);
     assert.equal(Boolean(after.archivedAt), archived, scenario);
     assert.equal(after.status, before.status); assert.equal(after.agent, before.agent);
     assert.deepEqual(after.evidence, before.evidence); assert.equal(after.acceptanceStatus, before.acceptanceStatus);
@@ -128,6 +128,34 @@ test("已结束的会话和历史无Run失效承载自动归档，来源变化�
       assert.equal(result.actions[0].action, "orphan_archived");
       assert.equal((await runReconciliation({ availableSessionIds: ["idle-owner"], inspectSession: () => assert.fail("已归档不再读取") })).actions.length, 0);
     }
+  }
+});
+
+test("计划中历史任务仅在来源静默且无运行时归档，不凭任务年龄推断结束", async t => {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: process.platform !== "win32", stdio: "ignore" });
+  await new Promise((accept, reject) => { child.once("spawn", accept); child.once("error", reject); });
+  t.after(() => terminateProcessTree(child.pid, { force: true }));
+  for (const scenario of ["idle", "source_recent", "task_recent", "source_missing", "no_observation", "cli", "run_active", "busy", "unreadable", "maintenance"]) {
+    await resetLedger();
+    recordTaskEvent({ type: "session.register", session_id: "planned-owner", agent: "claude" });
+    recordTaskEvent({ type: "task.create", task_id: "planned-task", session_id: "planned-owner", agent: "claude", goal: "保留计划契约", acceptance_criteria: ["原验收"], evidence: ["原证据"] });
+    const old = new Date(Date.now() - 600_000).toISOString();
+    const before = { ...loadTasks()[0], status: "planned", updatedAt: scenario === "task_recent" ? new Date().toISOString() : old, runs: scenario === "run_active" ? [{ started_at: old, ended_at: "" }] : [],
+      executionReconciliation: scenario === "no_observation" ? null : { basis: scenario === "run_active" ? "session_end_unconfirmed" : "legacy_run_missing", state: "recovery_pending" },
+      ...(scenario === "cli" ? { cliRuns: [{ status: "active" }] } : {}) };
+    await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([before]));
+    await writeFile(envPaths.TASKCENTER_SESSION_REGISTRY_PATH, JSON.stringify(scenario === "source_missing" ? {} : { "planned-owner": { agent: "claude", lastSeenAt: scenario === "source_recent" ? new Date().toISOString() : old } }));
+    const maintenancePath = join(tempDir, "planned-maintenance.json");
+    await writeFile(maintenancePath, JSON.stringify({ actions: scenario === "maintenance" ? { "planned-task": { status: "running", pid: child.pid } } : {} }));
+    await runReconciliation({ maintenancePath, availableSessionIds: ["planned-owner"], inspectSession: async () => {
+      if (scenario === "unreadable") throw Object.assign(new Error("unreadable"), { code: "EACCES" });
+      return { busy: scenario === "busy" };
+    } });
+    const after = loadTasks()[0];
+    assert.equal(Boolean(after.archivedAt), scenario === "idle", scenario);
+    assert.equal(after.status, "planned"); assert.equal(after.goal, before.goal);
+    assert.deepEqual(after.evidence, before.evidence); assert.deepEqual(after.acceptanceCriteria, before.acceptanceCriteria);
+    assert.equal(after.acceptanceStatus, before.acceptanceStatus);
   }
 });
 

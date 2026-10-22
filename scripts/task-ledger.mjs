@@ -150,7 +150,7 @@ export function taskSessionAgent(task) {
 }
 
 export function inactiveOwnerArchiveReady(task, terminal, now = Date.now()) {
-  if (task.status !== "in_progress" || task.cliRuns?.some(run => run.status === "active")
+  if (!["planned", "in_progress"].includes(task.status) || task.cliRuns?.some(run => run.status === "active")
     || task.runs?.some(run => !run.ended_at)) return false;
   const source = loadSessionRegistry()[canonicalSessionId(task.sessionId)];
   const quietSince = Math.max(Date.parse(task.updatedAt || task.createdAt), Date.parse(source?.lastSeenAt || task.createdAt));

@@ -205,6 +205,26 @@ test("模型理解含凭据时拒绝保存，规则降级仍保留用户目标",
   assert.equal(queued[3].intent, "修复导出");
   assert.ok(!JSON.stringify(f.rows).includes("abcdefghijklmnop"));
 });
+
+test("明确关联的治理问题携带选中身份，单条快照不会丢失目标关系", async t => {
+  let prompt;
+  const f = await fixture(t, { infer: async args => {
+    prompt = args.prompt;
+    return { text: JSON.stringify({ ...result, intent_understanding: "核查已选中任务为什么没有处理，保留未知结束状态" }), model: profile.model };
+  } });
+  const planned = { ...task, status: "planned", blocker: "", executionReconciliation: { basis: "session_end_unconfirmed" } };
+  const work = await requestAutomaticWork({ tasks: [planned], workspace: "/project", profile, runtime: join(f.options.statePath, ".."), intent: `${task.id} 为什么一直没有处理` });
+  assert.deepEqual(work.task_ids, [task.id]);
+  await f.observer.tick([planned], profile, work);
+  assert.match(prompt, /宿主已按任务ID或名称关联/);
+  assert.match(prompt, /"selected_task_ids":\["current"\]/);
+  assert.match(prompt, /不要仅因其他选中任务不在单条快照中而拒绝核查当前任务/);
+  assert.match(prompt, /不接管活跃执行者/);
+  assert.equal(f.rows.at(-1).status, "succeeded");
+  assert.equal(f.rows.at(-1).prompt_version, "automatic-v4");
+  assert.equal(f.rows.at(-1).work_target.task_id, task.id);
+  assert.deepEqual(f.rows.at(-1).work_target.selected_task_ids, [task.id]);
+});
 async function fixture(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), "ai-observer-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const rows = [], jev = []; let time = 1_000_000, calls = 0;
