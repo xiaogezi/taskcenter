@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复任务授权恢复后历史 `closedGoal` 仍阻止显式合同纠正：按当前关闭状态与当前目标校验，保留历史目标和关闭事件；恢复后的所属 Session 可修订合同，未恢复关闭任务、旧执行者及顺序切换封存限制保持生效。
+
 - Claude CLI 承载的 AI 治理模型切换为 `gpt-6.1-sol`（provider 为 `openai`），保留低推理等级、无工具推理隔离和回执模型一致性校验；替换已不可用的 DeepSeek 配置。
 
 - 修复同一 Session 恢复未完成任务时未重开 Run：恢复已收口运行会记录新 Run 并清除旧执行对账标记，执行状态重新计入“执行中”；活跃 Run 重复恢复保持幂等，归属与冲突校验继续保留。

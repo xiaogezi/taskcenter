@@ -3196,6 +3196,30 @@ test("同 Session HTTP 恢复重开已收口 Run，清除旧对账且重复恢�
   assert.equal(loadTasks()[0].lastEventId, resumed.lastEventId);
 });
 
+test("HTTP 关闭任务恢复后可纠正合同，历史目标保留且再次关闭仍受保护", async context => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "contract-owner");
+  await registerHttpSession(base, "contract-other");
+  const post = body => fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ task_id: "contract-resume", session_id: "contract-owner", ...body }) });
+  const contract = { contract_version: "v2", scope: ["阶段实现"], non_goals: ["不改变用户原始委托"], acceptance_criteria: ["交付满足合同"], workflow_profile: "fast", review_policy: "recommended" };
+  assert.equal((await post({ type: "task.create", ...contract, goal: "缩小的合同" })).status, 201);
+  assert.equal((await post({ type: "task.update", status: "done_claimed", evidence: ["阶段交付记录"] })).status, 200);
+  assert.equal((await post({ type: "task.update", goal: "完整原计划" })).status, 409);
+  const resume = await fetch(`${base}/task-resume`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ task_id: "contract-resume", session_id: "contract-owner", expected_session_id: "contract-owner" }) });
+  assert.equal(resume.status, 200);
+  assert.equal(loadTasks()[0].closedGoal, "缩小的合同");
+  const revised = await post({ type: "task.update", ...contract, goal: "完整原计划", scope: ["原计划全部阶段"], plan: ["覆盖核对", "补齐交付"] });
+  assert.equal(revised.status, 200, await revised.text());
+  assert.equal(loadTasks()[0].goal, "完整原计划");
+  assert.equal(loadTasks()[0].closedGoal, "缩小的合同");
+  assert.equal((await post({ type: "task.update", session_id: "contract-other", goal: "未经授权修改" })).status, 403);
+  assert.equal((await post({ type: "task.update", status: "done_claimed", evidence: ["完整交付记录"] })).status, 200);
+  assert.equal((await post({ type: "task.update", goal: "完整原计划", next_action: "待独立验收" })).status, 200);
+  assert.equal((await post({ type: "task.update", goal: "另一个目标" })).status, 409);
+});
+
 test("Bug 退休：历史字段保留、通用就绪一致、新写入与旧接口拒绝", async context => {
   await resetLedger();
   const subject = { type: "git_commit", value: "a".repeat(40), observed_at: new Date().toISOString() };

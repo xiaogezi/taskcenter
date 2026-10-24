@@ -494,7 +494,7 @@ export function recordTaskEvent(input, options = {}) {
       return switchCheckpoint(predecessor, tasks, sessionRegistry[eventSessionId], []);
     });
   }
-  if (options.requireRegistered && current && (current.closedGoal || ["done_claimed", "verified", "cancelled"].includes(current.status)) && event.goal && event.goal !== (current.closedGoal || current.goal)) {
+  if (options.requireRegistered && current && ["done_claimed", "verified", "cancelled"].includes(current.status) && event.goal && event.goal !== current.goal) {
     throw new TaskLedgerError(409, "new_session_required：不能将已关闭任务改造成新的交付目标。");
   }
   // 对已存在的任务，先校验 session 归属，再决定幂等或拒绝。
