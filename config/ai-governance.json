@@ -1,7 +1,7 @@
 {
   "harness": "claude",
-  "model": "deepseek-v4-flash",
-  "provider": "deepseek",
+  "model": "gpt-6.1-sol",
+  "provider": "openai",
   "effort": "low",
   "automatic": { "enabled": true, "scope": "all_projects", "actions": true }
 }
