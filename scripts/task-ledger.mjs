@@ -125,18 +125,20 @@ function formatExportDuration(value) {
 
 function taskAuditSummary(taskId) {
   if (!existsSync(taskEventsPath)) return { eventCount: 0, eventTypes: {}, firstOccurredAt: "", lastRecordedAt: "" };
-  const events = readFileSync(taskEventsPath, "utf8").split("\n").flatMap((line) => {
-    if (!line.trim()) return [];
-    try { const event = JSON.parse(line); return event.task_id === taskId ? [event] : []; } catch { return []; }
-  });
-  const eventTypes = {};
-  for (const event of events) eventTypes[event.type] = (eventTypes[event.type] || 0) + 1;
-  return {
-    eventCount: events.length,
-    eventTypes,
-    firstOccurredAt: events.map((event) => event.occurred_at || event.created_at).filter(Boolean).sort()[0] || "",
-    lastRecordedAt: events.map((event) => event.recorded_at || event.created_at).filter(Boolean).sort().at(-1) || "",
-  };
+  const summary = { eventCount: 0, eventTypes: {}, firstOccurredAt: "", lastRecordedAt: "" };
+  for (const line of taskEventLinesForward()) {
+    if (!line.trim()) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event.task_id !== taskId) continue;
+    summary.eventCount += 1;
+    summary.eventTypes[event.type] = (summary.eventTypes[event.type] || 0) + 1;
+    const occurred = event.occurred_at || event.created_at;
+    const recorded = event.recorded_at || event.created_at;
+    if (occurred && (!summary.firstOccurredAt || occurred < summary.firstOccurredAt)) summary.firstOccurredAt = occurred;
+    if (recorded && (!summary.lastRecordedAt || recorded > summary.lastRecordedAt)) summary.lastRecordedAt = recorded;
+  }
+  return summary;
 }
 
 export function isContextShadowTask(taskOrId) {
@@ -690,9 +692,11 @@ function* taskEventLinesForward() {
 
 function storedSwitchEvents() {
   if (!existsSync(taskEventsPath)) return [];
-  return readFileSync(taskEventsPath, "utf8").split("\n")
-    .filter((line) => line.includes('"previous_task_id"') && line.includes('"session_switch_id"'))
-    .map((line) => JSON.parse(line));
+  const events = [];
+  for (const line of taskEventLinesForward()) {
+    if (line.includes('"previous_task_id"') && line.includes('"session_switch_id"')) events.push(JSON.parse(line));
+  }
+  return events;
 }
 
 function sameIdempotentEvent(left, right) {

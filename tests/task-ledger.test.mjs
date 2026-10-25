@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { constants as bufferConstants } from "node:buffer";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -49,6 +50,7 @@ const {
   setSessionScheduledReadonlyScanExemption,
   supersedeContextShadowTask,
   taskCompletionPacket,
+  taskExport,
   taskCompletionReadiness,
   taskPhaseReport,
   TaskLedgerError,
@@ -3194,6 +3196,42 @@ test("同 Session HTTP 恢复重开已收口 Run，清除旧对账且重复恢�
   assert.equal((await resume()).status, 200);
   assert.deepEqual(loadTasks()[0].runs, resumed.runs);
   assert.equal(loadTasks()[0].lastEventId, resumed.lastEventId);
+});
+
+test("超字符串上限事件日志仍可 HTTP 写入、恢复和导出审计", async context => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, "large-log-owner");
+  recordTaskEvent({ type: "task.create", event_id: "large-create", task_id: "large-log", session_id: "large-log-owner", title: "跨块中文任务" });
+  const original = await readFile(envPaths.TASKCENTER_TASK_EVENTS_PATH);
+  const file = await open(envPaths.TASKCENTER_TASK_EVENTS_PATH, "r+");
+  const size = bufferConstants.MAX_STRING_LENGTH + 65536;
+  try {
+    // Sparse damaged lines keep the fixture cheap without creating an oversized individual line.
+    await file.truncate(size);
+    for (let offset = original.length + 65535; offset < size; offset += 65536) await file.write("\n", offset);
+    await file.write("\n", size - 1);
+  } finally { await file.close(); }
+  const post = body => fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ task_id: "large-log", session_id: "large-log-owner", ...body }) });
+  const close = { type: "task.update", event_id: "large-close", status: "done_claimed", evidence: ["fixture delivery"] };
+  assert.equal((await post(close)).status, 200);
+  assert.equal((await post(close)).status, 200);
+  const resume = await fetch(`${base}/task-resume`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ task_id: "large-log", session_id: "large-log-owner", expected_session_id: "large-log-owner" }) });
+  assert.equal(resume.status, 200, await resume.text());
+  assert.equal(loadTasks()[0].status, "in_progress");
+  const audit = taskExport("large-log").auditSummary;
+  assert.equal(audit.eventTypes["task.create"], 1);
+  assert.equal(audit.eventTypes["task.update"], 1);
+  assert.equal(audit.eventTypes["task.resume"], 1);
+  const tail = await open(envPaths.TASKCENTER_TASK_EVENTS_PATH, "r");
+  try {
+    const buffer = Buffer.alloc((await tail.stat()).size - size);
+    await tail.read(buffer, 0, buffer.length, size);
+    const events = buffer.toString("utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.deepEqual(events.map(event => event.type), ["task.update", "task.resume"]);
+  } finally { await tail.close(); }
+  assert.ok((await stat(envPaths.TASKCENTER_TASK_EVENTS_PATH)).size > bufferConstants.MAX_STRING_LENGTH);
 });
 
 test("HTTP 关闭任务恢复后可纠正合同，历史目标保留且再次关闭仍受保护", async context => {
