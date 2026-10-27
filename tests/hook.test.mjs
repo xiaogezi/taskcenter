@@ -622,6 +622,40 @@ test("L0 固定 SSH 检查无需建任务，远端 shell 和覆写拒绝", async
   assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
 });
 
+test("L0 security 无任务只放行系统签名查询与限定描述文件并记录审计", { skip: process.platform !== "darwin" }, async () => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "hook-security-")));
+  const session_id = "security-l0-session", env = { HOME: home, PATH: "/usr/bin:/bin:/opt/homebrew/bin" };
+  try {
+    const directory = join(home, "Library/Developer/Xcode/UserData/Provisioning Profiles");
+    await mkdir(directory, { recursive: true });
+    const profile = join(directory, "fixture.mobileprovision");
+    await writeFile(profile, "fixture");
+    await runHook("session-start", "codex", { session_id, cwd: "/work" }, [], base, env);
+    for (const [cmd, code] of [
+      ["rtk proxy security find-identity -v -p codesigning", 0],
+      ["/usr/bin/security find-identity -v -p codesigning", 0],
+      [`rtk proxy /usr/bin/security cms -D -i '${profile}'`, 0],
+      ["/tmp/security find-identity -v -p codesigning", 2],
+      ["/tmp/rtk proxy security find-identity -v -p codesigning", 2],
+      ["security find-generic-password -w", 2],
+      ["security export -t identities", 2],
+      [`security cms -D -i '${home}/outside.mobileprovision'`, 2],
+      [`security cms -D -i '${profile}' -o sentinel`, 2],
+      ["security find-identity -v -p codesigning > sentinel", 2],
+      ["security find-identity -v -p codesigning; touch sentinel", 2],
+      ["env HOME=/tmp security find-identity -v -p codesigning", 2],
+    ]) {
+      const result = await runHook("pre-tool-use", "codex", { session_id, cwd: "/work", tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
+      assert.equal(result.code, code, `${cmd}\n${result.stderr}`);
+      if (code === 0) assert.match(result.stdout, /L0/);
+    }
+    const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+    assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
+    const registry = JSON.parse(await readFile(paths.TASKCENTER_SESSION_REGISTRY_PATH, "utf8"));
+    assert.equal(registry[session_id].l0Audit.count, 3);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
 test("L0 AWS 无任务可执行精确诊断，写入与覆写拒绝", { skip: !existsSync("/opt/homebrew/opt/awscli/bin/aws") }, async () => {
   const session_id = "aws-l0-session";
   await runHook("session-start", "codex", { session_id, cwd: "/work" });
