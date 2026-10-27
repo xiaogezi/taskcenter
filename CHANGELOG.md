@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- ZIP 归档只读接入通用可信 CLI 语义适配：系统 `unzip`／`zipinfo` 可跨项目、跨文件列目录，`unzip -p/-c` 可读取明确成员到 stdout；支持 RTK proxy、空格路径及常见等价参数，继续拒绝实际落盘解压、未知混合参数、注入、模式通配、敏感成员及继承的 Info-ZIP 参数覆写。
+
 - macOS 签名只读检查接入可信 CLI：仅系统 `security find-identity -v -p codesigning` 与两个标准 Provisioning Profiles 目录内明确文件的 `security cms -D -i` 可在无任务 Session 执行；支持 RTK proxy，拒绝路径/符号链接越界、伪入口、私钥导出、密码读取和钥匙串修改。
 
 - 修复超大任务事件日志触发 `ERR_STRING_TOO_LONG`：会话切换检查与任务审计改用分块读取，恢复控制写入和任务恢复，保留全部历史事件。

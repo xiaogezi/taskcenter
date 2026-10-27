@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
@@ -620,6 +620,50 @@ test("L0 固定 SSH 检查无需建任务，远端 shell 和覆写拒绝", async
   }
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
+});
+
+test("L0 ZIP 跨项目只读支持RTK和空格路径，拒绝落盘并持久化无任务审计", { skip: !existsSync("/usr/bin/zip") }, async () => {
+  const fixture = await realpath(await mkdtemp(join(tmpdir(), "hook-archive-")));
+  const session_id = "archive-l0-session";
+  const env = { PATH: "/usr/bin:/bin:/opt/homebrew/bin", UNZIP: "", UNZIPOPT: "", ZIPINFO: "", ZIPINFOOPT: "" };
+  try {
+    const source = join(fixture, "source"), workspace = join(fixture, "different-project");
+    await mkdir(source); await mkdir(workspace);
+    const member = "Read Me.md", content = "archive stdout fixture\n", archive = join(fixture, "skills pack.zip");
+    await writeFile(join(source, member), content);
+    await promisify(execFile)("/usr/bin/zip", ["-q", archive, member], { cwd: source, env: { ...process.env, ...env } });
+    await runHook("session-start", "codex", { session_id, cwd: workspace }, [], base, env);
+    const allowed = [
+      `rtk proxy unzip -l '${archive}'`, `/usr/bin/unzip -ql '${archive}'`,
+      `rtk proxy /usr/bin/unzip -Z1 '${archive}'`, `unzip -Z -1 '${archive}'`,
+      `rtk proxy zipinfo -1 '${archive}'`,
+      `rtk proxy unzip -p '${archive}' '${member}'`, `unzip -q -p '${archive}' '${member}'`,
+      `unzip -c '${archive}' '${member}'`,
+    ];
+    for (const cmd of allowed) {
+      const result = await runHook("pre-tool-use", "codex", { session_id, cwd: workspace, tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
+      assert.equal(result.code, 0, `${cmd}\n${result.stderr}`);
+      assert.match(result.stdout, /L0/);
+    }
+    const stdout = await promisify(execFile)("/usr/bin/unzip", ["-p", archive, member], { cwd: workspace, env: { ...process.env, ...env } });
+    assert.equal(stdout.stdout, content);
+    assert.deepEqual(await readdir(workspace), []);
+    for (const cmd of [
+      `unzip '${archive}'`, `unzip -q '${archive}'`, `unzip -p '${archive}'`,
+      `unzip -lp '${archive}' '${member}'`, `unzip -lT '${archive}'`,
+      `unzip -p '${archive}' '*'`, `unzip -l '${archive}' -d '${workspace}'`,
+      `unzip -l '${archive}' > sentinel`, `unzip -l '${archive}'; touch sentinel`,
+      `unzip -l $(touch sentinel)`, `/tmp/unzip -l '${archive}'`,
+      `/tmp/rtk proxy unzip -l '${archive}'`, `env UNZIPOPT=-T unzip -l '${archive}'`,
+    ]) {
+      const result = await runHook("pre-tool-use", "codex", { session_id, cwd: workspace, tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
+      assert.equal(result.code, 2, cmd);
+    }
+    const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+    assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
+    const registry = JSON.parse(await readFile(paths.TASKCENTER_SESSION_REGISTRY_PATH, "utf8"));
+    assert.equal(registry[session_id].l0Audit.count, allowed.length);
+  } finally { await rm(fixture, { recursive: true, force: true }); }
 });
 
 test("L0 security 无任务只放行系统签名查询与限定描述文件并记录审计", { skip: process.platform !== "darwin" }, async () => {
