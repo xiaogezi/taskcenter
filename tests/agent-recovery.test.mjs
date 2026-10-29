@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { classifyGateDenial, evaluateGateDenials, gateDenialSnapshot } from "../scripts/governance-metrics.mjs";
+import { classifyGateDenial, evaluateGateDenials, gateDenialSnapshot, recordGateDenial } from "../scripts/governance-metrics.mjs";
 import { boundedResponse } from "../scripts/bounded-response.mjs";
 import { controlProxyTarget, isAllowedControlPath } from "../lib/control-proxy.mjs";
 
@@ -56,6 +56,22 @@ test("拒绝查询限量、去除敏感字段且保留空任务和历史记录�
   assert.equal(isAllowedControlPath("/gate-denials", "GET"), true);
   assert.equal(isAllowedControlPath("/gate-denials", "POST"), false);
   assert.equal(controlProxyTarget("/gate-denials", "?limit=1&claim_token=secret&task_id=wrong").search, "?limit=1");
+});
+
+test("MCP 身份故障指向宿主恢复，落盘不保留原始身份或错误正文", () => {
+  const path = join(dir, "mcp-context-denials.jsonl");
+  for (const code of ["UNAVAILABLE", "INVALID", "MISMATCH"]) {
+    const message = `TASKCENTER_SESSION_CONTEXT_${code} secret-context-value`;
+    const { assessment } = recordGateDenial(path, { message }, Date.parse(now));
+    assert.equal(assessment.category, "mcp_session_context");
+    assert.match(assessment.recovery, /由宿主恢复/);
+    assert.match(assessment.recovery, /不要通过新建任务、手填 Session ID/);
+    assert.match(assessment.verification, /原会话无参数调用 taskcenter_client_context/);
+  }
+  const records = gateDenialSnapshot(path, { now: Date.parse(now) }).records;
+  assert.equal(records.length, 3);
+  assert.ok(records.every(record => record.category === "mcp_session_context"));
+  assert.doesNotMatch(readFileSync(path, "utf8"), /secret-context-value|TASKCENTER_SESSION_CONTEXT/);
 });
 
 test("超长路由回执保留身份、有效期和安全下一步，完整原文留在 continuation", () => {

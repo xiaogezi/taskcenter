@@ -24,6 +24,11 @@ const GATE_DENIAL_LOG_RETAINED = 2_000;
 const KNOWN_FAILURE_KINDS = new Set(["tool_approval", "filesystem_permission", "task_permission"]);
 
 const GATE_DENIAL_GUIDANCE = {
+  mcp_session_context: {
+    reason: "MCP 宿主未提供有效且一致的可信 Session 上下文；Session 已登记或服务在线也不能替代身份注入。",
+    recovery: "在当前宿主检查 TaskCenter MCP 是否已加载并重连；由宿主恢复请求元数据或独立进程的 Session 环境注入。无效或冲突时核对宿主绑定与进程环境。不要通过新建任务、手填 Session ID 或启用豁免绕过，也不要重启健康的 TaskCenter 服务。",
+    verification: "在原会话无参数调用 taskcenter_client_context，返回宿主注入的真实当前 sessionId 后再接续原任务；服务健康、Session 登记成功或手工客户端传入 ID 均不能代替此验证。",
+  },
   no_active_task: {
     reason: "PreToolUse 未识别为 L0 确定性只读，且 Session 没有活跃任务；这不等于检测到写入。",
     recovery: "若确为只读，先拆开复合命令；RTK 包装仅在规则明确允许等价原生命令时降级，并经过同一 Hook，不为只读另建无关任务。实际执行则同一交付用 taskcenter_task_resume 接续，独立目标用 taskcenter_task_begin。",
@@ -86,6 +91,7 @@ export function classifyGateDenial(input) {
   const kind = String(input?.failure_kind || "");
   if (KNOWN_FAILURE_KINDS.has(kind)) return kind;
   const message = String(input?.message || input?.error || "");
+  if (/TASKCENTER_SESSION_CONTEXT_(?:UNAVAILABLE|INVALID|MISMATCH)\b/.test(message)) return "mcp_session_context";
   if (/TASKCENTER_UNAVAILABLE|控制服务不可用|控制面不可用|fetch failed|ECONNREFUSED/i.test(message)) return "taskcenter_unavailable";
   if (/MCP tool call requires approval|approval policy is never/i.test(message)) return "tool_approval";
   if (/EACCES|EPERM|sandbox|read.only file system/i.test(message)) return "filesystem_permission";

@@ -1975,12 +1975,15 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
     arguments: {},
   })));
   assert.equal(missingGateContext.error, "TASKCENTER_SESSION_CONTEXT_UNAVAILABLE");
+  assert.equal(missingGateContext.assessment.category, "mcp_session_context");
+  assert.match(missingGateContext.assessment.verification, /taskcenter_client_context/);
   const invalidGateContext = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_session_gate_exemption_status",
     arguments: {},
     _meta: { threadId: "not-a-uuid" },
   })));
   assert.equal(invalidGateContext.error, "TASKCENTER_SESSION_CONTEXT_INVALID");
+  assert.equal(invalidGateContext.assessment.category, "mcp_session_context");
   const spoofedGateTarget = await client.callTool({
     name: "taskcenter_session_gate_exemption_set",
     arguments: { enabled: true, session_id: "019f0000-0000-7000-8000-000000000113" },
