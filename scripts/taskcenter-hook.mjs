@@ -13,6 +13,7 @@ import { inspectManagedReport, inspectManagedReportContent, repairManagedReportH
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
 import { inspectTrustedCli } from "./trusted-cli-inspection.mjs";
+import { isTrustedSystemQuery } from "./network-inspection.mjs";
 import { assertNoSymlinks, auditAutomationMemory, automationMemoryBinding, inspectAutomationMemoryPatch } from "./automation-memory.mjs";
 
 class ControlUnavailableError extends Error {}
@@ -756,8 +757,16 @@ function isReadOnlyInspection(payload) {
   return Boolean(batch?.every(({ words, heredoc }) => isReadOnlyCommand(words, heredoc, input.workdir || input.cwd || workspace)));
 }
 
-function isReadOnlyCommand(words, heredoc, cwd = workspace) {
-  const trusted = inspectTrustedCli(words, { cwd, workspace });
+function isReadOnlyCommand(words, heredoc, cwd = workspace, depth = 0) {
+  if (depth > 2) return false;
+  const trusted = inspectTrustedCli(words, { cwd, workspace, inspectRemote: remote => {
+    const allowed = ["hostname", "whoami", "uptime", "uname", "sw_vers", "df", "pwd", "ls", "find", "cat", "head", "tail", "wc", "du", "stat", "file", "rg", "sed", "git", "xcode-select", "xcodebuild", "shasum", "sha256sum", "diff", "security"];
+    const name = basename(remote[0]);
+    if (![name, `/bin/${name}`, `/usr/bin/${name}`].includes(remote[0])) return false;
+    // Remote status/diff may execute fsmonitor or external diff from that host's config.
+    if (name === "git" && !["--version", "rev-parse", "show-ref", "for-each-ref", "branch", "tag"].includes(remote[1])) return false;
+    return allowed.includes(name) && isReadOnlyCommand(remote, false, "/", depth + 1);
+  } });
   if (trusted !== null) return !heredoc && trusted;
   const tokens = [...words];
   if (basename(tokens[0]) === "rtk") {
@@ -778,6 +787,45 @@ function isReadOnlyCommand(words, heredoc, cwd = workspace) {
   }
   if (executable === "tail" && args.some((arg) => /^--(?:follow|retry)(?:=|$)|^-[^-]*[fF]/.test(arg))) return false;
   if (args.some((token) => /(?:^|[/\\])(?:auth\.json|\.env(?:\.[^/\\]+)?|id_rsa|id_ed25519)(?:$|[/\\])/.test(token))) return false;
+  if (["whoami", "hostname", "uptime"].includes(executable)) return args.length === 0;
+  if (["sh", "/bin/sh"].includes(tokens[0]) && args.length === 2 && args[0] === "-c") {
+    if (!isTrustedSystemQuery(tokens[0], "sh", "/bin/sh")) return false;
+    const batch = inspectionBatch(args[1]);
+    return Boolean(batch?.every(command => !command.heredoc && isReadOnlyCommand(command.words, false, cwd, depth + 1)));
+  }
+  if (executable === "xcrun") return args.length === 2 && ["swift", "swiftc"].includes(args[0]) && args[1] === "--version"
+    || args.length >= 2 && args[0] === "simctl" && args[1] === "list" && args.slice(2).every(arg => ["runtimes", "devices", "available", "--json", "-j"].includes(arg));
+  if (executable === "uname") return args.every(arg => /^-[asnrvmpo]+$/.test(arg));
+  if (executable === "sw_vers") return args.length === 0 || args.length === 1 && ["-productName", "-productVersion", "-buildVersion"].includes(args[0]);
+  if (executable === "xcode-select") return args.length === 1 && args[0] === "-p";
+  if (executable === "xcodebuild") return args.length === 1 && ["-version", "-showsdks", "-checkFirstLaunchStatus"].includes(args[0]);
+  if (executable === "df") return args.every(arg => !arg.startsWith("-") || /^-[hHkmiPT]+$/.test(arg));
+  if (["shasum", "sha256sum"].includes(executable)) {
+    let index = 0;
+    if (executable === "shasum" && args[0] === "-a" && ["1", "224", "256", "384", "512"].includes(args[1])) index = 2;
+    const files = args.slice(index);
+    return files.length > 0 && files.every(arg => arg && !arg.startsWith("-"));
+  }
+  if (executable === "diff") {
+    let index = 0;
+    while (["-q", "-u", "-r", "--brief", "--unified", "--recursive"].includes(args[index])) index++;
+    if (args[index] === "--") index++;
+    return args.length === index + 2 && args.slice(index).every(arg => arg && !arg.startsWith("-"));
+  }
+  if (basename(words[0]) === "rtk" && words[1] === "read" && executable === "read") {
+    let files = 0;
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
+      if (["-n", "--line-numbers"].includes(arg)) continue;
+      if (["-l", "--level"].includes(arg)) {
+        if (!["none", "minimal", "aggressive"].includes(args[++index])) return false;
+      } else if (["-m", "--max-lines", "--tail-lines"].includes(arg)) {
+        if (!/^\d{1,6}$/.test(args[++index] || "")) return false;
+      } else if (!arg || arg.startsWith("-")) return false;
+      else files++;
+    }
+    return files > 0;
+  }
   if (executable === "adb") return args.length === 1 && args[0] === "version" || args[0] === "devices" && (args.length === 1 || args.length === 2 && args[1] === "-l");
   if (["pwd", "ls", "cat", "head", "tail", "wc", "du", "stat", "file"].includes(executable)) return true;
   if (executable === "rg") return !args.some((token) => /^--(?:pre|hostname-bin)(?:=|$)/.test(token));
@@ -913,7 +961,14 @@ function isReadOnlyGit(args) {
   if (subcommand === "show" && args.some(arg => /^[a-f0-9]{40,64}:/.test(arg))) return false;
   if (subcommand === "worktree") return args[1] === "list" && args.slice(2).every((arg) => ["--porcelain", "-z", "--verbose", "-v"].includes(arg));
   if (["status", "check-ignore", "ls-files"].includes(subcommand)) return true;
-  if (subcommand === "branch") return args.length === 2 && args[1] === "--show-current";
+  if (subcommand === "--version") return args.length === 1;
+  if (subcommand === "rev-parse") return args.length === 2 && ["HEAD", "--show-toplevel", "--is-inside-work-tree"].includes(args[1])
+    || args.length === 3 && ["--short", "--abbrev-ref"].includes(args[1]) && args[2] === "HEAD";
+  if (subcommand === "branch") return args.slice(1).every(arg => ["--show-current", "-a", "-r", "-v", "-vv", "-avv", "-av", "--all", "--verbose", "--list"].includes(arg));
+  if (subcommand === "tag") return ["-l", "--list"].includes(args[1]) && args.slice(2).every(arg => !arg.startsWith("-") || arg.startsWith("--format=") || arg.startsWith("--sort="));
+  if (subcommand === "for-each-ref") return args.slice(1).every(arg => arg.startsWith("--format=") || arg.startsWith("--sort=") || /^--count=\d{1,6}$/.test(arg) || /^refs\/[A-Za-z0-9_./-]+$/.test(arg));
+  if (subcommand === "reflog") return args[1] === "show" && args.slice(2).every(arg => !arg.startsWith("-") || ["--oneline", "--date=iso"].includes(arg) || /^-\d{1,6}$/.test(arg));
+  if (subcommand === "show-ref") return args[1] === "--tags" && args.slice(2).every(arg => /^[A-Za-z0-9_./-]+$/.test(arg) && !arg.startsWith("-"));
   if (!["diff", "show", "log"].includes(subcommand)) return false;
   return !args.slice(1).some((token) => token === "--ext-diff" || token === "--textconv" || token === "--output" || token.startsWith("--output="));
 }
@@ -1006,7 +1061,7 @@ function interpreterInvocation(command) {
 }
 
 function isCliVersionQuery(executable, args) {
-  const options = { node: ["--version", "-v"], claude: ["--version", "-v"], kimi: ["--version", "-V"] };
+  const options = { node: ["--version", "-v"], claude: ["--version", "-v"], kimi: ["--version", "-V"], ruby: ["--version", "-v"], pod: ["--version"], bundle: ["--version"], python: ["--version", "-V"], python3: ["--version", "-V"] };
   return args.length === 1 && Boolean(options[executable]?.includes(args[0]));
 }
 

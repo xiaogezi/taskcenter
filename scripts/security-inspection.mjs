@@ -10,6 +10,8 @@ export function isReadOnlySecurity(tokens) {
     : tokens[0];
   if (!isTrustedCliEntry(entry, { installed: "/usr/bin/security", aliases: [] })) return false;
   if (tokens.length === 5 && ["find-identity", "-v", "-p", "codesigning"].every((arg, index) => tokens[index + 1] === arg)) return true;
+  if (tokens.length === 6 && ["find-identity", "-v", "-p", "codesigning", "/Library/Keychains/System.keychain"].every((arg, index) => tokens[index + 1] === arg)) return true;
+  if (tokens.length === 4 && tokens[1] === "list-keychains" && tokens[2] === "-d" && tokens[3] === "user") return true;
   if (tokens.length !== 5 || tokens[1] !== "cms" || tokens[2] !== "-D" || tokens[3] !== "-i") return false;
   const path = tokens[4];
   if (!isAbsolute(path) || path !== resolve(path) || !path.endsWith(".mobileprovision") || /[\x00-\x1f]/.test(path)) return false;
