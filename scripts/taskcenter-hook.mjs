@@ -790,12 +790,24 @@ function isReadOnlyCommand(words, heredoc, cwd = workspace) {
   if (executable === "sed") return isReadOnlySed(args);
   if (executable === "find") return isReadOnlyFind(args);
   if (executable !== "git") return false;
-  if (isGitObjectInspection(args)) {
-    const base = canonicalExistingPath(resolveInputPath(cwd));
+  let gitCwd = cwd;
+  let index = 0;
+  while (args[index] === "-C") {
+    const directory = args[index + 1];
+    if (directory === undefined || directory.startsWith("-")) return false;
+    if (directory) {
+      gitCwd = canonicalExistingPath(resolveInputPath(directory, gitCwd));
+      if (!gitCwd || !lstatSync(gitCwd).isDirectory()) return false;
+    }
+    index += 2;
+  }
+  const gitArgs = args.slice(index);
+  if (isGitObjectInspection(gitArgs)) {
+    const base = canonicalExistingPath(resolveInputPath(gitCwd));
     const root = canonicalExistingPath(workspace);
     return Boolean(base && root && isWithinPath(base, root));
   }
-  return isReadOnlyGit(args);
+  return isReadOnlyGit(gitArgs);
 }
 
 // Object inspection never runs textconv/filters or accepts Git global options.

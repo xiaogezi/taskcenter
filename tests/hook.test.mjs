@@ -557,6 +557,56 @@ test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async
   assert.equal(tasks.filter((task) => task.sessionId === sessionId).length, 0);
 });
 
+test("L0 Git -C 按实际目录识别只读查询，保留写入和对象读取边界", async () => {
+  const session_id = "git-directory-inspection";
+  const other = join(tempDir, "other repository");
+  const linked = join(tempDir, "workspace-link");
+  await mkdir(other, { recursive: true });
+  await symlink(rootPath, linked, process.platform === "win32" ? "junction" : "dir");
+  await runHook("session-start", "codex", { session_id, cwd: rootPath });
+  const check = cmd => runHook("pre-tool-use", "codex", {
+    session_id, cwd: rootPath, tool_name: "exec_command", tool_input: { cmd, workdir: rootPath },
+  });
+  const allowed = [
+    `git -C '${other}' status --short`,
+    `rtk git -C '${other}' log -4 --format=%h`,
+    `rtk proxy git -C '${other}' diff --stat`,
+    "git -C tests -C .. status --short",
+    "git -C '' status --short",
+    `git -C '${linked}' show-ref --verify refs/heads/dev`,
+    `git -C tests -C .. cat-file -p ${objectSha}:README.md`,
+  ];
+  for (const cmd of allowed) {
+    const result = await check(cmd);
+    assert.equal(result.code, 0, `${cmd}: ${result.stderr}`);
+    assert.match(result.stdout, /L0/);
+  }
+  for (const cmd of [
+    `git -C '${other}' commit -m x`,
+    `git -C '${other}' reset --hard`,
+    `git -C '${other}' diff --output=leak`,
+    `git -C '${other}' diff --ext-diff`,
+    `git -C '${other}' show --textconv HEAD`,
+    `git -C '${other}' -c core.pager=evil log`,
+    `git --git-dir='${other}' status`,
+    `git -C '${other}' status && touch sentinel`,
+    `git -C '${other}' show-ref --verify refs/heads/dev`,
+    `git -C '${other}' cat-file -p ${objectSha}:README.md`,
+    `git -C '${other}' show ${objectSha}:README.md`,
+    `git -C '${other}' diff --name-only ${objectSha} ${"b".repeat(40)}`,
+    `git -C '${other}' -C '${rootPath}' show ${objectSha}:.env`,
+    `git -C '${join(tempDir, "missing")}' status`,
+    `git -C '${join(rootPath, "README.md")}' -C .. status`,
+    "git -C",
+    "git -C status",
+    "git -C --help status",
+  ]) assert.equal((await check(cmd)).code, 2, cmd);
+  const registry = JSON.parse(await readFile(paths.TASKCENTER_SESSION_REGISTRY_PATH, "utf8"));
+  assert.equal(registry[session_id].l0Audit.count, allowed.length);
+  const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+  assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
+});
+
 test("L0 无任务 DevKit 仅放行可信入口的受限只读参数", async () => {
   const fixture = await realpath(await mkdtemp(join(tmpdir(), "hook-devkit-")));
   try {

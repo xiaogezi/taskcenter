@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复 `git -C <目录>` 只读查询被无任务门禁误拦：原生与 RTK 包装支持空格路径、相对目录及连续目录切换，沿用已有只读审计；写命令、配置覆写与受限 Git 对象的跨工作区读取继续拒绝。
+
 - MCP 可信 Session 缺失、无效或冲突时提供专用故障分类与宿主恢复指引，避免误导 Agent 反复登记任务或重启健康服务；原会话的真实身份验证与拒绝保护保持生效。
 
 - ZIP 归档只读接入通用可信 CLI 语义适配：系统 `unzip`／`zipinfo` 可跨项目、跨文件列目录，`unzip -p/-c` 可读取明确成员到 stdout；支持 RTK proxy、空格路径及常见等价参数，继续拒绝实际落盘解压、未知混合参数、注入、模式通配、敏感成员及继承的 Info-ZIP 参数覆写。
