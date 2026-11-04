@@ -6,6 +6,7 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { createHookTransport } from "./hook-transport.mjs";
 import { taskTimeState } from "../app/task-time-state.mjs";
 import { isSubagentSession } from "./harnesses/codex-session.mjs";
 import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment } from "./governance-metrics.mjs";
@@ -16,13 +17,14 @@ import { inspectTrustedCli } from "./trusted-cli-inspection.mjs";
 import { isTrustedSystemQuery } from "./network-inspection.mjs";
 import { assertNoSymlinks, auditAutomationMemory, automationMemoryBinding, inspectAutomationMemoryPatch } from "./automation-memory.mjs";
 
-class ControlUnavailableError extends Error {}
-
 const defaultControlUrl = "http://127.0.0.1:3001";
 const controlUrl = (process.env.TASKCENTER_CONTROL_URL || defaultControlUrl).replace(/\/$/, "");
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
-let recoveryAttempted = false;
+const { request, requestOnce } = createHookTransport({
+  controlUrl,
+  recover: controlUrl === defaultControlUrl ? recoverControlService : undefined,
+});
 let scheduledPatchRewrite = "";
 let preparedTask;
 const input = await readStdin();
@@ -989,7 +991,7 @@ async function reportGateDenial(error) {
       task_id: preparedTask?.active_task?.id || event.task_id || "",
       run_id: "",
       failure_kind: "",
-    });
+    }, { report: true });
     if (result?.assessment) console.error(formatGateDenialAssessment(result.assessment));
   } catch (reportError) {
     console.error(`TaskCenter Hook 警告：拒绝记录失败，门禁结果不变（${reportError.message}）`);
@@ -1310,55 +1312,17 @@ async function provideTaskPreparationContext() {
   }));
 }
 
-async function request(method, path, body) {
-  try {
-    return await requestOnce(method, path, body);
-  } catch (error) {
-    if (!(error instanceof ControlUnavailableError) || recoveryAttempted || controlUrl !== defaultControlUrl) throw error;
-    recoveryAttempted = true;
-    await recoverControlService(error);
-    return requestOnce(method, path, body);
-  }
-}
-
-async function requestOnce(method, path, body) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8_000);
-  try {
-    const response = await fetch(`${controlUrl}${path}`, {
-      method,
-      headers: body ? { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" } : {},
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    let value;
-    try {
-      value = text ? JSON.parse(text) : {};
-    } catch {
-      throw new Error(`TaskCenter 返回非 JSON (${response.status})`);
-    }
-    if (!response.ok) throw Object.assign(new Error(value.error || `TaskCenter 请求失败 (${response.status})`), { statusCode: response.status });
-    return value;
-  } catch (error) {
-    if (error.name === "AbortError") throw new Error("TaskCenter 请求超时，写操作已阻断。");
-    if (error instanceof TypeError) throw new ControlUnavailableError("TaskCenter 控制服务不可用。");
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function recoverControlService(originalError) {
+async function recoverControlService(signal, _requestId, limitMs) {
   try {
     await execFileAsync(process.execPath, [resolve(projectRoot, "scripts/taskcenter-control.mjs"), "start"], {
       cwd: projectRoot,
       env: { ...process.env, TASKCENTER_NO_OPEN: "1" },
-      timeout: 30_000,
+      timeout: limitMs,
+      signal,
     });
   } catch (error) {
-    const detail = String(error.stderr || error.stdout || error.message || "未知错误").trim();
-    throw new Error(`${originalError.message} 自动恢复失败，写操作已阻断。${detail ? ` ${detail}` : ""} 可在项目目录运行：node scripts/taskcenter-control.mjs start`);
+    if (signal.aborted) throw error;
+    throw new Error("TaskCenter 控制服务不可用，自动恢复失败，写操作已阻断。可在项目目录运行：node scripts/taskcenter-control.mjs start");
   }
 }
 

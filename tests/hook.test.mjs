@@ -1799,6 +1799,30 @@ test("只读拒绝查询校验条数与安全字段；上报失败仍给本地�
   assert.match(rejected.stderr, /TASKCENTER_UNAVAILABLE/);
 });
 
+test("慢控制面在宿主10秒内拒绝并上报专用超时分类，不泄露查询参数", async context => {
+  let reported;
+  const slow = createServer(async (req, res) => {
+    if (req.url === "/gate-denials") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      reported = JSON.parse(body);
+      res.end("{}");
+    }
+    // All task preparation/identity requests intentionally stall.
+  });
+  await new Promise(resolve => slow.listen(0, "127.0.0.1", resolve));
+  context.after(() => { slow.closeAllConnections(); slow.close(); });
+  const started = performance.now();
+  const result = await runHook("pre-tool-use", "codex", { session_id: "timeout-probe", cwd: "/private-workspace", tool_name: "apply_patch", tool_input: {} }, [], `http://127.0.0.1:${slow.address().port}`);
+  assert.equal(result.code, 2);
+  assert.ok(performance.now() - started < 10_000, result.stderr);
+  assert.match(result.stderr, /TASKCENTER_HOOK_TIMEOUT/);
+  assert.match(result.stderr, /request_id.*method.*endpoint.*elapsed_ms/);
+  assert.doesNotMatch(result.stderr, /private-workspace|session_id=/);
+  assert.match(reported.message, /TASKCENTER_HOOK_TIMEOUT/);
+  context.diagnostic(result.stderr.trim());
+});
+
 test("子代理不参与主线门禁：全部 Hook 离线放行且不请求服务", async () => {
   const probe = createServer((_req, res) => { requests++; res.writeHead(503); res.end(); });
   let requests = 0;

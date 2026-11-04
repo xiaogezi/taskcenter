@@ -18,8 +18,18 @@ async function fixture(heapLimit) {
   await writeFile(paths.governanceHealth, JSON.stringify({ refreshOk: true, heartbeatAt: new Date().toISOString(), lastRefreshError: "" }));
   const port = 3200 + Math.floor(Math.random() * 300);
   const child = spawn(process.execPath, [...(heapLimit ? [`--max-old-space-size=${heapLimit}`] : []), "scripts/control-server.mjs"], { cwd: process.cwd(), env: { ...process.env, TASKCENTER_CONTROL_PORT: String(port), TASKCENTER_DASHBOARD_PATH: paths.dashboard, TASKCENTER_TASK_LEDGER_PATH: paths.ledger, TASKCENTER_TASK_EVENTS_PATH: paths.events, TASKCENTER_WATCHER_HEARTBEAT_PATH: paths.heartbeat, TASKCENTER_DELEGATIONS_PATH: paths.delegations, TASKCENTER_USAGE_REPORT_PATH: paths.usage, TASKCENTER_GOVERNANCE_METRICS_PATH: paths.governance, TASKCENTER_USAGE_HEALTH_PATH: paths.usageHealth, TASKCENTER_GOVERNANCE_HEALTH_PATH: paths.governanceHealth, TASKCENTER_TASK_EVENT_INDEX_PATH: paths.index, TASKCENTER_ROUTING_CONTROL_PATH: paths.routing, TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1" }, stdio: "ignore" });
-  for (let i = 0; i < 30; i++) { try { await fetch(`http://127.0.0.1:${port}/health`); break; } catch { await new Promise((resolve) => setTimeout(resolve, 50)); } }
-  return { dir, paths, port, child };
+  // Wait for actual readiness; a fixed 1.5s startup window flakes under the full suite's CPU load.
+  for (let i = 0; i < 200; i++) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(500) });
+      if (response.ok) return { dir, paths, port, child };
+    } catch {}
+    if (child.exitCode !== null) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  child.kill();
+  await rm(dir, { recursive: true, force: true });
+  throw new Error("Isolated health fixture did not become ready");
 }
 
 test("health 文件状态、heartbeat 新鲜/陈旧和事件接口边界", async (t) => {

@@ -55,6 +55,7 @@ next-env.d.ts
 /data/task-reuse-decisions.jsonl.event-index/
 /data/session-registry.json
 /data/session-selection.json
+/data/session-switch.jsonl
 /data/gate-session-allowlist.json
 /data/context-task-map.json
 /data/context-sync-events.jsonl

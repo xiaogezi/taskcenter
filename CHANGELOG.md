@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复 Hook 请求、自动恢复和拒绝上报累加超过宿主时限：共享 8.5 秒通信预算并预留上报时间；超时输出请求 ID、接口、阶段和耗时，单独归类为 `hook_timeout`，明确区别任务执行时长，保留授权拒绝且不盲目重放结果未知的写请求。
+
 - 修复常见只读查询误拦：补齐系统/Xcode 信息、校验和、文件比较、RTK read、常见 Git 查询及可信 Jugg 设备列表；字面量 sh 查询批次逐条判定。HTTP(S) GET/HEAD、Homebrew info/search/list、限时 TCP 探测和受限 SSH 查询接入既有可信 CLI 适配，检查隐式配置与精确参数；上传、落盘、安装、转发、混合写入和任意脚本继续要求任务授权，沿用只读审计。
 
 - 修复 `git -C <目录>` 只读查询被无任务门禁误拦：原生与 RTK 包装支持空格路径、相对目录及连续目录切换，沿用已有只读审计；写命令、配置覆写与受限 Git 对象的跨工作区读取继续拒绝。

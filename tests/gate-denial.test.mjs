@@ -17,6 +17,20 @@ import {
 const NOW = Date.parse("2026-09-24T12:00:00.000Z");
 const iso = (offsetMs) => new Date(NOW + offsetMs).toISOString();
 
+test("Hook timeout has a dedicated category and persists safe recovery evidence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-timeout-"));
+  try {
+    const path = join(dir, "gate-denials.jsonl");
+    for (const message of ["TaskCenter 请求超时，写操作已阻断。", "TASKCENTER_HOOK_TIMEOUT request_id=fixture endpoint=/tasks elapsed_ms=7500 private-text"]) {
+      const { record, assessment } = recordGateDenial(path, { source: "hook", message, session_id: "timeout-session" }, NOW);
+      assert.equal(record.category, "hook_timeout");
+      assert.match(assessment.reason, /不是任务执行时长/);
+      assert.match(assessment.recovery, /request_id/);
+    }
+    assert.doesNotMatch(readFileSync(path, "utf8"), /private-text|request_id=/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("拒绝即时记录只落安全分类，单次拒绝给出恢复与验证步骤", () => {
   const dir = mkdtempSync(join(tmpdir(), "gate-denial-"));
   const path = join(dir, "gate-denials.jsonl");
