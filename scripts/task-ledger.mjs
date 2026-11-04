@@ -175,6 +175,11 @@ export function loadVisibleSessionTasks(sessionId) {
     .map(task => withTaskPhaseTiming(withCompletionState({ ...normalizeDueAtSemantics(task), sessionId: canonical })));
 }
 
+export function loadTaskById(taskId) {
+  const task = readLedger().find(task => task.id === taskId && task.status !== "removed");
+  return task ? withTaskPhaseTiming(withCompletionState({ ...normalizeDueAtSemantics(task), sessionId: canonicalSessionId(task.sessionId) })) : null;
+}
+
 export function loadSessionMerges() {
   if (!existsSync(sessionMergesPath)) return {};
   try {

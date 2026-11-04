@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { taskReconcilePath } from "./task-ledger.mjs";
-import { reconcileTasks, loadTasks, recordTaskEvent, isContextShadowTask, taskSessionAgent, inactiveOwnerArchiveReady } from "./task-ledger.mjs";
+import { reconcileTasks, loadTasks, loadTaskById, recordTaskEvent, isContextShadowTask, taskSessionAgent, inactiveOwnerArchiveReady } from "./task-ledger.mjs";
 import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
 import { computeCompletionReadiness, sameSubject } from "./completion-state.mjs";
 import { isProcessTreeAlive } from "./process-tree.mjs";
@@ -67,7 +67,7 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
     const candidates = loadTasks().filter(task => !task.archivedAt && !isContextShadowTask(task) && RECONCILABLE_TASK_STATUSES.has(task.status)).map(task => task.id);
     for (const taskId of candidates) {
       await setImmediate();
-      const task = loadTasks().find(task => task.id === taskId);
+      const task = loadTaskById(taskId);
       if (!task || task.archivedAt || !RECONCILABLE_TASK_STATUSES.has(task.status)) continue;
       // A live maintenance host owns execution just like any other client.
       try {
@@ -88,7 +88,7 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
         }
         catch (error) { sessionReadFailed = true; sessionMissing = taskSessionAgent(task) === "codex" && error.code === "CODEX_SESSION_NOT_FOUND"; session = null; }
         // Session I/O yields; a concurrent task update invalidates the inspected snapshot.
-        const current = loadTasks().find(item => item.id === task.id);
+        const current = loadTaskById(task.id);
         if (!current || current.lastEventId !== task.lastEventId) continue;
         if (session?.busy) continue;
         if (sessionMissing) basis = "session_missing";
