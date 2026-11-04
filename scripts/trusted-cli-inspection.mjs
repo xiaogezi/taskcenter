@@ -7,9 +7,10 @@ import { isReadOnlySecurity } from "./security-inspection.mjs";
 import { isReadOnlyArchive } from "./archive-inspection.mjs";
 import { isReadOnlyBrew, isReadOnlyCurl, isReadOnlyNc } from "./network-inspection.mjs";
 import { isReadOnlyJugg } from "./jugg-inspection.mjs";
+import { isReadOnlyJev } from "./jev-inspection.mjs";
 
 // Adapters audit identity and exact arguments; unknown CLIs keep the existing L0 rules.
-const adapters = { "dev-kit": isReadOnlyDevKit, dcb: isReadOnlyDcb, aws: isReadOnlyAws, ssh: isReadOnlySsh, security: isReadOnlySecurity, unzip: isReadOnlyArchive, zipinfo: isReadOnlyArchive, curl: isReadOnlyCurl, brew: isReadOnlyBrew, nc: isReadOnlyNc, "jugg-env": isReadOnlyJugg };
+const adapters = { "dev-kit": isReadOnlyDevKit, dcb: isReadOnlyDcb, aws: isReadOnlyAws, ssh: isReadOnlySsh, security: isReadOnlySecurity, unzip: isReadOnlyArchive, zipinfo: isReadOnlyArchive, curl: isReadOnlyCurl, brew: isReadOnlyBrew, nc: isReadOnlyNc, "jugg-env": isReadOnlyJugg, "jev-decision": isReadOnlyJev };
 export function inspectTrustedCli(words, context) {
   const tokens = [...words];
   let validWrapper = true;

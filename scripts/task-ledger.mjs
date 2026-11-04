@@ -167,6 +167,14 @@ export function loadVisibleTasks() {
   return loadTasks().filter((task) => !task.archivedAt && !isContextShadowTask(task));
 }
 
+// Gate requests need one Session; hydrate completion/timing only after selecting it.
+export function loadVisibleSessionTasks(sessionId) {
+  const canonical = canonicalSessionId(sessionId);
+  return readLedger()
+    .filter(task => task.status !== "removed" && !task.archivedAt && !isContextShadowTask(task) && canonicalSessionId(task.sessionId) === canonical)
+    .map(task => withTaskPhaseTiming(withCompletionState({ ...normalizeDueAtSemantics(task), sessionId: canonical })));
+}
+
 export function loadSessionMerges() {
   if (!existsSync(sessionMergesPath)) return {};
   try {

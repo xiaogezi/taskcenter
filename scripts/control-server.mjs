@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { observeControlRequest } from "./control-request-observation.mjs";
 import { currentMaintenanceAction, safeActionText } from "./ai-maintenance.mjs";
 import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
 import { isProcessTreeAlive } from "./process-tree.mjs";
@@ -36,6 +37,7 @@ import {
   loadSessionRegistry,
   loadTasks,
   loadVisibleTasks,
+  loadVisibleSessionTasks,
   reconcileContextShadowTasks,
   recordSessionL0Audit,
   recordTaskEvent,
@@ -167,6 +169,7 @@ const reconciliationTimer = setInterval(async () => {
 
 const sessionSwitchOperations = new Map();
 const server = createServer(async (request, response) => {
+  observeControlRequest(request, response);
   try {
     setCors(request, response);
     if (request.method === "OPTIONS") {
@@ -300,7 +303,7 @@ const server = createServer(async (request, response) => {
       const sessionId = params.get("session_id") || "";
       const registry = loadSessionRegistry()[sessionId];
       if (!registry) throw new TaskLedgerError(409, "当前 Session 尚未登记。");
-      const tasks = loadVisibleTasks().filter((task) => task.sessionId === sessionId).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+      const tasks = loadVisibleSessionTasks(sessionId).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
       const activeTask = tasks.find((item) => ["planned", "in_progress", "blocked"].includes(item.status));
       const task = activeTask || tasks[0] || null;
       const budget = await readRequestBudget(sessionId, sessionsRoot, task);
@@ -1400,11 +1403,7 @@ function verifyRequirementExists(requirementId) {
 }
 
 function loadDashboard() {
-  try {
-    return JSON.parse(readFileSync(dashboardPath, "utf8"));
-  } catch {
-    return { source: {}, threads: [] };
-  }
+  return readSnapshot(dashboardPath, { source: {}, threads: [] });
 }
 
 function availableSessionIds() {

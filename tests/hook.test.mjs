@@ -1799,6 +1799,30 @@ test("只读拒绝查询校验条数与安全字段；上报失败仍给本地�
   assert.match(rejected.stderr, /TASKCENTER_UNAVAILABLE/);
 });
 
+test("ordinary hooks use only one current-session preparation; no all-session fetch or stale permission", async context => {
+  let calls = [], active = true;
+  const probe = createServer(async (req, res) => {
+    calls.push(req.url.split("?")[0]);
+    if (req.url.startsWith("/task-prepare?")) {
+      res.end(JSON.stringify({ session_id: "hot-path", task_id: active ? "active" : null, active_task: active ? { id: "active", sessionId: "hot-path", status: "in_progress" } : null, scheduled_readonly: null, gate_allowlisted: false }));
+    } else if (req.url === "/task-events" || req.url === "/gate-denials") { req.resume(); res.end("{}"); }
+    else { res.writeHead(500); res.end('{"error":"unexpected all-session request"}'); }
+  });
+  await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
+  context.after(() => { probe.closeAllConnections(); probe.close(); });
+  const url = `http://127.0.0.1:${probe.address().port}`;
+  const payload = { session_id: "hot-path", cwd: "/work", tool_name: "exec_command", tool_input: { cmd: "touch /work/probe" } };
+  const allowed = await runHook("pre-tool-use", "codex", payload, [], url);
+  assert.equal(allowed.code, 0, allowed.stderr);
+  assert.equal(calls.filter(path => path === "/task-prepare").length, 1);
+  assert.ok(!calls.includes("/session-status"));
+  active = false; calls = [];
+  const denied = await runHook("pre-tool-use", "codex", payload, [], url);
+  assert.equal(denied.code, 2);
+  assert.match(denied.stderr, /L0_COMMAND_NOT_RECOGNIZED/);
+  assert.ok(!calls.includes("/session-status") && !calls.includes("/tasks"));
+});
+
 test("慢控制面在宿主10秒内拒绝并上报专用超时分类，不泄露查询参数", async context => {
   let reported;
   const slow = createServer(async (req, res) => {

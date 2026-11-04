@@ -627,11 +627,13 @@ async function recordScheduledReadonlyAudit() {
 }
 
 async function loadScheduledReadonlyProfile() {
-  const result = await request("GET", "/session-status");
-  const current = Array.isArray(result.sessions)
-    ? result.sessions.find((session) => session.sessionId === sessionId)
-    : null;
-  const profile = current?.scheduledReadonly;
+  const prepared = await prepareCurrentTask();
+  let profile = prepared?.scheduled_readonly;
+  if (!prepared) {
+    // Older services and unregistered Sessions still use the existing checks.
+    const result = await request("GET", "/session-status");
+    profile = result.sessions?.find(session => session.sessionId === sessionId)?.scheduledReadonly;
+  }
   if (!profile) return null;
   return {
     profile: String(profile.profile || ""),
@@ -1247,6 +1249,7 @@ async function isGateAllowlistedSession() {
 
 async function requireTask() {
     if (preparedTask?.active_task) return preparedTask.active_task;
+  if (preparedTask) throw noActiveTaskError();
   const result = await request("GET", "/session-status");
   const current = Array.isArray(result.sessions)
     ? result.sessions.find((session) => session.sessionId === sessionId)
@@ -1259,7 +1262,11 @@ async function requireTask() {
   const rank = { in_progress: 3, blocked: 2, planned: 1 };
   const task = active.sort((left, right) => (rank[right.status] - rank[left.status]) || (Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || "")))[0];
   if (task) return task;
-  throw new Error("该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。受信 CLI 须匹配已审核安装入口、产物版本及精确只读参数；升级或新增 CLI 应修复适配器，不为纯查询创建无关任务。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。当前 Session 无活跃任务；实际执行、合并、验证或写入需调用 taskcenter_task_resume 接续同一交付，新的独立目标才创建任务。");
+  throw noActiveTaskError();
+}
+
+function noActiveTaskError() {
+  return new Error("该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。受信 CLI 须匹配已审核安装入口、产物版本及精确只读参数；升级或新增 CLI 应修复适配器，不为纯查询创建无关任务。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。当前 Session 无活跃任务；实际执行、合并、验证或写入需调用 taskcenter_task_resume 接续同一交付，新的独立目标才创建任务。");
 }
 
 async function prepareCurrentTask() {
