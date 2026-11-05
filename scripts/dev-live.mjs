@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { vinextInvocation } from "./vinext-cli.mjs";
-import { createRuntimeLogger } from "./runtime-logger.mjs";
+import { createRuntimeLogger } from "./runtime-logger-loader.mjs";
 import { migrateTaskEvents } from "./task-event-migration.mjs";
 
 const projectRoot = resolve(process.env.TASKCENTER_SOURCE_ROOT || fileURLToPath(new URL("..", import.meta.url)));

@@ -35,10 +35,14 @@ export function runVinext(command, args = []) {
     console.error(error.message);
     process.exitCode = 1;
   });
-  child.once("exit", (code, signal) => {
+  child.once("exit", async (code, signal) => {
     process.exitCode = code ?? (signal ? 1 : 0);
     if (process.exitCode === 0 && inputHash) {
-      try { recordBuild(projectRoot, inputHash); }
+      try {
+        const { buildRuntimeLogger } = await import("./build-runtime-logger.mjs");
+        await buildRuntimeLogger(projectRoot);
+        recordBuild(projectRoot, inputHash);
+      }
       catch (error) { console.error(error.message); process.exitCode = 1; }
     }
   });

@@ -34,6 +34,7 @@ export async function verifyProduction(root) {
     TASKCENTER_SELECTION_PATH: join(root, "tests/fixtures/session-selection-all.json"),
     TASKCENTER_WEB_MODE: "start", TASKCENTER_WEB_PORT: String(webPort), TASKCENTER_CONTROL_PORT: String(controlPort),
     TASKCENTER_SOURCE_ROOT: root, TASKCENTER_RUNTIME_DIR: join(state, "runtime"),
+    TASKCENTER_LOG_DIR: join(state, "logs"),
     TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION: "1", TASKCENTER_JEV_ROUTING: "0",
     TASKCENTER_CODEX_COMMAND: join(bin, process.platform === "win32" ? "codex.cmd" : "codex"), TASKCENTER_CODEX_SDK_MODULE: join(state, "nonexistent-sdk.mjs"),
   });
