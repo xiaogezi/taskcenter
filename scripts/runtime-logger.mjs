@@ -17,6 +17,7 @@ export async function createRuntimeLogger(directory, { size = "10m", count = 8 }
   });
   let failed = false;
   let droppedBytes = 0;
+  let overflowReported = false;
   destination.on("error", () => {
     // Fixed, bounded fallback; do not redirect an unbounded child stream to bootstrap stderr.
     if (!failed) process.stderr.write('{"event":"runtime_logging_failed"}\n');
@@ -29,7 +30,10 @@ export async function createRuntimeLogger(directory, { size = "10m", count = 8 }
     write(data) {
       if (failed) return;
       if (destination.writableLength + Buffer.byteLength(data) > 1024 * 1024) {
-        if (!droppedBytes) process.stderr.write('{"event":"runtime_logging_overflow"}\n');
+        if (!overflowReported) {
+          process.stderr.write('{"event":"runtime_logging_overflow"}\n');
+          overflowReported = true;
+        }
         droppedBytes += Buffer.byteLength(data);
         return;
       }

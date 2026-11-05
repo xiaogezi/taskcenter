@@ -49,3 +49,23 @@ test("built logger runs outside the installation tree with notices and no dynami
     assert.equal(record.data.token, "[Redacted]");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("repeated log floods keep the fallback bootstrap warning bounded", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "logger-flood-"));
+  const original = process.stderr.write;
+  let warnings = 0;
+  process.stderr.write = function (chunk, ...args) {
+    if (String(chunk).includes('"event":"runtime_logging_overflow"')) { warnings++; return true; }
+    return original.call(this, chunk, ...args);
+  };
+  try {
+    const logger = await createRuntimeLogger(dir, { size: "64k", count: 3 });
+    for (let burst = 0; burst < 3; burst++) {
+      for (let n = 0; n < 200; n++) logger.log("fixture", "stdout", "x".repeat(16384));
+      await delay(200);
+    }
+    await logger.close();
+    assert.equal(warnings, 1);
+    assert.ok(readdirSync(dir).filter(name => name.endsWith(".log")).length <= 3);
+  } finally { process.stderr.write = original; rmSync(dir, { recursive: true, force: true }); }
+});
