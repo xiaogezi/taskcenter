@@ -1,0 +1,1198 @@
+{
+  "schema": "ci-cost-diagnosis/v1",
+  "observed_date": "2026-11-05",
+  "source_revision": "ab6cf3ebb6a7f7ae3868fe456bbced5ba20631fe",
+  "node_ci": "22.13.0",
+  "package_version": "0.1.5",
+  "github": {
+    "endpoint": "https://api.github.com/repos/xiaogezi/taskcenter/actions/runs?per_page=100",
+    "total": 22,
+    "runs": [
+      {
+        "id": 38725140887,
+        "revision": "bf124bf631c5eafe3d452217d43aaa416df519b1",
+        "event": "push",
+        "result": "failure",
+        "created_at": "2026-10-15T11:07:48Z",
+        "updated_at": "2026-10-15T11:11:04Z",
+        "run_started_at": "2026-10-15T11:07:48Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/38725140887"
+      },
+      {
+        "id": 38697125229,
+        "revision": "f1c2bb84703f736cae6b5d17f5814dc0c35bac45",
+        "event": "push",
+        "result": "failure",
+        "created_at": "2026-10-15T07:11:48Z",
+        "updated_at": "2026-10-15T07:14:42Z",
+        "run_started_at": "2026-10-15T07:11:48Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/38697125229"
+      },
+      {
+        "id": 35693561000,
+        "revision": "5004172a20643baa54511da2635ae5297f5fcac9",
+        "event": "push",
+        "result": "failure",
+        "created_at": "2026-09-22T06:09:02Z",
+        "updated_at": "2026-09-22T06:13:35Z",
+        "run_started_at": "2026-09-22T06:09:02Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/35693561000"
+      },
+      {
+        "id": 34204807964,
+        "revision": "35fa5a1028678a33688cdfecd67dba7bfaee688e",
+        "event": "push",
+        "result": "failure",
+        "created_at": "2026-09-08T08:29:52Z",
+        "updated_at": "2026-09-08T08:31:40Z",
+        "run_started_at": "2026-09-08T08:29:52Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/34204807964"
+      },
+      {
+        "id": 34201985722,
+        "revision": "3a76435fa92a914098b4201ac80b3b41ad4cbe7a",
+        "event": "push",
+        "result": "failure",
+        "created_at": "2026-09-08T07:57:56Z",
+        "updated_at": "2026-09-08T08:00:16Z",
+        "run_started_at": "2026-09-08T07:57:56Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/34201985722"
+      },
+      {
+        "id": 31784131901,
+        "revision": "683964b43e751b41ac0f729245f330b4dc969fcc",
+        "event": "push",
+        "result": "success",
+        "created_at": "2026-08-14T08:29:53Z",
+        "updated_at": "2026-08-14T08:31:32Z",
+        "run_started_at": "2026-08-14T08:29:53Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31784131901"
+      },
+      {
+        "id": 31783224020,
+        "revision": "b2363d4ec52b1205bae6c918ad5bcaa82c033be4",
+        "event": "push",
+        "result": "failure",
+        "created_at": "2026-08-14T08:16:13Z",
+        "updated_at": "2026-08-14T08:17:46Z",
+        "run_started_at": "2026-08-14T08:16:13Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31783224020"
+      },
+      {
+        "id": 31779321486,
+        "revision": "32140e8b7513d5fd5066edf2977e8f23ea56aa38",
+        "event": "push",
+        "result": "success",
+        "created_at": "2026-08-14T07:16:50Z",
+        "updated_at": "2026-08-14T07:17:44Z",
+        "run_started_at": "2026-08-14T07:16:50Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31779321486"
+      },
+      {
+        "id": 31779239889,
+        "revision": "6a0d8e4672459afcb8bbeff91149e68998ed85d2",
+        "event": "pull_request",
+        "result": "success",
+        "created_at": "2026-08-14T07:15:32Z",
+        "updated_at": "2026-08-14T07:16:25Z",
+        "run_started_at": "2026-08-14T07:15:32Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31779239889"
+      },
+      {
+        "id": 31772549024,
+        "revision": "0db7398287c3555ac8656c8bd53791cdc86c91bb",
+        "event": "push",
+        "result": "success",
+        "created_at": "2026-08-14T05:17:45Z",
+        "updated_at": "2026-08-14T05:18:34Z",
+        "run_started_at": "2026-08-14T05:17:45Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31772549024"
+      },
+      {
+        "id": 31772487579,
+        "revision": "045af44746b86aac69ea70291d88cbec11530912",
+        "event": "pull_request",
+        "result": "success",
+        "created_at": "2026-08-14T05:16:32Z",
+        "updated_at": "2026-08-14T05:17:24Z",
+        "run_started_at": "2026-08-14T05:16:32Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31772487579"
+      },
+      {
+        "id": 31771102526,
+        "revision": "60541ace102a7af525a37ec848b9799e1bff8131",
+        "event": "push",
+        "result": "success",
+        "created_at": "2026-08-14T04:50:20Z",
+        "updated_at": "2026-08-14T04:51:06Z",
+        "run_started_at": "2026-08-14T04:50:20Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31771102526"
+      },
+      {
+        "id": 31771037986,
+        "revision": "6e5429c350cb86ea2937be47d1f737fe8a1fb3fa",
+        "event": "pull_request",
+        "result": "success",
+        "created_at": "2026-08-14T04:49:07Z",
+        "updated_at": "2026-08-14T04:49:55Z",
+        "run_started_at": "2026-08-14T04:49:07Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31771037986"
+      },
+      {
+        "id": 31768755437,
+        "revision": "4aecbc2e4d69e42d1dd627d377015a15f8f742e1",
+        "event": "push",
+        "result": "success",
+        "created_at": "2026-08-14T04:05:03Z",
+        "updated_at": "2026-08-14T04:05:51Z",
+        "run_started_at": "2026-08-14T04:05:03Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31768755437"
+      },
+      {
+        "id": 31768695230,
+        "revision": "b35aec1966544ced8fa92c2d68b7bf9e551385a9",
+        "event": "pull_request",
+        "result": "success",
+        "created_at": "2026-08-14T04:03:52Z",
+        "updated_at": "2026-08-14T04:04:45Z",
+        "run_started_at": "2026-08-14T04:03:52Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31768695230"
+      },
+      {
+        "id": 31766479112,
+        "revision": "086cbc0b1c3a96ac880ff696e5cb1abb9f4e4c07",
+        "event": "push",
+        "result": "success",
+        "created_at": "2026-08-14T03:19:54Z",
+        "updated_at": "2026-08-14T03:20:47Z",
+        "run_started_at": "2026-08-14T03:19:54Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31766479112"
+      },
+      {
+        "id": 31766410102,
+        "revision": "c993baa3db7585f8331c8daa31850cdceaef42f5",
+        "event": "pull_request",
+        "result": "success",
+        "created_at": "2026-08-14T03:18:30Z",
+        "updated_at": "2026-08-14T03:19:19Z",
+        "run_started_at": "2026-08-14T03:18:30Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31766410102"
+      },
+      {
+        "id": 31764652941,
+        "revision": "543cf193b778d56371cbdfdf29cd91cfba39934a",
+        "event": "push",
+        "result": "success",
+        "created_at": "2026-08-14T02:44:38Z",
+        "updated_at": "2026-08-14T02:45:23Z",
+        "run_started_at": "2026-08-14T02:44:38Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31764652941"
+      },
+      {
+        "id": 31764599224,
+        "revision": "50f9f4712bc3479477806da3ddde084af7fd798e",
+        "event": "pull_request",
+        "result": "success",
+        "created_at": "2026-08-14T02:43:34Z",
+        "updated_at": "2026-08-14T02:44:21Z",
+        "run_started_at": "2026-08-14T02:43:34Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31764599224"
+      },
+      {
+        "id": 31764511118,
+        "revision": "e5bb92c9ed729af66a7af7410a56ba031a52fbfc",
+        "event": "pull_request",
+        "result": "failure",
+        "created_at": "2026-08-14T02:41:51Z",
+        "updated_at": "2026-08-14T02:42:26Z",
+        "run_started_at": "2026-08-14T02:41:51Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31764511118"
+      },
+      {
+        "id": 31694943139,
+        "revision": "36c15bce4cc5da5dcc2265c3b4959088e394052e",
+        "event": "push",
+        "result": "success",
+        "created_at": "2026-08-13T11:18:51Z",
+        "updated_at": "2026-08-13T11:19:46Z",
+        "run_started_at": "2026-08-13T11:18:51Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31694943139"
+      },
+      {
+        "id": 31694777736,
+        "revision": "978969ffa206483d0515ce6ffc491e54369ad1a7",
+        "event": "push",
+        "result": "failure",
+        "created_at": "2026-08-13T11:16:34Z",
+        "updated_at": "2026-08-13T11:17:19Z",
+        "run_started_at": "2026-08-13T11:16:34Z",
+        "attempt": 1,
+        "url": "https://github.com/xiaogezi/taskcenter/actions/runs/31694777736"
+      }
+    ],
+    "sample_jobs": [
+      {
+        "id": 38725140887,
+        "jobs": [
+          {
+            "id": 116388996030,
+            "name": "test (ubuntu-latest)",
+            "result": "failure",
+            "seconds": 137,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 5
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 7
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 9
+              },
+              {
+                "name": "Run npm run typecheck",
+                "result": "success",
+                "seconds": 3
+              },
+              {
+                "name": "Run npm test",
+                "result": "failure",
+                "seconds": 103
+              },
+              {
+                "name": "Verify isolated production closure and platform budget",
+                "result": "failure",
+                "seconds": 6
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          },
+          {
+            "id": 116388996382,
+            "name": "test (windows-latest)",
+            "result": "failure",
+            "seconds": 192,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 6
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 13
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 16
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 15
+              },
+              {
+                "name": "Run npm run typecheck",
+                "result": "success",
+                "seconds": 4
+              },
+              {
+                "name": "Run npm test",
+                "result": "failure",
+                "seconds": 129
+              },
+              {
+                "name": "Verify isolated production closure and platform budget",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 38697125229,
+        "jobs": [
+          {
+            "id": 116296234337,
+            "name": "test (windows-latest)",
+            "result": "failure",
+            "seconds": 169,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 6
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 12
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 15
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 21
+              },
+              {
+                "name": "Run npm run typecheck",
+                "result": "success",
+                "seconds": 3
+              },
+              {
+                "name": "Run npm test",
+                "result": "failure",
+                "seconds": 105
+              },
+              {
+                "name": "Verify isolated production closure and platform budget",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          },
+          {
+            "id": 116296234798,
+            "name": "test (ubuntu-latest)",
+            "result": "failure",
+            "seconds": 84,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 4
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 4
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 5
+              },
+              {
+                "name": "Run npm run typecheck",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Run npm test",
+                "result": "failure",
+                "seconds": 60
+              },
+              {
+                "name": "Verify isolated production closure and platform budget",
+                "result": "failure",
+                "seconds": 5
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 35693561000,
+        "jobs": [
+          {
+            "id": 106635447284,
+            "name": "test (ubuntu-latest)",
+            "result": "failure",
+            "seconds": 170,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 5
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 24
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 9
+              },
+              {
+                "name": "Run npm test",
+                "result": "failure",
+                "seconds": 125
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          },
+          {
+            "id": 106635447442,
+            "name": "test (windows-latest)",
+            "result": "failure",
+            "seconds": 268,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 12
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 13
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 41
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 17
+              },
+              {
+                "name": "Run npm test",
+                "result": "failure",
+                "seconds": 178
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 34204807964,
+        "jobs": [
+          {
+            "id": 101991714460,
+            "name": "test (windows-latest)",
+            "result": "failure",
+            "seconds": 104,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 5
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 11
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 29
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 13
+              },
+              {
+                "name": "Run npm test",
+                "result": "failure",
+                "seconds": 41
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          },
+          {
+            "id": 101991714625,
+            "name": "test (ubuntu-latest)",
+            "result": "failure",
+            "seconds": 65,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 7
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 15
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 5
+              },
+              {
+                "name": "Run npm test",
+                "result": "success",
+                "seconds": 31
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "failure",
+                "seconds": 1
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 34201985722,
+        "jobs": [
+          {
+            "id": 101982663755,
+            "name": "test (ubuntu-latest)",
+            "result": "failure",
+            "seconds": 73,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 4
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 17
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 8
+              },
+              {
+                "name": "Run npm test",
+                "result": "success",
+                "seconds": 39
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "failure",
+                "seconds": 1
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          },
+          {
+            "id": 101982663986,
+            "name": "test (windows-latest)",
+            "result": "failure",
+            "seconds": 135,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 6
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 13
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 36
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 23
+              },
+              {
+                "name": "Run npm test",
+                "result": "failure",
+                "seconds": 52
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "skipped",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 31784131901,
+        "jobs": [
+          {
+            "id": 94716146673,
+            "name": "test (windows-latest)",
+            "result": "success",
+            "seconds": 95,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 4
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 10
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 31
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 16
+              },
+              {
+                "name": "Run npm test",
+                "result": "success",
+                "seconds": 21
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 4
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 2
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          },
+          {
+            "id": 94716146744,
+            "name": "test (ubuntu-latest)",
+            "result": "success",
+            "seconds": 51,
+            "steps": [
+              {
+                "name": "Set up job",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 10
+              },
+              {
+                "name": "Run npm ci",
+                "result": "success",
+                "seconds": 13
+              },
+              {
+                "name": "Run npm run lint",
+                "result": "success",
+                "seconds": 5
+              },
+              {
+                "name": "Run npm test",
+                "result": "success",
+                "seconds": 16
+              },
+              {
+                "name": "Check committed whitespace",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm audit --omit=dev --audit-level=high",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Run npm pack --dry-run",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Post Run actions/setup-node@v4",
+                "result": "success",
+                "seconds": 0
+              },
+              {
+                "name": "Post Run actions/checkout@v4",
+                "result": "success",
+                "seconds": 1
+              },
+              {
+                "name": "Complete job",
+                "result": "success",
+                "seconds": 0
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "local": {
+    "note": "Existing macOS logs; Node test-runner elapsed only, excludes build and sync; not hosted CI cost or independent random samples.",
+    "logs": [
+      {
+        "file": "reqradar-ssh-full-tests.log",
+        "tests": 549,
+        "duration_ms": 87544.853208,
+        "pass": 549,
+        "fail": 0
+      },
+      {
+        "file": "ssh-controlled-deploy-20261105.log",
+        "tests": 549,
+        "duration_ms": 156744.685417,
+        "pass": 549,
+        "fail": 0
+      },
+      {
+        "file": "no-active-task-full-20261105.log",
+        "tests": 549,
+        "duration_ms": 397640.444958,
+        "pass": 549,
+        "fail": 0
+      },
+      {
+        "file": "recovery-controlled-deploy-20261105.log",
+        "tests": 549,
+        "duration_ms": 415000.039125,
+        "pass": 548,
+        "fail": 1
+      },
+      {
+        "file": "recovery-controlled-deploy-retry-20261105.log",
+        "tests": 549,
+        "duration_ms": 168203.28125,
+        "pass": 549,
+        "fail": 0
+      }
+    ],
+    "recent_commit_sample": 30,
+    "docs_only_commits": 0
+  },
+  "jev": {
+    "call_id": "18bba5bb-8865-4eb0-9663-7b714ddda478",
+    "model": "jev-1.14.0",
+    "recommendation": "keep_baseline",
+    "adopted": true
+  },
+  "unknown": [
+    "Current revision hosted CI results",
+    "Current PR change distribution",
+    "Billing minutes, dollar cost and queue-only time",
+    "Selective-check speedup and miss rate",
+    "Whether old hosted failures persist at current revision"
+  ]
+}
