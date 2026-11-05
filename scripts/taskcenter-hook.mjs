@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { createHookTransport } from "./hook-transport.mjs";
 import { taskTimeState } from "../app/task-time-state.mjs";
 import { isSubagentSession } from "./harnesses/codex-session.mjs";
-import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment } from "./governance-metrics.mjs";
+import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment, NO_ACTIVE_TASK_RECOVERY } from "./governance-metrics.mjs";
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
@@ -1268,7 +1268,7 @@ async function requireTask() {
 }
 
 function noActiveTaskError() {
-  return new Error("该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。受信 CLI 须匹配已审核安装入口、产物版本及精确只读参数；升级或新增 CLI 应修复适配器，不为纯查询创建无关任务。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。当前 Session 无活跃任务；实际执行、合并、验证或写入需调用 taskcenter_task_resume 接续同一交付，新的独立目标才创建任务。");
+  return new Error(`当前 Session 无活跃任务（TASKCENTER_NO_ACTIVE_TASK）。${NO_ACTIVE_TASK_RECOVERY}\n真实 Hook 身份：${JSON.stringify({ session_id: sessionId, workspace })}。\n该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。受信 CLI 须匹配已审核安装入口、产物版本及精确只读参数；升级或新增 CLI 应修复适配器。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。`);
 }
 
 async function prepareCurrentTask() {
@@ -1285,10 +1285,8 @@ async function prepareCurrentTask() {
 async function provideTaskPreparationContext() {
   const prepared = await prepareCurrentTask();
   if (prepared) {
-    const continuation = !prepared.active_task && ["done_claimed", "verified"].includes(prepared.status)
-      ? "\n同一交付的合并、验证等后续工作应调用 taskcenter_task_resume 接续原 task_id，无时间限制；只有新的独立目标才新建任务。"
-      : "";
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: JSON.stringify(prepared) + continuation } }));
+    const context = prepared.active_task ? prepared : { ...prepared, recovery_instructions: NO_ACTIVE_TASK_RECOVERY };
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: JSON.stringify(context) } }));
     return;
   }
   if (await isGateAllowlistedSession()) return;
@@ -1310,7 +1308,7 @@ async function provideTaskPreparationContext() {
   const additionalContext = [
     `TaskCenter 任务准备提示：当前 Session 不在门禁豁免白名单且没有活跃正式任务；${registrationInstruction}。`,
     "如果本轮只做只读检查，可以直接继续。",
-    "如果本轮继续同一交付，调用 taskcenter_task_resume 接续原任务；新的独立目标才调用 taskcenter_task_begin。旧客户端可继续先登记再调用 taskcenter_task_create。",
+    NO_ACTIVE_TASK_RECOVERY,
     "不要先撞 PreToolUse 门禁，也不要要求用户手动创建任务、启动服务或批准提案。只有 TaskCenter MCP 确实不可用时，才限制为只读并报告 TASKCENTER_UNAVAILABLE。",
   ].join("\n");
   process.stdout.write(JSON.stringify({

@@ -23,6 +23,8 @@ const GATE_DENIAL_LOG_RETAINED = 2_000;
 
 const KNOWN_FAILURE_KINDS = new Set(["tool_approval", "filesystem_permission", "task_permission"]);
 
+export const NO_ACTIVE_TASK_RECOVERY = "Agent 应自行恢复任务准备：先查询当前真实 Session/workspace 的任务；同一交付已有任务时调用 taskcenter_task_resume 接续（包括完成声明后的合并、验证，无时间限制）；没有对应任务时，调用 taskcenter_task_begin 为当前已授权交付登记最小契约，包含必要的分析辅助与本地决策记录。核对 accepted=true、task_id 和任务归属后，在原授权范围内重试原操作并继续，不要仅报告被拦截就结束，也不要要求用户手动建任务或重复确认已有授权。纯查询的 L0 适配缺口不得靠创建无关写任务解决；不自动扩大授权、不接管其他 Session 任务，workspace/所有权或服务异常须按真实原因处理。";
+
 const GATE_DENIAL_GUIDANCE = {
   hook_timeout: {
     reason: "Hook 控制面通信或恢复耗尽时间预算，不是任务执行时长超限。",
@@ -36,7 +38,7 @@ const GATE_DENIAL_GUIDANCE = {
   },
   no_active_task: {
     reason: "PreToolUse 未识别为 L0 确定性只读，且 Session 没有活跃任务；这不等于检测到写入。",
-    recovery: "若确为只读，先拆开复合命令；RTK 包装仅在规则明确允许等价原生命令时降级，并经过同一 Hook，不为只读另建无关任务。实际执行则同一交付用 taskcenter_task_resume 接续，独立目标用 taskcenter_task_begin。",
+    recovery: `${NO_ACTIVE_TASK_RECOVERY} 若确为只读，先拆开复合命令；RTK 包装仅在规则明确允许等价原生命令时降级，并经过同一 Hook。`,
     verification: "只读调用应返回“L0 确定性只读检查放行”；实际执行应返回“任务门禁通过”。",
   },
   session_unregistered: {

@@ -246,6 +246,10 @@ test("预算到限仍允许实现验证提交及任务更新，prepare 返回绑
   assert.equal(finish.status, 200);
   const denied = await targetRun("exec_command", { cmd: "git merge feature" });
   assert.equal(denied.code, 2);
+  assert.match(denied.stderr, /TASKCENTER_NO_ACTIVE_TASK/);
+  assert.match(denied.stderr, /taskcenter_task_begin.*当前已授权交付/);
+  assert.match(denied.stderr, /重试原操作并继续/);
+  assert.match(denied.stderr, /不要要求用户手动建任务/);
   assert.match(denied.stderr, /taskcenter_task_resume/);
   assert.match((await runHook("user-prompt-submit", "codex", { session_id: target, cwd: "/work" })).stdout, /taskcenter_task_resume/);
   assert.equal((await targetRun("mcp__taskcenter__taskcenter_task_resume", {})).code, 0);
@@ -1298,6 +1302,20 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
   const preparation = JSON.parse(context.hookSpecificOutput.additionalContext);
   assert.equal(preparation.task_id, null);
   assert.equal(preparation.session_id, sessionId);
+  assert.match(preparation.recovery_instructions, /taskcenter_task_resume/);
+  assert.match(preparation.recovery_instructions, /taskcenter_task_begin.*当前已授权交付/);
+  assert.match(preparation.recovery_instructions, /accepted=true.*重试原操作并继续/);
+  assert.match(preparation.recovery_instructions, /不要要求用户手动建任务/);
+  assert.match(preparation.recovery_instructions, /L0 适配缺口不得靠创建无关写任务/);
+
+  const originalOperation = { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_use_id: "prompt-recovery-call", tool_input: { cmd: "jev-decision declare" } };
+  const rejected = await runHook("pre-tool-use", "codex", originalOperation);
+  assert.equal(rejected.code, 2);
+  assert.match(rejected.stderr, /TASKCENTER_NO_ACTIVE_TASK/);
+  assert.match(rejected.stderr, /taskcenter_task_begin/);
+  assert.match(rejected.stderr, new RegExp(sessionId));
+  const beforeTasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+  assert.equal(beforeTasks.filter(task => task.sessionId === sessionId).length, 0, "Hook must not invent a contract or task");
 
   const allowlistedSessionId = "019f0000-0000-7000-8000-000000000091";
   const allowlistedResponse = await fetch(`${base}/gate-session-allowlist`, {
@@ -1334,9 +1352,23 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
       model: "gpt-test",
       title: "前置任务准备测试",
       goal: "确认有活跃任务时不再注入提醒",
+      workspace: "/work",
+      contract_version: "v2",
+      plan: ["记录本次只读研究的分析决策"],
+      scope: ["当前研究与本地决策记录"],
+      non_goals: ["安装或改配置"],
+      acceptance_criteria: [{ id: "recovery", description: "登记当前任务后原操作可重试", required: true }],
+      workflow_profile: "fast",
+      review_policy: "recommended",
     }),
   });
   assert.equal(created.status, 201);
+  const createdBody = await created.json();
+  assert.equal(createdBody.accepted, true);
+  assert.equal(createdBody.task.id, "prompt-preparation-task");
+  const retried = await runHook("pre-tool-use", "codex", originalOperation);
+  assert.equal(retried.code, 0, retried.stderr);
+  assert.match(retried.stdout, /任务门禁通过/);
   const active = await runHook("user-prompt-submit", "codex", {
     session_id: sessionId,
     cwd: "/work",
@@ -1344,7 +1376,21 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
     prompt: "继续修改",
   });
   assert.equal(active.code, 0);
-  assert.equal(JSON.parse(JSON.parse(active.stdout).hookSpecificOutput.additionalContext).task_id, "prompt-preparation-task");
+  const activePreparation = JSON.parse(JSON.parse(active.stdout).hookSpecificOutput.additionalContext);
+  assert.equal(activePreparation.task_id, "prompt-preparation-task");
+  assert.equal(activePreparation.recovery_instructions, undefined);
+
+  const reported = await fetch(`${base}/task-events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({ type: "task.report", event_id: "prompt-recovery-done", task_id: "prompt-preparation-task", session_id: sessionId, status: "done_claimed", tests: ["Hook recovery retry"] }),
+  });
+  assert.equal(reported.status, 200);
+  const continuation = await runHook("user-prompt-submit", "codex", { session_id: sessionId, cwd: "/work", prompt: "继续验证同一交付" });
+  assert.equal(continuation.code, 0);
+  const completedPreparation = JSON.parse(JSON.parse(continuation.stdout).hookSpecificOutput.additionalContext);
+  assert.equal(completedPreparation.status, "done_claimed");
+  assert.match(completedPreparation.recovery_instructions, /taskcenter_task_resume.*无时间限制/);
 });
 
 test("Stop 不因完成就绪度或 Review 缺口打断 Codex 回复", async () => {
