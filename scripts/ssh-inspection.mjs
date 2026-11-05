@@ -9,6 +9,31 @@ const root = "/Users/instory/Services/instory-lan";
 const directories = [root, ...["src", "src/instory", "src/instory-admin", "releases", "launch", "run"].map(path => `${root}/${path}`)];
 const repos = ["instory", "instory-admin"].map(name => `${root}/src/${name}`);
 
+// Remote binaries cannot be authenticated using this machine's PATH or environment.
+// Keep these projections literal; in particular never reuse the local curl validator.
+export function isReadOnlyRemoteProbe(words) {
+  const [entry, ...args] = words;
+  if (entry === "/usr/sbin/sysctl") {
+    const keys = ["hw.model", "hw.ncpu", "hw.memsize", "hw.physicalcpu", "hw.logicalcpu", "machdep.cpu.brand_string", "vm.swapusage", "kern.memorystatus_vm_pressure_level"];
+    const queries = args[0] === "-n" ? args.slice(1) : args;
+    return queries.length > 0 && queries.length <= keys.length && queries.every(key => keys.includes(key));
+  }
+  if (entry === "/usr/bin/vm_stat") return args.length === 0;
+  if (entry === "/usr/bin/dscl") {
+    if (args.join(" ") === ". -list /Users UniqueID") return true;
+    const fields = args.slice(3);
+    return args[0] === "." && args[1] === "-read" && /^\/Users\/[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(args[2] || "")
+      && fields.length > 0 && fields.length <= 3 && fields.every(field => ["UniqueID", "NFSHomeDirectory", "UserShell"].includes(field));
+  }
+  // env -i removes SSLKEYLOGFILE, proxies and loader/curl environment overrides;
+  // -q ignores curlrc. Only discard the body and print this credential-free summary.
+  const probe = ["/usr/bin/env", "-i", "/usr/bin/curl", "-q", "--noproxy", "*", "--proto", "=https",
+    "--connect-timeout", "5", "--max-time", "15", "--silent", "--show-error", "--output", "/dev/null", "--write-out",
+    "http_code=%{http_code} remote_ip=%{remote_ip} ssl_verify_result=%{ssl_verify_result} time_namelookup=%{time_namelookup} time_connect=%{time_connect} time_appconnect=%{time_appconnect} time_total=%{time_total}\\n",
+    "https://git.myinstory.com/"];
+  return words.length === probe.length && words.every((word, index) => word === probe[index]);
+}
+
 // SSH joins argv into a remote shell command: validate that exact text, not only local argv.
 export function isReadOnlySsh(tokens, context = {}) {
   if (isLegacyReadOnlySsh(tokens)) return true;

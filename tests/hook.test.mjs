@@ -747,6 +747,42 @@ test("L0 无任务 DevKit 仅放行可信入口的受限只读参数", async () 
 });
 
 const auditedDcb = join(homedir(), ".local/share/android-ui-dcb/releases/0.4.0-alpha.1-67e73ab4e599d2c9/dcb");
+test("L0 真实 SSH 入口放行远端有界探针并落盘无任务审计", async () => {
+  const fixture = await realpath(await mkdtemp(join(tmpdir(), "hook-ssh-probes-")));
+  try {
+    const home = join(fixture, "home"), session_id = "ssh-probes-l0-session";
+    await mkdir(join(home, ".ssh"), { recursive: true });
+    await writeFile(join(home, ".ssh/config"), "Host *\n  ProxyCommand unsafe\n");
+    const env = { HOME: home, SSLKEYLOGFILE: join(home, "local-tls-key") };
+    const prefix = `rtk proxy ssh -F /dev/null -i ${home}/.ssh/mini -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=5 instory@192.168.50.167`;
+    const curl = `/usr/bin/env -i /usr/bin/curl -q --noproxy '*' --proto '=https' --connect-timeout 5 --max-time 15 --silent --show-error --output /dev/null --write-out 'http_code=%{http_code} remote_ip=%{remote_ip} ssl_verify_result=%{ssl_verify_result} time_namelookup=%{time_namelookup} time_connect=%{time_connect} time_appconnect=%{time_appconnect} time_total=%{time_total}\\n' https://git.myinstory.com/`;
+    // Double quotes preserve the single quotes required by the remote shell.
+    const wrap = remote => `${prefix} "${remote}"`;
+    const allowed = ["/usr/sbin/sysctl hw.model hw.ncpu hw.memsize", "/usr/bin/vm_stat", "/usr/bin/dscl . -list /Users UniqueID",
+      "/usr/bin/dscl . -read /Users/instory UniqueID NFSHomeDirectory UserShell", curl,
+      "/usr/sbin/sysctl hw.memsize; /usr/bin/vm_stat"];
+    await runHook("session-start", "codex", { session_id, cwd: rootPath }, [], base, env);
+    const check = cmd => runHook("pre-tool-use", "codex", { session_id, cwd: rootPath, tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
+    for (const command of allowed) {
+      const result = await check(wrap(command));
+      assert.equal(result.code, 0, `${command}\n${result.stderr}`);
+      assert.match(result.stdout, /L0/);
+    }
+    for (const command of ["/usr/sbin/sysctl -w hw.ncpu=1", "/usr/sbin/sysctl -a", "/usr/bin/vm_stat 1", "/usr/bin/dscl . -read /Users/instory ShadowHashData",
+      "/usr/bin/dscl . -create /Users/runner", curl.replace("/usr/bin/env -i ", ""), curl.replace(" -q ", " "), curl.replace("--silent", "--insecure"),
+      curl.replace("%{http_code}", "%{header_json}"), curl.replace("git.myinstory.com", "evil.example"), `${curl} --output /tmp/x`,
+      "/usr/sbin/sysctl hw.ncpu > /tmp/x", "/usr/bin/vm_stat; touch /tmp/x", "/usr/bin/dscl . -read /Users/instory UniqueID | sh"]) {
+      assert.equal((await check(wrap(command))).code, 2, command);
+    }
+    for (const cmd of [wrap(allowed[0]).replace("-F /dev/null ", ""), wrap(allowed[0]).replace("-F /dev/null", "-F /tmp/config"),
+      wrap(allowed[0]).replace("-o IdentitiesOnly=yes", "-L 8080:evil:80"), wrap(allowed[0]).replace("-o IdentitiesOnly=yes", "-o ProxyCommand=evil")]) assert.equal((await check(cmd)).code, 2, cmd);
+    const sessions = (await (await fetch(`${base}/session-status`)).json()).sessions;
+    assert.equal(sessions.find(item => item.sessionId === session_id).l0Audit.count, allowed.length);
+    const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
+    assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
+  } finally { await rm(fixture, { recursive: true, force: true }); }
+});
+
 test("L0 固定 SSH 检查无需建任务，远端 shell 和覆写拒绝", async () => {
   const session_id = "ssh-l0-session";
   const prefix = "rtk proxy ssh -o BatchMode=yes -o ConnectTimeout=10 instory@instoryMacmini.local";

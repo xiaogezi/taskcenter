@@ -15,6 +15,7 @@ import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
 import { inspectTrustedCli } from "./trusted-cli-inspection.mjs";
 import { isTrustedSystemQuery } from "./network-inspection.mjs";
+import { isReadOnlyRemoteProbe } from "./ssh-inspection.mjs";
 import { assertNoSymlinks, auditAutomationMemory, automationMemoryBinding, inspectAutomationMemoryPatch } from "./automation-memory.mjs";
 
 const defaultControlUrl = "http://127.0.0.1:3001";
@@ -764,6 +765,7 @@ function isReadOnlyInspection(payload) {
 function isReadOnlyCommand(words, heredoc, cwd = workspace, depth = 0) {
   if (depth > 2) return false;
   const trusted = inspectTrustedCli(words, { cwd, workspace, inspectRemote: remote => {
+    if (isReadOnlyRemoteProbe(remote)) return true;
     const allowed = ["hostname", "whoami", "uptime", "uname", "sw_vers", "df", "pwd", "ls", "find", "cat", "head", "tail", "wc", "du", "stat", "file", "rg", "sed", "git", "xcode-select", "xcodebuild", "shasum", "sha256sum", "diff", "security"];
     const name = basename(remote[0]);
     if (![name, `/bin/${name}`, `/usr/bin/${name}`].includes(remote[0])) return false;
