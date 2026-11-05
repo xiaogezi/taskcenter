@@ -77,21 +77,57 @@ test("slow recovery is aborted by the remaining shared budget", async t => {
   assert.equal(aborted, true);
 });
 
-test("disconnected writes and HTTP permission denials are never recovered or replayed", async t => {
+test("disconnected writes recover service without replay; permission denials do not recover", async t => {
   let requests = 0;
   let recoveries = 0;
-  const controlUrl = await fixture(t, (req, res) => {
+  let appliedEvent;
+  const controlUrl = await fixture(t, async (req, res) => {
     requests++;
-    if (req.method === "POST") req.socket.destroy();
+    if (req.method === "POST") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      appliedEvent = JSON.parse(body).event_id;
+      req.socket.destroy();
+    }
     else { res.writeHead(403); res.end('{"error":"scope denied"}'); }
   });
   const client = createHookTransport({ controlUrl, recover: async () => { recoveries++; } });
-  await assert.rejects(client.request("POST", "/task-events", {}), /控制服务不可用/);
+  await assert.rejects(client.request("POST", "/task-events", { event_id: "applied-before-disconnect" }), error => {
+    assert.equal(error.code, "TASKCENTER_POST_RESULT_UNKNOWN");
+    assert.match(error.message, /已恢复.*结果未知.*未重放/);
+    t.diagnostic(error.message);
+    return true;
+  });
+  assert.equal(requests, 1);
+  assert.equal(recoveries, 1);
+  assert.equal(appliedEvent, "applied-before-disconnect");
   await assert.rejects(client.request("GET", "/tasks"), error => {
     assert.equal(error.statusCode, 403);
     assert.equal(classifyGateDenial({ message: error.message }), "task_permission");
     return true;
   });
   assert.equal(requests, 2);
-  assert.equal(recoveries, 0);
+  assert.equal(recoveries, 1);
+});
+
+test("GET retries once after recovery; repeated disconnection does not recover twice", async t => {
+  let requests = 0, recoveries = 0;
+  const controlUrl = await fixture(t, (req, res) => {
+    requests++;
+    if (recoveries === 1 && requests === 2) res.end('{"ok":true}');
+    else req.socket.destroy();
+  });
+  const client = createHookTransport({ controlUrl, recover: async () => { recoveries++; } });
+  assert.deepEqual(await client.request("GET", "/tasks"), { ok: true });
+  await assert.rejects(client.request("GET", "/tasks"), /控制服务不可用/);
+  assert.equal(requests, 3);
+  assert.equal(recoveries, 1);
+});
+
+test("POST recovery failure remains a failure and never repeats the write", async t => {
+  let writes = 0;
+  const controlUrl = await fixture(t, req => { writes++; req.socket.destroy(); });
+  const client = createHookTransport({ controlUrl, recover: async () => { throw new Error("recovery failed"); } });
+  await assert.rejects(client.request("POST", "/task-events", {}), /recovery failed/);
+  assert.equal(writes, 1);
 });

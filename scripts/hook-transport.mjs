@@ -64,9 +64,10 @@ export function createHookTransport({ controlUrl, recover, totalMs = 8_500, repo
     try { return await requestOnce(method, path, body); }
     catch (error) {
       // A disconnected POST may already have taken effect. Never blindly replay it.
-      if (!(error instanceof ControlUnavailableError) || recoveryAttempted || !recover || method !== "GET") throw error;
+      if (!(error instanceof ControlUnavailableError) || recoveryAttempted || !recover) throw error;
       recoveryAttempted = true;
       await bounded("EXEC", "control:start", false, recover, "recovery");
+      if (method !== "GET") throw Object.assign(new Error("TASKCENTER_POST_RESULT_UNKNOWN：控制服务已恢复；原写请求结果未知，未重放。先按原 event_id 核对持久记录，再决定是否补交；服务恢复不代表原请求成功。"), { code: "TASKCENTER_POST_RESULT_UNKNOWN", cause: error });
       return requestOnce(method, path, body);
     }
   }
