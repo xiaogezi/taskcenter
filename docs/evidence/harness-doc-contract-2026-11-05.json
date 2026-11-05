@@ -1,0 +1,21 @@
+{
+  "base_revision": "c366eb38753a564345b077eda5d1d54ce643baf4",
+  "history_original_unchanged": true,
+  "history_sha256": "0bba40e27d42ddc095d5e4b59d5e21ee2056610496ee401abe2d379b3140ff66",
+  "document_example": {
+    "event": "harness_contract_example",
+    "passed": true,
+    "implemented": [
+      "inspectSession"
+    ]
+  },
+  "exit_code": 0,
+  "runtime_changes": false,
+  "live_client_connection": "not_tested",
+  "existing_harness_tests": {
+    "passed": 3,
+    "failed": 0,
+    "live_model_called": false
+  },
+  "changelog": "not required: clarify existing contract; no behavior change"
+}

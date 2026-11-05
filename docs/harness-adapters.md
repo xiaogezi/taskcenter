@@ -1,3 +1,83 @@
+# Harness 当前接入契约
+
+核对日期：2026-11-05；运行源码基线 `c366eb38753a564345b077eda5d1d54ce643baf4`。本次只修正文档，没有新增客户端能力或恢复退役编排。
+
+## 当前边界与真实消费者
+
+沿用已选定的 Node.js 同进程静态注册结构：`scripts/harnesses/index.mjs` → 已注册的客户端模块。请求输入不能注册模块、指定导入路径或待执行命令；没有动态插件加载器。
+
+- 控制服务仅通过 `harnessCapabilities` 返回能力信息；不调用 `invokeHarness`，也不处理自动派发队列。模型选择、派发和执行由宿主及当前主模型负责。
+- `scripts/agent-clients.mjs` 是兼容导出，MCP agent enum 与会话能力展示使用同一静态注册表。
+- `scripts/kimi-run.mjs` 在用户显式调用时使用 Kimi create/resume；它不是 TaskCenter 自动派发入口。历史 profile、路由、队列、delegation claim 与托管 Reviewer 说明均不构成当前调用要求。
+- `dispatchHarnessId` 仅保留历史记录身份解析兼容；缺少历史标识的 Codex 默认值不允许将已知但不支持的客户端回退成 Codex。
+
+## 当前能力矩阵
+
+注册表列出的操作名只有 `createSession`、`resumeSession`、`inspectSession`、`openSession`、`cancelSession`。每项能力取决于适配器实际的 own-property 操作函数，不能按客户端名或旧文档推断。
+
+| Harness | 已实现 operations | 身份来源声明 | 用量口径声明 |
+| --- | --- | --- | --- |
+| Codex | inspectSession | host_metadata_or_environment | token_usage |
+| Kimi | createSession、resumeSession | explicit_host_binding_required | context_snapshot |
+| Claude | 无；保留 hooks=true 的宿主主线观测声明 | explicit_host_binding_required | unknown |
+| WorkBuddy、unknown | 无 | explicit_host_binding_required | unknown |
+
+所有已实现操作都报告 `supported=true, availability=unknown`；unknown 表示未由能力查询核验当前安装、认证、连接或权限，不能显示“已连接”。未实现操作报告 supported=false/availability=unsupported。openSession/cancelSession 当前全部未实现；Kimi 的 signal 取消属于一次调用内部行为，不等于提供 cancelSession 操作。
+
+`runDelegatedCli` **不是当前注册操作**，不能作为教程调用；`requireHarnessOperation(id, operation)` 对未知客户端抛 HARNESS_UNKNOWN，对没有实现的操作抛 HARNESS_UNSUPPORTED，outcome=not_started，均在启动进程前拒绝，不回退 Codex。
+
+## 可运行的能力查询和拒绝示例
+
+从仓库根目录执行；只查询内存注册表和检查启动前拒绝，不读取真实会话、不提交 prompt、不启动客户端：
+
+```sh
+node --input-type=module <<'JS'
+import assert from "node:assert/strict";
+import { harnessCapabilities, invokeHarness } from "./scripts/harnesses/index.mjs";
+
+const codex = harnessCapabilities("codex");
+assert.equal(codex.operations.inspectSession.supported, true);
+assert.equal(codex.operations.inspectSession.availability, "unknown");
+assert.equal(codex.operations.createSession.supported, false);
+assert.equal(harnessCapabilities("kimi").usage_scope, "context_snapshot");
+await assert.rejects(invokeHarness("claude", "resumeSession", {}),
+  error => error.code === "HARNESS_UNSUPPORTED" && error.outcome === "not_started");
+await assert.rejects(invokeHarness("missing", "inspectSession", {}),
+  error => error.code === "HARNESS_UNKNOWN" && error.outcome === "not_started");
+console.log(JSON.stringify({ event: "harness_contract_example", passed: true,
+  implemented: Object.entries(codex.operations).filter(([, value]) => value.supported).map(([name]) => name) }));
+JS
+```
+
+示例成功仅证明静态契约和拒绝路径，不证明真实客户端连接或执行成功。不要把它改成默认启动 Kimi 的实机例子。
+
+## 内部调用与回执语义
+
+`invokeHarness(id, operation, input)` 是内部调用边界。requireHarnessOperation 只取得已注册函数；调用者仍负责来源、授权、任务所有权及执行组织，适配器名称不授予权限。受信宿主身份、TaskCenter 任务授权和客户端工具审批互相独立，不得为通过门禁自拟 Session ID。
+
+- createSession 必须有非空 prompt 和存在的绝对 workingDirectory，不能提供已有 sessionId；resumeSession 另需非空原生 sessionId，不能静默新建。取消信号已触发时启动前拒绝。
+- inspectSession 需要原生 sessionId；Codex 实现只读本地 JSONL，允许用隔离 sessionsRoot 核验。它不意味着存在安全投递队列。
+- Kimi 保留原生 `session_<UUID>` 与 TaskCenter UUID 两种身份，恢复走原生 ID；权限请求由当前显式入口决定，非交互审批缺失时拒绝，不能绕过 Hook/沙箱。context_snapshot 是上下文窗口瞬时量，不将多次快照相加为累计 Token。
+- accepted 仅表示取得会话回执，running 表示观察到执行，completed 仅为 turn 终态，均不是任务独立验收。通信失败/缺终态保留 unknown，不自动重试；不要对结果未知的调用假定没有发生副作用。
+- token_usage/unknown 等是各适配器声明的口径，不表示注册表本身实现了用量采集器。Codex 既有 Token 统计保持原流程。
+
+## 接入扩展与验证边界
+
+未来有明确新客户端需求时，再在既有静态模块中声明实际实现的 operations、可信身份与用量口径，并用该客户端隔离夹具及真实授权环境核验。unknown/unsupported、权限拒绝、取消和结果未知须保留；不能用 Codex 夹具代替其他客户端验收。本次没有新增接入需求，不引入插件/Source/Channel 或通用加载器。
+
+已有 `tests/harnesses.test.mjs` 覆盖注册表单源、启动前拒绝、Kimi 创建/取消与快照不累计、控制服务不调用自动派发；本次复用这些覆盖，并实际执行上面的文档块。纯文档修正不新增抄实现的测试，也不重跑完整构建/测试；未验证当前真实 CLI 安装、认证、连接、模型调用和外部验收。CI 全量基线不变。
+
+本次新增是当前能力矩阵、正确示例和当前/历史分界；已有静态注册、拒绝、身份和用量语义不计为本次实现成果。文档错误可通过回退本次文档提交撤销，不影响数据或恢复历史执行入口，无需服务部署。changelog: not required（澄清既有行为，未改变入口或公共协议）。
+
+参考方法：[上游 example-plugins.test.ts](https://github.com/KKKKhazix/agent-autoloop/blob/ad0384f7ee91f7e6d0b6b65453f4659eef3add23/tests/example-plugins.test.ts) 将教程按读者命令实际运行，核对示例与真实契约。这里只借鉴这项验证方法，未复制示例、引入插件或新增框架。Jev `c4385a59-1196-4c7c-af1e-f12fd2c4dc77` 支持当前指南与保留历史原文分离，主代理采纳。
+
+## 历史决策与实测原文（非当前教程）
+
+下列原文保留其当时措辞和验证边界；其中“当前”“继续”“本次”等词均指历史记录当时，路由/队列/委派、runDelegatedCli 与旧型号描述不再生效。不能据此恢复已退役能力、调整配置或调用旧接口。现行边界以本文上半部、实际注册表、AGENTS 和 README「主线治理边界」为准；历史实测不证明今天可用。
+
+<details>
+<summary>展开 2026-09 至 2026-10 的历史记录（原文保留）</summary>
+
  > 历史设计记录：模型路由、委派与托管 Reviewer 已退役。本文不构成当前执行规则；现行边界见 README 的「主线治理边界」。
 
 > 2026-10-08 当前能力：普通派发由外部宿主使用 native 协议执行，本工具不启动 Codex SDK/CLI。以下早期 CLI 选型与实测是历史记录，不代表当前准入策略；型号以集中配置为准。
@@ -100,3 +180,5 @@ OpenAI 官方支持 MCP 单工具 `tools.<tool>.approval_mode` 设置，见[官�
 权限诊断：受管 CLI 在提交 prompt 前检查工作目录、输入可读与输出目录可写；失败仍撤销 delegation 并释放路由租约。执行回执区分工具审批、文件系统权限、任务授权错误；客户端报告工具拒绝时不能声明成功。Codex 非交互 MCP 的进程级审批调整尚未启用，等待用户选择。
 
 实机验证：2026-09-20，受管 `kimi-k3` 使用真实 Session 登记和 claim，返回 `TASKCENTER_ADAPTER_OK`，回执型号 `kimi-code/k3-256k`。其他三个 Kimi 型号已通过本机 ACP 目录确认和配置解析测试，未声称完成生成测试。
+
+</details>
