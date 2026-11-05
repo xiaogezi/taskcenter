@@ -644,42 +644,86 @@ const idempotentEventFields = [
 
 function findStoredTaskEvent(eventId, missingTaskId = "") {
   if (!existsSync(taskEventsPath)) return null;
-  // ponytail: linear disk scan; add an event index if creation latency becomes material.
   const eventNeedle = JSON.stringify(eventId);
   const taskNeedle = missingTaskId ? JSON.stringify(missingTaskId) : "";
-  for (const line of taskEventLinesBackwards()) {
-    if (!line.includes(eventNeedle) && !(taskNeedle && line.includes(taskNeedle))) continue;
-    try {
-      const candidate = JSON.parse(line);
-      if (candidate.event_id === eventId || (missingTaskId && candidate.type === "task.create" && candidate.task_id === missingTaskId)) return candidate;
-    } catch {
-      // 忽略其他损坏行，继续寻找精确 event_id。
+  const needles = [eventNeedle, ...(taskNeedle ? [taskNeedle] : [])].map(value => Buffer.from(value));
+  const scan = { bytes: 0, decoded_lines: 0 };
+  const started = performance.now();
+  let found = false;
+  try {
+    for (const line of taskEventLinesBackwards(needles, scan)) {
+      try {
+        const candidate = JSON.parse(line);
+        if (candidate.event_id === eventId || (missingTaskId && candidate.type === "task.create" && candidate.task_id === missingTaskId)) {
+          found = true;
+          return candidate;
+        }
+      } catch {
+        // 忽略其他损坏行，继续寻找精确 event_id。
+      }
     }
+    return null;
+  } finally {
+    if (scan.bytes >= 1024 * 1024) console.error(JSON.stringify({ event: "task_history_scan", at: new Date().toISOString(), kind: "event_lookup",
+      ...scan, elapsed_ms: Math.round(performance.now() - started), found }));
   }
-  return null;
 }
 
-function* taskEventLinesBackwards() {
+// Search blocks in native code; reconstruct only candidate lines, including split UTF-8/needles.
+function* taskEventLinesBackwards(needles, scan = null) {
   const descriptor = openSync(taskEventsPath, "r");
   const buffer = Buffer.allocUnsafe(64 * 1024);
-  let carry = "";
+  const overlapSize = Math.max(...needles.map(needle => needle.length)) - 1;
+  let overlap = Buffer.alloc(0);
   try {
-    let position = fstatSync(descriptor).size;
+    const total = fstatSync(descriptor).size;
+    let position = total;
     while (position > 0) {
       const length = Math.min(buffer.length, position);
       position -= length;
       const bytesRead = readSync(descriptor, buffer, 0, length, position);
-      // Preserve bytes across chunk boundaries before decoding multibyte UTF-8.
-      const lines = (buffer.subarray(0, bytesRead).toString("latin1") + carry).split("\n");
-      carry = lines.shift();
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        yield Buffer.from(lines[index], "latin1").toString("utf8");
+      if (scan) scan.bytes += bytesRead;
+      if (!bytesRead) { overlap = Buffer.alloc(0); continue; }
+      const bytes = overlap.length ? Buffer.concat([buffer.subarray(0, bytesRead), overlap]) : buffer.subarray(0, bytesRead);
+      let match = -1;
+      for (const needle of needles) match = Math.max(match, bytes.lastIndexOf(needle, bytesRead - 1));
+      if (match >= 0) {
+        const line = historyLineAt(descriptor, position + match, total, scan);
+        position = line.start;
+        overlap = Buffer.alloc(0);
+        if (scan) scan.decoded_lines++;
+        yield line.bytes.toString("utf8");
+      } else {
+        overlap = Buffer.from(bytes.subarray(0, overlapSize));
       }
     }
-    if (carry) yield Buffer.from(carry, "latin1").toString("utf8");
   } finally {
     closeSync(descriptor);
   }
+}
+
+function historyLineAt(descriptor, offset, total, scan) {
+  const buffer = Buffer.allocUnsafe(64 * 1024), before = [], after = [];
+  let start = offset, end = offset;
+  while (start > 0) {
+    const length = Math.min(buffer.length, start);
+    start -= length;
+    const count = readSync(descriptor, buffer, 0, length, start);
+    if (scan) scan.bytes += count;
+    const separator = buffer.subarray(0, count).lastIndexOf(10);
+    before.push(Buffer.from(buffer.subarray(separator + 1, count)));
+    if (separator >= 0) { start += separator + 1; break; }
+  }
+  while (end < total) {
+    const count = readSync(descriptor, buffer, 0, Math.min(buffer.length, total - end), end);
+    if (scan) scan.bytes += count;
+    if (!count) break;
+    const separator = buffer.subarray(0, count).indexOf(10);
+    after.push(Buffer.from(buffer.subarray(0, separator < 0 ? count : separator)));
+    end += count;
+    if (separator >= 0) break;
+  }
+  return { start, bytes: Buffer.concat([...before.reverse(), ...after]) };
 }
 
 function* taskEventLinesForward() {
@@ -710,11 +754,12 @@ function storedSwitchEvents() {
   if (switchEventsCache?.identity === identity) return switchEventsCache.events;
   const started = performance.now();
   const events = [];
-  for (const line of taskEventLinesForward()) {
-    if (line.includes('"previous_task_id"') && line.includes('"session_switch_id"')) events.push(JSON.parse(line));
+  for (const line of taskEventLinesBackwards([Buffer.from('"previous_task_id"')])) {
+    if (line.includes('"session_switch_id"')) events.push(JSON.parse(line));
   }
+  events.reverse();
   switchEventsCache = identity === switchHistoryIdentity(statSync(taskEventsPath)) ? { identity, events } : null;
-  if (before.size >= 1024 * 1024) console.error(JSON.stringify({ event: "task_history_scan", kind: "session_switch", bytes: before.size,
+  if (before.size >= 1024 * 1024) console.error(JSON.stringify({ event: "task_history_scan", at: new Date().toISOString(), kind: "session_switch", bytes: before.size,
     elapsed_ms: Math.round(performance.now() - started), switch_count: events.length }));
   return events;
 }
