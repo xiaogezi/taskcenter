@@ -1,0 +1,105 @@
+{
+  "source_revision": "c366eb38753a564345b077eda5d1d54ce643baf4",
+  "kind": "baseline_diagnosis_not_fix_verification",
+  "tests": {
+    "passed": 13,
+    "failed": 0,
+    "scope": "existing preview and event-store tests"
+  },
+  "cases": [
+    {
+      "case": "behind",
+      "complete": true,
+      "task_reasons": [],
+      "malformedLines": 0,
+      "trailingBytes": 0,
+      "source_hash": "2522b67ee0f082c3acdf1d4c9eed13d29b1bc0a447e56c4b76065ffa0b19956e",
+      "sources_unchanged": true,
+      "repeat_identical": true
+    },
+    {
+      "case": "consistent",
+      "complete": true,
+      "task_reasons": [],
+      "malformedLines": 0,
+      "trailingBytes": 0,
+      "source_hash": "b76f99ca29395e32ad7ddc6f898596620f143024c0ea314c48957efffec5e859",
+      "sources_unchanged": true,
+      "repeat_identical": true
+    },
+    {
+      "case": "derived_after_source",
+      "complete": true,
+      "task_reasons": [],
+      "malformedLines": 0,
+      "trailingBytes": 0,
+      "source_hash": "20267538d7634da927450e54478d230a73cf3ef9064f6ef523ad8c26bd6f2123",
+      "sources_unchanged": true,
+      "repeat_identical": true
+    },
+    {
+      "case": "unknown_anchor",
+      "complete": true,
+      "task_reasons": [],
+      "malformedLines": 0,
+      "trailingBytes": 0,
+      "source_hash": "77b6f4f541576785ce03fe3a19db34aa6e1c9cd08ba5cc627c4c24e7cf2bc487",
+      "sources_unchanged": true,
+      "repeat_identical": true
+    },
+    {
+      "case": "unknown_type",
+      "complete": true,
+      "task_reasons": [],
+      "malformedLines": 0,
+      "trailingBytes": 0,
+      "source_hash": "8a7a741d4ebe8f5320635125bf59c1ed02fd1805647ec29e90ae583355c88a07",
+      "sources_unchanged": true,
+      "repeat_identical": true
+    },
+    {
+      "case": "missing",
+      "complete": true,
+      "task_reasons": [
+        "missing"
+      ],
+      "malformedLines": 0,
+      "trailingBytes": 0,
+      "source_hash": "9b083ecec156266bc21f5274f8cc2aaf52c1e37bbd047c11a68fd6aa9f699252",
+      "sources_unchanged": true,
+      "repeat_identical": true
+    },
+    {
+      "case": "removed",
+      "complete": true,
+      "task_reasons": [
+        "removed"
+      ],
+      "malformedLines": 0,
+      "trailingBytes": 0,
+      "source_hash": "42b3ecfc513cd2c63c52693bee78be2e8ca0940cb5190ef7e1977b497d0158ff",
+      "sources_unchanged": true,
+      "repeat_identical": true
+    },
+    {
+      "case": "malformed",
+      "complete": false,
+      "task_reasons": [],
+      "malformedLines": 1,
+      "trailingBytes": 0,
+      "source_hash": "336b6eabb9215ad7bb20074708925fe6fa03ac3eda0d03689b6e5bd7d7e2ab33",
+      "sources_unchanged": true,
+      "repeat_identical": true
+    },
+    {
+      "case": "tail",
+      "complete": false,
+      "task_reasons": [],
+      "malformedLines": 0,
+      "trailingBytes": 11,
+      "source_hash": "4e00cb629a6145f44689fcad20daa59953e030e48411af57c6e03e6c1e29f691",
+      "sources_unchanged": true,
+      "repeat_identical": true
+    }
+  ]
+}
