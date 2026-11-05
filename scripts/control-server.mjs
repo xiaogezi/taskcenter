@@ -38,6 +38,7 @@ import {
   loadTasks,
   loadVisibleTasks,
   loadVisibleSessionTasks,
+  loadTaskById,
   reconcileContextShadowTasks,
   recordSessionL0Audit,
   recordTaskEvent,
@@ -811,7 +812,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/task-events") {
       verifyTaskRequest(request);
       const input = await readJsonBody(request);
-      const body = enrichTaskWorkspaceEvent(input, loadSessionRegistry()[input.session_id], loadTasks().find((task) => task.id === input.task_id));
+      const body = enrichTaskWorkspaceEvent(input, loadSessionRegistry()[input.session_id], loadTaskById(input.task_id) ?? undefined);
       if (body.type === "task.review" || body.status === "verified" || String(body.type || "").startsWith("acceptance.")) {
         throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
       }

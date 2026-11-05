@@ -33,6 +33,7 @@ const contextShadowPattern = /^context-[0-9a-f]{24}$/;
 let ledgerCache = null;
 let normalizedTasksCache = null;
 let sessionRegistryCache = null;
+let switchEventsCache = null;
 export { taskTimeState, STALE_TASK_MS };
 
 export function loadTasks() {
@@ -574,9 +575,8 @@ export function recordTaskEvent(input, options = {}) {
       .concat(next);
   }
   mkdirSync(dirname(taskEventsPath), { recursive: true });
-  appendFileSync(taskEventsPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
   const derivedEvents = derivedCompletionEvents(current, next, event);
-  for (const derived of derivedEvents) appendFileSync(taskEventsPath, `${JSON.stringify(derived)}\n`, { mode: 0o600 });
+  appendTaskEvents([event, ...derivedEvents]);
   // Keep removed records available for historical recovery; loadTasks hides them from views.
   const nextIds = new Set(nextTasks.map((task) => task.id));
   persistTasks([...readLedger().filter((task) => task.status === "removed" && !nextIds.has(task.id)), ...nextTasks]);
@@ -704,12 +704,46 @@ function* taskEventLinesForward() {
 }
 
 function storedSwitchEvents() {
-  if (!existsSync(taskEventsPath)) return [];
+  if (!existsSync(taskEventsPath)) { switchEventsCache = null; return []; }
+  const before = statSync(taskEventsPath);
+  const identity = switchHistoryIdentity(before);
+  if (switchEventsCache?.identity === identity) return switchEventsCache.events;
+  const started = performance.now();
   const events = [];
   for (const line of taskEventLinesForward()) {
     if (line.includes('"previous_task_id"') && line.includes('"session_switch_id"')) events.push(JSON.parse(line));
   }
+  switchEventsCache = identity === switchHistoryIdentity(statSync(taskEventsPath)) ? { identity, events } : null;
+  if (before.size >= 1024 * 1024) console.error(JSON.stringify({ event: "task_history_scan", kind: "session_switch", bytes: before.size,
+    elapsed_ms: Math.round(performance.now() - started), switch_count: events.length }));
   return events;
+}
+
+function switchHistoryIdentity(info) {
+  return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+}
+
+function appendTaskEvents(events) {
+  // Only this process's verified append can advance the memo; any other file change forces a full scan.
+  const before = switchEventsCache && existsSync(taskEventsPath) ? statSync(taskEventsPath) : null;
+  let appendedBytes = 0;
+  for (const event of events) {
+    const line = `${JSON.stringify(event)}\n`;
+    appendFileSync(taskEventsPath, line, { mode: 0o600 });
+    appendedBytes += Buffer.byteLength(line);
+  }
+  if (!switchEventsCache) return;
+  const after = statSync(taskEventsPath);
+  if (!before || switchEventsCache.identity !== switchHistoryIdentity(before)
+    || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size + appendedBytes) {
+    switchEventsCache = null;
+    return;
+  }
+  const added = events.filter(event => {
+    const line = JSON.stringify(event);
+    return line.includes('"previous_task_id"') && line.includes('"session_switch_id"');
+  });
+  switchEventsCache = { identity: switchHistoryIdentity(after), events: [...switchEventsCache.events, ...added] };
 }
 
 function sameIdempotentEvent(left, right) {
