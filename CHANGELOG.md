@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 将服务及子进程输出接入 Pino 与 rotating-file-stream 持续轮转，运行日志总预算约 100 MiB，限制单行及缓冲并在退出时排空；保留子进程自动恢复。工具明细按 30 天及 200 MiB 清理，事件身份、重放摘要、状态变化及任务关键事实永久保留。新增完整 SQLite 索引，迁移预建时保持原实例服务，切换只核对并补入增量；原事件文件按校验摘要只读归档，旧 JSONL 消费者仍可读取关键事实。修复隔离启动测试路径被受控部署环境覆盖的问题。策略、恢复和空间边界见 `docs/event-storage-retention.md`。
+
 - 降低门禁控制面首次事件查找与切换历史扫描开销：按块搜索权威日志的字节，仅重建并解析候选行，保留跨块 UTF-8、精确幂等核对和前序封存规则；大范围事件查找追加脱敏扫描字节数、候选解码行数及耗时日志，不延长超时、不自动重放未知 POST。
 
 - 升级现有主版本内的 SDK、Zod、Vite 及兼容传递依赖，生产依赖审计由 17 项降至 3 项，清除 high/critical；剩余 OG 生成链与开发期 minimatch 影响及升级边界见 `docs/security-audit-2026-11-05.md`。

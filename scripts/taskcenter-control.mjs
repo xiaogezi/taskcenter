@@ -96,7 +96,11 @@ async function startService(options = {}) {
 
   const launched = spawn(process.execPath, ["scripts/taskcenter-detached-launch.mjs"], {
     cwd: projectRoot,
-    env: buildReleaseEnvironment({
+    env: startup.mode === "legacy_test_only" ? {
+      ...process.env,
+      TASKCENTER_SOURCE_ROOT: release.sourceRoot,
+      TASKCENTER_EVENT_STORAGE: "legacy",
+    } : buildReleaseEnvironment({
       sourceRoot: release.sourceRoot,
       revision: release.revision,
       releaseId: release.releaseId,
@@ -207,6 +211,15 @@ async function deployService() {
   });
   await requireOriginalService(original, "candidate");
 
+  // Build the complete first index while the verified original still serves requests.
+  const migrationScript = resolve(release.sourceRoot, "scripts/task-event-migration.mjs");
+  if (existsSync(migrationScript)) {
+    const migration = spawn(process.execPath, [migrationScript, resolve(projectRoot, "data/task-events.jsonl"), "--prepare"], { stdio: "inherit" });
+    await childResult(migration, "事件存储迁移准备");
+    await requireOriginalService(original, "storage preparation");
+    record("storage_preparation", "passed");
+  }
+
   console.log("候选实例验证通过，开始受控切换 TaskCenter 运行实例。");
   await cutoverWithRollback({
       stopOriginal: () => stopService({ authorized: true }),
@@ -217,6 +230,10 @@ async function deployService() {
       restoreOriginal: async () => {
         await stopService({ authorized: true, allowMissing: true });
         await sleep(300);
+        if (existsSync(migrationScript)) {
+          const recovery = spawn(process.execPath, [migrationScript, resolve(projectRoot, "data/task-events.jsonl"), "--recover-legacy"], { stdio: "inherit" });
+          await childResult(recovery, "旧版本事件存储恢复");
+        }
         await startService({ release: previousRelease });
         writeJson(activeReleasePath, previousRelease);
       },

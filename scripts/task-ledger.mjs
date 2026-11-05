@@ -1,3 +1,5 @@
+import { eventFingerprint, idempotentEventFields } from "./task-event-identity.mjs";
+import { eventStore } from "./task-event-store.mjs";
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -127,10 +129,11 @@ function formatExportDuration(value) {
 function taskAuditSummary(taskId) {
   if (!existsSync(taskEventsPath)) return { eventCount: 0, eventTypes: {}, firstOccurredAt: "", lastRecordedAt: "" };
   const summary = { eventCount: 0, eventTypes: {}, firstOccurredAt: "", lastRecordedAt: "" };
-  for (const line of taskEventLinesForward()) {
-    if (!line.trim()) continue;
+  const indexed = eventStore(taskEventsPath);
+  for (const line of indexed ? indexed.events({ taskId }) : taskEventLinesForward()) {
+    if (typeof line === "string" && !line.trim()) continue;
     let event;
-    try { event = JSON.parse(line); } catch { continue; }
+    try { event = typeof line === "string" ? JSON.parse(line) : line; } catch { continue; }
     if (event.task_id !== taskId) continue;
     summary.eventCount += 1;
     summary.eventTypes[event.type] = (summary.eventTypes[event.type] || 0) + 1;
@@ -221,9 +224,10 @@ export function loadSessionRegistry() {
   // 兼容注册表上线前的历史事件：已有 session.register 也应显示为已登记。
   try {
     if (useLegacyEvents && existsSync(taskEventsPath)) {
-      for (const line of taskEventLinesForward()) {
-        if (!line.trim()) continue;
-        const event = JSON.parse(line);
+      const indexed = eventStore(taskEventsPath);
+      for (const line of indexed ? indexed.events({ type: "session.register" }) : taskEventLinesForward()) {
+        if (typeof line === "string" && !line.trim()) continue;
+        const event = typeof line === "string" ? JSON.parse(line) : line;
         if (event.type !== "session.register" || !event.session_id) continue;
         const current = registry[event.session_id];
         registry[event.session_id] = {
@@ -454,7 +458,7 @@ export function recordTaskEvent(input, options = {}) {
     ? (current?.phaseEvents || []).find((item) => item.event_id === event.event_id)
     : null;
   // Creation retries must also consult durable history after the bounded ID cache expires.
-  const storedEvent = processed.has(event.event_id) || event.type === "task.create" || event.type === "task.close" || event.type === "review.reported" || event.session_switch_id || projectedPhaseEvent
+  const storedEvent = eventStore(taskEventsPath) || processed.has(event.event_id) || event.type === "task.create" || event.type === "task.close" || event.type === "review.reported" || event.session_switch_id || projectedPhaseEvent
     ? findStoredTaskEvent(event.event_id, event.type === "task.create" && !current ? event.task_id : "")
     : null;
   if (event.type === "task.create" && storedEvent && storedEvent.event_id !== event.event_id) {
@@ -484,6 +488,9 @@ export function recordTaskEvent(input, options = {}) {
     let originalTask = original.task_id
       ? tasks.find((task) => task.id === original.task_id) ?? null
       : null;
+    if (originalTask && event.type !== "review.reported" && eventStore(taskEventsPath)?.projectionBehind(original.event_id, originalTask.lastEventId)) {
+      throw new TaskLedgerError(409, "TASK_LEDGER_RECOVERY_REQUIRED：事件已持久化但任务投影落后，请核对恢复预览；不会重放写请求。");
+    }
     if (event.type === "review.reported" && original.review_attestation?.id && originalTask && !originalTask.reviewAttestations?.some((review) => review.id === original.review_attestation.id)) {
       // The event can survive a crash before the task projection and processed-ID cache do.
       originalTask = applyEvent(originalTask, original);
@@ -625,24 +632,11 @@ function derivedCompletionEvents(previous, next, source) {
 
 const activeTaskStatuses = new Set(["planned", "in_progress", "blocked"]);
 
-const idempotentEventFields = [
-  "session_switch_id",
-  "event_id", "type", "task_id", "context_task_id", "requirement_id", "session_id",
-  "agent", "provider", "model", "workspace", "project_id", "title", "goal", "status", "priority",
-  "plan", "current_step", "next_action", "blocker", "acceptance_criteria", "changed_files",
-  "tests", "evidence", "assumptions", "risks", "tradeoffs", "open_questions", "retrospective",
-  "expected_at", "archived_at", "superseded_by", "review_reason", "reviewed_at", "tool_name",
-  "due_at", "estimated_effort_ms", "estimate_reason",
-  "tool_use_id",
-  "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
-  "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation", "review_cycle",
-  "phase", "transition", "activity_source", "activity_id", "review_cycle_id",
-  "diagnostic_observation", "execution_observation",
-  "close_requirements", "close_verifications",
-  "context_completion_id", "authorization_id", "reason", "actor", "subject_ref", "acceptance_record", "workspace_policy",
-];
+
 
 function findStoredTaskEvent(eventId, missingTaskId = "") {
+  const indexed = eventStore(taskEventsPath);
+  if (indexed) return indexed.find(eventId, missingTaskId);
   if (!existsSync(taskEventsPath)) return null;
   const eventNeedle = JSON.stringify(eventId);
   const taskNeedle = missingTaskId ? JSON.stringify(missingTaskId) : "";
@@ -748,6 +742,8 @@ function* taskEventLinesForward() {
 }
 
 function storedSwitchEvents() {
+  const indexed = eventStore(taskEventsPath);
+  if (indexed) return [...indexed.events({ switches: true })];
   if (!existsSync(taskEventsPath)) { switchEventsCache = null; return []; }
   const before = statSync(taskEventsPath);
   const identity = switchHistoryIdentity(before);
@@ -769,6 +765,8 @@ function switchHistoryIdentity(info) {
 }
 
 function appendTaskEvents(events) {
+  const indexed = eventStore(taskEventsPath);
+  if (indexed) { indexed.append(events); return; }
   // Only this process's verified append can advance the memo; any other file change forces a full scan.
   const before = switchEventsCache && existsSync(taskEventsPath) ? statSync(taskEventsPath) : null;
   let appendedBytes = 0;
@@ -792,6 +790,7 @@ function appendTaskEvents(events) {
 }
 
 function sameIdempotentEvent(left, right) {
+  if (left?.storage_fingerprint) return left.storage_fingerprint === eventFingerprint(right);
   const fields = left?.type === "phase.reported" || right?.type === "phase.reported"
     ? [...idempotentEventFields, "occurred_at"]
     : idempotentEventFields;

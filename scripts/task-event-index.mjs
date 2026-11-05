@@ -3,12 +3,21 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
+import { eventStore } from "./task-event-store.mjs";
 
 const INDEX_VERSION = 6;
 
 export async function updateTaskEventIndex(options) {
   const now = Number(options.now || Date.now());
   const cutoff = now - Number(options.retentionMs || 24 * 60 * 60_000);
+  const complete = eventStore(options.sourcePath);
+  if (complete) {
+    const events = Array.from(complete.events({ since: new Date(cutoff).toISOString() }), compactMetricEvent);
+    const index = { version: INDEX_VERSION, identity: "sqlite-v1", offset: Number(complete.meta("offset") || 0),
+      events, byTask: {}, updatedAt: new Date(now).toISOString(), skippedOversizedLines: 0 };
+    await writeIndexAtomic(options.indexPath, index);
+    return index;
+  }
   const info = existsSync(options.sourcePath) ? await stat(options.sourcePath) : null;
   let previous = await readJson(options.indexPath, null);
   const identity = info ? `${info.dev || 0}:${info.ino || 0}` : "missing";

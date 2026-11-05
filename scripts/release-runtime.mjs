@@ -25,6 +25,7 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_GATE_SESSION_ALLOWLIST_PATH: join(dataRoot, "gate-session-allowlist.json"),
     TASKCENTER_REFLECTION_PROPOSALS_PATH: join(dataRoot, "reflection-proposals.json"),
     TASKCENTER_TASK_EVENTS_PATH: join(dataRoot, "task-events.jsonl"),
+    TASKCENTER_EVENT_STORAGE: "sqlite-v1",
     TASKCENTER_AI_ACTIVITY_PATH: join(dataRoot, "ai-activity.jsonl"),
     TASKCENTER_AI_WORKSPACE: controllerRoot,
     TASKCENTER_JEV_RUNTIME_DIR: config.candidateCodex ? join(runtimeRoot, "jev-pilot")

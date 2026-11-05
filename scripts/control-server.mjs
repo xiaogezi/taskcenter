@@ -1063,6 +1063,8 @@ function inspectFile(path, parseJson = false) {
 }
 
 function readTaskEvents(taskId) {
+  const stored = eventStore(taskEventsPath);
+  if (stored) return stored.recentTaskEvents(taskId);
   const indexed = readSnapshot(taskEventIndexPath, [], (value) => value.byTask?.[taskId] || [], taskId);
   const recent = readTaskEventTail(taskId);
   const merged = new Map();
@@ -1437,3 +1439,4 @@ function shutdown() {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+import { eventStore } from "./task-event-store.mjs";

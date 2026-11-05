@@ -3,12 +3,16 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { vinextInvocation } from "./vinext-cli.mjs";
+import { createRuntimeLogger } from "./runtime-logger.mjs";
+import { migrateTaskEvents } from "./task-event-migration.mjs";
 
 const projectRoot = resolve(process.env.TASKCENTER_SOURCE_ROOT || fileURLToPath(new URL("..", import.meta.url)));
 const runtimeDir = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local/runtime"));
 const heartbeatPath = resolve(runtimeDir, "web-heartbeat.json");
 const stopPath = resolve(runtimeDir, "web-stop.json");
 const childrenPath = resolve(runtimeDir, "web-children.json");
+if (process.env.TASKCENTER_EVENT_STORAGE === "sqlite-v1") migrateTaskEvents(resolve(process.env.TASKCENTER_TASK_EVENTS_PATH || resolve(projectRoot, "data/task-events.jsonl")));
+const runtimeLogger = await createRuntimeLogger(resolve(process.env.TASKCENTER_LOG_DIR || resolve(projectRoot, ".local/logs"), "runtime"));
 const launchToken = process.env.TASKCENTER_LAUNCH_TOKEN || "";
 const webArgs = process.env.TASKCENTER_WEB_PORT ? ["--port", process.env.TASKCENTER_WEB_PORT] : [];
 const webMode = process.env.TASKCENTER_WEB_MODE === "start" ? "start" : "dev";
@@ -17,6 +21,7 @@ const web = vinextInvocation(webMode, webArgs, projectRoot);
 const specs = [
   { name: "watch-codex", command: process.execPath, args: ["scripts/watch-codex.mjs"] },
   { name: "metrics-worker", command: process.execPath, args: ["--expose-gc", "--max-old-space-size=128", "scripts/metrics-worker.mjs"] },
+  { name: "event-retention", command: process.execPath, args: ["scripts/task-event-retention.mjs"], optional: true },
   { name: "control-server", command: process.execPath, args: ["--max-old-space-size=128", "scripts/control-server.mjs"] },
   { name: "ai-observer", command: process.execPath, args: ["--max-old-space-size=128", "scripts/ai-observer.mjs"], optional: true },
   { name: "web", command: web.command, args: web.args, env: web.env },
@@ -31,20 +36,24 @@ function start(spec) {
   const child = spawn(spec.command, spec.args, {
     cwd: projectRoot,
     env: spec.env || process.env,
-    stdio: "inherit",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  runtimeLogger.attach(child.stdout, spec.name, "stdout");
+  runtimeLogger.attach(child.stderr, spec.name, "stderr");
+  child.once("close", () => { child.closed = true; });
   children.set(spec.name, child);
   persistChildren();
   child.once("exit", (code, signal) => {
     if (children.get(spec.name) === child) children.delete(spec.name);
     persistChildren();
     if (shuttingDown) return;
-    if (spec.optional) return;
-    console.error(`[dev-live] ${spec.name} exited (${signal || code}); restarting in 1s`);
+    if (spec.optional && spec.name !== "event-retention") return;
+    const delayMs = spec.name === "event-retention" ? 60_000 : 1_000;
+    runtimeLogger.log(spec.name, "supervisor", JSON.stringify({ event: "child_restart", code, signal, delay_ms: delayMs }));
     const timer = setTimeout(() => {
       restartTimers.delete(timer);
       start(spec);
-    }, 1_000);
+    }, delayMs);
     restartTimers.add(timer);
   });
 }
@@ -89,6 +98,14 @@ async function finishShutdown(runningChildren) {
     }
     await Promise.all(runningChildren.map(waitForChildExit));
   }
+  const drained = await Promise.race([
+    Promise.all(runningChildren.filter(child => !child.closed).map(child => new Promise(resolve => child.once("close", resolve)))).then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 1_000)),
+  ]);
+  if (!drained) {
+    runtimeLogger.log("supervisor", "shutdown", JSON.stringify({ event: "child_output_drain_timeout" }));
+    for (const child of runningChildren) { child.stdout.destroy(); child.stderr.destroy(); }
+  }
   if (launchToken) {
     const heartbeat = readJson(heartbeatPath);
     if (heartbeat?.pid === process.pid && heartbeat?.token === launchToken) {
@@ -97,6 +114,7 @@ async function finishShutdown(runningChildren) {
       rmSync(childrenPath, { force: true });
     }
   }
+  await runtimeLogger.close();
   process.exit(0);
 }
 
