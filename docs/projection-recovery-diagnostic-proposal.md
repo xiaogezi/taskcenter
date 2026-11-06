@@ -1,6 +1,6 @@
 # 现存任务投影落后：只读诊断输出提案
 
-状态：待选择，未实施。基线 `c366eb38753a564345b077eda5d1d54ce643baf4`，2026-11-05，取证前工作区干净。
+状态：2026-11-06 用户已明确采用新增 `projectionDiagnostics` 的只读契约，继续完成修复与验证；不做恢复写回或自动重放。方案取证基线 `c366eb38753a564345b077eda5d1d54ce643baf4`，实现起点 `0c220c38ee355b6003866e1f0005a3b378e066fb`，开始前工作区干净。下列基线复现记录保留原时点含义，不代表新增实现的验证结论。
 
 目标是让人工能沿现有只读入口看到“持久事件比现存投影更新”的线索；不提供完整重建、apply、自动重放、任务/Run 重开或外部验收推断。CI 全量基线继续保留。
 
@@ -21,7 +21,7 @@
 - retention 只删除 tool_details；关键 journal 与工具非空事实、storage_fingerprint 仍保留。只读诊断不得调用 `eventStore()`/`TaskEventStore`，它们会创建/同步 SQLite/WAL、改权限；不能用索引写入冒充预览只读。
 - `complete` 仅表示当前扫描完整且未检测变化；未知事件语义不应假装“可恢复”，稳定 JSON 也不保证语义完整。
 
-## 推荐：独立诊断段，不改变现有 tasks 语义
+## 已选定：独立诊断段，不改变现有 tasks 语义
 
 保留当前入口、参数、退出码、missing/removed 的 tasks 结构和 mode=preview_only；新增根字段 `projectionDiagnostics`，与恢复候选分开。它只列出 behind/unknown 的现存非 removed 任务，已知一致任务不列出；没有条目不能证明完整投影等价。无新依赖/持久化/服务/API。未知情况呈现线索，继续保留原请求拒绝。
 
@@ -65,10 +65,18 @@ ordinal 定义为本次扫描的非空 JSONL 记录序号，与当前 lastEventO
 
 代码交付前按项目运行 sync、lint、完整测试和 diff 检查；不改变 CI 全量决定，不部署、不重启。回滚只撤销新增诊断输出及对应测试/文档，原拒绝与只读恢复候选仍在；无生产迁移或数据回滚。
 
-## 参考与待选择
+## 参考与已选定方案
 
 [上游 evolve.ts](https://github.com/KKKKhazix/agent-autoloop/blob/ad0384f7ee91f7e6d0b6b65453f4659eef3add23/kernel/evolve.ts) 用显式事实/变化与投影位置；[simulation.test.ts](https://github.com/KKKKhazix/agent-autoloop/blob/ad0384f7ee91f7e6d0b6b65453f4659eef3add23/tests/simulation.test.ts) 验证故障顺序和重放不变量。本仓 journal 不是它的完整 Fact，不复制表结构、调度或20万步预算。Engineering Reference《分布式金融架构课》“春节策划第3期-如何运用架构知识解读春运买票和手游案例？”（sourceRelpath=`分布式金融架构课/春节策划第3期-如何运用架构知识解读春运买票和手游案例？.md`，chunk_02a98b51a19d68c7ded6，索引schema6/2026-10-26）支持重放依赖确定语义与顺序，不证明本仓可以通用重建。
 
 Jev call `40ff039e-38ac-4c0b-83db-8f5ca213fe19`、jev-1.14.0 对窄只读诊断的证据支持返回0.92，主代理采纳为提案依据，不代替用户选定。
 
-需要选择：是否采用以上新增 `projectionDiagnostics` 的公共 JSON 契约？推荐采用；代价是新增输出与语义维护。若暂不采用，维持现有实现，承认该诊断缺口尚未修复，不改 `tasks` 含义假装修好。当前只提交方案及已复现证据；changelog: not required（提案未实施）。
+2026-11-06 用户已采用上述契约并授权修复与验证；无需重复选择。不授权 apply、自动重放、生产数据修复或部署。原方案提交 `8f6bad4` 仅含文档和基线证据；本次代码变更须另附实际 CLI 与全量验证证据，CHANGELOG Unreleased 同步记录行为变化。
+
+## 本次实现验证（2026-11-06）
+
+实际结果见[脱敏验证证据](evidence/projection-diagnostics-validation-2026-11-06.json)，绑定本次脚本与测试的 SHA-256。原探针现输出 `behind`；一致状态不输出诊断，review、缺失锚点和不完整源输出 `unknown`，非法账本明确失败。7 组真实 CLI 场景各执行两次，输入文件 `0400`、目录 `0500`，输出一致、源 hash 与权限不变、无索引或旁文件。
+
+`npm run sync`、`npm run lint`、`npm test` 全部通过（581 项，含预览回归 33 项）；真实写入重试在隔离 fixture 连续两次保持 `TASK_LEDGER_RECOVERY_REQUIRED`，账本和 journal 未变。完整日志为 `.local/verification/projection-diagnostics-final-20261106.log`，CLI 结构化结果为 `.local/verification/projection-diagnostics-cli-20261106.json`；可查询 `projectionDiagnostics`、`issues`、`sources_unchanged` 与测试汇总核对预期信号。验证仅覆盖本机 macOS，不代表 hosted CI、独立验收或部署；未读取生产输入、执行恢复写回或自动重放。
+
+验证方案选择复用既有工程参考；Jev call `0f04d877-7da8-4d1f-b14c-92e6624a811b`（jev-1.14.0，支持度 0.79）支持真实只读 CLI、实际拒绝行为及全量回归组合，主代理采纳并按上述证据执行。

@@ -1,0 +1,221 @@
+{
+  "source_base": "0c220c38ee355b6003866e1f0005a3b378e066fb",
+  "scope": "isolated CLI success/unknown/error; no production input",
+  "cases": [
+    {
+      "case": "behind",
+      "exit_code": 0,
+      "repeated_identical": true,
+      "source_hashes": [
+        "433c3fa44fed12f187dbe2da58ff52c223428e60eba3141fa95a588ddf5b3434",
+        "f8794cc0fbd9d83b24b2f96a124e831c600fa97a7f4b486c9e63e195e829c2f2"
+      ],
+      "sources_unchanged": true,
+      "source_mode": "0400",
+      "directory_mode": "0500",
+      "no_sidecars": true,
+      "result": {
+        "mode": "preview_only",
+        "complete": true,
+        "projectionDiagnostics": [
+          {
+            "id": "existing",
+            "state": "behind",
+            "projectedEventId": "create-1",
+            "projectedOrdinal": 1,
+            "latestSourceEventId": "update-2",
+            "latestSourceOrdinal": 2,
+            "issues": [
+              "persisted_event_after_projection"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "consistent",
+      "exit_code": 0,
+      "repeated_identical": true,
+      "source_hashes": [
+        "433c3fa44fed12f187dbe2da58ff52c223428e60eba3141fa95a588ddf5b3434",
+        "6146b9a317a0a2a099d11a9d7eb40821e5d07c517e39ad0798991cfcae5254e3"
+      ],
+      "sources_unchanged": true,
+      "source_mode": "0400",
+      "directory_mode": "0500",
+      "no_sidecars": true,
+      "result": {
+        "mode": "preview_only",
+        "complete": true,
+        "projectionDiagnostics": []
+      }
+    },
+    {
+      "case": "review",
+      "exit_code": 0,
+      "repeated_identical": true,
+      "source_hashes": [
+        "433c3fa44fed12f187dbe2da58ff52c223428e60eba3141fa95a588ddf5b3434",
+        "8d95a7a6587e79dd8eb7eacfa2122906f0b90bb387e1cbc9d3443065924b2165"
+      ],
+      "sources_unchanged": true,
+      "source_mode": "0400",
+      "directory_mode": "0500",
+      "no_sidecars": true,
+      "result": {
+        "mode": "preview_only",
+        "complete": true,
+        "projectionDiagnostics": [
+          {
+            "id": "existing",
+            "state": "unknown",
+            "projectedEventId": "create-1",
+            "projectedOrdinal": 1,
+            "latestSourceEventId": "update-2",
+            "latestSourceOrdinal": 2,
+            "issues": [
+              "review_evidence_requires_check"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "unknown_anchor",
+      "exit_code": 0,
+      "repeated_identical": true,
+      "source_hashes": [
+        "58317ee08552d9f6733fb6deabd0a78e5eb36fb29e89051aa11559b1bb203500",
+        "f8794cc0fbd9d83b24b2f96a124e831c600fa97a7f4b486c9e63e195e829c2f2"
+      ],
+      "sources_unchanged": true,
+      "source_mode": "0400",
+      "directory_mode": "0500",
+      "no_sidecars": true,
+      "result": {
+        "mode": "preview_only",
+        "complete": true,
+        "projectionDiagnostics": [
+          {
+            "id": "existing",
+            "state": "unknown",
+            "projectedEventId": "outside-journal",
+            "projectedOrdinal": null,
+            "latestSourceEventId": "update-2",
+            "latestSourceOrdinal": 2,
+            "issues": [
+              "projection_anchor_missing"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "tail",
+      "exit_code": 0,
+      "repeated_identical": true,
+      "source_hashes": [
+        "433c3fa44fed12f187dbe2da58ff52c223428e60eba3141fa95a588ddf5b3434",
+        "8b5a5b177a2057b7f6fbc1063af20c8e5ced7de7a97bf95ed1f68494df74fb09"
+      ],
+      "sources_unchanged": true,
+      "source_mode": "0400",
+      "directory_mode": "0500",
+      "no_sidecars": true,
+      "result": {
+        "mode": "preview_only",
+        "complete": false,
+        "projectionDiagnostics": [
+          {
+            "id": "existing",
+            "state": "unknown",
+            "projectedEventId": "create-1",
+            "projectedOrdinal": 1,
+            "latestSourceEventId": "update-2",
+            "latestSourceOrdinal": 2,
+            "issues": [
+              "incomplete_or_changing_source"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "malformed",
+      "exit_code": 0,
+      "repeated_identical": true,
+      "source_hashes": [
+        "433c3fa44fed12f187dbe2da58ff52c223428e60eba3141fa95a588ddf5b3434",
+        "453c999c4b7550de97823e6e497012a38a9f4c0355fa61260a4d449fb6d00f50"
+      ],
+      "sources_unchanged": true,
+      "source_mode": "0400",
+      "directory_mode": "0500",
+      "no_sidecars": true,
+      "result": {
+        "mode": "preview_only",
+        "complete": false,
+        "projectionDiagnostics": [
+          {
+            "id": "existing",
+            "state": "unknown",
+            "projectedEventId": "create-1",
+            "projectedOrdinal": 1,
+            "latestSourceEventId": "update-2",
+            "latestSourceOrdinal": 2,
+            "issues": [
+              "incomplete_or_changing_source"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "invalid_ledger",
+      "exit_code": 1,
+      "repeated_identical": true,
+      "source_hashes": [
+        "0c21a879c732a67910d80988df4919d794f6a070aab610ef865032a28046b021",
+        "6146b9a317a0a2a099d11a9d7eb40821e5d07c517e39ad0798991cfcae5254e3"
+      ],
+      "sources_unchanged": true,
+      "source_mode": "0400",
+      "directory_mode": "0500",
+      "no_sidecars": true,
+      "result": {
+        "explicit_error": true,
+        "no_success_json": true
+      }
+    }
+  ],
+  "validated_on": "2026-11-06",
+  "source_sha256": {
+    "scripts/task-recovery-preview.mjs": "e03449faf04b9df9887a8f1fc170922370689b40f9e990614f07baab2635f285",
+    "tests/task-recovery-preview.test.mjs": "65ebf193be6abae28b2512c47ce1b7ce89f48e6a60d025461ef0698ec592adbf"
+  },
+  "project_checks": {
+    "sync": "passed",
+    "lint": "passed",
+    "full_tests": {
+      "passed": 581,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "duration_ms": 101156.219333
+    },
+    "log": ".local/verification/projection-diagnostics-final-20261106.log"
+  },
+  "regressions": {
+    "projection_preview_tests_in_full_suite": 33,
+    "actual_write_retry": "TASK_LEDGER_RECOVERY_REQUIRED; two retries preserve ledger/journal bytes in isolated fixture",
+    "source_mutation_during_scan": "unknown; complete=false"
+  },
+  "boundaries": {
+    "environment": "local macOS",
+    "production_inputs_used": false,
+    "deployment_performed": false,
+    "recovery_writeback_performed": false,
+    "automatic_replay_performed": false,
+    "hosted_ci_run": false
+  }
+}

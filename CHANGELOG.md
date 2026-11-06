@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 只读恢复预览新增独立 `projectionDiagnostics`，暴露现存任务的持久事件领先投影问题；合法派生摘要和提醒不误报，review、未知格式、冲突身份及不完整/变化中的源保留 unknown。原 missing/removed 候选、恢复拒绝及事件源保持不变，不创建索引、不写回或自动重放。
+
 - 修复无活跃任务时现代 Hook 准备路径缺少恢复指引：统一前置提醒、拒绝和治理提示，明确由 Agent 创建或接续当前已授权交付的任务后重试；保留纯只读适配、任务归属和授权边界，不自动创建任务或绕过门禁。
 
 - 补齐 SSH 远端 macOS 资源与本地账户只读投影，以及固定 GitLab HTTPS 连通摘要探针；仅放行精确系统路径、固定资源键和账户字段。HTTPS 探针清空远端环境并禁用 curl 配置、代理和响应正文输出，继续拒绝写入、凭据读取、TLS 跳验与任意目标。
