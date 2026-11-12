@@ -318,6 +318,8 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 
 部署成功后在同一部署锁内强制清理旧构建，保留当前版本与上一不同的成功版本（重复部署同一 revision 不挤掉回滚版本）。`npm run service:prune` 可清理存量，`-- --dry-run` 仅预览。清理失败使命令非零退出并记录 cleanup 事件，但不停止或回滚已经健康的新实例；异常目录、符号链接和含用户改动的 worktree 不删除。更早版本需要从 Git 重新构建。
 
+部署收尾直接引用命令日志和 `.local/release-events.jsonl` 中对应 revision/deploymentId 的阶段结果；`service:history` 可查询发布摘要。仅补部署入口未覆盖的上线行为，成功的自动清理不再默认重复 prune 或盘点，也不另生成汇总报告。失败或结果未知时先核对已有事件，再决定补查或恢复；完整测试及切换前门禁保持不变。任务按 [Verification](AGENTS.md#verification) 一次登记当前版本证据并收口。
+
 部署先准备不可变候选构建，再执行 lint 和完整测试；npm 安装优先离线缓存（60 秒总时限），仅 ENOTCACHED 时联网一次（180 秒总时限、单请求 30 秒、最多一次请求重试）。缓存可被清理，不作为正确性前提；缺包按锁文件由 npm 下载与校验，失败在切换前终止并保留原服务。依赖安装不触发隐式 audit/fund 网络请求，独立依赖安全审计仍可按需执行。
 
 运行依赖不再包含 Codex SDK 或原生 CLI。方案 A 保留 vinext/React 页面和 Node 服务，移除 Next 编译器、Cloudflare/Wrangler/Workerd 及未使用的 Drizzle、Worker、Sites 模板链；页面直接引用 vinext 导出的兼容 API。类型检查使用 TypeScript，lint 使用已有 React、Hooks、无障碍和 TypeScript 插件。release 在完整构建后检查开发依赖预算，再裁剪开发/可选依赖，通过生产体积预算与隔离候选验证。详见 [轻量化方案及实施证据](docs/lightweight-tool-plan.md)。
