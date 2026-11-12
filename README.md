@@ -138,7 +138,7 @@ hooks = true
 
 重新启动 Codex，在 `/hooks` 中审核并信任 Hook，在 `/mcp` 中确认 `taskcenter` 已连接。也可以把 MCP 配置放进可信项目的 `.codex/config.toml`。
 
-v2 任务不能通过普通 `taskcenter_task_report(done_claimed)` 绕过闭环；Agent 应使用 `taskcenter_task_close` 原子提交验收与验证证据，并读取返回的 `completionReadiness`。完成就绪度、缺失验证和 Review 继续由 TaskCenter 记录和展示，但不会通过 `Stop` Hook 打断 Codex 回复；用户可以在后续发现问题时人工打回任务。旧配置中即使暂时保留 TaskCenter `Stop` 命令，当前脚本也会兼容地直接放行。
+v2 任务使用 `taskcenter_task_close` 声明执行完成，不通过普通 `taskcenter_task_report(done_claimed)` 替代。关闭无需补齐证据；有新结果时可随同原子提交，并直接取得 `completionReadiness`。完成就绪度、缺失验证和 Review 继续由 TaskCenter 记录和展示，但不会通过 `Stop` Hook 打断 Codex 回复；用户可以在后续发现问题时人工打回任务。旧配置中即使暂时保留 TaskCenter `Stop` 命令，当前脚本也会兼容地直接放行。
 
 ### Claude Code
 
@@ -240,7 +240,7 @@ TaskCenter 是执行合同、运行状态、验证、Review、验收的权威来
    Codex 或 Git 创建关联 worktree 后，适配器会从 `.git` 指针自动识别主仓库、当前分支和 `execution_environment=worktree`。每个 worktree 保留独立 `workspace` 与 Subject，稳定 `project_id` 归并到同一项目；TaskCenter 不负责创建、合并或删除 worktree。Context bridge 同时把稳定 `project_id` 和具体 worktree workspace 传给 ProjectContext，使项目知识共享、执行证据隔离。
 3. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
 4. 主模型自主决定模型与子代理的使用。TaskCenter 不选择、派发、登记、限制或管理子代理；主线 Hook 不再检查路由租约。
-5. Agent 的 `done_claimed` 仅代表执行声明，提交时必须附带 `tests` 或 `evidence`；随后通过验收条件结果、Verification Claim 和独立 Review Attestation 计算 `completion_readiness`。
+5. Agent 的 `done_claimed` 仅代表执行声明；`taskcenter_task_close` 无需附带 `tests` 或 `evidence`。已有验收条件结果、Verification Claim 和 Review Attestation 继续用于计算 `completion_readiness`，缺失或过期保持未就绪，不伪造验证或独立验收通过。
 6. `accepted` 只能由携带 `TASKCENTER_ACCEPTANCE_TOKEN` 的独立验收适配器通过 `taskcenter_task_acceptance_report` 上报；来源可以是 human、pull_request、ci、task_platform、context_agent、manual 或 other。普通执行 Agent、`task_report` 和浏览器操作均不能直接设置最终验收。
 
 ### 主线治理边界
@@ -261,7 +261,7 @@ TaskCenter 是执行合同、运行状态、验证、Review、验收的权威来
 
 费率表位于 `config/model-rates.json`，只应填写模型提供方正式公布并经操作者确认的每百万 Token Credits；禁止用相近模型价格代填 Spark。`taskcenter_usage_report`、`taskcenter_session_lifecycle` 和 `taskcenter_governance_metrics` 分别提供用量、会话建议与试点指标。治理指标同时返回 Token 任务归属覆盖率；只有显式调用 `taskcenter_task_diagnostic_report` 的案例才进入调试观察聚合，记录根因耗时、假设数、失败修复、回滚和新鲜验证。这些数据只用于发现流程瓶颈和检验改进，不参与个人绩效、任务门禁或自动模型路由。生命周期建议不会强制中断，且“新建 Codex Session”不等于“新建 TaskCenter task”：同一交付继续复用原任务并携带 1–2KB handoff。
 
-普通闭环可用 `taskcenter_task_close` 一次提交最终报告、Requirement Results 与 Verification Claims，并直接取得 readiness；同一 `event_id` 重试幂等。它把典型的 verification、requirements、report、readiness 四次往返压缩为一次，同时保留原有细粒度接口和 OCR 独立 Session/attestation 路径。
+普通收尾调用 `taskcenter_task_close` 时只需任务身份（已绑定真实 Session 时只传 `task_id`），可附一句摘要；`tests`、`evidence`、`close_requirements`、`close_verifications` 均可省略。同一 `event_id` 重试幂等，已有结果直接计算 readiness；有新结果才随同提交，子项可继承关闭请求的顶层 `subject_ref`。关闭仅记录 `done_claimed`，缺证据不会自动验证或验收通过；显式提交的引用/状态/版本仍须合法。旧式完整输入与细粒度证据接口继续兼容，不新增关闭流程。
 
 Review 过程使用 `taskcenter_review_cycle_report` 按稳定 `cycle_id` 增量记录 `pending_review/reviewing/fixing/verifying/completed` 阶段、墙钟时间和调用方明确测得的 active time。`taskcenter_task_review_report` 的 v3 Attestation 通过 `cycle_id`、`review_scope=full|incremental`、`base_attestation_id`、文件集合与带 fingerprint 的 finding 关联复审；旧 Attestation 保持 `legacy` 或 v2 原样读取，不补造新字段。治理快照和 Completion Packet 会输出轮次、漏斗、P50/P95、finding 质量、fallback 与 `reviewLoopWarnings`；缺少阶段事件或 active time 时返回“数据不足”，这些指标只用于团队流程诊断，不用于 reviewer、模型或个人排名。
 

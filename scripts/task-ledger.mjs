@@ -544,7 +544,8 @@ export function recordTaskEvent(input, options = {}) {
       throw new TaskLedgerError(404, "任务不存在，请先创建任务。");
     }
   }
-  if (event.status === "done_claimed" && !event.event_id.startsWith("manual-") && !event.tests.length && !event.evidence.length) {
+  // close 仅声明执行完成；缺证据由就绪度如实反映，不在此强迫补报或伪造通过。
+  if (event.type !== "task.close" && event.status === "done_claimed" && !event.event_id.startsWith("manual-") && !event.tests.length && !event.evidence.length) {
     throw new TaskLedgerError(400, "done_claimed 需附带 tests 或 evidence，避免将未验证完成误判为已完成。");
   }
   let next = event.type === "session.register"

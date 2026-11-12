@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 精简现有 `taskcenter_task_close` 为轻量执行完成声明：只需任务身份，摘要、测试、证据与逐项结果均可省略；复用已有结果计算就绪度，缺证据不会自动变成验证或验收通过。显式证据的引用/Subject 校验、独立验收及全量测试与受控部署门禁保持不变。
+
 - 只读恢复预览新增独立 `projectionDiagnostics`，暴露现存任务的持久事件领先投影问题；合法派生摘要和提醒不误报，review、未知格式、冲突身份及不完整/变化中的源保留 unknown。原 missing/removed 候选、恢复拒绝及事件源保持不变，不创建索引、不写回或自动重放。
 
 - 修复无活跃任务时现代 Hook 准备路径缺少恢复指引：统一前置提醒、拒绝和治理提示，明确由 Agent 创建或接续当前已授权交付的任务后重试；保留纯只读适配、任务归属和授权边界，不自动创建任务或绕过门禁。

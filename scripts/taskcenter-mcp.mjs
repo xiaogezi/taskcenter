@@ -185,11 +185,11 @@ toolRegistry.register("taskcenter_task_report", {
 
 toolRegistry.register("taskcenter_task_close", {
   title: "原子关闭 TaskCenter 任务",
-  description: "一次提交最终报告、验收条件结果与验证证据，并返回完成就绪度；同一 event_id 重试不会产生重复记录。completion_claim_allowed=false 时只能报告执行已声明完成，不得向用户宣称任务真正完成。",
+  description: "声明任务执行完成；除任务身份外，摘要、测试、证据及逐项结果均可省略，已有结果继续用于计算就绪度。同一 event_id 重试幂等；done_claimed 不等于验证或独立验收通过，completion_claim_allowed=false 不得宣称真正完成。",
   inputSchema: z.object(taskFields).extend({
     task_id: z.string().min(1).max(200),
-    tests: z.array(z.string().min(1).max(500)).min(1).max(30),
-    evidence: z.array(z.string().min(1).max(1_000)).min(1).max(30),
+    tests: z.array(z.string().min(1).max(500)).max(30).default([]),
+    evidence: z.array(z.string().min(1).max(1_000)).max(30).default([]),
     continuation: z.object({ new_independent_goal: z.boolean().optional(), context_large: z.boolean().optional(), expected_more_rounds: z.boolean().optional() }).strict().optional(),
     close_requirements: z.array(z.object({
       requirement_id: z.string().min(1).max(120), status: z.enum(["pending", "passed", "failed", "not_applicable"]),

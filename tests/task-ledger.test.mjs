@@ -2319,6 +2319,63 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(compactClose.session_lifecycle.action, "recommend_compact");
   assert.ok(1 <= 4 * 0.6, "原子 close 将四次闭环上报缩减为一次，下降至少 40%");
 
+  // 结构化引用替代重复摘要，但不替代逐项结果、验证计划或版本新鲜度。
+  const closeSubject = { type: "git_commit", value: "structured-close-revision", observed_at: "2026-08-20T08:30:00.000Z" };
+  const slimBase = {
+    subject_ref: closeSubject,
+    close_requirements: [{ requirement_id: "criterion", status: "passed", evidence_refs: ["log:checks"] }],
+    close_verifications: [{ id: "slim-check", requirement_id: "checks", kind: "test", status: "passed", observed_at: closeSubject.observed_at, producer: "codex", artifact_refs: ["log:checks"] }],
+  };
+  for (const scenario of ["empty", "bad-criterion", "bad-plan", "stale", "missing-check", "verification-only", "ready"]) {
+    const owner = `slim-${scenario}`, taskId = `task-${owner}`;
+    await client.callTool({ name: "taskcenter_session_register", arguments: { session_id: owner, workspace: "/work", agent: "codex" } });
+    const slimCreated = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_create", arguments: {
+      session_id: owner, task_id: taskId, title: "精简关闭", goal: "复用结构化证据", scope: ["close"], non_goals: [], plan: ["check"],
+      workflow_profile: "standard", review_policy: "recommended", subject_ref: closeSubject,
+      acceptance_criteria: [{ id: "criterion", description: "条件满足", required: true }],
+      verification_plan: [{ id: "checks", kind: "test", title: "检查", required: true }],
+    } })));
+    assert.equal(slimCreated.accepted, true, JSON.stringify(slimCreated));
+    const slim = structuredClone({ ...slimBase, session_id: owner, task_id: taskId, event_id: `close-${owner}`, response_mode: "full" });
+    if (scenario === "empty") { delete slim.subject_ref; slim.close_requirements = []; slim.close_verifications = []; }
+    if (scenario === "bad-criterion") slim.close_requirements[0].requirement_id = "checks";
+    if (scenario === "bad-plan") slim.close_verifications[0].requirement_id = "criterion";
+    if (scenario === "stale") slim.close_verifications[0].subject_ref = { ...closeSubject, value: "old-revision" };
+    if (scenario === "missing-check") slim.close_verifications = [];
+    if (scenario === "verification-only") {
+      slim.close_requirements = [];
+      slim.close_verifications[0].evidence_ref = "log:checks";
+      slim.close_verifications[0].artifact_refs = [];
+    }
+    const reply = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_close", arguments: slim })));
+    if (["bad-criterion", "bad-plan"].includes(scenario)) {
+      assert.equal(reply.accepted, false, scenario);
+      assert.match(reply.message, scenario === "bad-criterion" ? /UNKNOWN_ACCEPTANCE_REFERENCE/ : /UNKNOWN_VERIFICATION_REFERENCE/);
+      const queried = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_query", arguments: { task_id: taskId, view: "full" } })));
+      assert.equal(queried.tasks[0].requirementResults.length, 0, "拒绝的原子close不留下部分结果");
+      assert.equal(queried.tasks[0].verificationClaims.length, 0);
+      continue;
+    }
+    assert.equal(reply.accepted, true, scenario);
+    assert.equal(reply.task.completionReadiness.completionClaim.allowed, scenario === "ready", scenario);
+    assert.deepEqual(reply.event.tests, []);
+    assert.deepEqual(reply.event.evidence, []);
+    if (scenario === "empty") {
+      assert.equal(reply.task.status, "done_claimed");
+      assert.equal(reply.task.requirementResults.length, 0);
+      assert.equal(reply.task.verificationClaims.length, 0);
+      assert.notEqual(reply.task.acceptanceStatus, "accepted");
+      assert.deepEqual(reply.agent_guidance.steps, [], "关闭回包不再要求补证据或继续query");
+    }
+    if (scenario === "ready") {
+      assert.deepEqual(reply.task.verificationClaims[0].subject_ref, closeSubject);
+      const replay = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_close", arguments: slim })));
+      assert.equal(replay.idempotent, true);
+      assert.equal(replay.task.requirementResults.length, 1);
+      assert.equal(replay.task.verificationClaims.length, 1);
+    }
+  }
+
   const usageReport = JSON.parse(textOf(await client.callTool({ name: "taskcenter_usage_report", arguments: {} })));
   assert.deepEqual(Object.keys(usageReport.windows), ["5h", "24h", "7d"]);
   const lifecycle = JSON.parse(textOf(await client.callTool({ name: "taskcenter_session_lifecycle", arguments: { session_id: "sess-mcp" } })));

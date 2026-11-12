@@ -4,10 +4,17 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { aiActivity, createGovernanceRunner, governanceSnapshot, validateGovernanceResult } from "../scripts/ai-governance.mjs";
+import { agentGuidance, aiActivity, collaborationRules, createGovernanceRunner, governanceSnapshot, validateGovernanceResult } from "../scripts/ai-governance.mjs";
 import { controlProxyTarget, isAllowedControlPath } from "../lib/control-proxy.mjs";
 const task = { id: "task-test", title: "验证导出", goal: "导出全部记录", status: "blocked", blocker: "导出缺行", acceptanceCriteria: ["数量一致"], tests: ["单条导出通过"], evidence: ["/Users/example/private/report.log"], verificationClaims: [{ id: "export", status: "passed", summary: "仅验证单条记录" }] };
 const result = { summary: "尚未证明完整导出", findings: [{ severity: "medium", basis: "insufficient_data", message: "单条测试不能证明完整导出", evidence_refs: ["criterion:1", "verification:1"] }], next_steps: ["增加多条记录的数量核对"] };
+
+test("完成声明不再触发补证据、query或AI收尾建议，恢复执行后仍提示缺口", () => {
+  const closed = { ...task, status: "done_claimed", workflowProfile: "standard", verificationClaims: [], tests: [], evidence: [] };
+  assert.deepEqual(collaborationRules(closed).steps, []);
+  assert.deepEqual(agentGuidance(closed, "/unavailable/optional-analysis.jsonl").steps, []);
+  assert.ok(collaborationRules({ ...closed, status: "in_progress" }).steps.length);
+});
 
 test("治理快照选取受限摘要、隐去本机路径、截断前筛查密钥", () => {
   const snapshot = governanceSnapshot(task, "evidence");
