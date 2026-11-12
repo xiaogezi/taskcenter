@@ -208,7 +208,7 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody(request);
       const operation = (proactiveWork || Promise.resolve()).catch(() => {}).then(async () => {
         const profile = readSnapshot(resolve(process.env.TASKCENTER_AI_CONFIG_PATH || join(projectRoot, "config/ai-governance.json")), {});
-        const work = await requestAutomaticWork({ tasks: loadVisibleTasks(), workspace: resolve(process.env.TASKCENTER_AI_WORKSPACE || projectRoot), profile, runtime: aiRuntime, intent: body.intent, record: auditWriter(aiActivityPath), reconcile: () => runReconciliation({ availableSessionIds: availableSessionIds() }) });
+        const work = await requestAutomaticWork({ tasks: loadVisibleTasks(), workspace: resolve(process.env.TASKCENTER_AI_WORKSPACE || projectRoot), profile, runtime: aiRuntime, intent: body.intent, handoff: body.handoff, record: auditWriter(aiActivityPath), reconcile: () => runReconciliation({ availableSessionIds: availableSessionIds() }) });
         return { accepted: true, request_id: work.id, queued: work.task_ids.length, reused: work.reused, intent: work.intent };
       });
       proactiveWork = operation;

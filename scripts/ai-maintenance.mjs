@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { writeJsonAtomic } from "./usage-index.mjs";
-import { governanceSnapshot, validateWorkIntent } from "./ai-governance.mjs";
+import { governanceSnapshot, ruleResult, validateWorkIntent } from "./ai-governance.mjs";
 import { computeCompletionReadiness } from "./completion-state.mjs";
 import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
 import { loadVisibleTasks } from "./task-ledger.mjs";
@@ -58,14 +58,15 @@ export async function runClaudeMaintenance({ task, action, profile, record, onSp
 任务快照：${JSON.stringify(governanceSnapshot(task, "evidence"))}
 本次治理分析：${JSON.stringify(action.analysis)}
 本轮用户目标：${JSON.stringify(action.intent || "自主巡检")}。先核对目标和原契约关系，仅在契约内落实；若目标不适用或需契约变更，记录原因，不擅自扩大范围。`;
-  let child, timer, result, count = 0, aborted = false;
+  let child, timer, result, exitCode, stderr = "", count = 0, aborted = false;
   const operations = new Map();
   const stop = () => { aborted = true; if (child?.pid) void terminateProcessTree(child.pid, { force: true }).catch(() => {}); };
   if (signal?.aborted) throw new Error("AI_ACTION_CANCELLED");
-  child = spawn(executable.command, args, { cwd: task.workspace, env: environment, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "ignore"] });
+  child = spawn(executable.command, args, { cwd: task.workspace, env: environment, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
+  child.stderr.on("data", chunk => { stderr = (stderr + chunk.toString()).slice(-4096); });
   const completion = new Promise((accept, reject) => {
     child.once("error", reject);
-    child.once("exit", code => code === 0 && !aborted ? accept() : reject(new Error(aborted ? "AI_ACTION_INTERRUPTED" : "AI_ACTION_CLI_FAILED")));
+    child.once("exit", code => { exitCode = code; if (code === 0 && !aborted) accept(); else reject(new Error(aborted ? "AI_ACTION_INTERRUPTED" : "AI_ACTION_CLI_FAILED")); });
   });
   // Attach rejection immediately: streaming can still be consuming when the child exits.
   completion.catch(() => {});
@@ -101,6 +102,15 @@ export async function runClaudeMaintenance({ task, action, profile, record, onSp
     return { session_id: action.session_id, tool_calls: count, usage: result.usage || null, duration_ms: result.duration_ms };
   } catch (error) {
     error.performed_tools = count;
+    // Diagnose protocol/process failures without persisting provider text or CLI stderr.
+    const diagnostic = stderr + JSON.stringify(result?.errors || []) + String(result?.result || "");
+    const cause = /Function tools with reasoning_effort are not supported/i.test(diagnostic) ? "tools_reasoning_unsupported"
+      : /session.*already.*(?:use|exist)/i.test(diagnostic) ? "session_in_use" : /unknown option|invalid.*(?:argument|option)/i.test(diagnostic) ? "invalid_arguments"
+      : /authentication|not logged|login|unauthorized|401/i.test(diagnostic) ? "authentication" : /hook/i.test(diagnostic) ? "hook_failed" : "unknown";
+    if (cause === "tools_reasoning_unsupported") error.code = "AI_ACTION_PROTOCOL_UNSUPPORTED";
+    await record({ status: "tool_failed", summary: "维护执行通道失败，已记录进程与协议状态，未记录原始输出", error: safeActionText(error.message),
+      result: { exit_code: exitCode, subtype: result?.subtype, permission_denials: result?.permission_denials?.length || 0,
+        cause } });
     throw error;
   } finally {
     clearTimeout(timer); signal?.removeEventListener("abort", stop); lines.close();
@@ -136,6 +146,7 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
       if (old && old.input_hash === snapshot.input_hash && ["queued", "retry_wait"].includes(old.status) && (!work?.request_id || old.request_id === work.request_id)) return;
       if (old?.input_hash === snapshot.input_hash && old.status !== "attention" && (!work?.request_id || old.request_id === work.request_id)) return;
       const action = { id: `action-${randomUUID()}`, task_id: task.id, session_id: randomUUID(), expected_event_id: task.lastEventId, input_hash: snapshot.input_hash,
+        expected_session_id: task.sessionId, workspace: task.workspace, handoff: work?.handoff,
         analysis, intent, request_id: work?.request_id, model: profile.model, status: "queued", attempts: 0, updated_at: new Date(now()).toISOString(),
         recovery_session_id: old && old.status !== "running" && !isProcessTreeAlive(old.pid)
           && ((old.attempts > 0 && task.sessionId === old.session_id) || task.sessionId === old.recovery_session_id) ? task.sessionId : undefined };
@@ -167,14 +178,34 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
             action.status = finished(task) ? "completed" : "cancelled"; await save();
             await emit(action, { status: action.status, summary: finished(task) ? "执行前核对：交付证据已就绪" : "任务已结束、归档或原执行承载失效，取消待执行动作，未启动接续" }); continue;
           }
-          if ((action.status === "attention" && (!action.pid || action.attempts >= 3)) || now() < (action.retry_at || 0)) continue;
-          if (action.attempts === 0 && task.lastEventId !== action.expected_event_id) {
-            action.status = "cancelled"; await save(); await emit(action, { status: "cancelled", summary: "任务已变化，旧分析不再执行，等待新快照判断" }); continue;
+          if ((action.status === "attention" && (!action.pid || action.attempts >= 3 || action.error === "AI_ACTION_PROTOCOL_UNSUPPORTED")) || now() < (action.retry_at || 0)) continue;
+          if (action.attempts === 0 && (task.lastEventId !== action.expected_event_id || governanceSnapshot(task, "evidence").input_hash !== action.input_hash
+            || action.expected_session_id && task.sessionId !== action.expected_session_id || action.workspace && task.workspace !== action.workspace)) {
+            if (action.expected_session_id && task.sessionId !== action.expected_session_id || action.workspace && task.workspace !== action.workspace) {
+              action.status = "cancelled";
+              await emit(action, { status: "cancelled", summary: "任务归属或工作区已变化，原行动授权失效" }); continue;
+            }
+            const snapshot = governanceSnapshot(task, "evidence");
+            if (snapshot.input_hash !== action.input_hash) {
+              // Observer deduplicates anomaly signals; retain recovery intent with fresh local facts.
+              action.analysis = ruleResult(task, task.blocker || task.status === "blocked" ? "blockers" : "evidence");
+              action.input_hash = snapshot.input_hash;
+              delete action.handoff;
+              await emit(action, { status: "queued", summary: "任务内容已变化，已替换旧分析并保留恢复行动；原移交授权需重新确认" });
+            }
+            action.expected_event_id = task.lastEventId;
+            await save();
           }
           if (task.cliRuns?.some(run => run.status === "active")) continue;
-          // A completed turn is not a handoff; only recover this worker's own prior host.
+          // An idle turn alone is not a handoff; require our prior host or an explicit grant.
           let safe = ((task.sessionId === action.session_id && action.attempts > 0) || task.sessionId === action.recovery_session_id)
             && !isProcessTreeAlive(action.pid);
+          const handoff = action.handoff;
+          if (!safe && handoff?.task_id === task.id && handoff.expected_session_id === task.sessionId
+            && handoff.input_hash === governanceSnapshot(task, "evidence").input_hash && handoff.workspace === task.workspace) {
+            try { safe = task.agent === "codex" && (await inspect(task.sessionId)).busy === false; }
+            catch { safe = false; }
+          }
           // Check all other active owners in this workspace before handing it to a CLI.
           if (safe) for (const other of tasks().filter(item => item.id !== task.id && !item.archivedAt && item.workspace === task.workspace && activeStatuses.has(item.status))) {
             if (other.cliRuns?.some(run => run.status === "active")) { safe = false; break; }
@@ -206,10 +237,10 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
               remaining: updated ? computeCompletionReadiness(updated).reasons : ["task_missing"] };
             await save(); await emit(action, { status: action.status, summary: completed ? "行动闭环：任务交付证据满足契约，独立验收状态保持真实" : "Agent 已返回，任务尚未满足交付条件；保留已执行动作与待处理项", result: action.result });
           } catch (error) {
-            const code = error.code === "ENOENT" ? "AI_CLI_UNAVAILABLE" : ["AI_ACTION_INTERRUPTED", "AI_ACTION_CANCELLED", "CLI_MODEL_MISMATCH"].includes(error.message) ? error.message : "AI_ACTION_FAILED";
-            action.status = error.performed_tools > 0 || ["AI_ACTION_INTERRUPTED", "AI_ACTION_CANCELLED"].includes(code) || action.attempts >= 3 ? "attention" : "retry_wait";
+            const code = error.code === "AI_ACTION_PROTOCOL_UNSUPPORTED" ? error.code : error.code === "ENOENT" ? "AI_CLI_UNAVAILABLE" : ["AI_ACTION_INTERRUPTED", "AI_ACTION_CANCELLED", "CLI_MODEL_MISMATCH"].includes(error.message) ? error.message : "AI_ACTION_FAILED";
+            action.status = error.performed_tools > 0 || ["AI_ACTION_INTERRUPTED", "AI_ACTION_CANCELLED", "AI_ACTION_PROTOCOL_UNSUPPORTED"].includes(code) || action.attempts >= 3 ? "attention" : "retry_wait";
             action.retry_at = now() + 300_000; action.error = code;
-            await save(); await emit(action, { status: action.status, error: code, summary: action.status === "attention" ? "行动未完成，保留恢复依据；主线工具继续可用" : "执行通道不可用，行动已持久保留，五分钟后核对状态再试；本地治理继续运行" });
+            await save(); await emit(action, { status: action.status, error: code, summary: code === "AI_ACTION_PROTOCOL_UNSUPPORTED" ? "网关不支持当前模型的工具与推理协议，停止自动重试；修复通道配置后可重新授权任务接续" : action.status === "attention" ? "行动未完成，保留恢复依据；主线工具继续可用" : "执行通道不可用，行动已持久保留，五分钟后核对状态再试；本地治理继续运行" });
           } finally { health.status = "idle"; health.task_id = null; }
           break;
         }

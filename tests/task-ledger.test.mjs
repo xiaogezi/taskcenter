@@ -352,6 +352,8 @@ test("主动处理入口校验人工来源，本地对账与持久队列可见�
   assert.equal(created.status, 201);
   const denied = await fetch(`${base}/ai/work`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(denied.status, 403);
+  const handoffDenied = await fetch(`${base}/ai/work`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ handoff: { task_id: "ai-work-task" } }) });
+  assert.equal(handoffDenied.status, 403);
   const init = { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost:3000", "x-taskcenter-action": "delegate" }, body: JSON.stringify({ intent: "优先主动核实" }) };
   const noAnomaly = await (await fetch(`${base}/ai/work`, { ...init, body: "{}" })).json();
   assert.equal(noAnomaly.queued, 0, "正常planned任务不触发空白主动分析");
@@ -378,6 +380,22 @@ function taskHeaders() {
     "X-TaskCenter-Task": "mcp",
   };
 }
+
+test("人工移交入口精确绑定任务归属和版本，不接受过期授权", async t => {
+  await resetLedger();
+  const { base, child } = await startControlServer({ TASKCENTER_AI_WORKSPACE: "/work" });
+  t.after(() => child.kill());
+  await registerHttpSession(base, "handoff-owner");
+  const headers = { "content-type": "application/json", origin: "http://localhost:3000", "x-taskcenter-action": "delegate" };
+  await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ type: "task.create", event_id: "handoff-create", task_id: "handoff-task", session_id: "handoff-owner", workspace: "/work", agent: "codex", title: "明确移交", goal: "执行修复" }) });
+  const send = expected_event_id => fetch(`${base}/ai/work`, { method: "POST", headers, body: JSON.stringify({ handoff: { task_id: "handoff-task", expected_session_id: "handoff-owner", expected_event_id } }) });
+  assert.equal((await send("stale")).status, 409);
+  const response = await send("handoff-create"); assert.equal(response.status, 202);
+  const result = await response.json(); assert.equal(result.queued, 1);
+  const saved = JSON.parse(await readFile(join(tempDir, "runtime", "ai-work-request.json"), "utf8"));
+  assert.deepEqual(saved.task_ids, ["handoff-task"]);
+  assert.equal(saved.handoff.expected_session_id, "handoff-owner"); assert.equal(saved.handoff.expected_event_id, "handoff-create");
+});
 
 function legacyTaskHeaders() {
   return {

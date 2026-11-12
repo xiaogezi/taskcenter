@@ -11,6 +11,22 @@ const profile = { model: "deepseek-test", effort: "low" };
 const task = { id: "current", workspace: "/project", title: "修复导出", goal: "导出全部记录", status: "blocked", blocker: "导出缺行", evidence: ["两条而非三条"], currentStep: "检查缺行" };
 const result = { decision: "evidence", reason: "期望与结果有差异", summary: "缺少完整导出证据", findings: [{ severity: "medium", basis: "observed", message: "导出数量不同", evidence_refs: ["evidence:1"] }], next_steps: ["复核数量"] };
 
+test("人工任务级移交校验归属与版本，直接进入行动且重启不重复", async t => {
+  const queued = [];
+  const f = await fixture(t, { enqueue: async (...args) => queued.push(args) });
+  const current = { ...task, agent: "codex", sessionId: "owner", lastEventId: "version" };
+  const args = { tasks: [current], workspace: "/project", profile: { ...profile, automatic: { actions: true } }, runtime: join(f.options.statePath, ".."), handoff: { task_id: task.id, expected_session_id: "owner", expected_event_id: "version" } };
+  await assert.rejects(requestAutomaticWork({ ...args, handoff: { ...args.handoff, expected_event_id: "stale" } }), { statusCode: 409 });
+  const work = await requestAutomaticWork(args);
+  assert.deepEqual(work.task_ids, [task.id]);
+  assert.equal(work.handoff.workspace, current.workspace);
+  await f.observer.tick([current], args.profile, work);
+  assert.equal(f.calls(), 0, "明确移交直接推进执行，不重复分析");
+  assert.equal(queued.length, 1); assert.deepEqual(queued[0][3].handoff, work.handoff);
+  await (await createAutomaticObserver(f.options)).tick([current], args.profile, work);
+  assert.equal(queued.length, 1);
+});
+
 test("正常计划和执行进度仅本地观察，不调用任何模型", async t => {
   const f = await fixture(t, { judge: async () => assert.fail("正常进度无需Jev") });
   for (const status of ["planned", "in_progress"]) {

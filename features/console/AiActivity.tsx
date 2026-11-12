@@ -39,12 +39,14 @@ export function AiActivity({ request }: { request: Request }) {
     finally { setBusy(false); }
   };
   const rows = activity?.rows || [];
-  const work = async () => {
+  const work = async (handoffTask = "") => {
     setBusy(true);
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 12_000);
     try {
-      const result = await request<{ queued: number; reused: boolean; intent: string }>("/ai/work", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: JSON.stringify({ intent }), signal: controller.signal });
+      const selected = handoffTask ? (await request<{ task: { sessionId: string; lastEventId: string } }>(`/tasks/${encodeURIComponent(handoffTask)}`, { signal: controller.signal })).task : undefined;
+      const handoff = selected ? { task_id: handoffTask, expected_session_id: selected.sessionId, expected_event_id: selected.lastEventId } : undefined;
+      const result = await request<{ queued: number; reused: boolean; intent: string }>("/ai/work", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: JSON.stringify({ intent, handoff }), signal: controller.signal });
       setNotice(result.queued ? `${result.reused ? "继续已有处理轮次" : "已受理主动处理"}：核实队列 ${result.queued} 条；本地对账在后台执行，实际结果会出现在下方时间线。` : result.intent ? "未找到能明确关联的任务，请在目标中补充任务名称；未调用模型，本地对账继续。" : "没有新的明确异常；未调用模型，本地对账继续。");
       setBefore(""); void load();
     } catch (error) { setNotice(error instanceof Error && error.name === "AbortError" ? "受理响应超时，结果待核对；请刷新查看已登记轮次，同一目标重试会复用请求。" : error instanceof Error ? error.message : "主动处理启动失败"); }
@@ -54,6 +56,7 @@ export function AiActivity({ request }: { request: Request }) {
     <header className="task-header"><div><p>AI ACTIVITY</p><h1>AI 行为</h1><small>发现异常、执行维护、验证效果；每一步保存真实回执。</small></div><div><button disabled={busy} onClick={() => void work()}>{busy ? "正在受理…" : "立即主动处理"}</button><button onClick={() => { setBefore(""); void load(); }}>刷新</button></div></header>
     <section className="console-card ai-analysis"><label htmlFor="ai-work-intent">告诉 AI，你希望解决什么（可选）</label><textarea id="ai-work-intent" value={intent} maxLength={2000} rows={3} disabled={busy} placeholder="例如：优先处理「修复导出」任务的缺行问题。请带上任务名称。" onChange={event => setIntent(event.target.value)} /><small>留空仅处理尚未分析的新异常；填写任务名称后在现有契约内处理，无法明确关联时不会遍历其他任务。</small></section>
     <p role="status">{notice}</p>{activityError && <p role="alert">时间线刷新失败：{activityError}；已受理请求的后台处理不受此提示影响。</p>}{activity?.work && <p>本轮核实：已处理 {activity.work.total - activity.work.pending} / {activity.work.total} 条。结果包括分析、规则降级与跳过，不代表业务任务完成。</p>}
+    <section className="console-card ai-analysis"><h2>移交任务给维护 AI</h2><label htmlFor="ai-handoff-task">指定任务</label><select id="ai-handoff-task" value={taskId} disabled={busy} onChange={event => setTaskId(event.target.value)}><option value="">选择任务</option>{tasks.map(task => <option key={task.id} value={task.id}>{task.title || task.id}</option>)}</select><button disabled={busy || !taskId} onClick={() => void work(taskId)}>授权此任务由维护 AI 接续</button><small>授权仅绑定所选任务的当前归属与内容。维护 AI 核对执行者空闲后，在原契约内实际修复和验证；目标、契约或归属变化需重新授权。</small></section>
     {activity?.work && <section className="console-card ai-analysis" aria-label="本轮目标与结果"><h2>本轮目标与结果</h2><p>你的目标：{activity.work.intent || "自主巡检"}</p><p>{activity.work.pending ? `正在逐项分析，剩余 ${activity.work.pending} 项` : activity.work.total ? "本轮分析已结束，维护行动按实际回执跟进" : "没有新异常或目标未明确关联任务；未调用模型，本地对账继续"}</p><details><summary>逐项查看 AI 理解、结果与行动</summary>{activity.work.results?.map(result => <article key={result.task_id}><h3><a href={`/tasks?task=${encodeURIComponent(result.task_id)}`}>{result.title}</a></h3><p>AI 理解：{result.understanding || (result.status === "degraded" ? "模型不可用，尚未形成意图理解；已进行规则检查" : "本轮未记录意图理解")}</p><p>分析结果：{result.summary || "尚未记录"}</p><p>行动回执：{result.action || "此任务暂无本轮维护回执，分析不代表已执行"}</p></article>)}</details><small>最多显示本轮前 10 项分析结果；完整过程见时间线。</small></section>}
     <section className="console-card ai-analysis" aria-label="AI 当前行动"><h2>AI 现在在做什么</h2>{activity?.current_action ? <>
       <h3><a href={`/tasks?task=${encodeURIComponent(activity.current_action.task_id)}`}>{activity.current_action.title || "未命名任务"}</a></h3>

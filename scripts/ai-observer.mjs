@@ -49,24 +49,33 @@ export function automaticCandidates(tasks, workspace, profile) {
     && (profile.automatic?.scope === "all_projects" || resolve(task.workspace) === resolve(workspace)));
 }
 
-export async function requestAutomaticWork({ tasks, workspace, profile, runtime, reconcile, record, intent: value }) {
+export async function requestAutomaticWork({ tasks, workspace, profile, runtime, reconcile, record, intent: value, handoff }) {
   const intent = validateWorkIntent(value);
   const path = join(runtime, "ai-work-request.json");
   const previous = await readableJson(path, null);
   const state = await readableJson(join(runtime, "ai-observer-state.json"), { tasks: {} });
   const candidates = automaticCandidates(tasks, workspace, profile);
+  let authorization;
+  if (handoff !== undefined) {
+    const task = candidates.find(task => task.id === handoff?.task_id);
+    if (!task || profile.automatic?.actions !== true || task.agent !== "codex") throw new AiGovernanceError(400, "移交需要已启用维护行动的可执行 Codex 任务。");
+    if (task.sessionId !== handoff.expected_session_id || task.lastEventId !== handoff.expected_event_id) throw new AiGovernanceError(409, "任务归属或版本已变化，请刷新后重新授权移交。");
+    authorization = { task_id: task.id, expected_session_id: task.sessionId, expected_event_id: task.lastEventId,
+      workspace: task.workspace, input_hash: governanceSnapshot(task, "evidence").input_hash };
+  }
   if (previous && candidates.some(task => previous.task_ids.includes(task.id) && (!previous.intent || matchesIntent(task, previous.intent)) && state.tasks[task.id]?.request_id !== previous.id)) {
-    if ((previous.intent || "") !== intent) throw new AiGovernanceError(409, "上一轮目标仍在分析，请等待分析结束后提交新目标；输入已保留。");
+    if ((previous.intent || "") !== intent || JSON.stringify(previous.handoff) !== JSON.stringify(authorization)) throw new AiGovernanceError(409, "上一轮目标仍在分析，请等待分析结束后提交新目标；输入已保留。");
     return { ...previous, reused: true };
   }
   const eligible = candidates.filter(task => {
+    if (authorization) return task.id === authorization.task_id;
     if (intent) return matchesIntent(task, intent);
     const signal = anomalySignal(task);
     return signal !== "observe" && !handledSignal(state.tasks[task.id], signal);
   });
-  const request = { id: `work-${randomUUID()}`, at: new Date().toISOString(), intent, task_ids: eligible.map(task => task.id) };
+  const request = { id: `work-${randomUUID()}`, at: new Date().toISOString(), intent, task_ids: eligible.map(task => task.id), ...(authorization ? { handoff: authorization } : {}) };
   await writeJsonAtomic(path, request);
-  if (record) await record({ id: request.id, at: request.at, source: "governance", title: "立即主动处理", mode: "automatic", trigger: "manual_work", status: request.task_ids.length ? "started" : "skipped", model: "rules", summary: request.task_ids.length ? `已关联 ${request.task_ids.length} 条${intent ? "目标任务" : "新异常任务"}；本地对账在后台执行。` : intent ? "未找到能明确关联的任务名称，请补充任务名称；未调用模型，本地对账继续。" : "没有新的明确异常；未调用模型，本地对账继续。", result: { intent } });
+  if (record) await record({ id: request.id, at: request.at, source: "governance", title: "立即主动处理", mode: "automatic", trigger: "manual_work", status: request.task_ids.length ? "started" : "skipped", model: "rules", summary: request.task_ids.length ? `已关联 ${request.task_ids.length} 条${intent ? "目标任务" : "新异常任务"}；本地对账在后台执行。` : intent ? "未找到能明确关联的任务名称，请补充任务名称；未调用模型，本地对账继续。" : "没有新的明确异常；未调用模型，本地对账继续。", result: { intent, ...(authorization ? { handoff: authorization } : {}) } });
   if (reconcile && record) setImmediate(() => {
     void (async () => {
       try {
@@ -97,7 +106,7 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
         const previous = state.tasks[task.id];
         const requested = Boolean(request?.task_ids.includes(task.id) && previous?.request_id !== request.id);
         const intent = request?.intent || "";
-        const forced = requested && Boolean(intent) && matchesIntent(task, intent);
+        const forced = requested && (request.handoff?.task_id === task.id || Boolean(intent) && matchesIntent(task, intent));
         const automaticSignal = anomalySignal(task);
         if (requested && !forced && (intent || automaticSignal === "observe" || handledSignal(previous, automaticSignal))) {
           state.tasks[task.id] = { ...previous, request_id: request.id, retry_at: undefined,
@@ -135,7 +144,7 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
       if (!candidates.length) return;
       candidates.sort((a, b) => Number(b.requested) - Number(a.requested) || Number(a.previous?.handled_at || 0) - Number(b.previous?.handled_at || 0));
       const { task, snapshot, previous, requested, automaticSignal } = candidates[0];
-      const work = requested ? { request_id: request.id, intent: validateWorkIntent(request.intent) } : null;
+      const work = requested ? { request_id: request.id, intent: validateWorkIntent(request.intent), handoff: request.handoff?.task_id === task.id ? request.handoff : undefined } : null;
       const workTarget = work?.intent ? { task_id: task.id, title: task.title, matched_by: "宿主已按任务ID或名称关联", selected_task_ids: request.task_ids.filter(id => tasks.some(item => item.id === id && matchesIntent(item, work.intent))).slice(0, 20) } : null;
       const runId = `ai-${randomUUID()}`;
       const base = { run_id: runId, source: "governance", task_id: task.id, title: "自动治理", mode: "automatic", trigger: requested ? "manual_work" : previous ? "task_changed" : "active_task", request_id: work?.request_id, intent: work?.intent, work_target: workTarget, event_id: task.lastEventId, input_hash: work?.intent ? createHash("sha256").update(JSON.stringify({ snapshot, intent: work.intent, work_target: workTarget })).digest("hex") : snapshot.input_hash, prompt_version: "automatic-v4", snapshot };
@@ -146,6 +155,12 @@ export async function createAutomaticObserver({ workspace, statePath, record, re
       health.current_task_id = task.id; health.status = "analyzing";
       const started = performance.now();
       try {
+        if (work?.handoff) {
+          const result = ruleResult(task, task.blocker || task.status === "blocked" ? "blockers" : "evidence");
+          await enqueue(task, result, profile, work);
+          await emit({ status: "succeeded", model: "rules", summary: "任务级移交授权已持久登记，维护宿主将核对现场后实际执行" });
+          return;
+        }
         await emit({ status: "started", model: profile.model, summary: "自动关联任务，正在判断是否需要参与" });
         if (now() < state.cooldown_until) throw new Error("AI_COOLDOWN");
         let decision;
