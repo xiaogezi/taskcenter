@@ -4,7 +4,7 @@ import { performance } from "node:perf_hooks";
 // Observe gate hot paths without retaining query parameters, bodies or Session data.
 export function observeControlRequest(request, response, { now = () => performance.now(), write = line => console.log(line), slowMs = 1_000 } = {}) {
   const endpoint = String(request.url || "").split("?")[0];
-  if (!["/task-prepare", "/session-status", "/task-events", "/sessions/l0-audit", "/gate-denials"].includes(endpoint)) return;
+  if (!["/tasks", "/task-prepare", "/session-status", "/task-events", "/sessions/l0-audit", "/gate-denials"].includes(endpoint)) return;
   const started = now();
   const suppliedId = request.headers["x-request-id"];
   const requestId = typeof suppliedId === "string" && /^[a-f0-9-]{36}$/i.test(suppliedId) ? suppliedId : randomUUID();

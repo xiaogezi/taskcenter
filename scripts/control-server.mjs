@@ -529,13 +529,21 @@ const server = createServer(async (request, response) => {
       if (url.pathname !== "/tasks") {
         // 交给下方 task 子资源路由。
       } else {
-        const usageByTask = new Map((currentUsageReport().lifetime?.byTask || []).map((item) => [item.id, item]));
         const taskId = url.searchParams.get("task_id") || "";
-        const tasks = (taskId ? loadTasks() : loadVisibleTasks()).slice().reverse().map((task) => ({ ...task, tokenUsage: usageByTask.get(task.id) || null }));
         const sessionId = url.searchParams.get("session_id") || "";
-        if (taskId || sessionId) {
-          const matching = tasks.filter(task => (!taskId || task.id === taskId) && (!sessionId || task.sessionId === sessionId));
-          sendJson(response, 200, { tasks: url.searchParams.get("view") === "summary" ? matching.map(task => ({ ...taskSummary(task), agent_guidance: agentGuidance(task, taskId ? aiActivityPath : undefined) })) : matching });
+        if (taskId) {
+          // Select before completion/timing hydration; exact ownership reads must not hydrate unrelated tasks.
+          const task = loadTaskById(taskId);
+          const matching = task && (!sessionId || task.sessionId === sessionId)
+            ? [{ ...task, tokenUsage: (currentUsageReport().lifetime?.byTask || []).findLast(item => item.id === taskId) || null }] : [];
+          sendJson(response, 200, { tasks: url.searchParams.get("view") === "summary" ? matching.map(task => ({ ...taskSummary(task), agent_guidance: agentGuidance(task, aiActivityPath) })) : matching });
+          return;
+        }
+        const usageByTask = new Map((currentUsageReport().lifetime?.byTask || []).map((item) => [item.id, item]));
+        const tasks = loadVisibleTasks().slice().reverse().map((task) => ({ ...task, tokenUsage: usageByTask.get(task.id) || null }));
+        if (sessionId) {
+          const matching = tasks.filter(task => task.sessionId === sessionId);
+          sendJson(response, 200, { tasks: url.searchParams.get("view") === "summary" ? matching.map(task => ({ ...taskSummary(task), agent_guidance: agentGuidance(task) })) : matching });
           return;
         }
         if (!url.searchParams.size) {

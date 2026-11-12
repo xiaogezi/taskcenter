@@ -205,6 +205,47 @@ test("Control API task_id 精准查询、session 交集、view 与归档可见�
   assert.equal((await (await fetch(`${base}/tasks?session_id=precise-session`)).json()).tasks.length, 0, "普通Session列表仍隐藏归档项");
 });
 
+test("Control API 精确查询只包装目标，完成与转交仍保留归属交集和usage投影", async context => {
+  await resetLedger();
+  const target = { id: "count-target", sessionId: "count-owner", status: "done_claimed", title: "目标", evidence: ["probe:target"] };
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([target, ...Array.from({ length: 1000 }, (_, i) => ({ ...target, id: `unrelated-${i}` }))]));
+  await writeFile(envPaths.TASKCENTER_USAGE_REPORT_PATH, JSON.stringify({ lifetime: { byTask: [{ id: target.id, totalTokens: 1 }, { id: target.id, totalTokens: 2 }] } }));
+  const output = execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import { Session } from "node:inspector";
+    import { readFileSync, writeFileSync } from "node:fs";
+    await import("./scripts/control-server.mjs");
+    await new Promise(resolve => setImmediate(resolve));
+    const profiler = new Session(); profiler.connect();
+    const post = (method, params = {}) => new Promise((resolve, reject) => profiler.post(method, params, (error, result) => error ? reject(error) : resolve(result)));
+    await post("Profiler.enable");
+    await post("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
+    const base = "http://127.0.0.1:" + process.env.TASKCENTER_CONTROL_PORT;
+    const query = async suffix => {
+      const response = await fetch(base + "/tasks?task_id=" + suffix);
+      assert.equal(response.status, 200); return (await response.json()).tasks;
+    };
+    const [found] = await query("count-target&session_id=count-owner");
+    assert.equal(found.status, "done_claimed");
+    assert.deepEqual(found.evidence, ["probe:target"]);
+    assert.equal(found.tokenUsage.totalTokens, 2, "保留旧Map的最后usage项语义");
+    assert.deepEqual(await query("missing-target"), []);
+    const path = process.env.TASKCENTER_TASK_LEDGER_PATH;
+    const ledger = JSON.parse(readFileSync(path, "utf8")); ledger[0].sessionId = "new-count-owner";
+    writeFileSync(path, JSON.stringify(ledger));
+    assert.deepEqual(await query("count-target&session_id=count-owner"), []);
+    assert.equal((await query("count-target&session_id=new-count-owner"))[0].sessionId, "new-count-owner");
+    const coverage = (await post("Profiler.takePreciseCoverage")).result;
+    const functions = coverage.find(script => script.url.endsWith("/scripts/task-ledger.mjs")).functions;
+    const calls = name => functions.find(fn => fn.functionName === name)?.ranges[0].count || 0;
+    const counts = Object.fromEntries(["loadTasks", "loadVisibleTasks", "loadTaskById"].map(name => [name, calls(name)]));
+    assert.equal(counts.loadTasks, 0); assert.equal(counts.loadVisibleTasks, 0); assert.equal(counts.loadTaskById, 4);
+    console.log(JSON.stringify({ exact_query_call_counts: counts }));
+    profiler.disconnect(); process.exit(0);
+  `], { cwd: root, env: { ...process.env, TASKCENTER_CONTROL_PORT: String(39_000 + process.pid % 1000), TASKCENTER_JEV_ROUTING: "0", TASKCENTER_AI_OBSERVER_DISABLED: "1", TASKCENTER_RUNTIME_DIR: join(tempDir, "count-runtime") }, timeout: 15_000 }).toString();
+  context.diagnostic(output.trim());
+});
+
 async function resetLedger() {
   for (const path of Object.values(envPaths)) {
     await rm(path, { force: true });
