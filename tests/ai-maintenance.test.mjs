@@ -38,6 +38,23 @@ test("Claude 维护保留Hook与MCP，沿用指定模型、推理等级和连接
   assert.equal(rows.at(-1).result.cause, "tools_reasoning_unsupported");
   assert.equal(rows.at(-1).result.exit_code, 1);
   assert.doesNotMatch(JSON.stringify(rows), /never-persist-this/);
+  for (const [source, message] of [["assistant", "Responses upstream too_many_requests: token rate limit exceeded"], ["stderr", "HTTP 429"], ["result", "rate_limit_error"]]) {
+    rows.length = 0;
+    const text = `${message}; token=never-persist-this; private conversation`;
+    const emitted = source === "assistant" ? [{ type: "assistant", error: "rate_limit", message: { content: [{ type: "text", text }] } }] : [];
+    emitted.push({ type: "result", subtype: "success", ...(source === "result" ? { errors: [text] } : {}) });
+    await writeFile(join(dir, "fixture.mjs"), `for await(const chunk of process.stdin){} ${source === "stderr" ? `console.error(${JSON.stringify(text)});` : ""} for(const row of ${JSON.stringify(emitted)}) console.log(JSON.stringify(row)); process.exitCode=1;`);
+    await assert.rejects(runClaudeMaintenance({ task: { ...task, workspace: dir }, action: { session_id: "fixture" }, profile: { model: "fixture", effort: "low" }, record: async row => rows.push(row), onSpawn: async () => {} }), error => error.code === "AI_ACTION_RATE_LIMITED" && error.performed_tools === 0);
+    assert.deepEqual(rows.at(-1).result, { exit_code: 1, subtype: "success", permission_denials: 0, cause: "rate_limited", tool_calls: 0 });
+    assert.doesNotMatch(JSON.stringify(rows), /never-persist-this|private conversation|Responses upstream/);
+    t.diagnostic(JSON.stringify({ source, ...rows.at(-1) }));
+  }
+  rows.length = 0;
+  await writeFile(join(dir, "fixture.mjs"), `for await(const chunk of process.stdin){} console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text:'Discuss too_many_requests here'}]}})); console.log(JSON.stringify({type:'result',subtype:'private conversation token=never-persist-this'})); process.exitCode=1;`);
+  await assert.rejects(runClaudeMaintenance({ task: { ...task, workspace: dir }, action: { session_id: "fixture" }, profile: { model: "fixture", effort: "low" }, record: async row => rows.push(row), onSpawn: async () => {} }), error => !error.code);
+  assert.equal(rows.at(-1).result.cause, "unknown");
+  assert.equal(rows.at(-1).result.subtype, "unknown");
+  assert.doesNotMatch(JSON.stringify(rows), /private conversation|never-persist-this/);
 });
 
 test("当前行动来自账本阶段，过期心跳不宣称正在执行", () => {
@@ -231,6 +248,57 @@ test("已确认协议不兼容不定时重试，重启后保留原因，显式�
   const restarted = await createMaintenanceWorker(f.options);
   await restarted.tick(profile); assert.equal(calls, 1);
   await restarted.enqueue(task, analysis, profile, { request_id: "new-authorization", handoff: { task_id: task.id, expected_session_id: task.sessionId, workspace: task.workspace, input_hash: governanceSnapshot(task, "evidence").input_hash } });
+  await restarted.tick(profile); assert.equal(calls, 2);
+});
+
+test("限流退避跨重启增长、到期仍核对占用，三次后不被自动分析重置", async t => {
+  let calls = 0, busy = false;
+  const f = await fixture(t, { maintenanceOwned: false, inspect: async () => ({ busy }), execute: async ({ action, onSpawn }) => {
+    calls++; f.update({ sessionId: action.session_id }); await onSpawn(99999999);
+    throw Object.assign(new Error("AI_ACTION_CLI_FAILED"), { code: "AI_ACTION_RATE_LIMITED", performed_tools: 0 });
+  } });
+  const current = { ...task, agent: "codex" }; f.update(current);
+  await f.worker.enqueue(current, analysis, profile, { request_id: "grant", handoff: { task_id: task.id, expected_session_id: task.sessionId, workspace: task.workspace, input_hash: governanceSnapshot(current, "evidence").input_hash } });
+  await f.worker.tick(profile);
+  let action = (await f.state()).actions.task;
+  assert.equal(action.status, "retry_wait"); assert.equal(action.retry_at, 1_300_000);
+  f.advance(299_999);
+  const restarted = await createMaintenanceWorker(f.options);
+  await restarted.tick(profile); assert.equal(calls, 1);
+  f.advance(1); busy = true;
+  const withOther = await createMaintenanceWorker({ ...f.options, tasks: () => [{ ...task, sessionId: action.session_id }, { ...task, id: "other", sessionId: "other" }] });
+  await withOther.tick(profile); assert.equal(calls, 1);
+  busy = false; f.advance(60_001);
+  const recovered = await createMaintenanceWorker(f.options);
+  await recovered.tick(profile); assert.equal(calls, 2);
+  action = (await f.state()).actions.task;
+  assert.equal(action.retry_at, 1_960_001);
+  await recovered.enqueue({ ...task, lastEventId: "observer-update" }, analysis, profile);
+  assert.equal((await f.state()).actions.task.attempts, 2);
+  f.advance(599_999); await recovered.tick(profile); assert.equal(calls, 2);
+  f.advance(1); await recovered.tick(profile); assert.equal(calls, 3);
+  action = (await f.state()).actions.task;
+  assert.equal(action.status, "attention"); assert.equal(action.retry_at, null); assert.equal(action.retry_blocked, true);
+  assert.equal(f.rows.at(-1).result.retry_reason, "attempts_exhausted");
+  t.diagnostic(JSON.stringify(f.rows.at(-1)));
+  f.advance(9_000_000);
+  const stopped = await createMaintenanceWorker(f.options);
+  await stopped.enqueue(task, analysis, profile); await stopped.tick(profile); assert.equal(calls, 3);
+});
+
+test("限流前已有工具执行即保留现场，真实PID退出后也不自动重放", async t => {
+  let calls = 0, owner;
+  const f = await fixture(t, { execute: async ({ action, onSpawn }) => {
+    calls++; owner = action.session_id; f.update({ sessionId: owner }); await onSpawn(99999999);
+    throw Object.assign(new Error("AI_ACTION_CLI_FAILED"), { code: "AI_ACTION_RATE_LIMITED", performed_tools: 1 });
+  } });
+  await f.worker.enqueue(task, analysis, profile); await f.worker.tick(profile);
+  assert.equal((await f.state()).actions.task.retry_blocked, true);
+  assert.equal(f.rows.at(-1).result.retry_reason, "tool_results_require_check");
+  f.advance(9_000_000);
+  const restarted = await createMaintenanceWorker(f.options);
+  await restarted.tick(profile); assert.equal(calls, 1);
+  await restarted.enqueue({ ...task, sessionId: owner }, analysis, profile, { request_id: "explicit-recovery" });
   await restarted.tick(profile); assert.equal(calls, 2);
 });
 

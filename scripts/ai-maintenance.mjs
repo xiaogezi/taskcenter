@@ -35,6 +35,18 @@ export function currentMaintenanceAction(actions, tasks, observer, stale) {
 }
 
 const activeStatuses = new Set(["planned", "in_progress", "blocked"]);
+const maxAttempts = 3;
+const rateLimitCode = "AI_ACTION_RATE_LIMITED";
+
+function failureCause(text) {
+  if (/Function tools with reasoning_effort are not supported/i.test(text)) return "tools_reasoning_unsupported";
+  if (/too_many_requests|rate[_ -]?limit(?:ed|ing|_error)?|\b(?:HTTP|status(?:_code)?)\s*["':= ]*429\b/i.test(text)) return "rate_limited";
+  if (/session.*already.*(?:use|exist)/i.test(text)) return "session_in_use";
+  if (/unknown option|invalid.*(?:argument|option)/i.test(text)) return "invalid_arguments";
+  if (/authentication|not logged|login|unauthorized|401/i.test(text)) return "authentication";
+  return /hook/i.test(text) ? "hook_failed" : "unknown";
+}
+
 const finished = task => task && ["done_claimed", "verified"].includes(task.status)
   && computeCompletionReadiness({ ...task, status: "done_claimed" }).completionClaim.allowed;
 
@@ -58,7 +70,7 @@ export async function runClaudeMaintenance({ task, action, profile, record, onSp
 任务快照：${JSON.stringify(governanceSnapshot(task, "evidence"))}
 本次治理分析：${JSON.stringify(action.analysis)}
 本轮用户目标：${JSON.stringify(action.intent || "自主巡检")}。先核对目标和原契约关系，仅在契约内落实；若目标不适用或需契约变更，记录原因，不擅自扩大范围。`;
-  let child, timer, result, exitCode, stderr = "", count = 0, aborted = false;
+  let child, timer, result, exitCode, stderr = "", count = 0, aborted = false, streamCause = "unknown";
   const operations = new Map();
   const stop = () => { aborted = true; if (child?.pid) void terminateProcessTree(child.pid, { force: true }).catch(() => {}); };
   if (signal?.aborted) throw new Error("AI_ACTION_CANCELLED");
@@ -80,6 +92,11 @@ export async function runClaudeMaintenance({ task, action, profile, record, onSp
     for await (const line of lines) {
       if (line.length > 256_000) throw new Error("AI_ACTION_OUTPUT_INVALID");
       let row; try { row = JSON.parse(line); } catch { continue; }
+      // CLI API errors may be assistant messages even when the final subtype is success.
+      if (row.error || row.isApiErrorMessage || row.type === "error" || row.type === "system" && row.subtype === "api_error") {
+        const cause = failureCause(JSON.stringify(row));
+        if (cause !== "unknown") streamCause = cause;
+      }
       if (row.type === "assistant") for (const block of row.message?.content || []) {
         if (block.type !== "tool_use") continue;
         count++;
@@ -104,13 +121,13 @@ export async function runClaudeMaintenance({ task, action, profile, record, onSp
     error.performed_tools = count;
     // Diagnose protocol/process failures without persisting provider text or CLI stderr.
     const diagnostic = stderr + JSON.stringify(result?.errors || []) + String(result?.result || "");
-    const cause = /Function tools with reasoning_effort are not supported/i.test(diagnostic) ? "tools_reasoning_unsupported"
-      : /session.*already.*(?:use|exist)/i.test(diagnostic) ? "session_in_use" : /unknown option|invalid.*(?:argument|option)/i.test(diagnostic) ? "invalid_arguments"
-      : /authentication|not logged|login|unauthorized|401/i.test(diagnostic) ? "authentication" : /hook/i.test(diagnostic) ? "hook_failed" : "unknown";
+    const cause = failureCause(diagnostic) === "unknown" ? streamCause : failureCause(diagnostic);
     if (cause === "tools_reasoning_unsupported") error.code = "AI_ACTION_PROTOCOL_UNSUPPORTED";
+    if (cause === "rate_limited") error.code = rateLimitCode;
+    const subtype = ["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries"].includes(result?.subtype) ? result.subtype : "unknown";
     await record({ status: "tool_failed", summary: "维护执行通道失败，已记录进程与协议状态，未记录原始输出", error: safeActionText(error.message),
-      result: { exit_code: exitCode, subtype: result?.subtype, permission_denials: result?.permission_denials?.length || 0,
-        cause } });
+      result: { exit_code: exitCode, subtype, permission_denials: result?.permission_denials?.length || 0,
+        cause, tool_calls: count } });
     throw error;
   } finally {
     clearTimeout(timer); signal?.removeEventListener("abort", stop); lines.close();
@@ -139,6 +156,8 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
       const snapshot = governanceSnapshot(task, "evidence");
       const old = state.actions[task.id];
       const intent = validateWorkIntent(work?.intent);
+      // Observer updates must not reset a rate-limit cooldown or an exhausted retry budget.
+      if (old?.error === rateLimitCode && (!work?.request_id || old.request_id === work.request_id)) return;
       if (old?.status === "running") {
         if (work?.request_id && old.request_id !== work.request_id) { old.pending_work = { analysis, work: { ...work, intent } }; await save(); }
         return;
@@ -178,7 +197,7 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
             action.status = finished(task) ? "completed" : "cancelled"; await save();
             await emit(action, { status: action.status, summary: finished(task) ? "执行前核对：交付证据已就绪" : "任务已结束、归档或原执行承载失效，取消待执行动作，未启动接续" }); continue;
           }
-          if ((action.status === "attention" && (!action.pid || action.attempts >= 3 || action.error === "AI_ACTION_PROTOCOL_UNSUPPORTED")) || now() < (action.retry_at || 0)) continue;
+          if (action.retry_blocked || (action.status === "attention" && (!action.pid || action.attempts >= maxAttempts || action.error === "AI_ACTION_PROTOCOL_UNSUPPORTED")) || now() < (action.retry_at || 0)) continue;
           if (action.attempts === 0 && (task.lastEventId !== action.expected_event_id || governanceSnapshot(task, "evidence").input_hash !== action.input_hash
             || action.expected_session_id && task.sessionId !== action.expected_session_id || action.workspace && task.workspace !== action.workspace)) {
             if (action.expected_session_id && task.sessionId !== action.expected_session_id || action.workspace && task.workspace !== action.workspace) {
@@ -237,10 +256,17 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
               remaining: updated ? computeCompletionReadiness(updated).reasons : ["task_missing"] };
             await save(); await emit(action, { status: action.status, summary: completed ? "行动闭环：任务交付证据满足契约，独立验收状态保持真实" : "Agent 已返回，任务尚未满足交付条件；保留已执行动作与待处理项", result: action.result });
           } catch (error) {
-            const code = error.code === "AI_ACTION_PROTOCOL_UNSUPPORTED" ? error.code : error.code === "ENOENT" ? "AI_CLI_UNAVAILABLE" : ["AI_ACTION_INTERRUPTED", "AI_ACTION_CANCELLED", "CLI_MODEL_MISMATCH"].includes(error.message) ? error.message : "AI_ACTION_FAILED";
-            action.status = error.performed_tools > 0 || ["AI_ACTION_INTERRUPTED", "AI_ACTION_CANCELLED", "AI_ACTION_PROTOCOL_UNSUPPORTED"].includes(code) || action.attempts >= 3 ? "attention" : "retry_wait";
-            action.retry_at = now() + 300_000; action.error = code;
-            await save(); await emit(action, { status: action.status, error: code, summary: code === "AI_ACTION_PROTOCOL_UNSUPPORTED" ? "网关不支持当前模型的工具与推理协议，停止自动重试；修复通道配置后可重新授权任务接续" : action.status === "attention" ? "行动未完成，保留恢复依据；主线工具继续可用" : "执行通道不可用，行动已持久保留，五分钟后核对状态再试；本地治理继续运行" });
+            const code = ["AI_ACTION_PROTOCOL_UNSUPPORTED", rateLimitCode].includes(error.code) ? error.code : error.code === "ENOENT" ? "AI_CLI_UNAVAILABLE" : ["AI_ACTION_INTERRUPTED", "AI_ACTION_CANCELLED", "CLI_MODEL_MISMATCH"].includes(error.message) ? error.message : "AI_ACTION_FAILED";
+            const rateLimited = code === rateLimitCode;
+            // A fresh host cannot infer whether previously issued tools have settled.
+            action.retry_blocked = error.performed_tools > 0 || ["AI_ACTION_INTERRUPTED", "AI_ACTION_CANCELLED", "AI_ACTION_PROTOCOL_UNSUPPORTED"].includes(code) || action.attempts >= maxAttempts;
+            action.status = action.retry_blocked ? "attention" : "retry_wait";
+            const delay = rateLimited ? Math.min(300_000 * 2 ** (action.attempts - 1), 3_600_000) : 300_000;
+            action.retry_at = action.retry_blocked ? null : now() + delay; action.error = code;
+            const reason = error.performed_tools > 0 ? "tool_results_require_check" : action.attempts >= maxAttempts ? "attempts_exhausted" : action.retry_blocked ? "execution_requires_check" : rateLimited ? "rate_limit_backoff" : "channel_cooldown";
+            await save(); await emit(action, { status: action.status, error: code,
+              summary: code === "AI_ACTION_PROTOCOL_UNSUPPORTED" ? "网关不支持当前模型的工具与推理协议，停止自动重试；修复通道配置后可重新授权任务接续" : action.retry_blocked ? "行动未完成，停止自动重试，保留现场供核对后显式接续" : rateLimited ? "上游限流，已持久保存退避时间；到期核对归属和现场后再试" : "执行通道不可用，行动已持久保留，五分钟后核对状态再试；本地治理继续运行",
+              result: { cause: rateLimited ? "rate_limited" : code, attempt: action.attempts, max_attempts: maxAttempts, retry_delay_ms: action.retry_blocked ? null : delay, retry_at: action.retry_at, retry_reason: reason } });
           } finally { health.status = "idle"; health.task_id = null; }
           break;
         }
