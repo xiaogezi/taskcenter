@@ -23,8 +23,12 @@ export function queryUsageReport({ report, index, tasks = [], params = new URLSe
       if (!params.has("task")) return state;
       const id = params.get("task");
       const lifetime = state.lifetimeByTask?.[id];
+      const belongsToTask = (sample) => attribute(state.sessionId, Array.isArray(sample) ? sample[0] : sample.at).includes(id);
       return { ...state,
-        events: (state.events || []).filter((event) => attribute(state.sessionId, Array.isArray(event) ? event[0] : event.at).includes(id)),
+        events: (state.events || []).filter(belongsToTask),
+        responseInputs: (state.responseInputs || []).filter(belongsToTask),
+        responseGaps: (state.responseGaps || []).filter(belongsToTask),
+        toolSamples: (state.toolSamples || []).filter(belongsToTask),
         lifetimeTotal: lifetime || { usage: { input: 0, cachedInput: 0, output: 0, reasoning: 0 }, count: 0, total: 0 },
         lifetimeByTask: lifetime ? { [id]: lifetime } : {},
         latestRateLimits: {},

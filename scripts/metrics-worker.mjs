@@ -25,6 +25,7 @@ let refreshingGovernance = false;
 async function refreshUsage() {
   if (refreshingUsage) return;
   refreshingUsage = true;
+  const startedAt = Date.now();
   try {
     const { report, index } = await updateUsageIndex({
       sessionsRoot,
@@ -38,8 +39,13 @@ async function refreshUsage() {
         mode: "incremental_jsonl",
         indexedFiles: Object.keys(index.files || {}).length,
         skippedOversizedLines: Object.values(index.files || {}).reduce((sum, item) => sum + Number(item.skippedOversizedLines || 0), 0),
+        passiveSignals: "new_events_only",
       },
     });
+    const day = report.windows["24h"];
+    console.log(JSON.stringify({ event: "passive_usage_metrics_refresh", elapsed_ms: Date.now() - startedAt,
+      context_samples: day.contextOccupancy.sampleCount, response_samples: day.responseGapProxy.sampleCount,
+      tool_calls: day.toolSignals.calls, tool_receipts: day.toolSignals.receiptsObserved }));
     await writeWorkerHealth(usageHealthPath, "usage", true);
   } catch (error) {
     console.error(`[metrics-worker] usage refresh failed: ${safeError(error)}`);

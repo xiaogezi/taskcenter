@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
+import { consumePassiveSessionRecord } from "./passive-session-signals.mjs";
 
 const DEFAULT_SESSIONS_ROOT = process.env.TASKCENTER_SESSIONS_ROOT || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
 const DEFAULT_LEDGER = join(import.meta.dirname, "..", "data", "task-ledger.json");
@@ -125,7 +126,9 @@ export function parseSession(input, options = {}) {
   let phaseEnded = false;
   let compressionAfterPhase = 0;
   const latestRateLimits = {};
+  const passive = {};
   for (const record of records) {
+    consumePassiveSessionRecord(passive, record);
     if (record.type === "session_meta") cwd = record.payload?.cwd || cwd;
     if (record.type === "event_msg" && ["task_complete", "task_done", "phase_complete"].includes(record.payload?.type)) phaseEnded = true;
     if (phaseEnded && (record.type === "compacted" || record.payload?.type === "context_compacted" || record.payload?.compacted === true || record.payload?.compaction)) {
@@ -151,12 +154,14 @@ export function parseSession(input, options = {}) {
       else events.push({ at, model, usage, contextWindow: value(record.payload?.model_context_window || record.payload?.info?.model_context_window, contextWindow), credits: record.rate_limits?.credits || null });
     }
   }
-  return { sessionId, cwd, events, lifetimeTotal, compressionAfterPhase, missingTimestampUsage, latestRateLimits };
+  return { sessionId, cwd, events, lifetimeTotal, compressionAfterPhase, missingTimestampUsage, latestRateLimits,
+    responseInputs: passive.responseInputs || [], responseGaps: passive.responseGaps || [], toolSamples: passive.toolSamples || [] };
 }
 
 export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date(), providerAttempts, providerAttemptsPath } = {}) {
   const inputs = sessions || filesUnder(sessionsRoot).map((file) => ({ file, sessionId: sessionIdFromFile(file) }));
-  const parsed = inputs.map((item) => parseSession(item.records || item.lines || item.file || item, { sessionId: item.sessionId })).filter((s) => s.events.length || Object.keys(s.latestRateLimits || {}).length);
+  const parsed = inputs.map((item) => parseSession(item.records || item.lines || item.file || item, { sessionId: item.sessionId }))
+    .filter((s) => s.events.length || s.responseInputs.length || s.toolSamples.length || Object.keys(s.latestRateLimits || {}).length);
   const report = buildUsageReportFromParsed(parsed, { ledger, rates, now });
   if (providerAttempts !== undefined || providerAttemptsPath) report.providerAttempts = collectProviderAttemptUsage(providerAttempts ?? providerAttemptsPath);
   return report;
@@ -281,6 +286,7 @@ function buildWindow(parsed, index, rates, start, end) {
   const continuationGroups = new Map();
   const totals = emptyAggregate("all", "id");
   let eventCount = 0;
+  const contextRatios = [];
   for (const session of parsed) for (const event of session.events) if (eventAt(event) >= start && eventAt(event) <= end) {
     const model = eventModel(event);
     const usage = eventUsage(event);
@@ -295,8 +301,20 @@ function buildWindow(parsed, index, rates, start, end) {
     const continuationKey = `${session.sessionId}:${model}`;
     continuationGroups.set(continuationKey, { sessionId: session.sessionId, model, count: (continuationGroups.get(continuationKey)?.count || 0) + 1 });
     eventCount += 1;
+    const capacity = Array.isArray(event) ? value(event[5]) : value(event.contextWindow);
+    if (capacity > 0 && usage.input > 0) contextRatios.push(usage.input / capacity);
   }
-  return { eventCount, continuationGroups: [...continuationGroups.values()], byModel: finishAggregates(byModel), byProject: finishAggregates(byProject), bySession: finishAggregates(bySession), byTask: finishAggregates(byTask), totals: finishAggregate(totals) };
+  const inWindow = sample => sample[0] >= start && sample[0] <= end;
+  const inputCount = parsed.reduce((sum, session) => sum + (session.responseInputs || []).filter(inWindow).length, 0);
+  const responseDurations = parsed.flatMap((session) => (session.responseGaps || []).filter(inWindow).map((sample) => sample[1]));
+  const toolSamples = parsed.flatMap((session) => (session.toolSamples || []).filter(inWindow));
+  return { eventCount, continuationGroups: [...continuationGroups.values()], byModel: finishAggregates(byModel), byProject: finishAggregates(byProject), bySession: finishAggregates(bySession), byTask: finishAggregates(byTask), totals: finishAggregate(totals),
+    contextOccupancy: { metric: "input_tokens_over_model_context_window", sampleCount: contextRatios.length, usageEventCount: eventCount,
+      coverage: eventCount ? contextRatios.length / eventCount : null, ratio: percentiles(contextRatios), atLeast80Percent: contextRatios.filter((ratio) => ratio >= .8).length },
+    responseGapProxy: { metric: "input_to_first_assistant_item_ms", inputCount, sampleCount: responseDurations.length,
+      pairingCoverage: inputCount ? responseDurations.length / inputCount : null, durationMs: percentiles(responseDurations), exactModelRtt: false },
+    toolSignals: { source: "codex_custom_tool_call", calls: toolSamples.length, receiptsObserved: toolSamples.filter((sample) => sample[2] === 1).length,
+      duplicateCallIds: toolSamples.filter((sample) => sample[3] === 1).length, resultSuccess: "unavailable" } };
 }
 function emptyAggregate(id, key) { return { [key]: id, usage: { input: 0, cachedInput: 0, output: 0 }, samples: [], cost: 0, estimableCount: 0, unestimable: false, count: 0 }; }
 function mergeAggregate(item, row) { mergeUsage(item.usage, row.usage); item.samples.push(row.usage.input); if (row.estimable) { item.cost += row.cost; item.estimableCount++; } item.unestimable ||= !row.estimable; item.count++; }

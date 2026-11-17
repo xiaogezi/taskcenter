@@ -3,6 +3,7 @@ import { mkdir, open, readdir, readFile, rename, stat, writeFile } from "node:fs
 import { basename, dirname, join } from "node:path";
 
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
+import { consumePassiveSessionRecord, prunePassiveSessionSignals } from "./passive-session-signals.mjs";
 import { buildUsageReportFromParsed, createTaskUsageAttributor, sessionIdentityFromRecord } from "./usage-report.mjs";
 
 const INDEX_VERSION = 7;
@@ -42,6 +43,7 @@ export async function updateUsageIndex(options) {
     state.checkpointHash = await jsonlCheckpointFingerprint(path, state.offset);
     state.headHash = await jsonlCheckpointFingerprint(path, Math.min(state.offset, 4096));
     state.events = (state.events || []).filter((event) => Number(Array.isArray(event) ? event[0] : event.at) >= now - RETENTION_MS);
+    prunePassiveSessionSignals(state, now - RETENTION_MS);
     index.files[path] = state;
   }
   for (const path of Object.keys(index.files)) if (!seen.has(path)) delete index.files[path];
@@ -52,12 +54,16 @@ export async function updateUsageIndex(options) {
     sessionId: state.sessionId,
     cwd: state.cwd,
     events: state.events || [],
+    responseInputs: state.responseInputs || [],
+    responseGaps: state.responseGaps || [],
+    toolSamples: state.toolSamples || [],
     compressionAfterPhase: Number(state.compressionAfterPhase || 0),
     missingTimestampUsage: Number(state.missingTimestampUsage || 0),
     lifetimeTotal: state.lifetimeTotal || emptyLifetime(),
     lifetimeByTask: state.lifetimeByTask || {},
     latestRateLimits: state.latestRateLimits || migrateLatestRateLimit(state.latestPrimaryRateLimit),
-  })).filter((session) => session.events.length || session.lifetimeTotal.count || Object.keys(session.lifetimeByTask).length || Object.keys(session.latestRateLimits || {}).length || session.latestPrimaryRateLimit);
+  })).filter((session) => session.events.length || session.responseInputs.length || session.toolSamples.length
+    || session.lifetimeTotal.count || Object.keys(session.lifetimeByTask).length || Object.keys(session.latestRateLimits || {}).length || session.latestPrimaryRateLimit);
   return {
     report: buildUsageReportFromParsed(parsed, {
       ledger: options.ledger,
@@ -85,6 +91,12 @@ function emptyFileState(path, identity, sessionId = sessionIdFromFile(path)) {
     checkpointHash: "",
     headHash: "",
     events: [],
+    responseInputs: [],
+    responseGaps: [],
+    toolSamples: [],
+    pendingResponseInput: null,
+    pendingToolCalls: {},
+    recentCallIds: {},
     lifetimeTotal: emptyLifetime(),
     lifetimeByTask: {},
     latestRateLimits: {},
@@ -109,6 +121,7 @@ function consumeRecord(state, line, attributeTask) {
     state.model = record.payload?.model || state.model;
     state.contextWindow = number(record.payload?.model_context_window, state.contextWindow);
   }
+  consumePassiveSessionRecord(state, record);
   const rateLimits = record?.payload?.rate_limits;
   const primary = rateLimits?.primary;
   const rawTime = record.timestamp ?? record.created_at ?? record.payload?.timestamp;
