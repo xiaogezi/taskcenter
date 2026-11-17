@@ -34,7 +34,10 @@ await page.goto(`${process.env.TASKCENTER_PREVIEW_URL || 'http://127.0.0.1:4318'
 await eventually(async()=>/正在加载/.test(await text()));
 mode='ok';while(held.length)await held.shift()();
 await eventually(async()=>(await text()).includes('目标甲'));
-await page.getByRole('button',{name:'调度',exact:true}).click();assert.match(await text(),/routed-model/);assert.match(await text(),/reported-model/);assert.match(await text(),/客户端报告/);assert.doesNotMatch(await text(),/实际模型/);
+assert.equal(await detail.getByRole('button',{name:'调度',exact:true}).count(),0,'retired scheduling tab must not return');
+for(const name of ['概览','证据','活动']) assert.equal(await detail.getByRole('button',{name,exact:true}).count(),1);
+await detail.getByRole('button',{name:'证据',exact:true}).click();assert.match(await text(),/尚未提交证据/);
+await detail.getByRole('button',{name:'概览',exact:true}).click();assert.match(await text(),/目标甲/);
 await page.getByRole('button',{name:'活动',exact:true}).click();await eventually(async()=>/Bash/.test(await text()));assert.doesNotMatch(await text(),/SECRET_/);assert.match(await text(),/未记录/);
 await page.getByRole('button',{name:'概览',exact:true}).click();
 mode='hold';await page.getByRole('button',{name:'刷新',exact:true}).click();
@@ -61,6 +64,6 @@ await page.getByRole('button',{name:'刷新',exact:true}).click();await eventual
 await page.getByRole('button',{name:'证据',exact:true}).click();assert.match(await text(),/尚未提交证据/);assert.match(await text(),/未记录/);
 mode='fail';await page.reload();await eventually(async()=>/读取失败/.test(await text()));assert.doesNotMatch(await text(),/1970|目标甲|目标乙|分钟前的数据/);
 if(process.env.TASKCENTER_SCREENSHOT) await page.screenshot({path:process.env.TASKCENTER_SCREENSHOT,fullPage:true});
-assert.deepEqual(errors,[]);console.log('PASS U1/U2 browser: routed/reported separation, safe activity, pending, refresh retention, failure/malformed retention, empty, task switch, missing evidence');
+assert.deepEqual(errors,[]);console.log('PASS U1/U2 browser: current detail tabs, safe activity, pending, refresh retention, failure/malformed retention, empty, task switch, missing evidence');
 } finally {await browser.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});

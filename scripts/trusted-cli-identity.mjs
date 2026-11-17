@@ -15,12 +15,12 @@ export function isTrustedCliEntry(entry, { installed, aliases, sha256 }) {
 
 // Fixed installation locations, not an arbitrary executable's basename. Homebrew
 // symlinks may resolve into Cellar; the selected entry must still be the installed alias.
-export function isTrustedInspectionEntry(entry, { cwd = process.cwd(), path = process.env.PATH || "" } = {}) {
+export function isTrustedInspectionEntry(entry, { cwd = process.cwd(), path = process.env.PATH || "", allowBuiltins = true } = {}) {
   // No trusted Windows installation inventory is defined yet. Use the normal
   // task gate there rather than guessing executable identities from names.
   if (process.platform === "win32") return false;
   if (typeof entry !== "string" || !entry) return false;
-  if (["command", "type", "pwd"].includes(entry)) return true; // shell builtins, never a path
+  if (allowBuiltins && ["command", "type", "pwd"].includes(entry)) return true; // shell builtins, never a path
   const name = basename(entry);
   const locations = ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"].map(dir => join(dir, name));
   const candidates = entry.includes("/") ? [isAbsolute(entry) ? entry : resolve(cwd, entry)]

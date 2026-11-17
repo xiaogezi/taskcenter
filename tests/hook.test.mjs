@@ -23,7 +23,7 @@ function installedInspection(command, cwd = process.cwd(), path = process.env.PA
       tokens.shift();
       if (tokens[0] === "proxy") tokens.shift();
       if (tokens[0] === "read") return true;
-      if (!isTrustedInspectionEntry(tokens[0], { cwd, path })) return false;
+      if (!isTrustedInspectionEntry(tokens[0], { cwd, path, allowBuiltins: false })) return false;
     }
     if (tokens[0].split("/").at(-1) === "sh" && tokens[1] === "-c") return installedInspection(tokens[2], cwd, path);
     return true;

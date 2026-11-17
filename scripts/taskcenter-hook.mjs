@@ -783,7 +783,7 @@ function isReadOnlyCommand(words, heredoc, cwd = workspace, depth = 0, remote = 
     tokens.shift();
     if (tokens[0] === "proxy") tokens.shift();
     // RTK read is a wrapper subcommand; all other entries execute another CLI.
-    if (tokens[0] !== "read" && !isTrustedInspectionEntry(tokens[0], { cwd })) return false;
+    if (tokens[0] !== "read" && !isTrustedInspectionEntry(tokens[0], { cwd, allowBuiltins: false })) return false;
   }
   const executable = basename(tokens[0] || "");
   const args = tokens.slice(1);

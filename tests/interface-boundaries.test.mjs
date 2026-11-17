@@ -20,6 +20,9 @@ test("L0 executable identity rejects project paths and PATH shadowing", { skip: 
     await symlink("/bin/cat", join(directory, "alias-cat"));
     assert.equal(isTrustedInspectionEntry(join(directory, "alias-cat")), false);
     assert.equal(isTrustedInspectionEntry("command"), true);
+    await writeFile(join(directory, "pwd"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    assert.equal(isTrustedInspectionEntry("pwd", { path: directory, allowBuiltins: false }), false);
+    assert.equal(isTrustedInspectionEntry("command", { path: directory, allowBuiltins: false }), false);
     assert.equal(isTrustedInspectionEntry(join(directory, "command")), false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

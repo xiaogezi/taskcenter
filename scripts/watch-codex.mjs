@@ -16,7 +16,10 @@ const maxSyncDelayMs = Number(process.env.TASKCENTER_MAX_SYNC_DELAY_MS || 30_000
 const syncState = createWatcherSyncState({ quietPeriodMs, maxSyncDelayMs });
 const heartbeatPath = process.env.TASKCENTER_WATCHER_HEARTBEAT_PATH || join(import.meta.dirname, "..", ".local", "runtime", "watcher-heartbeat.json");
 const configuredPathCache = new Map();
-function heartbeat(observationError = "") {
+// A child finishing must not clear a newer failure to inspect the source tree.
+// Only a subsequent successful observation can establish that polling recovered.
+let observationError = "";
+function heartbeat() {
   try {
     mkdirSync(join(heartbeatPath, ".."), { recursive: true });
     writeFileSync(heartbeatPath, JSON.stringify({ ...syncState.heartbeat(),
@@ -113,10 +116,12 @@ function sync() {
 function poll() {
   try {
     syncState.observe(fingerprint(), Date.now());
+    observationError = "";
     sync();
     heartbeat();
   } catch (error) {
-    heartbeat(error instanceof Error ? error.message : String(error));
+    observationError = error instanceof Error ? error.message : String(error);
+    heartbeat();
   }
 }
 poll();
