@@ -1,9 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cutoverWithRollback, verifyBeforeServiceCutover } from "../scripts/service-deployment-policy.mjs";
+import { cutoverWithRollback, verifyBeforeServiceCutover, verifyOriginalServiceWithRetries } from "../scripts/service-deployment-policy.mjs";
 
 const original = { pid: 42, token: "original" };
+
+test("原服务短暂探测失败后须连续健康，身份变化立即中止", async () => {
+  const results = [false, true, false, true, true];
+  let reads = 0;
+  await verifyOriginalServiceWithRetries(async () => ({ identityMatches: true, healthy: results[reads++] }), { delay: async () => {} });
+  assert.equal(reads, 5);
+
+  reads = 0;
+  await assert.rejects(() => verifyOriginalServiceWithRetries(async () => {
+    reads += 1;
+    return reads === 2 ? { identityChanged: true } : { identityMatches: true, healthy: true };
+  }, { delay: async () => {} }), /identity changed/);
+  assert.equal(reads, 2);
+});
 
 test("部署前验证全部通过后才允许进入切换阶段", async () => {
   const stages = [];

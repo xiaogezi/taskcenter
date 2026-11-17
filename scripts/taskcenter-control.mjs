@@ -23,7 +23,7 @@ import { verifyProduction } from "./verify-production.mjs";
 import { buildReleaseEnvironment, resolveManagedProcessState, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.mjs";
-import { cutoverWithRollback, verifyBeforeServiceCutover } from "./service-deployment-policy.mjs";
+import { cutoverWithRollback, verifyBeforeServiceCutover, verifyOriginalServiceWithRetries } from "./service-deployment-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const runtimeDir = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local/runtime"));
@@ -285,18 +285,27 @@ async function requireDisruptionAuthorization(requestedAction) {
 }
 
 async function requireOriginalService(original, stage) {
-  const current = readManagedProcess();
-  const identityMatches = current?.pid === original.pid && current?.token === original.token;
-  const healthy = identityMatches && await healthCheck();
-  if (!identityMatches || !healthy) {
+  try {
+    await verifyOriginalServiceWithRetries(async () => {
+      const state = readJson(statePath);
+      const identityChanged = state?.pid !== original.pid || state?.token !== original.token;
+      if (identityChanged) return { identityChanged, observedPid: state?.pid ?? null };
+      const current = readManagedProcess();
+      const identityMatches = current?.pid === original.pid && current?.token === original.token;
+      const healthy = identityMatches && await healthCheck();
+      return { identityChanged, identityMatches, healthy, observedPid: current?.pid ?? null, supervision: current?.supervision ?? null };
+    });
+  } catch (error) {
     console.error(JSON.stringify({
       event: "release_original_service_check_failed",
       stage,
       originalPid: original.pid,
-      observedPid: current?.pid ?? null,
-      supervision: current?.supervision ?? null,
-      identityMatches,
-      healthy,
+      observedPid: error.last?.observedPid ?? null,
+      supervision: error.last?.supervision ?? null,
+      identityChanged: error.last?.identityChanged ?? false,
+      identityMatches: error.last?.identityMatches ?? false,
+      healthy: error.last?.healthy ?? false,
+      attempts: error.attempt,
     }));
     throw new Error(`部署已中止：${stage} 验证期间原 TaskCenter 服务发生变化，未执行切换。`);
   }

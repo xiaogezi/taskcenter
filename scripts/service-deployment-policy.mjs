@@ -27,6 +27,21 @@ export async function assertCleanRevision(expectedRevision, readRevision, readSt
   }
 }
 
+export async function verifyOriginalServiceWithRetries(probe, { attempts = 5, consecutive = 2, delay = () => new Promise(resolve => setTimeout(resolve, 500)) } = {}) {
+  let healthyStreak = 0;
+  let last;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    last = await probe();
+    if (last.identityChanged) {
+      throw Object.assign(new Error("original identity changed"), { last, attempt });
+    }
+    healthyStreak = last.identityMatches && last.healthy ? healthyStreak + 1 : 0;
+    if (healthyStreak >= consecutive) return;
+    if (attempt < attempts) await delay();
+  }
+  throw Object.assign(new Error("original service did not pass consecutive health checks"), { last, attempt: attempts });
+}
+
 export async function cutoverWithRollback(options) {
   const {
     stopOriginal,
