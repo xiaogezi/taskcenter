@@ -218,6 +218,30 @@ export function applyCompletionEvent(task, event, previousTask = task) {
   return withCompletionState(next);
 }
 
+// Storage recovery only: callers must load the event from the durable ledger and
+// verify its idempotency before calling. Never select this path from input flags.
+// Reproject already accepted evidence, not current-task transitions or gates.
+export function restorePersistedReview(task, persistedEvent, persistedSuccessorIds = []) {
+  if (persistedEvent.type !== "review.reported") throw failure("Review recovery requires a persisted review event.");
+  const review = normalizeReview(persistedEvent.review_attestation, persistedEvent.occurred_at || persistedEvent.created_at);
+  if (!review.id) throw failure("Persisted review is missing its attestation id.");
+  if ((task.reviewAttestations || []).some((item) => item.id === review.id)) return withCompletionState(task);
+  const revision = persistedEvent.contract_revision ?? review.contract_revision ?? 1;
+  // Validate persisted bindings against each other, but not against a newer
+  // contract: withCompletionState must retain this historical review as stale.
+  const boundRevision = evidenceContractRevision({ contractRevision: revision }, persistedEvent, review);
+  const reviews = [...(task.reviewAttestations || [])];
+  const successors = new Set(persistedSuccessorIds);
+  // Use durable ledger order, never producer timestamps. A higher contract is
+  // also later even when its projection was imported without a local event.
+  const laterIndex = reviews.findIndex(item => successors.has(item.id) || (item.contract_revision || 1) > boundRevision);
+  reviews.splice(laterIndex < 0 ? reviews.length : laterIndex, 0, { ...review, contract_revision: boundRevision });
+  return withCompletionState({
+    ...task,
+    reviewAttestations: projectReviewDuplicates(reviews),
+  });
+}
+
 // Recompute derived duplicate flags on load as well, repairing old projections
 // without deleting or rewriting the original attestations/events.
 function projectReviewDuplicates(reviews) {

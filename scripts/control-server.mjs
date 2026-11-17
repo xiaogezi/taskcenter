@@ -802,6 +802,7 @@ const server = createServer(async (request, response) => {
         context_task_id: body.context_task_id,
         context_completion_id: body.context_completion_id,
         authorization_id: body.authorization_id,
+        contract_revision: body.contract_revision,
         revision: body.revision,
         reason: body.reason,
         acceptance_record: {

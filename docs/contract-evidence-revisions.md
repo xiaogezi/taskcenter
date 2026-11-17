@@ -10,6 +10,9 @@ Return that captured revision, not a revision fetched after the work finished:
 
 - MCP requirement, verification and review report inputs: `contract_revision`.
 - MCP acceptance report: `acceptance_record.contract_revision`.
+- Trusted Context `/task-acceptance-sync`: top-level `contract_revision`; the adapter forwards the producer value without substituting the current version.
+- Context `/context-tasks/complete`: top-level `contract_revision` captured before
+  evaluating completion; shadow-task close evidence carries that value into core validation.
 - MCP task close: top-level `contract_revision` for the batch, or the field on each
   `close_requirements` / `close_verifications` entry.
 - Core event API: top-level `contract_revision` or the field on the corresponding
@@ -33,3 +36,20 @@ during recovery. This fix does not retrospectively establish producer provenance
 events accepted by older versions, which stamped the arrival-time contract revision.
 If delayed evidence may have been accepted before the fix, independently re-evaluate
 that evidence rather than treating this protocol change as retrospective validation.
+
+An idempotent retry of an already persisted Review may repair its missing
+projection. This storage-only recovery preserves the original contract revision,
+so an old review remains stale after a contract change, without reverting current
+task state or Run history. New caller input cannot enable this recovery path.
+Locally persisted successor review IDs determine insertion order, including within
+the same contract revision; producer timestamps are not used as event ordering.
+
+## Legacy Context shadow tasks
+
+Closing a legacy shadow no longer implicitly upgrades its contract and creates a
+passing result in one step. This is a deliberate compatibility break: completion
+returns HTTP 409 `CONTEXT_CONTRACT_UPGRADE_REQUIRED` without closing or upgrading.
+Explicitly update the task to the v2 Context lifecycle contract (including the
+`context_goal` criterion), retain the returned `contractRevision`, re-evaluate the
+semantic goal against that contract, then call completion with that captured
+`contract_revision`. Do not simply relabel the old completion assertion.

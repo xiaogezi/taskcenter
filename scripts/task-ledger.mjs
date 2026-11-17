@@ -10,6 +10,7 @@ import {
   completionPacketMarkdown,
   computeCompletionReadiness,
   normalizeCompletionEvent,
+  restorePersistedReview,
   withCompletionState,
 } from "./completion-state.mjs";
 import {
@@ -493,7 +494,9 @@ export function recordTaskEvent(input, options = {}) {
     }
     if (event.type === "review.reported" && original.review_attestation?.id && originalTask && !originalTask.reviewAttestations?.some((review) => review.id === original.review_attestation.id)) {
       // The event can survive a crash before the task projection and processed-ID cache do.
-      originalTask = applyEvent(originalTask, { ...original, contract_revision: original.contract_revision || 1 });
+      // Only the stored event after the idempotency check can take this path.
+      // Do not reapply old lifecycle transitions or bind it to the current contract.
+      originalTask = restorePersistedReview(originalTask, original, persistedReviewSuccessors(original));
       persistTasks(readLedger().map((task) => task.id === originalTask.id ? originalTask : task));
       processed.add(original.event_id);
       persistProcessedEventIds(processed);
@@ -743,6 +746,26 @@ function* taskEventLinesForward() {
   } finally {
     closeSync(descriptor);
   }
+}
+
+function persistedReviewSuccessors(original) {
+  const indexed = eventStore(taskEventsPath);
+  const events = indexed ? indexed.events({ taskId: original.task_id, type: "review.reported" })
+    : (function* () {
+      for (const line of taskEventLinesForward()) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.task_id === original.task_id && event.type === "review.reported") yield event;
+      }
+    })();
+  let found = false;
+  const successors = [];
+  for (const event of events) {
+    if (event.event_id === original.event_id) found = true;
+    else if (found && event.review_attestation?.id) successors.push(event.review_attestation.id);
+  }
+  if (!found) throw new TaskLedgerError(409, "TASK_LEDGER_RECOVERY_REQUIRED：无法核对已存 Review 顺序，拒绝猜测投影。");
+  return successors;
 }
 
 function storedSwitchEvents() {
@@ -1009,8 +1032,12 @@ export function completeContextTasks(input) {
   const completed = [];
   let task = contextCompletionTask(contextTaskId, cleanText(input?.taskcenter_task_id, 200));
   if (isContextShadowTask(task) && activeTaskStatuses.has(task.status)) {
+    if (task.contractVersion !== "v2") {
+      throw new TaskLedgerError(409, "CONTEXT_CONTRACT_UPGRADE_REQUIRED：请先显式升级影子任务为 v2 合同，读取新的 contractRevision，并按新合同重新确认完成；不能在关闭时升级合同并复用旧证据。");
+    }
     const result = recordTaskEvent({
       type: "task.close",
+      contract_revision: input.contract_revision,
       event_id: `context-complete-${contextIdentity(`${contextTaskId}:${task.id}:${task.lastEventId || task.updatedAt}`)}`,
       task_id: task.id,
       context_task_id: contextTaskId,
@@ -1018,14 +1045,6 @@ export function completeContextTasks(input) {
       status: "done_claimed",
       current_step: "ProjectContext semantic task 已完成。",
       evidence: [cleanText(input.summary, 1_000)].filter(Boolean),
-      ...(task.contractVersion === "v2" ? {} : {
-        contract_version: "v2",
-        scope: ["ProjectContext semantic task lifecycle"],
-        non_goals: [],
-        workflow_profile: "fast",
-        review_policy: "not_required",
-        acceptance_criteria: [{ id: "context_goal", description: "ProjectContext 已声明语义目标完成", required: true }],
-      }),
       close_requirements: [{
         requirement_id: "context_goal",
         status: "passed",

@@ -866,6 +866,34 @@ test("Context semantic task 跨 Turn 复用同一执行任务，只有 complete 
   assert.equal(completedAgain.completed[0].status, "done_claimed");
 });
 
+test("Context 影子任务关闭透传生产版本，不将迟到确认重绑当前合同", async () => {
+  await resetLedger();
+  const { task } = ensureContextTask({ context_task_id: "context-versioned", session_id: "context-versioned-session", workspace: "/work", semantic_label: "初始目标" });
+  const changed = recordTaskEvent({ type: "task.update", event_id: "context-versioned-change", task_id: task.id, session_id: task.sessionId, goal: "扩展目标" }).task;
+  assert.equal(changed.contractRevision, 2);
+  const input = { context_task_id: "context-versioned", taskcenter_task_id: task.id, summary: "完成确认" };
+  assert.throws(() => completeContextTasks(input), /CONTRACT_REVISION_MISMATCH/);
+  assert.throws(() => completeContextTasks({ ...input, contract_revision: 1 }), /CONTRACT_REVISION_MISMATCH/);
+  assert.equal(loadTasks().find(item => item.id === task.id).status, "in_progress");
+  const result = completeContextTasks({ ...input, contract_revision: 2 });
+  assert.equal(result.accepted, true);
+  assert.equal(result.completed[0].requirementResults.at(-1).contract_revision, 2);
+});
+
+test("legacy Context 影子需显式升级后重新确认，不在close隐式升级并伪造通过", async () => {
+  await resetLedger();
+  const common = { task_id: `context-${"0".repeat(24)}`, session_id: "legacy-context-session", context_task_id: "legacy-context" };
+  const created = recordTaskEvent({ ...common, type: "task.create", status: "in_progress", goal: "legacy goal" }).task;
+  const input = { context_task_id: common.context_task_id, taskcenter_task_id: common.task_id };
+  assert.throws(() => completeContextTasks(input), /CONTEXT_CONTRACT_UPGRADE_REQUIRED/);
+  assert.equal(loadTasks().find(item => item.id === created.id).contractVersion, created.contractVersion);
+  const upgraded = recordTaskEvent({ ...common, type: "task.update", contract_version: "v2", scope: ["ProjectContext semantic task lifecycle"], non_goals: [], workflow_profile: "fast", review_policy: "not_required", acceptance_criteria: [{ id: "context_goal", description: "ProjectContext 已声明语义目标完成", required: true }] }).task;
+  assert.throws(() => completeContextTasks({ ...input, contract_revision: created.contractRevision }), /CONTRACT_REVISION_MISMATCH/);
+  const result = completeContextTasks({ ...input, contract_revision: upgraded.contractRevision, summary: "按升级后合同重新确认" });
+  assert.equal(result.accepted, true);
+  assert.equal(result.completed[0].requirementResults.at(-1).contract_revision, upgraded.contractRevision);
+});
+
 test("正式 TaskCenter 任务未满足 Completion Packet 门禁时不能完成 Context", async () => {
   await resetLedger();
   recordTaskEvent({ type: "session.register", event_id: "packet-session", session_id: "packet-session", workspace: "/work", agent: "codex" });
@@ -1215,7 +1243,7 @@ test("v2 完成证据追加幂等、就绪度与 Completion Packet 闭环", asyn
   assert.equal(taskCompletionReadiness("completion-task").ready, false);
 });
 
-test("普通任务事件不能验收，可信 Context 同步才可 accepted", async (context) => {
+for (const contractRevision of [1, 2]) test(`可信 Context 验收透传合同版本，兼容初版无版本客户端（合同${contractRevision}）`, async (context) => {
   await resetLedger();
   const { base, child } = await startControlServer({ TASKCENTER_CONTEXT_ACCEPTANCE_TOKEN: "context-test-token" });
   context.after(() => child.kill("SIGTERM"));
@@ -1227,12 +1255,19 @@ test("普通任务事件不能验收，可信 Context 同步才可 accepted", as
     execution_environment: "local", verification_plan: [{ id: "tests", title: "测试", kind: "test", required: true }],
   };
   assert.equal((await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(createBody) })).status, 201);
+  if (contractRevision === 2) {
+    const updated = await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({
+      type: "task.update", event_id: "acceptance-contract-change", session_id: "acceptance-session", task_id: "acceptance-task", goal: "扩展后的可信验收目标",
+    }) });
+    assert.equal(updated.status, 200);
+  }
+  const producerRevision = contractRevision === 1 ? {} : { contract_revision: contractRevision };
   const events = [
     { type: "task.report", event_id: "acceptance-done", session_id: "acceptance-session", task_id: "acceptance-task", status: "done_claimed", tests: ["passed"], revision: "revision-a" },
     { type: "requirement.reported", event_id: "acceptance-requirement", session_id: "acceptance-session", task_id: "acceptance-task", requirement_result: { requirement_id: "acceptance-1", status: "passed", evidence_refs: ["claim-tests"] } },
     { type: "verification.reported", event_id: "acceptance-verification", session_id: "acceptance-session", task_id: "acceptance-task", revision: "revision-a", verification_claim: { id: "claim-tests", requirement_id: "tests", kind: "test", status: "passed", exit_code: 0, revision: "revision-a", observed_at: "2026-08-17T00:00:00.000Z", producer: "codex", producer_session_id: "acceptance-session", evidence_ref: "summary:passed" } },
   ];
-  for (const event of events) assert.equal((await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify(event) })).status, 200);
+  for (const event of events) assert.equal((await fetch(`${base}/task-events`, { method: "POST", headers: taskHeaders(), body: JSON.stringify({ ...event, ...producerRevision }) })).status, 200);
 
   const forged = await fetch(`${base}/task-events`, {
     method: "POST", headers: taskHeaders(),
@@ -1243,16 +1278,29 @@ test("普通任务事件不能验收，可信 Context 同步才可 accepted", as
     method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Context-Token": "wrong" }, body: JSON.stringify({ task_id: "acceptance-task" }),
   });
   assert.equal(denied.status, 403);
+  if (contractRevision === 2) {
+    for (const version of [undefined, 1]) {
+      const stale = await fetch(`${base}/task-acceptance-sync`, {
+        method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Context-Token": "context-test-token" },
+        body: JSON.stringify({ event_id: `stale-context-${version}`, task_id: "acceptance-task", context_task_id: "context-acceptance",
+          context_completion_id: `stale-completion-${version}`, authorization_id: "authorization-1", revision: "revision-a", outcome: "accepted", contract_revision: version }),
+      });
+      assert.equal(stale.status, 409);
+      assert.match(JSON.stringify(await stale.json()), /CONTRACT_REVISION_MISMATCH/);
+    }
+  }
   const accepted = await fetch(`${base}/task-acceptance-sync`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-TaskCenter-Context-Token": "context-test-token" },
     body: JSON.stringify({
-      event_id: "trusted-acceptance", task_id: "acceptance-task", context_task_id: "context-acceptance",
+      ...producerRevision, event_id: "trusted-acceptance", task_id: "acceptance-task", context_task_id: "context-acceptance",
       context_completion_id: "completion-1", authorization_id: "authorization-1", revision: "revision-a", outcome: "accepted",
     }),
   });
   assert.equal(accepted.status, 200);
-  assert.equal((await accepted.json()).task.acceptanceStatus, "accepted");
+  const result = await accepted.json();
+  assert.equal(result.task.acceptanceStatus, "accepted");
+  assert.equal(result.task.acceptanceRecords.at(-1).contract_revision, contractRevision);
 });
 
 test("TaskCenter 页面仅对门禁通过的 fast 任务同步关联 ProjectContext", async (context) => {
