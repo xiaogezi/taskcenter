@@ -34,7 +34,7 @@
 
 组合过滤在已有用量索引上筛选后重新聚合，不能把全局总数冒充过滤后的总数。索引保留最近 7 天事件及 lifetime 累计；归属仍标为 estimated。索引不可用时返回错误，不伪造空报告。
 
-`windows.*` 还返回后台派生的 `contextOccupancy`、`responseGapProxy` 与 `toolSignals`。上下文占比为本轮输入 Token 除以宿主报告的模型窗口，缺窗口或缺有效输入时只计入覆盖率分母；它不是精确剩余容量。响应耗时是用户消息或工具回执到首个 Assistant 事件的间隔，包含宿主调度，`exactModelRtt=false`；超过 30 分钟或缺少可配对事件时统计为无样本。工具信号只覆盖带调用 ID 的 Codex `custom_tool_call`，`receiptsObserved` 仅表示收到回执，不能证明成功或效果正确；`duplicateCallIds` 仅是重复身份，不是重复工作。字段仅从部署后的增量会话事件开始积累，不回填历史，也不保存命令、提示或结果正文。
+`windows.*` 还返回后台派生的 `contextOccupancy`、`responseGapProxy` 与 `toolSignals`。上下文占比为本轮输入 Token 除以宿主报告的模型窗口，缺窗口或缺有效输入时只计入覆盖率分母；它不是精确剩余容量，可使用已有索引中的历史用量事件。响应耗时是用户消息或工具回执到首个 Assistant 事件的间隔，包含宿主调度，`exactModelRtt=false`；同时间戳配对不具备可测时长，由 `sameTimestampPairsExcluded` 计数且不进入分布，超过 30 分钟或缺少可配对事件也不计入样本。工具信号只覆盖带调用 ID 的 Codex `custom_tool_call`，`receiptsObserved` 仅表示收到回执，不能证明成功或效果正确；`duplicateCallIds` 仅是重复身份，不是重复工作。响应和工具字段仅从部署后的增量会话事件开始积累，不回填历史，也不保存命令、提示或结果正文。
 
 默认 MCP 文本响应上限为 4096 UTF-8 字节，超限返回摘要与 `continuation_cursor`。`taskcenter_response_continue` 读取其他响应或 prepare 合同的游标，usage_report 的游标也可传回 usage_report。分页为 `json_text_fragment`，按 offset 拼接后解析 JSON；不会自动续读。游标绑定五分钟的固定快照，过期或服务重启后重新发起原筛选查询。机器可读 handoff 上限为 2048 字节，大字段保留 task 引用。
 

@@ -306,12 +306,15 @@ function buildWindow(parsed, index, rates, start, end) {
   }
   const inWindow = sample => sample[0] >= start && sample[0] <= end;
   const inputCount = parsed.reduce((sum, session) => sum + (session.responseInputs || []).filter(inWindow).length, 0);
-  const responseDurations = parsed.flatMap((session) => (session.responseGaps || []).filter(inWindow).map((sample) => sample[1]));
+  const responseGaps = parsed.flatMap((session) => (session.responseGaps || []).filter(inWindow));
+  // Older incremental snapshots may contain same-timestamp pairs; they have no measurable duration.
+  const responseDurations = responseGaps.filter((sample) => sample[1] > 0).map((sample) => sample[1]);
   const toolSamples = parsed.flatMap((session) => (session.toolSamples || []).filter(inWindow));
   return { eventCount, continuationGroups: [...continuationGroups.values()], byModel: finishAggregates(byModel), byProject: finishAggregates(byProject), bySession: finishAggregates(bySession), byTask: finishAggregates(byTask), totals: finishAggregate(totals),
     contextOccupancy: { metric: "input_tokens_over_model_context_window", sampleCount: contextRatios.length, usageEventCount: eventCount,
       coverage: eventCount ? contextRatios.length / eventCount : null, ratio: percentiles(contextRatios), atLeast80Percent: contextRatios.filter((ratio) => ratio >= .8).length },
     responseGapProxy: { metric: "input_to_first_assistant_item_ms", inputCount, sampleCount: responseDurations.length,
+      sameTimestampPairsExcluded: responseGaps.length - responseDurations.length,
       pairingCoverage: inputCount ? responseDurations.length / inputCount : null, durationMs: percentiles(responseDurations), exactModelRtt: false },
     toolSignals: { source: "codex_custom_tool_call", calls: toolSamples.length, receiptsObserved: toolSamples.filter((sample) => sample[2] === 1).length,
       duplicateCallIds: toolSamples.filter((sample) => sample[3] === 1).length, resultSuccess: "unavailable" } };

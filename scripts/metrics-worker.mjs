@@ -39,7 +39,7 @@ async function refreshUsage() {
         mode: "incremental_jsonl",
         indexedFiles: Object.keys(index.files || {}).length,
         skippedOversizedLines: Object.values(index.files || {}).reduce((sum, item) => sum + Number(item.skippedOversizedLines || 0), 0),
-        passiveSignals: "new_events_only",
+        passiveSignals: { contextOccupancy: "indexed_usage_history", responseGapProxy: "new_events_only", toolSignals: "new_events_only" },
       },
     });
     const day = report.windows["24h"];

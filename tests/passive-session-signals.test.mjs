@@ -31,8 +31,20 @@ test("后台统计占用与响应代理值，工具回执不等于成功且不�
   assert.equal(window.contextOccupancy.atLeast80Percent, 1);
   assert.deepEqual(window.responseGapProxy.durationMs, { average: 250, p50: 200, p95: 300 });
   assert.equal(window.responseGapProxy.exactModelRtt, false);
+  assert.equal(window.responseGapProxy.sameTimestampPairsExcluded, 0);
   assert.deepEqual(window.toolSignals, { source: "codex_custom_tool_call", calls: 2, receiptsObserved: 1, duplicateCallIds: 1, resultSuccess: "unavailable" });
   assert.doesNotMatch(JSON.stringify(report), /SECRET|call-1/);
+});
+
+test("同时间戳不形成零耗时响应样本", () => {
+  const records = [item(0, { type: "message", role: "user" }),
+    item(0, { type: "reasoning" }),
+    item(1, { type: "custom_tool_call_output", call_id: "missing" }),
+    item(1, { type: "message", role: "assistant" })];
+  const report = collectUsage({ sessions: [{ sessionId: "s", records }], ledger: [], rates: {}, now: at(2) });
+  assert.equal(report.windows["24h"].responseGapProxy.inputCount, 2);
+  assert.equal(report.windows["24h"].responseGapProxy.sampleCount, 0);
+  assert.equal(report.windows["24h"].responseGapProxy.durationMs.p50, null);
 });
 
 test("增量索引跨刷新配对回执，重复刷新不重计且缺窗口不伪装零占用", async (t) => {

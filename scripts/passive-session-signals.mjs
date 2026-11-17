@@ -21,7 +21,7 @@ export function consumePassiveSessionRecord(state, record) {
   } else if (["reasoning", "custom_tool_call", "function_call"].includes(payload.type)
     || payload.type === "message" && payload.role === "assistant") {
     const pending = state.pendingResponseInput;
-    if (pending && at >= pending[0] && at - pending[0] <= MAX_RESPONSE_GAP_MS) {
+    if (pending && at > pending[0] && at - pending[0] <= MAX_RESPONSE_GAP_MS) {
       state.responseGaps.push([pending[0], at - pending[0], pending[1]]);
     }
     state.pendingResponseInput = null;
