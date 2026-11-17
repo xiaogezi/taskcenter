@@ -286,7 +286,18 @@ async function requireDisruptionAuthorization(requestedAction) {
 
 async function requireOriginalService(original, stage) {
   const current = readManagedProcess();
-  if (!current || current.pid !== original.pid || current.token !== original.token || !(await healthCheck())) {
+  const identityMatches = current?.pid === original.pid && current?.token === original.token;
+  const healthy = identityMatches && await healthCheck();
+  if (!identityMatches || !healthy) {
+    console.error(JSON.stringify({
+      event: "release_original_service_check_failed",
+      stage,
+      originalPid: original.pid,
+      observedPid: current?.pid ?? null,
+      supervision: current?.supervision ?? null,
+      identityMatches,
+      healthy,
+    }));
     throw new Error(`部署已中止：${stage} 验证期间原 TaskCenter 服务发生变化，未执行切换。`);
   }
 }
