@@ -3508,6 +3508,13 @@ test("账本在更新goal之前保留旧合同身份，关闭时不能复用旧�
   const closed = recordTaskEvent({ ...common, type: "task.close", status: "done_claimed" }).task;
   assert.equal(closed.completionReadiness.ready, false);
   assert.ok(closed.completionReadiness.reasons.includes("requirement_result_stale"));
+  const late = { ...common, event_id: "late-contract-proof", type: "requirement.reported", requirement_result: { requirement_id: "ac", status: "passed", evidence_refs: ["late-result"] } };
+  assert.throws(() => recordTaskEvent(late), /CONTRACT_REVISION_MISMATCH/);
+  assert.throws(() => recordTaskEvent({ ...late, contract_revision: 1 }), /CONTRACT_REVISION_MISMATCH/);
+  const fresh = { ...late, contract_revision: 2, requirement_result: { ...late.requirement_result, evidence_refs: ["fresh-result"] } };
+  assert.equal(recordTaskEvent(fresh).task.requirementResults.at(-1).contract_revision, 2);
+  assert.doesNotThrow(() => recordTaskEvent(fresh));
+  assert.throws(() => recordTaskEvent({ ...fresh, contract_revision: 1 }), /event_id 已被不同事件/);
 });
 
 test("故障场景：不调用 task_close，会话脱离后运行收口为 session_detached，任务保留且不伪造完成", async () => {

@@ -84,6 +84,8 @@ export function normalizeCompletionEvent(input, currentSubject = null) {
     ...(input.execution_environment !== undefined ? { execution_environment: input.execution_environment } : {}),
     ...(input.verification_plan !== undefined ? { verification_plan: normalizeVerificationPlan(input.verification_plan) } : {}),
     ...(input.workspace_policy !== undefined ? { workspace_policy: input.workspace_policy } : {}),
+    ...normalizeContractRevision(input),
+    ...(input.contract_revision !== undefined ? { producer_contract_revision: input.contract_revision } : {}),
     revision: text(input.revision, 500), subject_ref: subject,
     requirement_result: alignSubject(normalizeRequirementResult(input.requirement_result, occurredAt), input.requirement_result),
     verification_claim: alignSubject(normalizeVerificationClaim(input.verification_claim, occurredAt), input.verification_claim),
@@ -127,7 +129,7 @@ export function applyCompletionEvent(task, event, previousTask = task) {
     if (!criteria(next).some((item) => item.id === result.requirement_id)) throw failure(`UNKNOWN_ACCEPTANCE_REFERENCE: requirement_id=${result.requirement_id} 不属于该任务的 acceptance criteria；允许的验收项 ID: ${criteria(next).map((item) => item.id).join(", ") || "(none)"}。验证计划 ID 应填写在 verification claim 中。`, 400);
     if (result.status === "not_applicable" && !result.note) throw failure("not_applicable 必须填写原因。");
     if (["passed", "failed"].includes(result.status) && !result.evidence_refs.length) throw failure("验收条件通过或失败时必须引用证据。");
-    next.requirementResults = [...(next.requirementResults || []), { ...result, contract_revision: event.contract_revision || next.contractRevision || 1, checked_at: result.checked_at || event.occurred_at || event.created_at }];
+    next.requirementResults = [...(next.requirementResults || []), { ...result, contract_revision: evidenceContractRevision(next, event, result), checked_at: result.checked_at || event.occurred_at || event.created_at }];
   }
   if (event.type === "verification.reported") {
     const claim = normalizeVerificationClaim(event.verification_claim, event.occurred_at || event.created_at);
@@ -141,7 +143,7 @@ export function applyCompletionEvent(task, event, previousTask = task) {
     if (["standard", "strict"].includes(next.workflowProfile) && !claim.subject_ref) throw failure(`${next.workflowProfile} 验证证据必须绑定 SubjectReference。`);
     if ((next.verificationClaims || []).some((item) => item.id === claim.id)) throw failure("Verification Claim id 已存在；请使用新 id 追加证据。", 409);
     rejectSecrets([claim.command_or_probe, claim.evidence_ref, claim.summary, ...(claim.artifact_refs || [])]);
-    next.verificationClaims = [...(next.verificationClaims || []), { ...claim, contract_revision: event.contract_revision || next.contractRevision || 1 }];
+    next.verificationClaims = [...(next.verificationClaims || []), { ...claim, contract_revision: evidenceContractRevision(next, event, claim) }];
   }
   if (event.type === "task.close") {
     for (const requirementResult of event.close_requirements || []) {
@@ -171,7 +173,7 @@ export function applyCompletionEvent(task, event, previousTask = task) {
     validateReviewVerdicts(review);
     if ((next.reviewAttestations || []).some((item) => item.id === review.id)) throw failure("Review Attestation id 已存在；请使用新 id 追加复审。", 409);
     validateReviewCycleLink(next, review);
-    next.reviewAttestations = projectReviewDuplicates([...(next.reviewAttestations || []), { ...review, contract_revision: event.contract_revision || next.contractRevision || 1 }]);
+    next.reviewAttestations = projectReviewDuplicates([...(next.reviewAttestations || []), { ...review, contract_revision: evidenceContractRevision(next, event, review) }]);
   }
   if (event.type === "review_cycle.reported") {
     const cycle = normalizeReviewCycle(event.review_cycle, event.occurred_at || event.created_at);
@@ -202,12 +204,13 @@ export function applyCompletionEvent(task, event, previousTask = task) {
   if (["acceptance.accepted", "acceptance.rejected"].includes(event.type)) {
     const outcome = event.type.endsWith("accepted") ? "accepted" : "rejected";
     const record = event.acceptance_record?.id ? event.acceptance_record : legacyAcceptance(next, event, outcome);
+    const contractRevision = evidenceContractRevision(next, event, record);
     validateAcceptance(next, record, outcome);
     if (outcome === "accepted") {
       const readiness = computeCompletionReadiness(next, record.subject_ref || next.currentSubject);
       if (!readiness.ready) throw failure(`任务尚未就绪：${readiness.reasons.join(", ")}`, 409);
     }
-    const boundRecord = { ...record, contract_revision: event.contract_revision || next.contractRevision || 1, outcome };
+    const boundRecord = { ...record, contract_revision: contractRevision, outcome };
     next.acceptanceRecords = [...(next.acceptanceRecords || []), boundRecord];
     next.acceptanceRecord = outcome === "accepted" ? boundRecord : null;
     if (outcome === "rejected") { next.acceptanceRejectedAt = record.observed_at; next.acceptanceRejectionReason = record.reason || "rejected"; }
@@ -448,6 +451,28 @@ function criteria(task) { return normalizeCriteria(task.acceptanceRequirements?.
 
 // Artifact identity alone does not identify the obligations it was checked against.
 // Legacy evidence belongs to revision 1; never silently rebind it after a contract edit.
+function normalizeContractRevision(value) {
+  if (value.contract_revision === undefined) return {};
+  if (!Number.isSafeInteger(value.contract_revision) || value.contract_revision < 1) {
+    throw failure("contract_revision 必须为正安全整数。", 400);
+  }
+  return { contract_revision: value.contract_revision };
+}
+
+function evidenceContractRevision(task, event, evidence) {
+  const explicit = normalizeContractRevision(evidence).contract_revision;
+  const envelope = normalizeContractRevision(event).contract_revision;
+  if (explicit !== undefined && envelope !== undefined && explicit !== envelope) {
+    throw failure("CONTRACT_REVISION_MISMATCH：证据与事件 contract_revision 不一致。", 409);
+  }
+  // Missing producer identity is legacy revision 1, NEVER the latest contract.
+  const revision = explicit ?? envelope ?? 1;
+  if (revision !== (task.contractRevision || 1)) {
+    throw failure(`CONTRACT_REVISION_MISMATCH：证据基于合同 ${revision}，当前合同 ${task.contractRevision || 1}；请按当前合同重新验证，不得为旧证据改写版本。`, 409);
+  }
+  return revision;
+}
+
 function sameContract(evidence, task) {
   return (evidence?.contract_revision || 1) === (task.contractRevision || 1);
 }
@@ -489,13 +514,13 @@ function normalizeWorkspacePolicy(value, profile, reviewPolicy) {
 
 function normalizeRequirementResult(value, fallbackAt) {
   if (!value || typeof value !== "object") return {};
-  return { requirement_id: text(value.requirement_id, 120), status: enumeration(value.status, requirementStatuses, ""), evidence_refs: strings(value.evidence_refs, 30, 500), checked_at: text(value.checked_at, 80) || fallbackAt, checked_by: normalizeActorIdentity(value.checked_by), subject_ref: normalizeSubjectReference(value.subject_ref, value.checked_at || fallbackAt), revision: text(value.revision, 500), note: text(value.note, 1_000) };
+  return { ...normalizeContractRevision(value), requirement_id: text(value.requirement_id, 120), status: enumeration(value.status, requirementStatuses, ""), evidence_refs: strings(value.evidence_refs, 30, 500), checked_at: text(value.checked_at, 80) || fallbackAt, checked_by: normalizeActorIdentity(value.checked_by), subject_ref: normalizeSubjectReference(value.subject_ref, value.checked_at || fallbackAt), revision: text(value.revision, 500), note: text(value.note, 1_000) };
 }
 
 function normalizeVerificationClaim(value, fallbackAt) {
   if (!value || typeof value !== "object") return {};
   const observedAt = text(value.observed_at, 80) || fallbackAt;
-  return { id: text(value.id, 120), requirement_id: text(value.requirement_id, 120), kind: enumeration(value.kind, verificationKinds, ""), command_or_probe: text(value.command_or_probe, 1_000), status: enumeration(value.status, claimStatuses, ""), ...(Number.isInteger(value.exit_code) ? { exit_code: value.exit_code } : {}), subject_ref: normalizeSubjectReference(value.subject_ref, observedAt) || legacySubject(value.revision, observedAt), revision: text(value.revision, 500), observed_at: observedAt, producer: normalizeActorIdentity(value.producer, { type: "agent", id: value.producer_session_id || "" }), evidence_ref: text(value.evidence_ref, 500), artifact_refs: strings(value.artifact_refs, 30, 500), summary: text(value.summary, 1_000) };
+  return { ...normalizeContractRevision(value), id: text(value.id, 120), requirement_id: text(value.requirement_id, 120), kind: enumeration(value.kind, verificationKinds, ""), command_or_probe: text(value.command_or_probe, 1_000), status: enumeration(value.status, claimStatuses, ""), ...(Number.isInteger(value.exit_code) ? { exit_code: value.exit_code } : {}), subject_ref: normalizeSubjectReference(value.subject_ref, observedAt) || legacySubject(value.revision, observedAt), revision: text(value.revision, 500), observed_at: observedAt, producer: normalizeActorIdentity(value.producer, { type: "agent", id: value.producer_session_id || "" }), evidence_ref: text(value.evidence_ref, 500), artifact_refs: strings(value.artifact_refs, 30, 500), summary: text(value.summary, 1_000) };
 }
 
 function normalizeReview(value, fallbackAt) {
@@ -508,7 +533,7 @@ function normalizeReview(value, fallbackAt) {
   const unresolved = contractVersion === "v3" ? findings.filter((item) => item.status === "unresolved").length : Number.isInteger(value.unresolved_findings) && value.unresolved_findings >= 0 ? value.unresolved_findings : 0;
   return {
     id: text(value.id, 120), reviewer: normalizeActorIdentity(value.reviewer, { type: "agent", id: value.reviewer_session_id || "" }),
-    ...(positiveInteger(value.contract_revision) ? { contract_revision: value.contract_revision } : {}),
+    ...normalizeContractRevision(value),
     ...(value.route_id ? { route_id: text(value.route_id, 200), review_artifacts: value.review_artifacts } : {}),
     subject_ref: normalizeSubjectReference(value.subject_ref, observedAt) || legacySubject(value.revision, observedAt), revision: text(value.revision, 500), scope: text(value.scope, 1_000),
     review_contract_version: contractVersion, spec_verdict: enumeration(value.spec_verdict, specVerdicts, hasV2Fields || hasV3Fields ? "not_evaluated" : ""), quality_verdict: enumeration(value.quality_verdict, qualityVerdicts, hasV2Fields || hasV3Fields ? "not_evaluated" : ""),
@@ -639,7 +664,7 @@ function normalizeDiagnosticObservation(value, fallbackAt) {
 
 function normalizeAcceptance(value, fallbackAt) {
   if (!value || typeof value !== "object") return {};
-  return { id: text(value.id, 120), source: enumeration(value.source, acceptanceSources, ""), actor: normalizeActorIdentity(value.actor), subject_ref: normalizeSubjectReference(value.subject_ref, value.observed_at || fallbackAt), outcome: value.outcome === "rejected" ? "rejected" : "accepted", observed_at: text(value.observed_at, 80) || fallbackAt, authorization_id: text(value.authorization_id, 200), evidence_refs: strings(value.evidence_refs, 30, 500), reason: text(value.reason, 1_000) };
+  return { ...normalizeContractRevision(value), id: text(value.id, 120), source: enumeration(value.source, acceptanceSources, ""), actor: normalizeActorIdentity(value.actor), subject_ref: normalizeSubjectReference(value.subject_ref, value.observed_at || fallbackAt), outcome: value.outcome === "rejected" ? "rejected" : "accepted", observed_at: text(value.observed_at, 80) || fallbackAt, authorization_id: text(value.authorization_id, 200), evidence_refs: strings(value.evidence_refs, 30, 500), reason: text(value.reason, 1_000) };
 }
 
 function validateAcceptance(task, record, outcome) {

@@ -89,6 +89,7 @@ const taskFields = {
   estimated_effort_ms: z.number().int().positive().optional().describe("预计有效执行工时（毫秒），用于历史估时校准"),
   estimate_reason: z.string().max(1_000).optional().describe("新增或调整截止时间/预计工时的原因"),
   contract_version: z.enum(["legacy", "v2"]).optional(),
+  contract_revision: z.number().int().positive().optional().describe("产生证据前读取的 contractRevision；缺省仅兼容初版1，合同变更后必须重新验证"),
   scope: z.array(z.string().min(1).max(500)).max(50).optional(),
   non_goals: z.array(z.string().max(500)).max(50).optional(),
   workflow_profile: z.enum(["fast", "standard", "strict"]).optional(),
@@ -192,12 +193,13 @@ toolRegistry.register("taskcenter_task_close", {
     evidence: z.array(z.string().min(1).max(1_000)).max(30).default([]),
     continuation: z.object({ new_independent_goal: z.boolean().optional(), context_large: z.boolean().optional(), expected_more_rounds: z.boolean().optional() }).strict().optional(),
     close_requirements: z.array(z.object({
+      contract_revision: z.number().int().positive().optional(),
       requirement_id: z.string().min(1).max(120), status: z.enum(["pending", "passed", "failed", "not_applicable"]),
       evidence_refs: z.array(z.string().min(1).max(500)).max(30).default([]), checked_at: z.string().datetime({ offset: true }).optional(),
       checked_by: z.union([actorIdentity, z.string().max(200)]).optional(), subject_ref: subjectReference.optional(), revision: z.string().max(200).optional(), note: z.string().max(1_000).optional(),
     }).strict()).max(50).default([]),
     close_verifications: z.array(z.object({
-      id: z.string().min(1).max(120), requirement_id: z.string().max(120).optional(), kind: verificationKind,
+      contract_revision: z.number().int().positive().optional(), id: z.string().min(1).max(120), requirement_id: z.string().max(120).optional(), kind: verificationKind,
       command_or_probe: z.string().max(1_000).optional(), status: z.enum(["passed", "failed", "skipped"]), exit_code: z.number().int().optional(),
       revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }),
       producer: z.union([actorIdentity, z.string().min(1).max(200)]), producer_session_id: z.string().max(200).optional(),
@@ -211,6 +213,7 @@ toolRegistry.register("taskcenter_task_requirement_report", {
   description: "追加一条验收条件结果；passed/failed 必须引用证据，not_applicable 必须说明原因。",
   inputSchema: z.object({
     session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
+    contract_revision: z.number().int().positive().optional(),
     requirement_id: z.string().min(1).max(120), status: z.enum(["pending", "passed", "failed", "not_applicable"]),
     evidence_refs: z.array(z.string().min(1).max(500)).max(30).default([]), checked_at: z.string().datetime({ offset: true }).optional(), response_mode: responseMode,
     checked_by: z.union([actorIdentity, z.string().max(200)]).optional(), subject_ref: subjectReference.optional(), revision: z.string().max(200).optional(), note: z.string().max(1_000).optional(), occurred_at: z.string().datetime({ offset: true }).optional(),
@@ -222,7 +225,7 @@ toolRegistry.register("taskcenter_task_verification_report", {
   description: "追加 Verification Claim；TaskCenter 保存证据并计算新鲜度，但不会执行命令。",
   inputSchema: z.object({
     session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
-    id: z.string().min(1).max(120), requirement_id: z.string().max(120).optional(), kind: verificationKind,
+    contract_revision: z.number().int().positive().optional(), id: z.string().min(1).max(120), requirement_id: z.string().max(120).optional(), kind: verificationKind,
     command_or_probe: z.string().max(1_000).optional(), status: z.enum(["passed", "failed", "skipped"]), exit_code: z.number().int().optional(),
     revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), producer: z.union([actorIdentity, z.string().min(1).max(200)]),
     producer_session_id: z.string().max(200).optional(), evidence_ref: z.string().max(500).optional(),
@@ -235,7 +238,7 @@ toolRegistry.register("taskcenter_task_review_report", {
   description: "追加 Review Attestation；同一 reviewer 先给出规格符合性、再给出代码质量结论，总体 verdict 必须与两个分项及未决项一致。是否要求 reviewer 与实现者独立由版本化 Workspace Policy 决定。",
   inputSchema: z.object({
     session_id: z.string().min(1).max(200).optional(), task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(),
-    id: z.string().min(1).max(120), reviewer: z.union([actorIdentity, z.string().min(1).max(200)]), reviewer_session_id: z.string().max(200).optional(),
+    contract_revision: z.number().int().positive().optional(), id: z.string().min(1).max(120), reviewer: z.union([actorIdentity, z.string().min(1).max(200)]), reviewer_session_id: z.string().max(200).optional(),
     revision: z.string().max(200).optional(), subject_ref: subjectReference.optional(), scope: z.string().min(1).max(1_000), review_contract_version: z.enum(["v2", "v3"]).default("v2"),
     spec_verdict: z.enum(["compliant", "issues_found", "not_evaluated"]), quality_verdict: z.enum(["approved", "needs_fixes", "not_evaluated"]), verdict: z.enum(["approved", "changes_requested", "rejected"]),
     unverified_requirements: z.array(unverifiedRequirement).max(50).default([]),
@@ -318,7 +321,7 @@ toolRegistry.register("taskcenter_task_import_evidence", {
 toolRegistry.register("taskcenter_task_acceptance_report", {
   title: "独立上报 TaskCenter 验收",
   description: "供已配置独立验收凭据的人工、CI、PR 或任务平台适配器上报 AcceptanceRecord；普通执行 Agent 不应配置该凭据。",
-  inputSchema: z.object({ task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), outcome: z.enum(["accepted", "rejected"]), occurred_at: z.string().datetime({ offset: true }).optional(), acceptance_record: z.object({ id: z.string().min(1).max(120), source: z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"]), actor: actorIdentity, subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(), evidence_refs: z.array(z.string().max(500)).max(30).optional(), reason: z.string().max(1_000).optional() }).strict(), response_mode: responseMode }).strict(),
+  inputSchema: z.object({ task_id: z.string().min(1).max(200), event_id: z.string().max(200).optional(), outcome: z.enum(["accepted", "rejected"]), occurred_at: z.string().datetime({ offset: true }).optional(), acceptance_record: z.object({ contract_revision: z.number().int().positive().optional(), id: z.string().min(1).max(120), source: z.enum(["human", "pull_request", "ci", "task_platform", "context_agent", "manual", "other"]), actor: actorIdentity, subject_ref: subjectReference.optional(), observed_at: z.string().datetime({ offset: true }), authorization_id: z.string().max(200).optional(), evidence_refs: z.array(z.string().max(500)).max(30).optional(), reason: z.string().max(1_000).optional() }).strict(), response_mode: responseMode }).strict(),
 }, async (input) => postAcceptance(input));
 
 toolRegistry.register("taskcenter_task_query", {
@@ -551,7 +554,7 @@ async function queryTasks({ task_id, session_id, view } = {}) {
     if (!Number.isSafeInteger(payload.totalPages) || !payload.tasks.length) throw new Error("TaskCenter 任务分页响应无效。");
   }
   if (view !== "summary") return tasks;
-  const fields = ["id", "sessionId", "title", "goal", "status", "currentStep", "nextAction", "blocker", "verificationStatus", "reviewStatus", "acceptanceStatus", "currentSubject", "updatedAt", "agent_guidance"];
+  const fields = ["id", "sessionId", "title", "goal", "status", "currentStep", "nextAction", "blocker", "verificationStatus", "reviewStatus", "acceptanceStatus", "currentSubject", "contractRevision", "contractFingerprint", "updatedAt", "agent_guidance"];
   return tasks.map(task => ({
     ...Object.fromEntries(fields.filter(key => Object.hasOwn(task, key)).map(key => [key, task[key]])),
     completionReasons: task.completionReadiness?.reasons || [],
@@ -633,6 +636,7 @@ function compactResult(payload) {
     accepted: Boolean(payload?.accepted),
     task_id: task.id || payload?.task_id || payload?.taskId || "",
     status: task.status || payload?.status || "",
+    contract_revision: task.contractRevision || payload?.contractRevision || null,
     verification_status: task.verificationStatus || readiness.verificationStatus || "not_required",
     review_status: task.reviewStatus || readiness.reviewStatus || "not_required",
     missing_count: missing.length || [...new Set(readiness.reasons || [])].length,

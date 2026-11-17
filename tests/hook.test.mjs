@@ -1209,6 +1209,10 @@ test("scheduled_readonly 仅绕过 active task 并限制为 inStory 精确只读
   await writeFile(reportPath, initialReport);
 
   const blockedCases = [
+    { tool_name: "exec_command", tool_input: { cmd: "pwd", shell: "/tmp/custom-shell" } },
+    { tool_name: "exec_command", tool_input: { cmd: "git ls-files", shell: "/bin/sh" } },
+    { tool_name: "Bash", tool_input: { command: "pwd", shell: "/tmp/custom-shell" } },
+    { tool_name: "exec_command", tool_input: { cmd: "pwd", shell: null } },
     ...unsafeObjectCommands.map(cmd => ({ tool_name: "exec_command", tool_input: { cmd } })),
     { tool_name: "exec_command", tool_input: { cmd: "git show-ref --verify refs/heads/dev && git status --short" } },
     { tool_name: "exec_command", tool_input: { cmd: objectInspectionCommands[0], workdir: tempDir } },
@@ -1982,5 +1986,22 @@ test("L0 denies a project executable named cat instead of using its basename", {
       session_id, cwd: directory, tool_name: "exec_command", tool_input: { cmd, workdir: directory },
     }, [], base, { PATH: `${directory}:/bin:/usr/bin` });
     assert.equal(result.code, 2, `${cmd}: ${result.stderr}`);
+  }
+});
+
+test("custom execution shells cannot claim L0 or fixed-recovery exemptions", async () => {
+  const session_id = "l0-custom-shell";
+  await runHook("session-start", "codex", { session_id, cwd: rootPath });
+  for (const tool_name of ["exec_command", "Bash"]) {
+    for (const shell of ["/tmp/custom-shell", "/bin/sh", "", null]) {
+      for (const command of ["pwd", "node scripts/taskcenter-control.mjs status"]) {
+        const result = await runHook("pre-tool-use", "codex", {
+          session_id, cwd: rootPath, tool_name,
+          tool_input: { ...(tool_name === "exec_command" ? { cmd: command } : { command }), shell },
+        });
+        assert.equal(result.code, 2, `${tool_name} ${command} shell=${shell}: ${result.stderr}`);
+        assert.doesNotMatch(result.stdout, /L0|固定恢复命令放行/);
+      }
+    }
   }
 });

@@ -304,7 +304,7 @@ test("合同无变化不失效；新一轮close证据绑定新合同，但不自
   });
   assert.equal(changed.contractRevision, 2);
   const closed = applyCompletionEvent(changed, {
-    type: "task.close", created_at: at,
+    type: "task.close", created_at: at, contract_revision: 2,
     close_requirements: [{ requirement_id: "ac-1", status: "passed", evidence_refs: ["claim-new"], subject_ref: subject() }],
     close_verifications: [{ id: "claim-new", requirement_id: "verify-1", kind: "test", status: "passed", observed_at: at, producer: actor(), subject_ref: subject(), evidence_ref: "ci://new" }],
   });
@@ -314,4 +314,34 @@ test("合同无变化不失效；新一轮close证据绑定新合同，但不自
   assert.equal(closed.completionReadiness.ready, true);
   assert.equal(closed.acceptanceStatus, "ready");
   assert.equal(buildCompletionPacket(closed).contractRevision, 2);
+});
+
+test("迟到证据不能自动绑定新合同；无版本客户端仅兼容初版", () => {
+  const original = base();
+  const changed = applyCompletionEvent(original, { type: "task.update", goal: "new contract" });
+  const result = { requirement_id: "ac-1", status: "passed", evidence_refs: ["ci://new"], subject_ref: subject() };
+  const claim = { id: "delayed", requirement_id: "verify-1", kind: "test", status: "passed", observed_at: at, producer: actor(), subject_ref: subject(), evidence_ref: "ci://old" };
+  const review = { id: "late-review", reviewer: actor("reviewer"), subject_ref: subject(), scope: "all", verdict: "approved", observed_at: at };
+  const acceptance = { id: "late-acceptance", source: "human", actor: actor("owner", "human"), subject_ref: subject(), observed_at: at };
+  const events = [
+    { type: "requirement.reported", requirement_result: result },
+    { type: "verification.reported", verification_claim: claim },
+    { type: "review.reported", review_attestation: review },
+    { type: "acceptance.accepted", acceptance_record: acceptance },
+    { type: "acceptance.rejected", acceptance_record: acceptance },
+    { type: "task.close", close_requirements: [result], close_verifications: [claim] },
+  ];
+  for (const event of events) {
+    for (const revision of [undefined, 1]) {
+      const input = { ...event, ...(revision ? { contract_revision: revision } : {}), occurred_at: at };
+      assert.throws(() => applyCompletionEvent(changed, { ...input, ...normalizeCompletionEvent(input) }), /CONTRACT_REVISION_MISMATCH/);
+    }
+  }
+  assert.equal(applyCompletionEvent(original, { type: "verification.reported", verification_claim: claim }).verificationClaims.at(-1).contract_revision, 1);
+  const fresh = { type: "task.close", occurred_at: at, close_requirements: [{ ...result, contract_revision: 2 }], close_verifications: [{ ...claim, contract_revision: 2, evidence_ref: "ci://fresh" }] };
+  const completed = applyCompletionEvent(changed, { ...fresh, ...normalizeCompletionEvent(fresh) });
+  assert.equal(completed.completionReadiness.ready, true);
+  assert.equal(completed.verificationClaims.at(-1).contract_revision, 2);
+  assert.throws(() => applyCompletionEvent(changed, { ...fresh, contract_revision: 1 }), /CONTRACT_REVISION_MISMATCH/);
+  assert.throws(() => normalizeCompletionEvent({ contract_revision: 0 }), /正安全整数/);
 });

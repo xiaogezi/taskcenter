@@ -413,6 +413,7 @@ function isScheduledReadonlyMcp(toolName, toolInput) {
 }
 
 function isScheduledReadonlyScanOperation(payload) {
+  if (hasCustomExecutionShell(payload)) return false;
   const toolName = String(payload.tool_name || payload.tool || payload.name || "");
   if (!["Bash", "exec_command"].includes(toolName)) return false;
   const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
@@ -486,6 +487,7 @@ function isSafeRelativePattern(pattern) {
 }
 
 function isScheduledReadonlyCommand(payload) {
+  if (hasCustomExecutionShell(payload)) return false;
   const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
   const command = String(input.command || input.cmd || payload.command || "").trim();
   if (!command || /[\n\r;&<>`]/.test(command) || /\|\||\||\$\(/.test(command)) return false;
@@ -689,6 +691,7 @@ function shellQuote(value) {
 }
 
 function isTrustedRecoveryCommand(payload) {
+  if (hasCustomExecutionShell(payload)) return false;
   const toolName = String(payload.tool_name || payload.tool || payload.name || "");
   // 兼容 Bash（主代理）与 exec_command（Codex）两种工具入口。
   if (!["Bash", "exec_command"].includes(toolName)) return false;
@@ -750,10 +753,19 @@ async function isL0ReadOnlyInspection(payload) {
   return !hasActiveTask;
 }
 
+function hasCustomExecutionShell(payload) {
+  // A command's read-only grammar says nothing about the program selected to
+  // interpret it. Only the host's unchanged default shell is eligible for a
+  // no-task exemption. Even a familiar explicit shell path needs a task.
+  const input = payload.tool_input;
+  return Object.hasOwn(payload, "shell") || Boolean(input && typeof input === "object" && Object.hasOwn(input, "shell"));
+}
+
 function isReadOnlyInspection(payload) {
   const toolName = String(payload.tool_name || payload.tool || payload.name || "");
   if (["Read", "Grep", "Glob"].includes(toolName)) return true;
   if (!["Bash", "exec_command"].includes(toolName)) return false;
+  if (hasCustomExecutionShell(payload)) return false;
   const input = payload.tool_input && typeof payload.tool_input === "object"
     ? payload.tool_input
     : {};

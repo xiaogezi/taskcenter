@@ -562,8 +562,8 @@ export function recordTaskEvent(input, options = {}) {
     event.previous_task_id = previousTaskId;
   }
   if (next) {
-    // Server-derived contract binding is durable for evidence recovery; normalizeEvent
-    // deliberately does not accept a caller-supplied contract_revision override.
+    // Persist the validated producer binding for evidence replay. Evidence without
+    // a producer revision is accepted only on the initial contract (revision 1).
     event.contract_revision = next.contractRevision || 1;
     event.previous_state = current ? auditState(current) : null;
     event.new_state = auditState(next);

@@ -9,6 +9,7 @@ export const idempotentEventFields = [
   "expected_at", "archived_at", "superseded_by", "review_reason", "reviewed_at", "tool_name",
   "due_at", "estimated_effort_ms", "estimate_reason",
   "tool_use_id",
+  "producer_contract_revision",
   "contract_version", "scope", "non_goals", "workflow_profile", "review_policy", "execution_environment",
   "verification_plan", "revision", "requirement_result", "verification_claim", "review_attestation", "review_cycle",
   "phase", "transition", "activity_source", "activity_id", "review_cycle_id",

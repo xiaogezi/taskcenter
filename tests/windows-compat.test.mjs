@@ -75,6 +75,7 @@ test("cross-platform controller starts, observes, and gracefully stops an isolat
     TASKCENTER_SELECTION_PATH: resolve("tests/fixtures/session-selection-all.json"),
     TASKCENTER_TASK_EVENTS_PATH: join(root, "task-events.jsonl"),
     TASKCENTER_TASK_LEDGER_PATH: join(root, "task-ledger.json"),
+    TASKCENTER_TASK_REUSE_DECISIONS_PATH: join(root, "task-reuse-decisions.jsonl"),
     TASKCENTER_TASK_EVENT_IDS_PATH: join(root, "task-event-ids.json"),
     TASKCENTER_TASK_RECONCILE_PATH: join(root, "task-reconcile.jsonl"),
     TASKCENTER_SESSION_REGISTRY_PATH: join(root, "session-registry.json"),
@@ -86,6 +87,7 @@ test("cross-platform controller starts, observes, and gracefully stops an isolat
   };
   try {
     initializeSqliteMutex({ databasePath: join(root, "runtime/launcher.mutex.sqlite"), legacyLockPath: join(root, "runtime/launcher.lock"), offlineConfirmed: true });
+    initializeSqliteMutex({ databasePath: `${env.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.mutex.sqlite`, legacyLockPath: `${env.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.lock`, offlineConfirmed: true });
     const started = await runNode(["scripts/taskcenter-control.mjs", "start"], env);
     assert.equal(started.code, 0, started.stderr);
     assert.match(started.stdout, /启动成功/);
