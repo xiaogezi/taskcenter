@@ -12,7 +12,8 @@ test("slow or abandoned gate requests log correlated safe fields exactly once", 
     let tick = 0;
     const lines = [], response = Object.assign(new EventEmitter(), { statusCode: 200, writableFinished: !aborted });
     const id = "11111111-1111-4111-8111-111111111111";
-    observeControlRequest({ url: `${endpoint}?task_id=private&session_id=private&workspace=/private`, method: "GET", headers: { "x-request-id": id } }, response, { now: () => tick, write: line => lines.push(JSON.parse(line)) });
+    const requestId = observeControlRequest({ url: `${endpoint}?task_id=private&session_id=private&workspace=/private`, method: "GET", headers: { "x-request-id": id } }, response, { now: () => tick, write: line => lines.push(JSON.parse(line)) });
+    assert.equal(requestId, id);
     tick = aborted ? 500 : 1200;
     response.emit(aborted ? "close" : "finish"); response.emit("close");
     assert.equal(lines.length, 1);

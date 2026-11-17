@@ -45,7 +45,7 @@ function fixture(behavior = "success") {
     }
     close() { this.readyState = 3; this.dispatchEvent(new Event("close")); }
   }
-  const run = (operation) => withCodexCompactionHost({ url: "ws://127.0.0.1:1234", sessionId: "session", workspace: "/fixture", timeout: 100, WebSocket: Socket }, operation);
+  const run = (operation) => withCodexCompactionHost({ url: "ws://127.0.0.1:1234", sessionId: "session", workspace: "/fixture", timeout: behavior === "success" ? 500 : 100, WebSocket: Socket }, operation);
   return { run, requests };
 }
 

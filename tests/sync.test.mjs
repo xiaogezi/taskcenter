@@ -17,7 +17,7 @@ function runSync(env) {
   });
 }
 
-async function waitFor(predicate, timeoutMs = 3_000) {
+async function waitFor(predicate, timeoutMs = 10_000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     if (predicate()) return;

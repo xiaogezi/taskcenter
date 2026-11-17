@@ -21,4 +21,5 @@ export function observeControlRequest(request, response, { now = () => performan
   };
   response.once("finish", observe);
   response.once("close", observe);
+  return requestId;
 }

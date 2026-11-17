@@ -2,6 +2,7 @@ import { accessSync, chmodSync, closeSync, constants, existsSync, fchmodSync, fs
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { TASKCENTER_VERSION } from "./version.mjs";
@@ -33,11 +34,13 @@ export function resolveContextCommand(options = {}) {
 }
 
 export async function syncContextEvent(event, task, options = {}) {
-  if (["routing.decision", "task.reminder", "phase.reported"].includes(event?.type)) {
+  if (["routing.decision", "task.reminder", "phase.reported", "tool.call"].includes(event?.type)) {
     const reason = event.type === "task.reminder"
       ? "local_overdue_reminder"
       : event.type === "phase.reported"
         ? "local_phase_timing"
+        : event.type === "tool.call"
+          ? "local_tool_fact"
         : "routing_audit";
     return { status: "skipped", reason };
   }
@@ -48,6 +51,7 @@ export async function syncContextEvent(event, task, options = {}) {
   }
   if (!task?.id || !event?.event_id) return { status: "skipped", reason: "missing_task_or_event" };
 
+  const started = performance.now();
   try {
     const result = await withTimeout((signal) => sync(event, task, {
       callTool: async (...args) => {
@@ -59,11 +63,11 @@ export async function syncContextEvent(event, task, options = {}) {
       loadMap: options.loadMap || loadMap,
       saveMap: options.saveMap || saveMap,
     }), options.timeoutMs || timeoutMs);
-    if (options.audit !== false) appendAudit({ event, task, status: "synced", contextTaskId: result.contextTaskId });
+    if (options.audit !== false) appendAudit({ event, task, status: "synced", contextTaskId: result.contextTaskId, elapsedMs: Math.round(performance.now() - started) });
     return { status: "synced", contextTaskId: result.contextTaskId };
   } catch (error) {
     const message = String(error?.message || error).slice(0, 500);
-    if (options.audit !== false) appendAudit({ event, task, status: "failed", error: message });
+    if (options.audit !== false) appendAudit({ event, task, status: "failed", error: message, elapsedMs: Math.round(performance.now() - started) });
     return { status: "failed", error: message };
   }
 }
@@ -380,7 +384,21 @@ function appendAudit(value) {
   const descriptor = openSync(auditPath, "a", 0o600);
   try {
     fchmodSync(descriptor, 0o600);
-    writeFileSync(descriptor, `${JSON.stringify({ ...value, createdAt: new Date().toISOString() })}\n`);
+    const failureCode = String(value.error || "").match(/\b(?:CORE_REVISION_MISMATCH|CORE_RECOVERY_REQUIRED|CORE_TIMEOUT|USER_ATTESTATION_REQUIRED|IDEMPOTENCY_CONFLICT)\b/)?.[0]
+      || (String(value.error || "").includes("超时") ? "CONTEXT_TIMEOUT" : "SYNC_FAILED");
+    writeFileSync(descriptor, `${JSON.stringify({
+      schemaVersion: 2,
+      eventId: String(value.event?.event_id || "").slice(0, 200),
+      eventType: String(value.event?.type || "").slice(0, 80),
+      taskId: String(value.task?.id || value.taskCenterTaskId || "").slice(0, 200),
+      contextTaskId: String(value.contextTaskId || value.task?.contextTaskId || "").slice(0, 200),
+      status: value.status,
+      ...(value.error ? { failureCode } : {}),
+      ...(Number.isFinite(value.elapsedMs) ? { elapsedMs: value.elapsedMs } : {}),
+      ...(value.packetDigest ? { packetDigest: value.packetDigest } : {}),
+      ...(value.idempotent ? { idempotent: true } : {}),
+      createdAt: new Date().toISOString(),
+    })}\n`);
   } finally { closeSync(descriptor); }
 }
 

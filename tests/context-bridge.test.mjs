@@ -63,6 +63,23 @@ test("映射和审计写入收紧已有文件权限至0600", async (t) => {
   }
   const result = await bridge.syncContextEvent({ type: "task.create", event_id: "mode" }, { id: "mode", contextTaskId: "context-mode", workspace: "/work" });
   assert.equal(result.status, "synced");
+  const audit = JSON.parse((await readFile(auditPath, "utf8")).trim());
+  assert.equal(audit.schemaVersion, 2);
+  assert.equal(audit.eventId, "mode");
+  assert.equal(audit.taskId, "mode");
+  assert.equal(audit.status, "synced");
+  assert.ok(Number.isInteger(audit.elapsedMs));
+  assert.equal(Object.hasOwn(audit, "event"), false);
+  assert.equal(Object.hasOwn(audit, "task"), false);
+  const failed = await bridge.syncContextEvent(
+    { type: "task.update", event_id: "failed-audit" },
+    { id: "failed-audit-task", contextTaskId: "context-failed-audit", workspace: "/work" },
+    { enabled: true, loadMap: () => ({}), saveMap: () => {}, callTool: async () => { throw new Error("CORE_REVISION_MISMATCH private detail"); } },
+  );
+  assert.equal(failed.status, "failed");
+  const failureAudit = JSON.parse((await readFile(auditPath, "utf8")).trim().split("\n").at(-1));
+  assert.equal(failureAudit.failureCode, "CORE_REVISION_MISMATCH");
+  assert.doesNotMatch(JSON.stringify(failureAudit), /private detail/);
   if (process.platform !== "win32") {
     assert.equal((await stat(mapPath)).mode & 0o777, 0o600);
     assert.equal((await stat(auditPath)).mode & 0o777, 0o600);
@@ -213,6 +230,17 @@ test("本地逾期提醒不会同步为 ProjectContext 代码证据", async () =
     bridgeOptions(calls, []),
   );
   assert.deepEqual(result, { status: "skipped", reason: "local_overdue_reminder" });
+  assert.deepEqual(calls, []);
+});
+
+test("工具调用事实仅留在 TaskCenter，不重复同步任务摘要到 Context", async () => {
+  const calls = [];
+  const result = await syncContextEvent(
+    { type: "tool.call", event_id: "tool-local", tool_name: "exec_command" },
+    { id: "task-tool-local", contextTaskId: "context-tool-local", workspace: "/work" },
+    bridgeOptions(calls, []),
+  );
+  assert.deepEqual(result, { status: "skipped", reason: "local_tool_fact" });
   assert.deepEqual(calls, []);
 });
 

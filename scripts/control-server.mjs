@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { observeControlRequest } from "./control-request-observation.mjs";
 import { currentMaintenanceAction, safeActionText } from "./ai-maintenance.mjs";
 import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
@@ -170,7 +171,7 @@ const reconciliationTimer = setInterval(async () => {
 
 const sessionSwitchOperations = new Map();
 const server = createServer(async (request, response) => {
-  observeControlRequest(request, response);
+  const requestId = observeControlRequest(request, response);
   try {
     setCors(request, response);
     if (request.method === "OPTIONS") {
@@ -825,10 +826,18 @@ const server = createServer(async (request, response) => {
         throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
       }
       const sessionIds = availableSessionIds();
+      const eventStarted = performance.now();
       const result = recordTaskEvent(body, { ...(reconcileLiveSessions ? { availableSessionIds: sessionIds } : {}), requireRegistered: true });
+      const localMs = Math.round(performance.now() - eventStarted);
       // 本地账本事件幂等不等于外部同步已成功。重复投递仍使用同一派生 event_id
       // 重试 Context MCP，由 Context 侧幂等键消除已成功的副作用并补偿超时/失败。
       const contextSync = await syncContextEvent(result.event, result.task);
+      const totalMs = Math.round(performance.now() - eventStarted);
+      if (totalMs >= 1_000 || contextSync.status === "failed") {
+        console.log(JSON.stringify({ event: "task_event_stage_latency", request_id: requestId,
+          event_type: result.event.type, local_ms: localMs, context_ms: totalMs - localMs,
+          total_ms: totalMs, context_status: contextSync.status }));
+      }
       const warnings = contextSync.status === "failed"
         ? [{
           code: "SESSION_NOTIFICATION_FAILED",

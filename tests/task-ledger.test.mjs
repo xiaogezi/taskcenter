@@ -59,6 +59,19 @@ const {
 const { resolveTrustedMcpSession } = await import("../scripts/mcp-session-context.mjs");
 const { enrichTaskWorkspaceEvent } = await import("../lib/git-workspace.mjs");
 
+test("阻塞原因跨工具事件保留，恢复执行后清空", async () => {
+  await resetLedger();
+  const taskId = "task-blocker-preservation";
+  const sessionId = "session-blocker-preservation";
+  recordTaskEvent({ type: "task.create", event_id: "blocker-create", task_id: taskId, session_id: sessionId, title: "保留阻塞原因", status: "in_progress" });
+  recordTaskEvent({ type: "task.update", event_id: "blocker-set", task_id: taskId, session_id: sessionId, status: "blocked", blocker: "等待模拟器恢复" });
+  recordTaskEvent({ type: "tool.call", event_id: "blocker-tool", task_id: taskId, session_id: sessionId, tool_name: "exec_command" });
+  recordTaskEvent({ type: "task.update", event_id: "blocker-progress", task_id: taskId, session_id: sessionId, current_step: "已核对设备" });
+  assert.equal(loadTasks().find((task) => task.id === taskId).blocker, "等待模拟器恢复");
+  recordTaskEvent({ type: "task.update", event_id: "blocker-resume", task_id: taskId, session_id: sessionId, status: "in_progress" });
+  assert.equal(loadTasks().find((task) => task.id === taskId).blocker, "");
+});
+
 test("MCP Session 上下文：请求 threadId 优先、兼容环境变量且冲突时拒绝", () => {
   const requestSessionId = "019f0000-0000-7000-8000-000000000112";
   const otherSessionId = "019f0000-0000-7000-8000-000000000113";

@@ -1293,7 +1293,9 @@ function applyEvent(current, event) {
     plan: event.plan.length ? event.plan : base.plan,
     currentStep: event.current_step || base.currentStep || "",
     nextAction: event.next_action || base.nextAction || "",
-    blocker: event.blocker || (event.type === "task.blocked" ? "已报告阻塞，等待处理。" : ""),
+    blocker: (event.status || (event.type === "task.blocked" ? "blocked" : base.status)) === "blocked"
+      ? (event.blocker || base.blocker || "已报告阻塞，等待处理。")
+      : "",
     acceptanceCriteria: event.acceptance_criteria.length ? event.acceptance_criteria : base.acceptanceCriteria,
     changedFiles: event.changed_files.length ? event.changed_files : base.changedFiles,
     tests: event.tests.length ? event.tests : base.tests,
