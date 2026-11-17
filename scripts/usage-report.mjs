@@ -155,7 +155,8 @@ export function parseSession(input, options = {}) {
     }
   }
   return { sessionId, cwd, events, lifetimeTotal, compressionAfterPhase, missingTimestampUsage, latestRateLimits,
-    responseInputs: passive.responseInputs || [], responseGaps: passive.responseGaps || [], toolSamples: passive.toolSamples || [] };
+    responseInputs: passive.responseInputs || [], responseGaps: passive.responseGaps || [],
+    sameTimestampPairs: passive.sameTimestampPairs || [], toolSamples: passive.toolSamples || [] };
 }
 
 export function collectUsage({ sessionsRoot = DEFAULT_SESSIONS_ROOT, sessions, ledger = DEFAULT_LEDGER, rates = DEFAULT_RATES, now = new Date(), providerAttempts, providerAttemptsPath } = {}) {
@@ -314,7 +315,7 @@ function buildWindow(parsed, index, rates, start, end) {
     contextOccupancy: { metric: "input_tokens_over_model_context_window", sampleCount: contextRatios.length, usageEventCount: eventCount,
       coverage: eventCount ? contextRatios.length / eventCount : null, ratio: percentiles(contextRatios), atLeast80Percent: contextRatios.filter((ratio) => ratio >= .8).length },
     responseGapProxy: { metric: "input_to_first_assistant_item_ms", inputCount, sampleCount: responseDurations.length,
-      sameTimestampPairsExcluded: responseGaps.length - responseDurations.length,
+      sameTimestampPairsExcluded: responseGaps.length - responseDurations.length + parsed.reduce((sum, session) => sum + (session.sameTimestampPairs || []).filter(inWindow).length, 0),
       pairingCoverage: inputCount ? responseDurations.length / inputCount : null, durationMs: percentiles(responseDurations), exactModelRtt: false },
     toolSignals: { source: "codex_custom_tool_call", calls: toolSamples.length, receiptsObserved: toolSamples.filter((sample) => sample[2] === 1).length,
       duplicateCallIds: toolSamples.filter((sample) => sample[3] === 1).length, resultSuccess: "unavailable" } };

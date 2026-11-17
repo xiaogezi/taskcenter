@@ -44,6 +44,7 @@ test("同时间戳不形成零耗时响应样本", () => {
   const report = collectUsage({ sessions: [{ sessionId: "s", records }], ledger: [], rates: {}, now: at(2) });
   assert.equal(report.windows["24h"].responseGapProxy.inputCount, 2);
   assert.equal(report.windows["24h"].responseGapProxy.sampleCount, 0);
+  assert.equal(report.windows["24h"].responseGapProxy.sameTimestampPairsExcluded, 2);
   assert.equal(report.windows["24h"].responseGapProxy.durationMs.p50, null);
 });
 

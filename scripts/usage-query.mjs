@@ -28,6 +28,7 @@ export function queryUsageReport({ report, index, tasks = [], params = new URLSe
         events: (state.events || []).filter(belongsToTask),
         responseInputs: (state.responseInputs || []).filter(belongsToTask),
         responseGaps: (state.responseGaps || []).filter(belongsToTask),
+        sameTimestampPairs: (state.sameTimestampPairs || []).filter(belongsToTask),
         toolSamples: (state.toolSamples || []).filter(belongsToTask),
         lifetimeTotal: lifetime || { usage: { input: 0, cachedInput: 0, output: 0, reasoning: 0 }, count: 0, total: 0 },
         lifetimeByTask: lifetime ? { [id]: lifetime } : {},

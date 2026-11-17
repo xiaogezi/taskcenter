@@ -9,6 +9,7 @@ export function consumePassiveSessionRecord(state, record) {
   if (!Number.isFinite(at)) return;
   state.responseInputs ||= [];
   state.responseGaps ||= [];
+  state.sameTimestampPairs ||= [];
   state.toolSamples ||= [];
   state.pendingToolCalls ||= {};
   state.recentCallIds ||= {};
@@ -23,6 +24,8 @@ export function consumePassiveSessionRecord(state, record) {
     const pending = state.pendingResponseInput;
     if (pending && at > pending[0] && at - pending[0] <= MAX_RESPONSE_GAP_MS) {
       state.responseGaps.push([pending[0], at - pending[0], pending[1]]);
+    } else if (pending && at === pending[0]) {
+      state.sameTimestampPairs.push([pending[0], pending[1]]);
     }
     state.pendingResponseInput = null;
   }
@@ -44,7 +47,7 @@ export function consumePassiveSessionRecord(state, record) {
 }
 
 export function prunePassiveSessionSignals(state, cutoff) {
-  for (const key of ["responseInputs", "responseGaps"]) {
+  for (const key of ["responseInputs", "responseGaps", "sameTimestampPairs"]) {
     state[key] = (state[key] || []).filter((sample) => sample[0] >= cutoff);
   }
   const offsets = new Map();
