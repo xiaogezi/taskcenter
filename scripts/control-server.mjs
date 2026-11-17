@@ -896,6 +896,7 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         accepted: true,
         action,
+        ...(action === "cancel" ? { operation_scope: "management_only", execution_control: result.task.executionControl } : {}),
         task: result.task,
         contextSync,
         actor: "manual",

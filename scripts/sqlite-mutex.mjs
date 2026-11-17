@@ -101,4 +101,3 @@ export function acquireSqliteMutex({ databasePath, legacyLockPath, timeoutMs = 5
     try { db.exec("ROLLBACK"); } finally { db.close(); }
   };
 }
-

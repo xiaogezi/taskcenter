@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
 import { readFileSync, realpathSync, statSync } from "node:fs";
@@ -30,5 +31,22 @@ export function isTrustedInspectionEntry(entry, { cwd = process.cwd(), path = pr
     try { const stat = statSync(candidate); return stat.isFile() && Boolean(stat.mode & 0o111); }
     catch { return false; }
   });
+  if (selected === chatgptRgPath) return isTrustedChatgptRg(selected);
   return Boolean(selected && locations.some(installed => isTrustedCliEntry(selected, { installed, aliases: [] })));
+}
+
+const chatgptRgPath = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/codex-path/rg";
+const chatgptRgRequirement = '=identifier "com.openai.codex.rg" and anchor apple generic and certificate leaf[subject.OU] = "2DC432GLL2"';
+
+function isTrustedChatgptRg(entry) {
+  if (process.platform !== "darwin" || entry !== chatgptRgPath) return false;
+  try {
+    // Only this installed executable is supported, not its containing directory,
+    // a project alias, or a replacement symlink. Verify trust, not display output.
+    if (realpathSync(entry) !== chatgptRgPath) return false;
+    execFileSync("/usr/bin/codesign", ["--verify", "--strict", "-R", chatgptRgRequirement, entry], {
+      stdio: "ignore", timeout: 3000,
+    });
+    return true;
+  } catch { return false; }
 }

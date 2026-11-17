@@ -1242,7 +1242,7 @@ function applyEvent(current, event) {
     // 非演示任务的人工移除需在 control-server 层额外校验
     if (event.event_id.startsWith("manual-") && !demoPattern.test(current.id)) {
       // 允许人工移除真实任务，但标记为已取消更合理
-      return withRunClosed({ ...current, status: "cancelled", updatedAt: event.created_at, lastEventId: event.event_id }, event, event.created_at, "cancelled");
+      return withManagementCancelled({ ...current, status: "cancelled", updatedAt: event.created_at, lastEventId: event.event_id }, event.created_at);
     }
     return { ...current, status: "removed", updatedAt: event.created_at, lastEventId: event.event_id };
   }
@@ -1340,7 +1340,7 @@ function applyEvent(current, event) {
     supersededAt: event.superseded_by ? now : (base.supersededAt || ""),
     actualAt: event.status === "in_progress"
       ? ""
-      : event.type === "task.done_claimed" || event.status === "done_claimed" || event.status === "cancelled" ? (base.actualAt || now) : (base.actualAt || ""),
+      : event.type === "task.done_claimed" || event.status === "done_claimed" ? (base.actualAt || now) : (base.actualAt || ""),
     reviewReason: event.review_reason || base.reviewReason || "",
     reviewedAt: event.reviewed_at || base.reviewedAt || "",
     toolCalls: { ...(base.toolCalls || {}) },
@@ -1357,10 +1357,11 @@ function applyEvent(current, event) {
     || (["task.update", "task.report", "task.review"].includes(event.type) && next.status === "in_progress" && base.status !== "in_progress")) {
     next = withRunOpened(next, event, now);
   }
-  if (["task.close", "task.done_claimed", "task.blocked"].includes(event.type)
-    || ["done_claimed", "blocked", "cancelled", "verified"].includes(next.status)) {
-    next = withRunClosed(next, event, now, next.status === "blocked" ? "blocked" : next.status === "cancelled" ? "cancelled" : "completed");
+  if (next.status !== "cancelled" && (["task.close", "task.done_claimed", "task.blocked"].includes(event.type)
+    || ["done_claimed", "blocked", "verified"].includes(next.status))) {
+    next = withRunClosed(next, event, now, next.status === "blocked" ? "blocked" : "completed");
   }
+  if (next.status === "cancelled") next = withManagementCancelled(next, now);
   try {
     next = applyCompletionEvent(next, event, current || next);
     if (event.type === "phase.reported") next = applyTaskPhaseEvent(next, event);
@@ -1376,6 +1377,21 @@ function applyEvent(current, event) {
   return next;
 }
 
+// Management cancellation is not a process-control signal or stop confirmation.
+// Derive this projection internally; external event fields cannot assert stopped.
+function withManagementCancelled(task, at) {
+  return {
+    ...task,
+    executionControl: {
+      managementStatus: "cancelled",
+      managementCancelledAt: task.executionControl?.managementCancelledAt || at,
+      stopRequestStatus: "not_requested",
+      executionStatus: "unknown",
+      message: "仅取消任务管理，未请求或确认宿主停止。请在实际执行宿主中检查或停止任务。",
+    },
+  };
+}
+
 const RUNS_LIMIT = 50;
 
 function runSummary(task) {
@@ -1386,7 +1402,7 @@ function runSummary(task) {
 
 // 打开一个 Run：同 session 延续当前 Run；切换到新 session 时结束旧 Run（handoff）并新开。
 function withRunOpened(task, event, now) {
-  task = { ...task, executionReconciliation: null, sessionDetachedAt: "" };
+  task = { ...task, executionReconciliation: null, executionControl: null, sessionDetachedAt: "" };
   const runs = [...(task.runs || [])];
   const last = runs[runs.length - 1];
   if (last && !last.ended_at && last.session_id === event.session_id) return task;
@@ -1408,7 +1424,8 @@ function auditState(task) {
   const summary = runSummary(task);
   return {
     execution_status: task.status,
-    run_status: summary.running ? "running" : (task.sessionDetachedAt ? "detached" : summary.count ? "ended" : "none"),
+    execution_control: task.executionControl || null,
+    run_status: summary.running && task.executionControl?.managementStatus === "cancelled" ? "unknown" : summary.running ? "running" : (task.sessionDetachedAt ? "detached" : summary.count ? "ended" : "none"),
     verification_status: task.verificationStatus || "not_required",
     review_status: task.reviewStatus || "not_required",
     acceptance_status: task.acceptanceStatus || "pending",

@@ -29,7 +29,7 @@ test("durable review recovery preserves its old contract and the current blocked
   const common = { task_id: "review-recovery", session_id: "review-recovery-session" };
   const at = "2026-11-17T01:00:00.000Z";
   const subject = { type: "artifact", value: "same-artifact", observed_at: at };
-  recordTaskEvent({ ...common, type: "task.create", goal: "initial goal", status: "in_progress", review_policy: "recommended", subject_ref: subject });
+  recordTaskEvent({ ...common, type: "task.create", goal: "initial goal", contract_version: "v2", scope: ["review recovery"], non_goals: [], workflow_profile: "fast", acceptance_criteria: [{ id: "ac", description: "recovery is correct" }], status: "in_progress", review_policy: "recommended", subject_ref: subject });
   const review = {
     ...common, event_id: "persisted-review", type: "review.reported", occurred_at: at,
     review_attestation: {

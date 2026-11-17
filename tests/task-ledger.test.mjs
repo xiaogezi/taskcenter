@@ -1,6 +1,7 @@
 import { initializeSqliteMutex } from "../scripts/sqlite-mutex.mjs";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { constants as bufferConstants } from "node:buffer";
 import { tmpdir } from "node:os";
@@ -12,6 +13,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const root = new URL("../", import.meta.url);
 const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-ledger-"));
 process.env.TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION = "1";
+process.env.CODEX_HOME = join(tempDir, "codex");
+process.env.TASKCENTER_SESSIONS_ROOT = join(tempDir, "sessions");
+await mkdir(process.env.TASKCENTER_SESSIONS_ROOT, { recursive: true });
 
 const envPaths = {
   TASKCENTER_SESSION_SWITCH_PATH: join(tempDir, "session-switch.jsonl"),
@@ -405,6 +409,15 @@ async function startControlServer(options = {}) {
 
 test("主动处理入口校验人工来源，本地对账与持久队列可见且重复请求复用", async t => {
   await resetLedger();
+  // Registration is not proof that a Codex execution session exists. The real
+  // background reconciler must observe an isolated, live-turn session fixture.
+  const sessionPath = join(tempDir, "sessions", "rollout-ai-work-session.jsonl");
+  const sessionAt = new Date().toISOString();
+  await writeFile(sessionPath, [
+    { type: "session_meta", timestamp: sessionAt, payload: { id: "ai-work-session", cwd: "/work", source: "cli" } },
+    { type: "event_msg", timestamp: sessionAt, payload: { type: "task_started", turn_id: "ai-work-fixture-turn" } },
+  ].map(item => JSON.stringify(item)).join("\n") + "\n");
+  t.after(() => rm(sessionPath, { force: true }));
   const { base, child } = await startControlServer({ TASKCENTER_AI_WORKSPACE: "/work" });
   t.after(() => child.kill());
   await registerHttpSession(base, "ai-work-session");
@@ -421,6 +434,15 @@ test("主动处理入口校验人工来源，本地对账与持久队列可见�
   assert.equal(response.status, 202);
   const first = await response.json();
   assert.equal(first.queued, 1);
+  let reconciliation;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const activity = await (await fetch(`${base}/ai/activity`)).json();
+    reconciliation = activity.rows.find(row => row.id === `${first.request_id}:reconciliation`);
+    if (reconciliation) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(reconciliation?.status, "succeeded", "在后台对账完成后检查幂等，而非依赖HTTP请求时序");
+  assert.notEqual(loadTasks().find(task => task.id === "ai-work-task")?.executionReconciliation?.basis, "session_missing");
   const second = await (await fetch(`${base}/ai/work`, init)).json();
   assert.equal(second.request_id, first.request_id);
   assert.equal(second.reused, true);
@@ -2395,7 +2417,8 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   });
   const compactText = textOf(compact);
   const compactPayload = JSON.parse(compactText);
-  assert.deepEqual(Object.keys(compactPayload).sort(), ["accepted", "agent_guidance", "completion_claim_allowed", "missing_count", "review_status", "status", "task_id", "verification_status"]);
+  assert.deepEqual(Object.keys(compactPayload).sort(), ["accepted", "agent_guidance", "completion_claim_allowed", "contract_revision", "missing_count", "review_status", "status", "task_id", "verification_status"]);
+  assert.equal(compactPayload.contract_revision, createPayload.task.contractRevision);
   assert.equal(compactPayload.agent_guidance.advisory_only, true);
   assert.ok(compactPayload.agent_guidance.steps.length);
   assert.equal(compactPayload.completion_claim_allowed, false);
@@ -3531,9 +3554,53 @@ test("运行收口：Run 生命周期与 session 切换、结束事件解耦", a
   assert.equal(task.status, "done_claimed", "close 正常推进完成判定");
 });
 
-test("UI task.update完成阻塞取消统一收口Run，重新开始打开新Run", async () => {
+test("UI取消仅取消管理，隔离执行者仍存活且Run没有伪造结束", async t => {
   await resetLedger();
-  for (const [status, reason] of [["done_claimed", "completed"], ["blocked", "blocked"], ["cancelled", "cancelled"]]) {
+  const executor = spawn(process.execPath, ["-e", "process.send('ready');setInterval(()=>{},1000)"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const exited = once(executor, "exit");
+  t.after(async () => { executor.kill("SIGTERM"); await exited; });
+  await once(executor, "message");
+  const common = { task_id: "management-only-cancel", session_id: "isolated-executor-session" };
+  const created = recordTaskEvent({ ...common, type: "task.create", status: "in_progress" }).task;
+  const { base, child } = await startControlServer();
+  const serverExited = once(child, "exit");
+  t.after(async () => { child.kill("SIGTERM"); await serverExited; });
+  const response = await fetch(`${base}/tasks/${common.task_id}/actions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-TaskCenter-Action": "delegate" },
+    body: JSON.stringify({ action: "cancel", executionControl: { executionStatus: "confirmed_stopped" } }),
+  });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.operation_scope, "management_only");
+  assert.equal(payload.task.status, "cancelled");
+  assert.equal(payload.task.executionControl.stopRequestStatus, "not_requested");
+  assert.equal(payload.task.executionControl.executionStatus, "unknown");
+  assert.equal(payload.task.runs.at(-1).ended_at, "");
+  assert.equal(payload.task.runs.at(-1).ended_reason, "");
+  assert.equal(payload.task.runs.at(-1).run_id, created.runs.at(-1).run_id);
+  assert.equal(payload.task.actualAt, "");
+  assert.equal(executor.exitCode, null);
+  assert.doesNotThrow(() => process.kill(executor.pid, 0), "仅探测本测试启动的执行者，不发送停止信号");
+  const updated = recordTaskEvent({ ...common, type: "task.update", current_step: "still unknown" });
+  assert.equal(updated.event.new_state.run_status, "unknown");
+  assert.equal(updated.task.runs.at(-1).ended_at, "");
+  const restarted = recordTaskEvent({ ...common, type: "task.update", status: "in_progress" }).task;
+  assert.equal(restarted.executionControl, null);
+  assert.equal(restarted.runs.at(-1).run_id, created.runs.at(-1).run_id, "管理重启不虚构宿主曾停止后新开运行");
+  const removed = recordTaskEvent({ ...common, event_id: "manual-remove-management-only", type: "task.review", status: "removed" }).task;
+  assert.equal(removed.status, "cancelled");
+  assert.equal(removed.executionControl.executionStatus, "unknown");
+  assert.equal(removed.runs.at(-1).ended_at, "");
+  const ended = recordTaskEvent({ task_id: "already-ended", session_id: "ended-session", type: "task.create", status: "done_claimed", evidence: ["isolated-fixture-complete"] }).task;
+  const cancelledEnded = recordTaskEvent({ task_id: ended.id, session_id: ended.sessionId, type: "task.update", status: "cancelled" }).task;
+  assert.deepEqual(cancelledEnded.runs, ended.runs, "取消不改写既有结束事实，也不把它升级为宿主停止确认");
+  assert.equal(cancelledEnded.executionControl.executionStatus, "unknown");
+});
+
+test("UI task.update完成阻塞收口Run，重新开始打开新Run", async () => {
+  await resetLedger();
+  for (const [status, reason] of [["done_claimed", "completed"], ["blocked", "blocked"]]) {
     const taskId = `ui-run-${status}`;
     recordTaskEvent({ type: "task.create", task_id: taskId, session_id: taskId, status: "in_progress" });
     const ended = recordTaskEvent({ type: "task.update", event_id: `manual-${taskId}`, task_id: taskId, session_id: taskId, status });

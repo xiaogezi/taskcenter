@@ -34,7 +34,7 @@ test("任务状态列保持可读并提供受控处理入口", () => {
 
   assert.match(componentSource, /<th>操作<\/th>/);
   assert.match(componentSource, /X-TaskCenter-Action": "delegate"/);
-  assert.match(componentSource, /askConfirm\(`确认取消任务/);
+  assert.match(componentSource, /askConfirm\(managementCancelConfirmation/);
   assert.match(componentSource, /askConfirm\(`确认归档任务/);
   assert.match(componentSource, /taskActions\(task\)/);
   assert.match(styleSource, /\.status-chip \{[^}]*display: inline-flex;[^}]*white-space: nowrap;/);
@@ -44,7 +44,7 @@ test("任务状态列保持可读并提供受控处理入口", () => {
 });
 
 test("任务按钮依据生命周期展示，Review 不触发状态操作", () => {
-  const cancel = { action: "cancel", label: "取消任务" };
+  const cancel = { action: "cancel", label: "取消管理（不会停止执行）" };
   const terminal = [{ action: "start", label: "重新处理" }, { action: "archive", label: "归档" }];
   assert.deepEqual(taskActions({ status: "blocked" }), [{ action: "start", label: "恢复为执行中" }, cancel]);
   assert.deepEqual(taskActions({ status: "planned" }), [{ action: "start", label: "标记执行中" }, cancel]);
