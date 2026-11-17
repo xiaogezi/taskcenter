@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "vinext/shims/server";
-import { controlProxyTarget } from "@/lib/control-proxy.mjs";
+import { controlProxyTarget, isLocalControlRequest } from "@/lib/control-proxy.mjs";
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
   const requiresSameOrigin = path[0] === "ai" || (path[0] === "tasks" && path.at(-1) === "actions");
-  if (request.method === "POST" && requiresSameOrigin && request.headers.get("origin") !== new URL(request.url).origin) {
+  if (!isLocalControlRequest(request, { requireOrigin: request.method === "POST" && requiresSameOrigin })) {
     return NextResponse.json({ error: "操作必须来自当前工作台页面。" }, { status: 403 });
   }
   const target = controlProxyTarget(`/${path.join("/")}`, new URL(request.url).search, request.method);

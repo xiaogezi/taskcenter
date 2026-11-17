@@ -493,7 +493,7 @@ export function recordTaskEvent(input, options = {}) {
     }
     if (event.type === "review.reported" && original.review_attestation?.id && originalTask && !originalTask.reviewAttestations?.some((review) => review.id === original.review_attestation.id)) {
       // The event can survive a crash before the task projection and processed-ID cache do.
-      originalTask = applyEvent(originalTask, original);
+      originalTask = applyEvent(originalTask, { ...original, contract_revision: original.contract_revision || 1 });
       persistTasks(readLedger().map((task) => task.id === originalTask.id ? originalTask : task));
       processed.add(original.event_id);
       persistProcessedEventIds(processed);
@@ -562,6 +562,9 @@ export function recordTaskEvent(input, options = {}) {
     event.previous_task_id = previousTaskId;
   }
   if (next) {
+    // Server-derived contract binding is durable for evidence recovery; normalizeEvent
+    // deliberately does not accept a caller-supplied contract_revision override.
+    event.contract_revision = next.contractRevision || 1;
     event.previous_state = current ? auditState(current) : null;
     event.new_state = auditState(next);
     event.timestamp = event.created_at;
@@ -1220,7 +1223,7 @@ function applyEvent(current, event) {
     // 非演示任务的人工移除需在 control-server 层额外校验
     if (event.event_id.startsWith("manual-") && !demoPattern.test(current.id)) {
       // 允许人工移除真实任务，但标记为已取消更合理
-      return { ...current, status: "cancelled", updatedAt: event.created_at, lastEventId: event.event_id };
+      return withRunClosed({ ...current, status: "cancelled", updatedAt: event.created_at, lastEventId: event.event_id }, event, event.created_at, "cancelled");
     }
     return { ...current, status: "removed", updatedAt: event.created_at, lastEventId: event.event_id };
   }
@@ -1330,14 +1333,17 @@ function applyEvent(current, event) {
   if (event.type === "tool.call" && event.tool_name) next.toolCalls[event.tool_name] = (next.toolCalls[event.tool_name] || 0) + 1;
   if (event.type === "task.review") next.status = event.status || base.status;
   // 运行收口：执行生命周期（Run/Attempt）与任务完成判定解耦。
-  // task.create / task.resume 打开 Run；close/done_claimed/blocked/cancelled/report(done) 收口 Run。
-  if (["task.create", "task.resume"].includes(event.type)) next = withRunOpened(next, event, now);
-  if (["task.close", "task.done_claimed", "task.blocked", "task.cancelled"].includes(event.type)
-    || (event.type === "task.report" && event.status === "done_claimed")) {
-    next = withRunClosed(next, event, now, event.type === "task.blocked" ? "blocked" : event.type === "task.cancelled" ? "cancelled" : "completed");
+  // 状态转换与专用事件使用相同收口规则，包含 UI 的 task.update 路径。
+  if (["task.create", "task.resume"].includes(event.type)
+    || (["task.update", "task.report", "task.review"].includes(event.type) && next.status === "in_progress" && base.status !== "in_progress")) {
+    next = withRunOpened(next, event, now);
+  }
+  if (["task.close", "task.done_claimed", "task.blocked"].includes(event.type)
+    || ["done_claimed", "blocked", "cancelled", "verified"].includes(next.status)) {
+    next = withRunClosed(next, event, now, next.status === "blocked" ? "blocked" : next.status === "cancelled" ? "cancelled" : "completed");
   }
   try {
-    next = applyCompletionEvent(next, event);
+    next = applyCompletionEvent(next, event, current || next);
     if (event.type === "phase.reported") next = applyTaskPhaseEvent(next, event);
     else if (event.type === "review_cycle.reported") next = withTaskPhaseTiming(next);
   } catch (error) {

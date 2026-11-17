@@ -13,6 +13,7 @@ import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment, NO
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
+import { isTrustedInspectionEntry } from "./trusted-cli-identity.mjs";
 import { inspectTrustedCli } from "./trusted-cli-inspection.mjs";
 import { isTrustedSystemQuery } from "./network-inspection.mjs";
 import { isReadOnlyRemoteProbe } from "./ssh-inspection.mjs";
@@ -161,7 +162,7 @@ try {
     console.error(`真实 Hook 身份：${JSON.stringify({ session_id: sessionId, workspace })}。不要添加 local_ 或自拟测试身份。通过 MCP 查询该 Session 的任务；同一交付接续使用 taskcenter_task_resume，新目标使用 taskcenter_task_begin（必填 plan、scope）。身份一致不代表其他门禁条件已满足。`);
   }
   if (["pre-tool-use", "scheduled-pre-tool-use", "post-tool-use"].includes(action)) await reportGateDenial(error);
-  process.exitCode = ["pre-tool-use", "post-tool-use"].includes(action) ? 2 : 1;
+  process.exitCode = ["pre-tool-use", "scheduled-pre-tool-use", "post-tool-use"].includes(action) ? 2 : 1;
 }
 
 function claudeLifecycleContext() {
@@ -762,8 +763,10 @@ function isReadOnlyInspection(payload) {
   return Boolean(batch?.every(({ words, heredoc }) => isReadOnlyCommand(words, heredoc, input.workdir || input.cwd || workspace)));
 }
 
-function isReadOnlyCommand(words, heredoc, cwd = workspace, depth = 0) {
+function isReadOnlyCommand(words, heredoc, cwd = workspace, depth = 0, remote = false) {
   if (depth > 2) return false;
+  // Wrappers execute before adapters, so they need their own installation identity.
+  if (basename(words[0]) === "rtk" && !isTrustedInspectionEntry(words[0], { cwd })) return false;
   const trusted = inspectTrustedCli(words, { cwd, workspace, inspectRemote: remote => {
     if (isReadOnlyRemoteProbe(remote)) return true;
     const allowed = ["hostname", "whoami", "uptime", "uname", "sw_vers", "df", "pwd", "ls", "find", "cat", "head", "tail", "wc", "du", "stat", "file", "rg", "sed", "git", "xcode-select", "xcodebuild", "shasum", "sha256sum", "diff", "security"];
@@ -771,15 +774,18 @@ function isReadOnlyCommand(words, heredoc, cwd = workspace, depth = 0) {
     if (![name, `/bin/${name}`, `/usr/bin/${name}`].includes(remote[0])) return false;
     // Remote status/diff may execute fsmonitor or external diff from that host's config.
     if (name === "git" && !["--version", "rev-parse", "show-ref", "for-each-ref", "branch", "tag"].includes(remote[1])) return false;
-    return allowed.includes(name) && isReadOnlyCommand(remote, false, "/", depth + 1);
+    return allowed.includes(name) && isReadOnlyCommand(remote, false, "/", depth + 1, true);
   } });
   if (trusted !== null) return !heredoc && trusted;
+  if (!remote && !isTrustedInspectionEntry(words[0], { cwd })) return false;
   const tokens = [...words];
   if (basename(tokens[0]) === "rtk") {
     tokens.shift();
     if (tokens[0] === "proxy") tokens.shift();
+    // RTK read is a wrapper subcommand; all other entries execute another CLI.
+    if (tokens[0] !== "read" && !isTrustedInspectionEntry(tokens[0], { cwd })) return false;
   }
-  const executable = basename(tokens[0]);
+  const executable = basename(tokens[0] || "");
   const args = tokens.slice(1);
   if (heredoc && executable !== "cat") return false;
   if (executable === "env") return false;
@@ -797,7 +803,7 @@ function isReadOnlyCommand(words, heredoc, cwd = workspace, depth = 0) {
   if (["sh", "/bin/sh"].includes(tokens[0]) && args.length === 2 && args[0] === "-c") {
     if (!isTrustedSystemQuery(tokens[0], "sh", "/bin/sh")) return false;
     const batch = inspectionBatch(args[1]);
-    return Boolean(batch?.every(command => !command.heredoc && isReadOnlyCommand(command.words, false, cwd, depth + 1)));
+    return Boolean(batch?.every(command => !command.heredoc && isReadOnlyCommand(command.words, false, cwd, depth + 1, remote)));
   }
   if (executable === "xcrun") return args.length === 2 && ["swift", "swiftc"].includes(args[0]) && args[1] === "--version"
     || args.length >= 2 && args[0] === "simctl" && args[1] === "list" && args.slice(2).every(arg => ["runtimes", "devices", "available", "--json", "-j"].includes(arg));

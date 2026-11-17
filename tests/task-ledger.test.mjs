@@ -3477,6 +3477,33 @@ test("运行收口：Run 生命周期与 session 切换、结束事件解耦", a
   assert.equal(task.status, "done_claimed", "close 正常推进完成判定");
 });
 
+test("UI task.update完成阻塞取消统一收口Run，重新开始打开新Run", async () => {
+  await resetLedger();
+  for (const [status, reason] of [["done_claimed", "completed"], ["blocked", "blocked"], ["cancelled", "cancelled"]]) {
+    const taskId = `ui-run-${status}`;
+    recordTaskEvent({ type: "task.create", task_id: taskId, session_id: taskId, status: "in_progress" });
+    const ended = recordTaskEvent({ type: "task.update", event_id: `manual-${taskId}`, task_id: taskId, session_id: taskId, status });
+    assert.equal(ended.task.runs.at(-1).ended_reason, reason);
+    assert.ok(ended.task.runs.at(-1).ended_at);
+    assert.equal(ended.event.new_state.run_status, "ended");
+    const started = recordTaskEvent({ type: "task.update", event_id: `manual-restart-${taskId}`, task_id: taskId, session_id: taskId, status: "in_progress" });
+    assert.equal(started.task.runs.length, 2);
+    assert.equal(started.task.runs.at(-1).ended_at, "");
+  }
+});
+
+test("账本在更新goal之前保留旧合同身份，关闭时不能复用旧契约证据", async () => {
+  await resetLedger();
+  const common = { task_id: "contract-revision", session_id: "contract-revision-owner" };
+  recordTaskEvent({ ...common, type: "task.create", goal: "old goal", scope: ["core"], non_goals: [], workflow_profile: "fast", acceptance_criteria: [{ id: "ac", description: "works" }] });
+  recordTaskEvent({ ...common, type: "requirement.reported", requirement_result: { requirement_id: "ac", status: "passed", evidence_refs: ["old-result"] } });
+  const changed = recordTaskEvent({ ...common, type: "task.update", goal: "expanded goal" }).task;
+  assert.equal(changed.contractRevision, 2);
+  const closed = recordTaskEvent({ ...common, type: "task.close", status: "done_claimed" }).task;
+  assert.equal(closed.completionReadiness.ready, false);
+  assert.ok(closed.completionReadiness.reasons.includes("requirement_result_stale"));
+});
+
 test("故障场景：不调用 task_close，会话脱离后运行收口为 session_detached，任务保留且不伪造完成", async () => {
   await resetLedger();
   recordTaskEvent({ type: "task.create", session_id: "fault-s1", task_id: "fault-task", title: "未收尾任务", goal: "目标" });

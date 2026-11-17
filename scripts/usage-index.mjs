@@ -19,15 +19,18 @@ export async function updateUsageIndex(options) {
 
   for (const path of files) {
     const info = await stat(path);
-    const previous = index.files[path];
     const sessionId = await sessionIdentityFromFile(path);
     const identity = `${info.dev || 0}:${info.ino || 0}`;
+    const previous = index.files[path];
     const previousOffset = Number(previous?.offset || 0);
     const checkpointMatches = previous?.checkpointHash && previous?.headHash
       && previous.checkpointHash === await jsonlCheckpointFingerprint(path, previousOffset)
       && previous.headHash === await jsonlCheckpointFingerprint(path, Math.min(previousOffset, 4096));
     const reusable = previous && previous.identity === identity && info.size >= previousOffset && checkpointMatches;
-    const state = reusable && previous.sessionId === sessionId ? previous : emptyFileState(path, identity, sessionId);
+    const attributionFingerprint = attributeTask.fingerprint(sessionId);
+    const state = reusable && previous.sessionId === sessionId
+      && previous.attributionFingerprint === attributionFingerprint
+      ? previous : emptyFileState(path, identity, sessionId);
     if (info.size > Number(state.offset || 0)) {
       const result = await consumeJsonl(path, {
         start: Number(state.offset || 0),
@@ -40,13 +43,20 @@ export async function updateUsageIndex(options) {
     state.identity = identity;
     state.size = info.size;
     state.mtimeMs = info.mtimeMs;
+    state.attributionFingerprint = attributeTask.fingerprint(state.sessionId);
     state.checkpointHash = await jsonlCheckpointFingerprint(path, state.offset);
     state.headHash = await jsonlCheckpointFingerprint(path, Math.min(state.offset, 4096));
     state.events = (state.events || []).filter((event) => Number(Array.isArray(event) ? event[0] : event.at) >= now - RETENTION_MS);
     prunePassiveSessionSignals(state, now - RETENTION_MS);
     index.files[path] = state;
   }
-  for (const path of Object.keys(index.files)) if (!seen.has(path)) delete index.files[path];
+  // Preserve the existing source-retention contract. Do not reattribute a
+  // pruned seven-day window as if it represented the complete lifetime source.
+  const unavailableSessions = new Set();
+  for (const [path, state] of Object.entries(index.files)) if (!seen.has(path)) {
+    unavailableSessions.add(state.sessionId);
+    delete index.files[path];
+  }
 
   index.updatedAt = new Date(now).toISOString();
   await writeJsonAtomic(options.indexPath, index);
@@ -65,14 +75,16 @@ export async function updateUsageIndex(options) {
     latestRateLimits: state.latestRateLimits || migrateLatestRateLimit(state.latestPrimaryRateLimit),
   })).filter((session) => session.events.length || session.responseInputs.length || session.toolSamples.length
     || session.lifetimeTotal.count || Object.keys(session.lifetimeByTask).length || Object.keys(session.latestRateLimits || {}).length || session.latestPrimaryRateLimit);
-  return {
-    report: buildUsageReportFromParsed(parsed, {
+  const report = buildUsageReportFromParsed(parsed, {
       ledger: options.ledger,
       rates: options.rates,
       now,
-    }),
-    index,
-  };
+    });
+  for (const sessionId of unavailableSessions) report.warnings.push({
+    code: "LIFETIME_SOURCE_UNAVAILABLE", sessionId,
+    message: "本轮发现原始日志已清理或搬迁，旧路径索引按既有策略移除；已清理日志的历史累计及归属无法重建。",
+  });
+  return { report, index };
 }
 
 function emptyFileState(path, identity, sessionId = sessionIdFromFile(path)) {

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createWatcherSyncState } from "./watcher-sync-state.mjs";
 
 const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
 const sessionsRoot = join(codexHome, "sessions");
@@ -9,20 +10,18 @@ const sessionIndexPath = join(codexHome, "session_index.jsonl");
 const configuredThreadIds = process.env.TASKCENTER_THREADS
   ? process.env.TASKCENTER_THREADS.split(",").map((value) => value.trim()).filter(Boolean)
   : null;
-let lastFingerprint = "";
-let pendingFingerprint = "";
-let pendingSince = 0;
-let changedSince = 0;
-let syncing = false;
 const pollIntervalMs = Number(process.env.TASKCENTER_POLL_INTERVAL_MS || 5_000);
 const quietPeriodMs = Number(process.env.TASKCENTER_QUIET_PERIOD_MS || 20_000);
 const maxSyncDelayMs = Number(process.env.TASKCENTER_MAX_SYNC_DELAY_MS || 30_000);
+const syncState = createWatcherSyncState({ quietPeriodMs, maxSyncDelayMs });
 const heartbeatPath = process.env.TASKCENTER_WATCHER_HEARTBEAT_PATH || join(import.meta.dirname, "..", ".local", "runtime", "watcher-heartbeat.json");
 const configuredPathCache = new Map();
-function heartbeat(status = "watching") {
+function heartbeat(observationError = "") {
   try {
     mkdirSync(join(heartbeatPath, ".."), { recursive: true });
-    writeFileSync(heartbeatPath, JSON.stringify({ status, pid: process.pid, updatedAt: new Date().toISOString() }) + "\n", { mode: 0o600 });
+    writeFileSync(heartbeatPath, JSON.stringify({ ...syncState.heartbeat(),
+      ...(observationError ? { status: "failed", refreshOk: false, lastRefreshError: observationError } : {}),
+      pid: process.pid, updatedAt: new Date().toISOString() }) + "\n", { mode: 0o600 });
   } catch (error) {
     console.error(`TaskCenter watcher heartbeat 写入失败：${error instanceof Error ? error.message : error}`);
   }
@@ -93,44 +92,35 @@ function fingerprint() {
 }
 
 function sync() {
-  if (syncing) return;
-  syncing = true;
-  heartbeat("syncing");
-  const child = spawn(process.execPath, [join(import.meta.dirname, "sync-codex.mjs")], {
-    stdio: "inherit",
-    env: process.env,
-  });
-  child.on("exit", () => {
-    syncing = false;
-    heartbeat("watching");
-  });
+  if (syncState.start(Date.now()) === null) return;
+  heartbeat();
+  let finished = false;
+  const finish = (ok, error = "") => {
+    if (finished) return;
+    finished = true;
+    syncState.finish(ok, Date.now(), error);
+    heartbeat();
+  };
+  try {
+    const child = spawn(process.execPath, [join(import.meta.dirname, "sync-codex.mjs")], {
+      stdio: "inherit", env: process.env,
+    });
+    child.once("error", error => finish(false, error.message));
+    child.once("close", (code, signal) => finish(code === 0, `sync exited: ${signal || code}`));
+  } catch (error) { finish(false, error instanceof Error ? error.message : String(error)); }
 }
 
-sync();
-heartbeat();
-setInterval(() => {
-  heartbeat(syncing ? "syncing" : "watching");
-  const currentFingerprint = fingerprint();
-  const now = Date.now();
-  if (currentFingerprint === lastFingerprint) changedSince = 0;
-  if (currentFingerprint !== pendingFingerprint) {
-    pendingFingerprint = currentFingerprint;
-    pendingSince = now;
-    if (currentFingerprint !== lastFingerprint && !changedSince) changedSince = now;
-    if (!changedSince || now - changedSince < maxSyncDelayMs) return;
-  }
-  if (
-    currentFingerprint !== lastFingerprint &&
-    (now - pendingSince >= quietPeriodMs || now - changedSince >= maxSyncDelayMs)
-  ) {
-    lastFingerprint = currentFingerprint;
-    changedSince = 0;
+function poll() {
+  try {
+    syncState.observe(fingerprint(), Date.now());
     sync();
+    heartbeat();
+  } catch (error) {
+    heartbeat(error instanceof Error ? error.message : String(error));
   }
-}, pollIntervalMs);
-
-lastFingerprint = fingerprint();
-pendingFingerprint = lastFingerprint;
+}
+poll();
+setInterval(poll, pollIntervalMs);
 console.log(
   `TaskCenter is watching all local Codex session metadata${configuredThreadIds ? `; sync remains limited to ${configuredThreadIds.length} configured Session(s)` : ""}; ` +
   `updates sync after ${Math.round(quietPeriodMs / 1000)} quiet seconds.`,

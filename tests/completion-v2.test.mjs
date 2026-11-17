@@ -271,3 +271,47 @@ test("Completion Packet 汇总 Review 长尾告警且不把告警作为完成阻
   assert.ok(packet.reviewProcess.reviewLoopWarnings.includes("review_cycle_in_progress"));
   assert.deepEqual(packet.completionReadiness.completionClaim, task.completionReadiness.completionClaim);
 });
+
+test("合同实质变更使相同Subject下的历史证据和验收失效，恢复旧文本也不复活旧证据", () => {
+  const accepted = applyCompletionEvent(base(), {
+    type: "acceptance.accepted", created_at: at,
+    acceptance_record: { id: "old-acceptance", source: "human", actor: actor("owner", "human"), subject_ref: subject(), observed_at: at },
+  });
+  const changed = applyCompletionEvent(accepted, {
+    type: "task.update",
+    acceptance_criteria: [{ id: "ac-1", description: "refund works", required: true }],
+    verification_plan: [{ id: "verify-1", title: "refund integration", kind: "test", required: true }],
+  });
+  assert.equal(changed.contractRevision, 2);
+  assert.equal(changed.completionReadiness.ready, false);
+  assert.equal(changed.verificationStatus, "stale");
+  assert.equal(changed.acceptanceStatus, "stale");
+  assert.equal(changed.verificationClaims.length, accepted.verificationClaims.length, "历史证据保留");
+  const restored = applyCompletionEvent(changed, {
+    type: "task.update", acceptance_criteria: accepted.acceptanceRequirements, verification_plan: accepted.verificationPlan,
+  });
+  assert.equal(restored.contractRevision, 3);
+  assert.equal(restored.completionReadiness.ready, false);
+});
+
+test("合同无变化不失效；新一轮close证据绑定新合同，但不自动复用独立验收", () => {
+  const original = base();
+  const unchanged = applyCompletionEvent(original, { type: "task.update", current_step: "仍在核对" });
+  assert.equal(unchanged.contractRevision, 1);
+  assert.equal(unchanged.completionReadiness.ready, true);
+  const changed = applyCompletionEvent(unchanged, {
+    type: "task.update", goal: "expanded goal", scope: ["core", "refund"],
+  });
+  assert.equal(changed.contractRevision, 2);
+  const closed = applyCompletionEvent(changed, {
+    type: "task.close", created_at: at,
+    close_requirements: [{ requirement_id: "ac-1", status: "passed", evidence_refs: ["claim-new"], subject_ref: subject() }],
+    close_verifications: [{ id: "claim-new", requirement_id: "verify-1", kind: "test", status: "passed", observed_at: at, producer: actor(), subject_ref: subject(), evidence_ref: "ci://new" }],
+  });
+  assert.equal(closed.contractRevision, 2);
+  assert.equal(closed.requirementResults.at(-1).contract_revision, 2);
+  assert.equal(closed.verificationClaims.at(-1).contract_revision, 2);
+  assert.equal(closed.completionReadiness.ready, true);
+  assert.equal(closed.acceptanceStatus, "ready");
+  assert.equal(buildCompletionPacket(closed).contractRevision, 2);
+});

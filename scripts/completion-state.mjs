@@ -1,4 +1,5 @@
 import { buildTaskPhaseTiming, PHASES } from "./task-phase-timing.mjs";
+import { createHash } from "node:crypto";
 
 const workflowProfiles = new Set(["fast", "standard", "strict"]);
 const reviewPolicies = new Set(["not_required", "recommended", "required"]);
@@ -102,10 +103,17 @@ export function normalizeCompletionEvent(input, currentSubject = null) {
   };
 }
 
-export function applyCompletionEvent(task, event) {
+export function applyCompletionEvent(task, event, previousTask = task) {
   let next = { ...task };
   const taskMutation = ["task.create", "task.update", "task.report", "task.close"].includes(event.type);
-  if (taskMutation) next = { ...next, ...normalizeTaskContract(event, next) };
+  if (taskMutation) {
+    next = { ...next, ...normalizeTaskContract(event, next), goal: event.goal || next.goal };
+    const priorFingerprint = previousTask?.contractFingerprint || contractFingerprint(previousTask || task);
+    const fingerprint = contractFingerprint(next);
+    next.contractRevision = (previousTask?.contractRevision || 1)
+      + (event.type !== "task.create" && fingerprint !== priorFingerprint ? 1 : 0);
+    next.contractFingerprint = fingerprint;
+  }
   if ((taskMutation || event.type === "subject.updated") && event.subject_ref) next.currentSubject = event.subject_ref;
   if (taskMutation && event.revision) {
     next.currentRevision = event.revision;
@@ -119,7 +127,7 @@ export function applyCompletionEvent(task, event) {
     if (!criteria(next).some((item) => item.id === result.requirement_id)) throw failure(`UNKNOWN_ACCEPTANCE_REFERENCE: requirement_id=${result.requirement_id} 不属于该任务的 acceptance criteria；允许的验收项 ID: ${criteria(next).map((item) => item.id).join(", ") || "(none)"}。验证计划 ID 应填写在 verification claim 中。`, 400);
     if (result.status === "not_applicable" && !result.note) throw failure("not_applicable 必须填写原因。");
     if (["passed", "failed"].includes(result.status) && !result.evidence_refs.length) throw failure("验收条件通过或失败时必须引用证据。");
-    next.requirementResults = [...(next.requirementResults || []), { ...result, checked_at: result.checked_at || event.occurred_at || event.created_at }];
+    next.requirementResults = [...(next.requirementResults || []), { ...result, contract_revision: event.contract_revision || next.contractRevision || 1, checked_at: result.checked_at || event.occurred_at || event.created_at }];
   }
   if (event.type === "verification.reported") {
     const claim = normalizeVerificationClaim(event.verification_claim, event.occurred_at || event.created_at);
@@ -133,7 +141,7 @@ export function applyCompletionEvent(task, event) {
     if (["standard", "strict"].includes(next.workflowProfile) && !claim.subject_ref) throw failure(`${next.workflowProfile} 验证证据必须绑定 SubjectReference。`);
     if ((next.verificationClaims || []).some((item) => item.id === claim.id)) throw failure("Verification Claim id 已存在；请使用新 id 追加证据。", 409);
     rejectSecrets([claim.command_or_probe, claim.evidence_ref, claim.summary, ...(claim.artifact_refs || [])]);
-    next.verificationClaims = [...(next.verificationClaims || []), claim];
+    next.verificationClaims = [...(next.verificationClaims || []), { ...claim, contract_revision: event.contract_revision || next.contractRevision || 1 }];
   }
   if (event.type === "task.close") {
     for (const requirementResult of event.close_requirements || []) {
@@ -163,7 +171,7 @@ export function applyCompletionEvent(task, event) {
     validateReviewVerdicts(review);
     if ((next.reviewAttestations || []).some((item) => item.id === review.id)) throw failure("Review Attestation id 已存在；请使用新 id 追加复审。", 409);
     validateReviewCycleLink(next, review);
-    next.reviewAttestations = projectReviewDuplicates([...(next.reviewAttestations || []), review]);
+    next.reviewAttestations = projectReviewDuplicates([...(next.reviewAttestations || []), { ...review, contract_revision: event.contract_revision || next.contractRevision || 1 }]);
   }
   if (event.type === "review_cycle.reported") {
     const cycle = normalizeReviewCycle(event.review_cycle, event.occurred_at || event.created_at);
@@ -199,8 +207,9 @@ export function applyCompletionEvent(task, event) {
       const readiness = computeCompletionReadiness(next, record.subject_ref || next.currentSubject);
       if (!readiness.ready) throw failure(`任务尚未就绪：${readiness.reasons.join(", ")}`, 409);
     }
-    next.acceptanceRecords = [...(next.acceptanceRecords || []), { ...record, outcome }];
-    next.acceptanceRecord = outcome === "accepted" ? record : null;
+    const boundRecord = { ...record, contract_revision: event.contract_revision || next.contractRevision || 1, outcome };
+    next.acceptanceRecords = [...(next.acceptanceRecords || []), boundRecord];
+    next.acceptanceRecord = outcome === "accepted" ? boundRecord : null;
     if (outcome === "rejected") { next.acceptanceRejectedAt = record.observed_at; next.acceptanceRejectionReason = record.reason || "rejected"; }
   }
   return withCompletionState(next);
@@ -212,7 +221,8 @@ function projectReviewDuplicates(reviews) {
   let latest;
   return reviews.map((review) => {
     if (review.effective_review === false && !review.duplicate_of_attestation_id) return review;
-    const duplicate = review.verdict === "approved" && latest?.verdict === "approved" && sameSubject(latest.subject_ref, review.subject_ref);
+    const duplicate = review.verdict === "approved" && latest?.verdict === "approved" && sameSubject(latest.subject_ref, review.subject_ref)
+      && (latest.contract_revision || 1) === (review.contract_revision || 1);
     const projected = { ...review, effective_review: !duplicate };
     delete projected.duplicate_of_attestation_id;
     if (duplicate) projected.duplicate_of_attestation_id = latest.id;
@@ -226,9 +236,11 @@ export function withCompletionState(task) {
   const currentSubject = task.currentSubject || legacySubject(task.currentRevision, task.updatedAt || task.createdAt || new Date().toISOString());
   const migrated = {
     ...task, contractVersion: task.contractVersion || "legacy", currentSubject,
+    contractRevision: task.contractRevision || 1,
+    contractFingerprint: task.contractFingerprint || contractFingerprint(task),
     acceptanceRequirements: criteria(task),
     requirementResults: Array.isArray(task.requirementResults) ? task.requirementResults : [],
-    verificationClaims: (task.verificationClaims || []).map((item) => item?.subject_ref && typeof item.producer === "object" ? item : normalizeVerificationClaim(item, item?.observed_at)),
+    verificationClaims: (task.verificationClaims || []).map((item) => item?.subject_ref && typeof item.producer === "object" ? item : { ...normalizeVerificationClaim(item, item?.observed_at), ...(item?.contract_revision ? { contract_revision: item.contract_revision } : {}) }),
     reviewAttestations: projectReviewDuplicates((task.reviewAttestations || []).map((item) => item?.subject_ref && typeof item.reviewer === "object" ? item : normalizeReview(item, item?.observed_at))),
     reviewCycles: Array.isArray(task.reviewCycles) ? task.reviewCycles.map((item) => normalizeReviewCycle(item, item?.observed_at)) : [],
     diagnosticObservations: Array.isArray(task.diagnosticObservations) ? task.diagnosticObservations.map((item) => normalizeDiagnosticObservation(item, item?.observed_at)) : [],
@@ -239,7 +251,7 @@ export function withCompletionState(task) {
   const readiness = computeCompletionReadiness(migrated);
   const latest = migrated.acceptanceRecords.at(-1);
   let acceptanceStatus = latest?.outcome || (readiness.ready ? "ready" : "pending");
-  if (latest?.outcome === "accepted" && !sameSubject(latest.subject_ref, migrated.currentSubject)) acceptanceStatus = "stale";
+  if (latest?.outcome === "accepted" && (!sameSubject(latest.subject_ref, migrated.currentSubject) || !sameContract(latest, migrated))) acceptanceStatus = "stale";
   return { ...migrated, executionStatus: migrated.status, verificationStatus: verificationStatusOf(migrated), reviewStatus: reviewStatusOf(migrated), acceptanceStatus, completionReadiness: readiness };
 }
 
@@ -257,7 +269,7 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
     if (!result || !["passed", "not_applicable"].includes(result.status)) {
       (result?.status === "failed" ? failedRequirements : missingRequirements).push(requirement.id);
       reasons.push(result?.status === "failed" ? "acceptance_criterion_failed" : "acceptance_criterion_pending");
-    } else if (result.subject_ref && currentSubject && !sameSubject(result.subject_ref, currentSubject)) {
+    } else if (!sameContract(result, task) || (result.subject_ref && currentSubject && !sameSubject(result.subject_ref, currentSubject))) {
       staleEvidence.push(`requirement:${requirement.id}`);
       reasons.push("requirement_result_stale");
     }
@@ -268,7 +280,7 @@ export function computeCompletionReadiness(task, subject = task.currentSubject |
     if (!claim || claim.status === "skipped") { missingRequirements.push(requirement.id); reasons.push("required_verification_missing"); }
     else if (claim.status !== "passed") { failedRequirements.push(requirement.id); reasons.push("verification_failed"); }
     else {
-      if (currentSubject && !sameSubject(claim.subject_ref, currentSubject)) { staleEvidence.push(claim.id); reasons.push("verification_stale"); }
+      if (!sameContract(claim, task) || (currentSubject && !sameSubject(claim.subject_ref, currentSubject))) { staleEvidence.push(claim.id); reasons.push("verification_stale"); }
       if (["standard", "strict"].includes(task.workflowProfile) && !hasPortableEvidence(claim)) reasons.push("portable_evidence_missing");
     }
   }
@@ -299,6 +311,7 @@ export function buildCompletionPacket(task) {
   return {
     schemaVersion: "taskcenter-completion-v2", policyVersion: value.policyVersion,
     taskId: value.id,
+    contractRevision: value.contractRevision, contractFingerprint: value.contractFingerprint,
     taskContract: { contractVersion: value.contractVersion, goal: value.goal, scope: value.scope || [], nonGoals: value.nonGoals || [], acceptanceCriteria: value.acceptanceRequirements, workflowProfile: value.workflowProfile, reviewPolicy: value.reviewPolicy, executionEnvironment: value.executionEnvironment, verificationPlan: value.verificationPlan || [], workspacePolicy: value.workspacePolicy },
     currentSubject: value.currentSubject || null, requirementResults: value.requirementResults, verificationClaims: value.verificationClaims, reviewAttestations: value.reviewAttestations, reviewCycles: value.reviewCycles, reviewProcess, phaseTiming, diagnosticObservations: value.diagnosticObservations, acceptanceRecords: value.acceptanceRecords, completionReadiness: value.completionReadiness,
     currentRevision: normalizedRevision,
@@ -433,6 +446,25 @@ function normalizeCriteria(value) {
 
 function criteria(task) { return normalizeCriteria(task.acceptanceRequirements?.length ? task.acceptanceRequirements : task.acceptanceCriteria); }
 
+// Artifact identity alone does not identify the obligations it was checked against.
+// Legacy evidence belongs to revision 1; never silently rebind it after a contract edit.
+function sameContract(evidence, task) {
+  return (evidence?.contract_revision || 1) === (task.contractRevision || 1);
+}
+
+function contractFingerprint(task) {
+  const policy = normalizeWorkspacePolicy(task.workspacePolicy, task.workflowProfile, task.reviewPolicy);
+  const value = {
+    version: task.contractVersion || "legacy", goal: text(task.goal, 1_000),
+    scope: strings(task.scope, 50, 500), nonGoals: strings(task.nonGoals, 50, 500),
+    workflowProfile: task.workflowProfile || "", reviewPolicy: task.reviewPolicy || "",
+    executionEnvironment: task.executionEnvironment || "",
+    acceptanceRequirements: criteria(task), verificationPlan: normalizeVerificationPlan(task.verificationPlan),
+    workspacePolicy: policy,
+  };
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
 function normalizeVerificationPlan(value) {
   if (!Array.isArray(value)) return [];
   const seen = new Set();
@@ -476,6 +508,7 @@ function normalizeReview(value, fallbackAt) {
   const unresolved = contractVersion === "v3" ? findings.filter((item) => item.status === "unresolved").length : Number.isInteger(value.unresolved_findings) && value.unresolved_findings >= 0 ? value.unresolved_findings : 0;
   return {
     id: text(value.id, 120), reviewer: normalizeActorIdentity(value.reviewer, { type: "agent", id: value.reviewer_session_id || "" }),
+    ...(positiveInteger(value.contract_revision) ? { contract_revision: value.contract_revision } : {}),
     ...(value.route_id ? { route_id: text(value.route_id, 200), review_artifacts: value.review_artifacts } : {}),
     subject_ref: normalizeSubjectReference(value.subject_ref, observedAt) || legacySubject(value.revision, observedAt), revision: text(value.revision, 500), scope: text(value.scope, 1_000),
     review_contract_version: contractVersion, spec_verdict: enumeration(value.spec_verdict, specVerdicts, hasV2Fields || hasV3Fields ? "not_evaluated" : ""), quality_verdict: enumeration(value.quality_verdict, qualityVerdicts, hasV2Fields || hasV3Fields ? "not_evaluated" : ""),
@@ -635,7 +668,7 @@ function verificationStatusOf(task) {
   if (!required.length) return "not_required";
   const claims = required.map(item => latestVerification(task, item));
   if (claims.some((claim) => claim?.status === "failed")) return "failed";
-  if (claims.some((claim) => claim?.status === "passed" && task.currentSubject && !sameSubject(claim.subject_ref, task.currentSubject))) return "stale";
+  if (claims.some((claim) => claim?.status === "passed" && (!sameContract(claim, task) || (task.currentSubject && !sameSubject(claim.subject_ref, task.currentSubject))))) return "stale";
   return claims.every((claim) => claim?.status === "passed") ? "passed" : "pending";
 }
 
@@ -643,7 +676,7 @@ function reviewStatusOf(task) {
   if (!reviewRequired(task) && task.reviewPolicy !== "recommended") return "not_required";
   const review = (task.reviewAttestations || []).filter((item) => item.effective_review !== false).at(-1);
   if (!review) return "pending";
-  if (task.currentSubject && !sameSubject(review.subject_ref, task.currentSubject)) return "stale";
+  if (!sameContract(review, task) || (task.currentSubject && !sameSubject(review.subject_ref, task.currentSubject))) return "stale";
   if (review.verdict === "rejected") return "rejected";
   const v2Approved = review.review_contract_version !== "v2" || (review.spec_verdict === "compliant" && review.quality_verdict === "approved" && review.unverified_requirements.length === 0);
   if (review.verdict === "approved" && review.unresolved_findings === 0 && v2Approved && (task.workspacePolicy?.requireIndependentReview === false || independent(task.ownerActor, review.reviewer))) return "passed";

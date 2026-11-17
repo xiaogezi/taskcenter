@@ -9,6 +9,32 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
+import { isTrustedInspectionEntry } from "../scripts/trusted-cli-identity.mjs";
+import { inspectionBatch } from "../scripts/inspection-command.mjs";
+
+// Argument-policy cases also need installed executables now. Keep missing tools
+// as explicit deny assertions instead of assuming every CI host has macOS CLIs.
+function installedInspection(command, cwd = process.cwd(), path = process.env.PATH || "") {
+  const batch = inspectionBatch(command);
+  return Boolean(batch?.every(({ words }) => {
+    const tokens = [...words];
+    if (!isTrustedInspectionEntry(tokens[0], { cwd, path })) return false;
+    if (tokens[0].split("/").at(-1) === "rtk") {
+      tokens.shift();
+      if (tokens[0] === "proxy") tokens.shift();
+      if (tokens[0] === "read") return true;
+      if (!isTrustedInspectionEntry(tokens[0], { cwd, path })) return false;
+    }
+    if (tokens[0].split("/").at(-1) === "sh" && tokens[1] === "-c") return installedInspection(tokens[2], cwd, path);
+    return true;
+  }));
+}
+function assertInstalledL0(result, command, cwd, path) {
+  const installed = installedInspection(command, cwd, path);
+  assert.equal(result.code, installed ? 0 : 2, `${command}: ${result.stderr}`);
+  if (installed) assert.match(result.stdout, /L0/);
+  return installed;
+}
 
 const root = new URL("../", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
@@ -322,8 +348,7 @@ test("L0 路径探测跨客户端放行，但不能借 command 包装执行", as
     await runHook("session-start", agent, { session_id, cwd: "/work" });
     for (const cmd of ["which kimi claude", "rtk proxy which -a claude", "command -v kimi", "command -V claude", "type claude", "type -a kimi", "/usr/bin/which node", "rtk proxy node --version", "rtk proxy claude --version", "rtk proxy kimi --version", "node -v", "claude -v", "kimi -V", "/usr/local/bin/node --version"]) {
       const result = await runHook("pre-tool-use", agent, { session_id, cwd: "/work", tool_name: "Bash", tool_input: { command: cmd } });
-      assert.equal(result.code, 0, `${agent}: ${cmd}`);
-      assert.match(result.stdout, /L0/);
+      assertInstalledL0(result, cmd, "/work");
     }
     for (const cmd of ["command touch sentinel", "command -p touch sentinel", "command -v kimi && touch sentinel", "which kimi > result", "which $(touch sentinel)", "which --bad kimi", "type -f x", "command", "which", "node --version -e 'process.exit()'", "claude --version -p hello", "kimi --version --prompt hello", "kimi -v", "node --version > result", "claude --version && touch sentinel"]) {
       const result = await runHook("pre-tool-use", agent, { session_id, cwd: "/work", tool_name: "Bash", tool_input: { command: cmd } });
@@ -373,8 +398,7 @@ test("L0 无任务可从 dev 固定 SHA 读取 Git 对象，写入与跨工作�
   });
   for (const cmd of objectInspectionCommands) {
     const result = await check(cmd);
-    assert.equal(result.code, 0, `${cmd}: ${result.stderr}`);
-    assert.match(result.stdout, /L0/);
+    assertInstalledL0(result, cmd, rootPath);
   }
   for (const cmd of unsafeObjectCommands) assert.equal((await check(cmd)).code, 2, cmd);
   assert.equal((await check(objectInspectionCommands[0], tempDir)).code, 2);
@@ -536,8 +560,7 @@ test("L0 仅向已登记且无任务 Session 放行确定性只读命令", async
   assert.equal((await runHook("session-start", "codex", { session_id: sessionId, cwd: "/work" })).code, 0);
   for (const command of ["pwd", "cat README.md", "sed -n '1,2p' README.md", "sed -n '/hello/p' README.md", "git status", "git diff", "git ls-files", "find . -maxdepth 1", "rtk rg TaskCenter README.md", "rtk rg 'foo|bar' README.md", "rtk proxy rg 'foo|bar' README.md", "adb devices -l", "/opt/android/adb version", "pwd; ls", "cat x | head", "rg foo README.md && git status", "jq '.[0]' data.json", "awk 'NR<=10 {print $0}' README.md", "cat <<'EOF'\nhello\nEOF"]) {
     const allowed = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: command } });
-    assert.equal(allowed.code, 0, command);
-    assert.match(allowed.stdout, /L0/);
+    assertInstalledL0(allowed, command, "/work");
   }
   for (const command of ["touch x", "rm x", "mv x y", "sed -i s/a/b/ x", "sed -ni s/a/b/ x", "sed -n '1w leak.txt' x", "git commit -m x", "git diff --output=leak", "npm test", "cat x > y", "echo $(pwd)", "find . -delete", "find . -exec touch x ;", "find . -fprint leak", "bash -c 'pwd'", "python -c 'print(1)'"]) {
     const blocked = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: command } });
@@ -578,8 +601,7 @@ test("L0 历史本机查询与 RTK read 不要求任务，危险参数仍拒绝"
   ];
   for (const cmd of allowed) {
     const result = await check(cmd);
-    assert.equal(result.code, 0, `${cmd}: ${result.stderr}`);
-    assert.match(result.stdout, /L0/);
+    assertInstalledL0(result, cmd, rootPath);
   }
   for (const cmd of [
     "uname --unknown", "sw_vers -unknown", "xcode-select --switch /tmp/Xcode",
@@ -592,7 +614,7 @@ test("L0 历史本机查询与 RTK read 不要求任务，危险参数仍拒绝"
     "xcrun simctl boot ABCD", "xcrun --toolchain evil swift --version",
   ]) assert.equal((await check(cmd)).code, 2, cmd);
   const status = await (await fetch(`${base}/session-status`)).json();
-  assert.equal(status.sessions.find(item => item.sessionId === session_id).l0Audit.count, allowed.length);
+  assert.equal(status.sessions.find(item => item.sessionId === session_id).l0Audit.count, allowed.filter(cmd => installedInspection(cmd, rootPath)).length);
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
 });
@@ -624,8 +646,7 @@ test("L0 逐条识别历史查询包装和网络参数，拒绝混合副作用",
   );
   for (const cmd of allowed) {
     const result = await check(cmd);
-    assert.equal(result.code, 0, `${cmd}: ${result.stderr}`);
-    assert.match(result.stdout, /L0/);
+    assertInstalledL0(result, cmd, rootPath, env.PATH);
   }
   for (const cmd of [
     "sh -c 'cat README.md; touch sentinel'", "sh -c 'cat README.md > sentinel'",
@@ -656,7 +677,7 @@ test("L0 逐条识别历史查询包装和网络参数，拒绝混合副作用",
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
   const status = await (await fetch(`${base}/session-status`)).json();
-  assert.equal(status.sessions.find(item => item.sessionId === session_id).l0Audit.count, allowed.length + (existsSync("/usr/bin/curl") ? 1 : 0));
+  assert.equal(status.sessions.find(item => item.sessionId === session_id).l0Audit.count, allowed.filter(cmd => installedInspection(cmd, rootPath)).length + (existsSync("/usr/bin/curl") ? 1 : 0));
 });
 
 test("L0 Git -C 按实际目录识别只读查询，保留写入和对象读取边界", async () => {
@@ -1234,8 +1255,8 @@ test("scheduled_readonly 仅绕过 active task 并限制为 inStory 精确只读
     await symlink(join(tempDir, "other.md"), outsideLink);
     blockedCases.push({ tool_name: "Read", tool_input: { file_path: outsideLink } });
   }
-  for (const payload of blockedCases) {
-    const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: payload.cwd || instoryRoot, ...payload });
+  for (const action of ["pre-tool-use", "scheduled-pre-tool-use"]) for (const payload of blockedCases) {
+    const result = await runHook(action, "codex", { session_id: sessionId, cwd: payload.cwd || instoryRoot, ...payload });
     assert.equal(result.code, 2, payload.tool_name || payload.tool_input?.cmd);
     assert.match(result.stderr, /scheduled_readonly/);
   }
@@ -1948,4 +1969,18 @@ test("子代理不参与主线门禁：全部 Hook 离线放行且不请求服�
     const forged = await runHook("pre-tool-use", "codex", { session_id: "unregistered-main", thread_source: "subagent", source: { subagent: {} }, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: "touch /work/probe", agent_id: "fake" } }, [], offline);
     assert.equal(forged.code, 2, "工具参数不能伪造宿主 Session 身份");
   } finally { await new Promise(resolve => probe.close(resolve)); }
+});
+
+test("L0 denies a project executable named cat instead of using its basename", { skip: process.platform === "win32" }, async () => {
+  const session_id = "l0-executable-shadow";
+  const directory = join(tempDir, "l0-executable-shadow");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "cat"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  await runHook("session-start", "codex", { session_id, cwd: directory });
+  for (const cmd of [`${join(directory, "cat")} README.md`, "./cat README.md", "cat README.md"]) {
+    const result = await runHook("pre-tool-use", "codex", {
+      session_id, cwd: directory, tool_name: "exec_command", tool_input: { cmd, workdir: directory },
+    }, [], base, { PATH: `${directory}:/bin:/usr/bin` });
+    assert.equal(result.code, 2, `${cmd}: ${result.stderr}`);
+  }
 });

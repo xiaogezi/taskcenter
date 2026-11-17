@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KimiAcp, reportedUsage } from "../scripts/kimi-acp.mjs";
-import { runKimi } from "../scripts/kimi-run.mjs";
+import { runKimi, kimiRunMetadata } from "../scripts/kimi-run.mjs";
 import { handleKimiHook, formatKimiStdout } from "../scripts/kimi-context-hook.mjs";
 import { kimiHooks } from "../scripts/print-integrations.mjs";
 
@@ -146,4 +146,14 @@ test("Kimi resume refuses another workspace before load", async () => {
   };
   await assert.rejects(runKimi({ cwd: tmpdir(), session: sessionId, prompt: "test", client }), /requested workspace/);
   assert.equal(loaded, false);
+});
+
+test("Kimi persisted metadata excludes raw answer and unexpected fields", () => {
+  const metadata = kimiRunMetadata({ sessionId, finalText: "private answer", prompt: "private prompt",
+    usage: { used: 12, size: 100, cost: null, currency: null, raw: "private usage payload" }, status: "completed" }, "fixed-time");
+  assert.equal(metadata.sessionId, sessionId);
+  assert.equal(metadata.observed_at, "fixed-time");
+  assert.equal(metadata.usage.used, 12);
+  assert.equal(JSON.stringify(metadata).includes("private"), false);
+  assert.equal(Object.hasOwn(metadata, "finalText"), false);
 });

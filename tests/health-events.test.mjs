@@ -38,6 +38,14 @@ test("health 文件状态、heartbeat 新鲜/陈旧和事件接口边界", async
   let health = await (await fetch(`http://127.0.0.1:${f.port}/health`)).json();
   assert.equal(health.dashboard.readable, true); assert.equal(health.ledger.readable, true); assert.equal(health.ledger.eventsReadable, true); assert.equal(health.watcher.healthy, true);
   assert.equal(health.metrics.usage.stale, true); assert.equal(health.metrics.usage.lastRefreshError, "usage failed"); assert.equal(health.metrics.governance.stale, false);
+  for (const status of ["failed", "syncing"]) {
+    await writeFile(f.paths.heartbeat, JSON.stringify({ updatedAt: new Date().toISOString(), status, refreshOk: false }));
+    health = await (await fetch(`http://127.0.0.1:${f.port}/health`)).json();
+    assert.equal(health.watcher.healthy, false, "fresh heartbeat must not conceal a failed refresh, including while retrying");
+  }
+  await writeFile(f.paths.heartbeat, JSON.stringify({ updatedAt: new Date().toISOString(), status: "watching", refreshOk: true }));
+  health = await (await fetch(`http://127.0.0.1:${f.port}/health`)).json();
+  assert.equal(health.watcher.healthy, true);
   let events = await (await fetch(`http://127.0.0.1:${f.port}/tasks/target/events?limit=1`)).json();
   assert.deepEqual(events.events.map((event) => event.type), ["new"]);
   events = await (await fetch(`http://127.0.0.1:${f.port}/tasks/target/events`)).json();

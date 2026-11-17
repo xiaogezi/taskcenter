@@ -9,6 +9,15 @@ import { invokeHarness } from "./harnesses/index.mjs";
 export { runKimi } from "./harnesses/kimi-session.mjs";
 
 
+export function kimiRunMetadata(result, observedAt = new Date().toISOString()) {
+  // Keep answer text and future adapter fields out of the on-disk metadata report.
+  const { sessionId, taskcenterSessionId, cwd, stopReason, reportedModel, reportedThinking,
+    usage, usage_status, cancelled, status, usageScope } = result;
+  return { sessionId, taskcenterSessionId, cwd, stopReason, reportedModel, reportedThinking,
+    usage: usage ? { used: usage.used, size: usage.size, cost: usage.cost, currency: usage.currency } : null,
+    usage_status, cancelled, status, usageScope, observed_at: observedAt };
+}
+
 async function main() {
   const { values } = parseArgs({ options: { cwd: { type: "string", default: process.cwd() }, session: { type: "string" }, prompt: { type: "string" }, "pca-root": { type: "string" }, help: { type: "boolean" } } });
   if (values.help) { console.log("node scripts/kimi-run.mjs --cwd PATH --prompt TEXT [--session UUID] [--pca-root PATH]\nCtrl-C cancels the current turn. Permissions require an interactive terminal; otherwise denied."); return; }
@@ -30,7 +39,7 @@ async function main() {
     const directory = resolve(import.meta.dirname, "../.local/kimi-runs");
     await mkdir(directory, { recursive: true });
     const report = resolve(directory, `${randomUUID()}.json`);
-    await writeFile(report, JSON.stringify({ ...result, observed_at: new Date().toISOString() }, null, 2) + "\n", { mode: 0o600 });
+    await writeFile(report, JSON.stringify(kimiRunMetadata(result), null, 2) + "\n", { mode: 0o600 });
     console.error(`\nSession: ${result.sessionId}; report: ${report}; usage: ${result.usage_status}`);
     if (result.cancelled || result.stopReason !== "end_turn") process.exitCode = 1;
   } finally { process.off("SIGINT", interrupt); terminal?.close(); }

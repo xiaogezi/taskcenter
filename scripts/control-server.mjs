@@ -182,8 +182,9 @@ const server = createServer(async (request, response) => {
       const dashboard = inspectFile(dashboardPath);
       const heartbeat = inspectFile(watcherHeartbeatPath, true);
       const watcherFresh = heartbeat.readable && Date.now() - Date.parse(heartbeat.updatedAt) < 30_000;
+      const watcherHealthy = watcherFresh && heartbeat.refreshOk !== false && heartbeat.status !== "failed";
       const memory = process.memoryUsage();
-      sendJson(response, 200, { ok: true, release: releaseInfo(), dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()), rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable }, metrics: { usage: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000), governance: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) }, watcher: { ...heartbeat, healthy: watcherFresh } });
+      sendJson(response, 200, { ok: true, release: releaseInfo(), dryRun, syncing: Boolean(syncing), control: { uptimeSeconds: Math.round(process.uptime()), rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers }, dashboard, ledger: { readable: inspectFile(taskLedgerPath).readable, eventsReadable: inspectFile(taskEventsPath).readable }, metrics: { usage: metricSnapshotStatus(usageReportPath, usageHealthPath, 120_000), governance: metricSnapshotStatus(governanceMetricsPath, governanceHealthPath, 15_000) }, watcher: { ...heartbeat, healthy: watcherHealthy } });
       return;
     }
     if (request.method === "POST" && request.url === "/sync") {
@@ -1070,7 +1071,10 @@ function inspectFile(path, parseJson = false) {
     const mtime = new Date(stat.mtimeMs).toISOString();
     if (!parseJson) return { readable: true, exists: true, generatedAt: mtime };
     try {
-      return { readable: true, exists: true, generatedAt: mtime, updatedAt: JSON.parse(readFileSync(path, "utf8")).updatedAt || mtime };
+      const value = JSON.parse(readFileSync(path, "utf8"));
+      return { readable: true, exists: true, generatedAt: mtime, updatedAt: value.updatedAt || mtime,
+        ...(typeof value.status === "string" ? { status: value.status } : {}),
+        ...(typeof value.refreshOk === "boolean" ? { refreshOk: value.refreshOk } : {}) };
     } catch {
       return { readable: false, exists: true, generatedAt: mtime, updatedAt: mtime };
     }

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import { consumePassiveSessionRecord } from "./passive-session-signals.mjs";
 
 const DEFAULT_SESSIONS_ROOT = process.env.TASKCENTER_SESSIONS_ROOT || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
@@ -335,7 +336,19 @@ function eventUsage(event) {
 }
 export function createTaskUsageAttributor(ledger) {
   const index = taskIndex(readJson(ledger, ledger));
-  return (sessionId, eventAt) => taskIdsAt(index, sessionId, eventAt);
+  const attribute = (sessionId, eventAt) => taskIdsAt(index, sessionId, eventAt);
+  // Only the identity and lifecycle boundaries used by taskIdsAt invalidate attribution.
+  // Progress text and unrelated task updates must not force every rollout to replay.
+  attribute.fingerprint = (sessionId) => createHash("sha256").update(JSON.stringify(
+    [...new Set(index.sessions.get(sessionId) || [])].sort().map((id) => {
+      const task = index.tasks.get(id) || {};
+      const terminal = ["done_claimed", "verified", "cancelled"].includes(task.status);
+      const start = Date.parse(task.firstStartedAt || task.startedAt || task.createdAt || "");
+      const end = Date.parse(task.actualAt || (terminal ? task.updatedAt : "") || "");
+      return [id, Number.isFinite(start) ? start : null, Number.isFinite(end) ? end : null];
+    }),
+  )).digest("hex");
+  return attribute;
 }
 function taskIdsAt(index, sessionId, eventAt) {
   const candidates = (index.sessions.get(sessionId) || []).filter((taskId, position, all) => all.indexOf(taskId) === position).filter((taskId) => {

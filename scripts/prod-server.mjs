@@ -12,4 +12,4 @@ for (const name of [".env.production.local", ".env.local", ".env.production", ".
 const { values } = parseArgs({ options: { port: { type: "string", short: "p" }, hostname: { type: "string", short: "H" } } });
 const port = Number(values.port || process.env.PORT || 3000);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid production port");
-await startProdServer({ port, host: values.hostname || "0.0.0.0", outDir: resolve("dist") });
+await startProdServer({ port, host: values.hostname || "127.0.0.1", outDir: resolve("dist") });
