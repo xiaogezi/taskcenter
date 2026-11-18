@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, appendFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, appendFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { findSessionPathAsync } from "../scripts/session-cli.mjs";
 import { boundedResponse } from "../scripts/bounded-response.mjs";
 import { budgetSnapshot, readPreparationBudget, readRequestBudget } from "../scripts/request-budget.mjs";
 
@@ -107,4 +108,62 @@ test("超限和两次压缩的建议及原因保留在默认摘要，不收缩�
   assert.equal(result.continuation_count.phase, 38);
   assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 4096);
   }
+});
+
+
+test("异步查找冷会话保持最新文件选择并返回缺失结果", async () => {
+  const root = await mkdtemp(join(tmpdir(), "budget-discovery-"));
+  const id = "019f0000-0000-7000-8000-000000000004";
+  try {
+    await mkdir(join(root, "nested"));
+    const old = join(root, `${id}.jsonl`);
+    const newest = join(root, "nested", `${id}.jsonl`);
+    await writeFile(old, JSON.stringify({ type: "session_meta", payload: { id } }) + "\n");
+    await writeFile(newest, JSON.stringify({ type: "session_meta", payload: { id } }) + "\n");
+    await utimes(old, new Date(1000), new Date(1000));
+    await utimes(newest, new Date(2000), new Date(2000));
+    assert.equal(await findSessionPathAsync(id, root), newest);
+    assert.equal((await readRequestBudget(id, root)).source, "session_jsonl_incremental");
+    assert.equal(await findSessionPathAsync("absent", root), "");
+    assert.equal(await findSessionPathAsync(id, join(root, "missing")), "");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("慢目录发现不阻塞预算截止或事件循环，迟到读取仍可完成", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const io = {
+    async readdir() { entered(); await gate; return []; },
+    async stat() { throw new Error("unexpected stat"); },
+  };
+  const pending = findSessionPathAsync("missing", "/ignored", io);
+  await started;
+  try {
+    const result = await readPreparationBudget(null, async () => {
+      await pending;
+      return budgetSnapshot(null);
+    }, 20);
+    assert.equal(result.timedOut, true);
+    assert.equal(result.budget.source, "unavailable");
+  } finally { release(); }
+  assert.equal(await pending, "");
+});
+
+
+test("并发预算读取共享冷会话结果但分别投影任务配置", async () => {
+  const root = await mkdtemp(join(tmpdir(), "budget-concurrent-"));
+  const id = "019f0000-0000-7000-8000-000000000005";
+  try {
+    await writeFile(join(root, `${id}.jsonl`), JSON.stringify({ type: "session_meta", payload: { id } }) + "\n");
+    const [fast, standard] = await Promise.all([
+      readRequestBudget(id, root, { workflowProfile: "fast" }),
+      readRequestBudget(id, root, { workflowProfile: "standard" }),
+    ]);
+    assert.equal(fast.source, "session_jsonl_incremental");
+    assert.equal(standard.source, "session_jsonl_incremental");
+    assert.equal(fast.request_limit, 8);
+    assert.equal(standard.request_limit, 35);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

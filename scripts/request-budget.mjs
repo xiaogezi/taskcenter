@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
-import { findSessionPath } from "./session-cli.mjs";
+import { findSessionPathAsync } from "./session-cli.mjs";
 
 const cache = new Map();
 const inFlight = new Map();
@@ -61,7 +61,7 @@ export async function readPreparationBudget(task, read, waitMs = 400) {
 
 async function readSessionBudget(sessionId, root) {
   let state = cache.get(`${root}:${sessionId}`);
-  const path = state?.path || findSessionPath(sessionId, root);
+  const path = state?.path || await findSessionPathAsync(sessionId, root);
   if (!path) return null;
   const info = await stat(path);
   const identity = `${info.dev}:${info.ino}`;

@@ -1,6 +1,8 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { createReadStream } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -106,4 +108,33 @@ function collectFiles(root, predicate) {
     else if (predicate(path)) files.push(path);
   }
   return files;
+}
+
+// Budget reads must not block the control server's event loop while locating a
+// cold session. Keep the synchronous finder for callers that require it.
+export async function findSessionPathAsync(threadId, root = defaultSessionsRoot(), io = { readdir, stat }) {
+  const matches = [];
+  let entriesVisited = 0;
+  async function visit(dir) {
+    const entries = await io.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (++entriesVisited % 256 === 0) await yieldToEventLoop();
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (path.endsWith(".jsonl") && path.includes(threadId)) matches.push(path);
+    }
+  }
+  try {
+    await visit(root);
+    let newest = "";
+    let newestMtime = -Infinity;
+    for (const path of matches) {
+      const info = await io.stat(path);
+      if (info.mtimeMs > newestMtime) { newest = path; newestMtime = info.mtimeMs; }
+    }
+    return newest;
+  } catch (error) {
+    if (error.code === "ENOENT") return "";
+    throw error;
+  }
 }
