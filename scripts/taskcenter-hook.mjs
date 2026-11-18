@@ -44,7 +44,7 @@ try {
   // grammar without waiting on the control service. A missing/corrupt registry
   // or a scheduled profile falls back to the existing authoritative gate.
   if (action === "pre-tool-use" && sessionId && !scheduledReadonly && !isInteractiveExec(event)
-    && isReadOnlyInspection(event) && isKnownOrdinarySession()) {
+    && isReadOnlyInspection(event) && isKnownOrdinarySession() && isFastPathWorkdirWithinWorkspace(event)) {
     console.log("TaskCenter L0 确定性只读检查放行（快速放行，不登记任务或逐次计数）");
     process.exit(0);
   }
@@ -758,6 +758,22 @@ function isKnownOrdinarySession() {
       && typeof entry.workspace === "string" && entry.workspace === workspace
       && !entry.scheduledReadonly);
   } catch { return false; }
+}
+
+function isFastPathWorkdirWithinWorkspace(payload) {
+  const input = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
+  const explicit = [
+    ...["workdir", "cwd"].filter(key => Object.hasOwn(input, key)).map(key => input[key]),
+    ...(Object.hasOwn(payload, "workdir") ? [payload.workdir] : []),
+  ];
+  if (!explicit.length) return true; // Host session cwd is already matched to the registry.
+  const root = canonicalExistingPath(workspace);
+  if (!root) return false;
+  return explicit.every(value => {
+    if (typeof value !== "string" || !isAbsolute(value)) return false;
+    const actual = canonicalExistingPath(value);
+    return Boolean(actual && isWithinPath(actual, root));
+  });
 }
 
 async function isL0ReadOnlyInspection(payload) {

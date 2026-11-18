@@ -2025,7 +2025,37 @@ test("L0 快速通道不等待控制服务且不绕过定时会话与危险操�
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /L0 确定性只读检查放行.*快速放行/);
   }
+  const nested = join(tempDir, "fast-path-nested");
+  // Use an existing directory within the registered root; a symlink escaping
+  // the root must not qualify even if its spelling starts with the root path.
+  const inside = join(rootPath, "scripts");
+  const insideResult = await runHook("pre-tool-use", "codex", { ...event("pwd"), tool_input: { cmd: "pwd", workdir: inside } }, [], url, env);
+  assert.equal(insideResult.code, 0);
+  assert.match(insideResult.stdout, /快速放行/);
   assert.equal(requests, 0);
+  await mkdir(nested, { recursive: true });
+  for (const input of [
+    { cmd: "pwd", workdir: nested },
+    { cmd: "pwd", cwd: nested },
+    { cmd: "pwd", workdir: inside, cwd: nested },
+    { cmd: "pwd", workdir: "../outside" },
+    { cmd: "pwd", workdir: null },
+  ]) {
+    const outside = await runHook("pre-tool-use", "codex", { ...event("pwd"), tool_input: input }, [], url, env);
+    assert.equal(outside.code, 2);
+    assert.doesNotMatch(outside.stdout, /快速放行/);
+  }
+  const topLevel = await runHook("pre-tool-use", "codex", { ...event("pwd"), workdir: nested }, [], url, env);
+  assert.equal(topLevel.code, 2);
+  assert.doesNotMatch(topLevel.stdout, /快速放行/);
+  const linkPath = join(tempDir, "fast-path-outside-link");
+  await symlink(rootPath, linkPath);
+  const linkedSession = "fast-path-symlink";
+  registry[linkedSession] = { sessionId: linkedSession, registeredAt: "2026-11-18T00:00:00Z", workspace: tempDir };
+  await writeFile(registryPath, JSON.stringify(registry));
+  const symlinkEscape = await runHook("pre-tool-use", "codex", { session_id: linkedSession, cwd: tempDir, tool_name: "exec_command", tool_input: { cmd: "pwd", workdir: linkPath } }, [], url, env);
+  assert.equal(symlinkEscape.code, 2);
+  assert.doesNotMatch(symlinkEscape.stdout, /快速放行/);
   const write = await runHook("pre-tool-use", "codex", event("touch sentinel"), [], url, env);
   assert.equal(write.code, 2);
   registry[sessionId].scheduledReadonly = { profile: "scheduled_readonly" };
