@@ -39,6 +39,7 @@ export function buildReleaseEnvironment(config, options = {}) {
     TASKCENTER_WEB_MODE: config.webMode || "start",
     TASKCENTER_RUNTIME_DIR: runtimeRoot,
     TASKCENTER_LOG_DIR: resolve(config.logRoot),
+    TASKCENTER_GATE_DENIALS_PATH: join(runtimeRoot, "gate-denials.jsonl"),
     TASKCENTER_WEB_PORT: String(config.webPort),
     TASKCENTER_CONTROL_PORT: String(config.controlPort),
     TASKCENTER_CONTROL_URL: `http://127.0.0.1:${config.controlPort}`,

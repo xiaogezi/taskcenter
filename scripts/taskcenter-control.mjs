@@ -22,7 +22,7 @@ import { verifyProduction } from "./verify-production.mjs";
 import { assertReleaseLockCompatibility, readRuntimeCapabilities, buildReleaseEnvironment, resolveManagedProcessState, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.mjs";
-import { cutoverWithRollback, verifyBeforeServiceCutover, verifyOriginalServiceWithRetries } from "./service-deployment-policy.mjs";
+import { assertExpectedServiceIdentity, clearExitedOwnedCandidate, restoreOwnedCandidate, cutoverWithRollback, deploymentFailureDetails, verifyBeforeServiceCutover, verifyOriginalServiceWithRetries } from "./service-deployment-policy.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const runtimeDir = resolve(process.env.TASKCENTER_RUNTIME_DIR || resolve(projectRoot, ".local/runtime"));
@@ -72,6 +72,7 @@ try {
 }
 
 async function startService(options = {}) {
+  if (options.requireVacant) await requireVacantRuntime();
   if (offlineUpgrade) await requireOfflineUpgrade();
   const startup = options.release
     ? { mode: "release", release: options.release }
@@ -90,6 +91,7 @@ async function startService(options = {}) {
   const releaseReuseProbe = acquireSqliteMutex({ databasePath: `${decisions}.mutex.sqlite`, legacyLockPath: `${decisions}.lock` });
   releaseReuseProbe();
   if (await healthCheck()) {
+    if (options.requireVacant) throw new Error("启动已阻止：出现非本次启动的健康实例，不接管或覆盖。");
     const current = readManagedProcess();
     if (!startup.release || !current || current.sourceRoot !== startup.release.sourceRoot || current.revision !== startup.release.revision) {
       throw new Error("启动已阻止：现有服务与兼容 release 不一致；请安排离线升级，不能将旧实例视为新协议启动成功。");
@@ -112,6 +114,7 @@ async function startService(options = {}) {
   if (running) {
     throw new Error("TaskCenter 管理进程仍在启动或异常，请稍后重试；若持续失败请查看 .local/logs/web.log。");
   }
+  if (options.requireVacant) await requireVacantRuntime();
   cleanupRuntimeFiles();
   if (await isPortBusy(dashboardPort) || await isPortBusy(controlPort)) {
     throw new Error(`启动失败：${dashboardPort} 或 ${controlPort} 端口已被其他程序占用。`);
@@ -135,11 +138,21 @@ async function startService(options = {}) {
       webPort: dashboardPort,
       controlPort,
     }, { controllerRoot: projectRoot }),
-    stdio: "inherit",
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
+  });
+  let launchedIdentity;
+  launched.on("message", message => {
+    const state = message?.state;
+    if (message?.type !== "taskcenter-launched" || !resolveStopTarget(state)
+      || state.sourceRoot !== release.sourceRoot || state.revision !== (release.revision || "")) return;
+    launchedIdentity = state;
+    options.onLaunched?.(state);
   });
   await childResult(launched, "TaskCenter 后台启动器");
+  if (!launchedIdentity) throw new Error("启动器未返回本次实例身份；不会将未知实例用于回滚。");
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (await healthCheck()) {
+      assertExpectedServiceIdentity(launchedIdentity, readManagedProcess(), "startup health");
       if (startup.mode === "bootstrap") writeJson(activeReleasePath, release);
       await openDashboard();
       console.log("TaskCenter 启动成功：http://localhost:3000");
@@ -148,6 +161,17 @@ async function startService(options = {}) {
     await sleep(500);
   }
   throw new Error(`TaskCenter 启动失败，请查看日志：${logPath}`);
+}
+
+async function requireVacantRuntime(candidate) {
+  if (readJson(statePath) || readJson(resolve(runtimeDir, "web-launch-intent.json"))
+    || candidate?.pid && isProcessTreeAlive(candidate.pid)
+    || managedChildPids(runtimeDir).some(isProcessAlive)
+    || await isPortBusy(dashboardPort) || await isPortBusy(controlPort)) {
+    throw Object.assign(new Error("回滚/启动已阻止：运行区仍存在实例、启动意图或占用端口，不停止或覆盖未知进程。"), {
+      code: "TASKCENTER_RELEASE_IDENTITY_CHANGED", stage: "rollback/startup vacancy",
+    });
+  }
 }
 
 async function requireOfflineUpgrade() {
@@ -165,6 +189,20 @@ async function requireOfflineUpgrade() {
 async function stopService(options = {}) {
   if (!options.authorized) await requireDisruptionAuthorization("stop");
   const state = readManagedProcess();
+  if (options.expected && !state && await clearExitedOwnedCandidate({
+    expected: options.expected,
+    readCurrent: () => readJson(statePath),
+    hasOccupants: async expected => isProcessTreeAlive(expected.pid) || isProcessAlive(expected.pid)
+      || managedChildPids(runtimeDir).some(isProcessAlive)
+      || Boolean(readJson(resolve(runtimeDir, "web-launch-intent.json")))
+      || await isPortBusy(dashboardPort) || await isPortBusy(controlPort),
+    clear: cleanupRuntimeFiles,
+  })) {
+    console.log("本次候选实例已退出，已清理其已验证的运行残留。");
+    return;
+  }
+  // No await between the identity-bound read and the stop request/signal.
+  if (options.expected) assertExpectedServiceIdentity(options.expected, state);
   if (!state) {
     cleanupRuntimeFiles();
     if (await healthCheck()) {
@@ -177,15 +215,20 @@ async function stopService(options = {}) {
   await terminateProcessTree(state.pid);
   for (let attempt = 0; attempt < 25; attempt += 1) {
     if (!isProcessTreeAlive(state.pid) && !(await healthCheck())) {
+      const remaining = readJson(statePath);
+      if (options.expected && remaining) assertExpectedServiceIdentity(options.expected, remaining, "stop cleanup");
       cleanupRuntimeFiles();
       console.log("TaskCenter 已安全停止。");
       return;
     }
     await sleep(200);
   }
+  if (options.expected) assertExpectedServiceIdentity(options.expected, readManagedProcess(), "forced stop");
   await terminateProcessTree(state.pid, { force: true });
   for (let attempt = 0; attempt < 25; attempt += 1) {
     if (!isProcessTreeAlive(state.pid) && !(await healthCheck())) {
+      const remaining = readJson(statePath);
+      if (options.expected && remaining) assertExpectedServiceIdentity(options.expected, remaining, "stop cleanup");
       cleanupRuntimeFiles();
       console.log("TaskCenter 已安全停止。");
       return;
@@ -259,22 +302,31 @@ async function deployService() {
   }
 
   console.log("候选实例验证通过，开始受控切换 TaskCenter 运行实例。");
+  let launchedCandidate;
   await cutoverWithRollback({
-      stopOriginal: () => stopService({ authorized: true }),
-      startCandidate: () => startService({ release }),
+      stopOriginal: async () => {
+        await requireOriginalService(original, "cutover");
+        await stopService({ authorized: true, expected: original });
+      },
+      startCandidate: () => startService({ release, requireVacant: true, onLaunched: state => { launchedCandidate = state; } }),
       assertCandidateHealthy: async () => {
         if (!(await healthCheck())) throw new Error("新版本未通过稳定端口健康检查");
+        assertExpectedServiceIdentity(launchedCandidate, readManagedProcess(), "candidate health");
       },
-      restoreOriginal: async () => {
-        await stopService({ authorized: true, allowMissing: true });
-        await sleep(300);
+      restoreOriginal: () => restoreOwnedCandidate({
+        candidate: launchedCandidate,
+        readCurrent: () => readJson(statePath),
+        stopCandidate: expected => stopService({ authorized: true, expected }),
+        assertVacant: requireVacantRuntime,
+        restore: async () => {
         if (existsSync(migrationScript)) {
           const recovery = spawn(process.execPath, [migrationScript, resolve(projectRoot, "data/task-events.jsonl"), "--recover-legacy"], { stdio: "inherit" });
           await childResult(recovery, "旧版本事件存储恢复");
         }
-        await startService({ release: previousRelease });
+        await startService({ release: previousRelease, requireVacant: true });
         writeJson(activeReleasePath, previousRelease);
-      },
+        },
+      }),
   });
   writeJson(activeReleasePath, release);
   record("deployment", "succeeded", { durationMs: Date.now() - startedAtMs });
@@ -284,7 +336,9 @@ async function deployService() {
     record("deployment", rolledBack ? "rolled_back" : "failed", {
       durationMs: Date.now() - startedAtMs,
       error: error.message,
+      ...deploymentFailureDetails(error),
     });
+    console.error(deploymentFailureDetails(error).retryAction);
     throw error;
   }
   // Cleanup failure must not relabel or roll back a successful, healthy cutover.
@@ -345,7 +399,7 @@ async function requireOriginalService(original, stage) {
       healthy: error.last?.healthy ?? false,
       attempts: error.attempt,
     }));
-    throw new Error(`部署已中止：${stage} 验证期间原 TaskCenter 服务发生变化，未执行切换。`);
+    throw Object.assign(new Error(`部署已中止：${stage} 验证期间原 TaskCenter 服务身份或健康校验失败，未执行切换。`, { cause: error }), { code: error.code, stage });
   }
 }
 

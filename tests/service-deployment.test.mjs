@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cutoverWithRollback, verifyBeforeServiceCutover, verifyOriginalServiceWithRetries } from "../scripts/service-deployment-policy.mjs";
+import { assertExpectedServiceIdentity, restoreOwnedCandidate, cutoverWithRollback, deploymentFailureDetails, verifyBeforeServiceCutover, verifyOriginalServiceWithRetries } from "../scripts/service-deployment-policy.mjs";
 
 const original = { pid: 42, token: "original" };
 
@@ -33,7 +33,7 @@ test("部署前验证全部通过后才允许进入切换阶段", async () => {
     readRevision: async () => "abc123",
     readStatus: async () => "",
   });
-  assert.deepEqual(stages, ["lint", "healthy:lint", "test", "healthy:test"]);
+  assert.deepEqual(stages, ["healthy:preflight", "lint", "healthy:lint", "test", "healthy:test"]);
 });
 
 test("工作区不干净时不运行任何部署验证", async () => {
@@ -120,4 +120,89 @@ test("新旧版本都启动失败时报告双重故障", async () => {
     assertCandidateHealthy: async () => {},
     restoreOriginal: async () => { throw new Error("old failed"); },
   }), (error) => error instanceof AggregateError && /新版本启动失败且旧版本恢复失败/.test(error.message));
+});
+
+
+test("原服务预检失败时不开始构建、lint 或测试", async () => {
+  const calls = [];
+  await assert.rejects(() => verifyBeforeServiceCutover({
+    original, revision: "abc123", stages: ["artifact", "lint", "test"],
+    runStage: async stage => calls.push(stage),
+    assertOriginalService: async (service, stage) => {
+      calls.push(stage);
+      await verifyOriginalServiceWithRetries(async () => ({ identityChanged: true }));
+    },
+    readRevision: async () => "abc123", readStatus: async () => "",
+  }), error => error.code === "TASKCENTER_RELEASE_IDENTITY_CHANGED");
+  assert.deepEqual(calls, ["preflight"]);
+});
+
+test("阶段失败保留分类与阶段，不把健康失败误报身份变化", async () => {
+  let failure;
+  try {
+    await verifyBeforeServiceCutover({
+      original, revision: "abc123", stages: ["test"],
+      runStage: async () => { throw new Error("test failed"); },
+      assertOriginalService: async () => {},
+      readRevision: async () => "abc123", readStatus: async () => "",
+    });
+  } catch (error) { failure = error; }
+  assert.deepEqual(deploymentFailureDetails(failure), {
+    failureCode: "TASKCENTER_RELEASE_STAGE_FAILED", failedStage: "test",
+    retryAction: "先修复失败阶段并核对输出，再重新执行完整部署验证。",
+  });
+  await assert.rejects(() => verifyOriginalServiceWithRetries(
+    async () => ({ identityMatches: true, healthy: false }),
+    { attempts: 1 },
+  ), error => error.code === "TASKCENTER_RELEASE_UNHEALTHY");
+  const details = deploymentFailureDetails({ code: "TASKCENTER_RELEASE_IDENTITY_CHANGED", last: { token: "private" } });
+  assert.match(details.retryAction, /不要盲目重复构建/);
+  assert.ok(!JSON.stringify(details).includes("private"));
+});
+
+
+test("切换前身份变化不能停止替换实例或开始候选/回滚", async () => {
+  for (const replacement of [null, { pid: 99, token: "replacement" }, { pid: 42, token: "new-generation" }]) {
+    const calls = [];
+    await assert.rejects(() => cutoverWithRollback({
+      stopOriginal: async () => {
+        assertExpectedServiceIdentity(original, replacement);
+        calls.push("stop");
+      },
+      startCandidate: async () => calls.push("start"),
+      assertCandidateHealthy: async () => calls.push("health"),
+      restoreOriginal: async () => calls.push("rollback"),
+    }), error => error.code === "TASKCENTER_RELEASE_IDENTITY_CHANGED");
+    assert.deepEqual(calls, []);
+  }
+  assert.equal(assertExpectedServiceIdentity(original, original), original);
+});
+
+
+test("回滚只停止本次候选，未知或替换实例绝不恢复覆盖", async () => {
+  for (const candidate of [undefined, original]) for (const current of [
+    { pid: 99, token: "other" }, { pid: 42, token: "new-generation" },
+  ]) {
+    const calls = [];
+    await assert.rejects(() => restoreOwnedCandidate({
+      candidate, readCurrent: () => current,
+      stopCandidate: async () => calls.push("stop"),
+      assertVacant: async () => calls.push("vacant"), restore: async () => calls.push("restore"),
+    }), error => error.code === "TASKCENTER_RELEASE_IDENTITY_CHANGED");
+    assert.deepEqual(calls, []);
+  }
+  const calls = [];
+  await restoreOwnedCandidate({ candidate: original, readCurrent: () => original,
+    stopCandidate: async identity => { assert.equal(identity, original); calls.push("stop-owned"); },
+    assertVacant: async identity => { assert.equal(identity, original); calls.push("vacant"); },
+    restore: async () => calls.push("restore"),
+  });
+  assert.deepEqual(calls, ["stop-owned", "vacant", "restore"]);
+  let restored = false;
+  await assert.rejects(() => restoreOwnedCandidate({ candidate: original, readCurrent: () => null,
+    stopCandidate: async () => assert.fail("missing state must not signal"),
+    assertVacant: async () => { throw new Error("port occupied or pending launch"); },
+    restore: async () => { restored = true; },
+  }), /port occupied/);
+  assert.equal(restored, false);
 });
