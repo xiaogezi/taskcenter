@@ -18,7 +18,7 @@ import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { observeControlRequest } from "./control-request-observation.mjs";
+import { markPrepareStage, observeControlRequest } from "./control-request-observation.mjs";
 import { currentMaintenanceAction, safeActionText } from "./ai-maintenance.mjs";
 import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
 import { isProcessTreeAlive } from "./process-tree.mjs";
@@ -304,13 +304,20 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url?.startsWith("/task-prepare?")) {
       const params = new URL(request.url, "http://localhost").searchParams;
       const sessionId = params.get("session_id") || "";
+      markPrepareStage(request, "registry");
       const registry = loadSessionRegistry()[sessionId];
       if (!registry) throw new TaskLedgerError(409, "当前 Session 尚未登记。");
+      markPrepareStage(request, "tasks");
       const tasks = loadVisibleSessionTasks(sessionId).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
       const activeTask = tasks.find((item) => ["planned", "in_progress", "blocked"].includes(item.status));
       const task = activeTask || tasks[0] || null;
+      markPrepareStage(request, "budget");
       const budget = await readRequestBudget(sessionId, sessionsRoot, task);
-      sendJson(response, 200, boundedResponse({
+      // Budget reads may finish after the Hook has disconnected. Preserve the
+      // read/cache outcome but do not build a handoff nobody can receive.
+      if (response.destroyed) return;
+      markPrepareStage(request, "response");
+      const prepared = boundedResponse({
         session_id: sessionId, task_id: task?.id || null, status: task?.status || null,
         active_task: activeTask ? Object.fromEntries(["id", "sessionId", "status", "dueAt", "estimatedEffortMs", "activeDurationMs", "activeStartedAt"].map((key) => [key, activeTask[key]])) : null,
         gate_allowlisted: readSessionAllowlist(gateSessionAllowlistPath).threadIds?.includes(sessionId) || false,
@@ -319,7 +326,9 @@ const server = createServer(async (request, response) => {
         handoff: task && (budget.handoff_recommended || !activeTask) ? machineHandoff(task) : null,
         agent_guidance: task ? agentGuidance(task, aiActivityPath) : null,
         ...budget,
-      }));
+      });
+      sendJson(response, 200, prepared);
+      markPrepareStage(request, null);
       return;
     }
     if (request.method === "GET" && request.url === "/governance-metrics") {

@@ -47,12 +47,13 @@ test("候选 release 隔离 Codex、账本、runtime、端口并强制 dry-run",
     webMode: "start",
     webPort: 4100,
     controlPort: 4101,
-  }, { controllerRoot: "/taskcenter", baseEnvironment: { TASKCENTER_AI_ACTIVITY_PATH: "/production/ai.jsonl", TASKCENTER_JEV_RUNTIME_DIR: "/production/jev" } });
+  }, { controllerRoot: "/taskcenter", baseEnvironment: { TASKCENTER_GATE_DENIALS_PATH: "/production/gate-denials.jsonl", TASKCENTER_AI_ACTIVITY_PATH: "/production/ai.jsonl", TASKCENTER_JEV_RUNTIME_DIR: "/production/jev" } });
   assert.equal(environment.CODEX_HOME, "/candidate/codex");
   assert.equal(environment.TASKCENTER_SESSIONS_ROOT, "/candidate/codex/sessions");
   assert.equal(environment.TASKCENTER_TASK_LEDGER_PATH, "/candidate/data/task-ledger.json");
   assert.equal(environment.TASKCENTER_RUNTIME_DIR, "/candidate/runtime");
   assert.equal(environment.TASKCENTER_CONTROL_URL, "http://127.0.0.1:4101");
+  assert.equal(environment.TASKCENTER_GATE_DENIALS_PATH, "/candidate/runtime/gate-denials.jsonl");
   assert.equal(environment.TASKCENTER_DISPATCH_DRY_RUN, "1");
   assert.equal(environment.TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION, "1");
   assert.equal(environment.TASKCENTER_AI_ACTIVITY_PATH, "/candidate/data/ai-activity.jsonl");

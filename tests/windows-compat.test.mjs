@@ -1,3 +1,4 @@
+import "./helpers/isolate-runtime.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";

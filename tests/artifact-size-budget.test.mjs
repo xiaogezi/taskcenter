@@ -134,7 +134,7 @@ test("超标预检不会进入 stopOriginal，健康实例继续受保护", asyn
     await verifyBeforeServiceCutover({ original: { pid: 123 }, revision: "same", stages: ["artifact"], readRevision: async () => "same", readStatus: async () => "", assertOriginalService: async () => calls.push("healthy"), runStage: async () => { calls.push("budget"); throw new Error("ARTIFACT_BUDGET_EXCEEDED"); } });
     await cutoverWithRollback({ stopOriginal: async () => calls.push("stop") });
   })(), /ARTIFACT_BUDGET_EXCEEDED/);
-  assert.deepEqual(calls, ["budget"]);
+  assert.deepEqual(calls, ["healthy", "budget"]);
 });
 
 test("本次真实构建、固定预算与 Codex 包禁令", () => {

@@ -255,3 +255,15 @@ rtk git diff --check
 - 未在生产 Session 注入故障，未消耗真实额度制造不可用，未声称验证真实宿主终止能力；Reviewer、scheduled_readonly 与既有选模/权限算法继续使用已有回归证据。未启动独立 Review。Linux/Windows 未校准边界不变。
 - 健康正式服务继续运行；本次不部署或推送。提交号与隔离生产验收结果记录在对应 TaskCenter 任务证据中。
 - 隔离干净生产安装通过：6 个页面、47 个 MCP 工具、sync/watcher、无需 Codex CLI；生产依赖为 50,093,930 字节，release 全部指标低于现有警告阈值。临时生产目录由既有入口自动删除。
+
+## 测试流量隔离与历史日报
+
+集成测试控制服务通过 `tests/helpers/isolate-runtime.mjs` 使用临时 runtime、日志和拒绝记录，覆盖继承的正式路径；Hook fixture 必须显式连接自己的临时服务。候选 release 的拒绝记录也固定在候选 runtime，不能继承正式日志。
+
+历史审计不删除、不根据 Session 名称猜测测试身份。确认具体 Session 确实属于测试后，可对日志副本执行只读统计：
+
+```sh
+node scripts/gate-denial-report.mjs --path /path/to/gate-denials.jsonl --since 2026-11-17T00:00:00+08:00 --until 2026-11-18T00:00:00+08:00 --exclude-session CONFIRMED_TEST_SESSION_ID
+```
+
+时间窗为左闭右开；报告保留总数、排除数、纳入数和精确排除清单。未确认测试 Session 时不传 `--exclude-session`。这只影响本次离线报告，不修改门禁、在线告警或原始日志。运行日志 `control_request_slow` 可通过 `request_id` 与 Hook 对齐；`stage_elapsed_ms` / `active_stage` 仅帮助定位 registry/tasks/budget/response，不能单凭客户端断开推断哪个组件故障。

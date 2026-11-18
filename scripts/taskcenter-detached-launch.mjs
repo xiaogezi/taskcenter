@@ -31,7 +31,7 @@ try {
     windowsHide: true,
   });
   writeFileSync(pidPath, `${child.pid}\n`, { mode: 0o600 });
-  writeFileSync(statePath, `${JSON.stringify({
+  const launchedState = {
     pid: child.pid,
     token,
     startedAt: new Date().toISOString(),
@@ -39,7 +39,9 @@ try {
     revision: process.env.TASKCENTER_RELEASE_REVISION || "",
     releaseId: process.env.TASKCENTER_RELEASE_ID || "",
     webMode: process.env.TASKCENTER_WEB_MODE || "dev",
-  }, null, 2)}\n`, { mode: 0o600 });
+  };
+  writeFileSync(statePath, `${JSON.stringify(launchedState, null, 2)}\n`, { mode: 0o600 });
+  if (process.send) process.send({ type: "taskcenter-launched", state: launchedState });
   rmSync(launchIntentPath, { force: true });
   child.unref();
 } catch (error) {
