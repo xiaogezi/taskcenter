@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { initializeSqliteMutex } from "./sqlite-mutex.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -41,10 +40,7 @@ export async function verifyProduction(root) {
   });
   for (const key of ["DASHBOARD", "DISPATCHES", "OVERRIDES", "INBOX_DECISIONS", "SESSION_SELECTION", "GATE_SESSION_ALLOWLIST", "MCP_TOKEN", "REFLECTION_PROPOSALS", "TASK_LEDGER", "TASK_EVENTS", "TASK_EVENT_IDS", "SESSION_REGISTRY", "DELEGATIONS", "ROUTING_CONTROL", "USAGE_REPORT", "GOVERNANCE_METRICS", "GATE_DENIALS", "TASK_EVENT_INDEX", "USAGE_HEALTH", "GOVERNANCE_HEALTH", "WATCHER_HEARTBEAT", "TASK_RECONCILE"]) env[`TASKCENTER_${key}_PATH`] = join(state, key.toLowerCase() + ".json");
   env.TASKCENTER_CONTEXT_MANAGEMENT_PILOT_EVENTS_PATH = join(state, "pilot.jsonl");
-  // Fresh private fixture, never a live runtime or production data directory.
   env.TASKCENTER_TASK_REUSE_DECISIONS_PATH = join(state, "task-reuse-decisions.jsonl");
-  initializeSqliteMutex({ databasePath: join(env.TASKCENTER_RUNTIME_DIR, "launcher.mutex.sqlite"), legacyLockPath: join(env.TASKCENTER_RUNTIME_DIR, "launcher.lock"), offlineConfirmed: true });
-  initializeSqliteMutex({ databasePath: `${env.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.mutex.sqlite`, legacyLockPath: `${env.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.lock`, offlineConfirmed: true });
   let output = "";
   const child = spawn(process.execPath, ["scripts/dev-live.mjs"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.on("data", data => { output = (output + data).slice(-16000); });

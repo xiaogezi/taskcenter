@@ -7,7 +7,6 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { resolveSpawnCommand } from "../scripts/platform-command.mjs";
-import { initializeSqliteMutex } from "../scripts/sqlite-mutex.mjs";
 import { vinextInvocation } from "../scripts/vinext-cli.mjs";
 
 test("Windows npm cmd shim resolves to its Node entry without shell interpolation", async () => {
@@ -44,7 +43,6 @@ test("production start uses the exported server without loading optional build t
 test("cross-platform controller reports a stopped isolated runtime", async () => {
   const root = await mkdtemp(join(tmpdir(), "taskcenter-control-"));
   try {
-    initializeSqliteMutex({ databasePath: join(root, "runtime/launcher.mutex.sqlite"), legacyLockPath: join(root, "runtime/launcher.lock"), offlineConfirmed: true });
     const result = await runNode(["scripts/taskcenter-control.mjs", "status"], {
       TASKCENTER_RUNTIME_DIR: join(root, "runtime"),
       TASKCENTER_LOG_DIR: join(root, "logs"),
@@ -86,8 +84,6 @@ test("cross-platform controller starts, observes, and gracefully stops an isolat
     TASKCENTER_ALLOW_LEGACY_DEV_START: "1",
   };
   try {
-    initializeSqliteMutex({ databasePath: join(root, "runtime/launcher.mutex.sqlite"), legacyLockPath: join(root, "runtime/launcher.lock"), offlineConfirmed: true });
-    initializeSqliteMutex({ databasePath: `${env.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.mutex.sqlite`, legacyLockPath: `${env.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.lock`, offlineConfirmed: true });
     const started = await runNode(["scripts/taskcenter-control.mjs", "start"], env);
     assert.equal(started.code, 0, started.stderr);
     assert.match(started.stdout, /启动成功/);

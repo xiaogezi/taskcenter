@@ -1,30 +1,4 @@
-import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-
-export const REQUIRED_LOCK_PROTOCOL = "taskcenter-sqlite-mutex-v1";
-
-export function readRuntimeCapabilities(sourceRoot) {
-  let capabilities;
-  try { capabilities = JSON.parse(readFileSync(resolve(sourceRoot, "config/runtime-capabilities.json"), "utf8")); }
-  catch { throw new Error("LOCK_PROTOCOL_INCOMPATIBLE: release 缺少锁协议能力声明；保持离线并使用 start --offline-upgrade --offline-confirmed 升级，禁止回滚到旧写者。"); }
-  if (capabilities?.launcherMutex !== REQUIRED_LOCK_PROTOCOL || capabilities?.reuseMutex !== REQUIRED_LOCK_PROTOCOL) {
-    throw new Error("LOCK_PROTOCOL_INCOMPATIBLE: release 不支持当前 launcher/reuse 锁协议，禁止启动或自动回滚。");
-  }
-  return { launcherMutex: capabilities.launcherMutex, reuseMutex: capabilities.reuseMutex };
-}
-
-export function assertReleaseLockCompatibility(release, { allowWorktree = false } = {}) {
-  const capabilities = readRuntimeCapabilities(release.sourceRoot);
-  if (!allowWorktree) {
-    let marker;
-    try { marker = JSON.parse(readFileSync(resolve(release.sourceRoot, ".taskcenter-release.json"), "utf8")); } catch { /* fail closed below */ }
-    if (marker?.revision !== release.revision || marker?.runtimeCapabilities?.launcherMutex !== capabilities.launcherMutex
-      || marker?.runtimeCapabilities?.reuseMutex !== capabilities.reuseMutex) {
-      throw new Error("LOCK_PROTOCOL_INCOMPATIBLE: release 构建标记缺失、版本不符或未声明兼容锁协议；禁止启动及回滚。");
-    }
-  }
-  return capabilities;
-}
 
 export function buildReleaseEnvironment(config, options = {}) {
   const controllerRoot = resolve(options.controllerRoot || process.cwd());
@@ -90,7 +64,6 @@ export function buildReleaseEnvironment(config, options = {}) {
 }
 
 export function resolveStartupRelease(activeRelease, options = {}) {
-  if (options.offlineUpgrade === true) return { mode: "bootstrap", release: null };
   if (activeRelease?.sourceRoot && activeRelease?.revision) return { mode: "release", release: activeRelease };
   if (options.allowLegacyDev === true) {
     return {

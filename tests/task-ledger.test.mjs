@@ -1,4 +1,3 @@
-import { initializeSqliteMutex } from "../scripts/sqlite-mutex.mjs";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
@@ -35,11 +34,6 @@ const envPaths = {
   TASKCENTER_MCP_TOKEN_PATH: join(tempDir, "mcp-token"),
   TASKCENTER_AI_ACTIVITY_PATH: join(tempDir, "ai-activity.jsonl"),
 };
-initializeSqliteMutex({
-  databasePath: `${envPaths.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.mutex.sqlite`,
-  legacyLockPath: `${envPaths.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.lock`,
-  offlineConfirmed: true,
-});
 for (const [key, value] of Object.entries(envPaths)) {
   process.env[key] = value;
 }

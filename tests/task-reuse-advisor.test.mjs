@@ -5,15 +5,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { initializeSqliteMutex } from "../scripts/sqlite-mutex.mjs";
 
 const directory = await mkdtemp(join(tmpdir(), "task-reuse-advisor-"));
 process.env.TASKCENTER_TASK_REUSE_DECISIONS_PATH = join(directory, "task-reuse-decisions.jsonl");
-initializeSqliteMutex({
-  databasePath: `${process.env.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.mutex.sqlite`,
-  legacyLockPath: `${process.env.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.lock`,
-  offlineConfirmed: true,
-});
 
 const {
   loadTaskReuseDecisions,

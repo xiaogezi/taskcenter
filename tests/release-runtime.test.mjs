@@ -204,9 +204,3 @@ async function waitUntil(predicate, timeoutMs) {
   }
   assert.fail("进程树未在超时前停止");
 }
-
-test("显式离线升级绕过旧 active 进入受控 bootstrap，普通启动不偷偷替换 active", () => {
-  const old = { sourceRoot: "/old", revision: "old" };
-  assert.deepEqual(resolveStartupRelease(old, { offlineUpgrade: true, allowLegacyDev: true }), { mode: "bootstrap", release: null });
-  assert.equal(resolveStartupRelease(old).release, old);
-});

@@ -1,4 +1,3 @@
-import { initializeSqliteMutex } from "../scripts/sqlite-mutex.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
@@ -22,11 +21,6 @@ const envPaths = {
   TASKCENTER_ROUTING_CONTROL_PATH: join(tempDir, "routing-control.json"),
   TASKCENTER_USAGE_REPORT_PATH: join(tempDir, "usage-report.json"),
 };
-initializeSqliteMutex({
-  databasePath: `${envPaths.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.mutex.sqlite`,
-  legacyLockPath: `${envPaths.TASKCENTER_TASK_REUSE_DECISIONS_PATH}.lock`,
-  offlineConfirmed: true,
-});
 for (const [key, value] of Object.entries(envPaths)) {
   process.env[key] = value;
 }

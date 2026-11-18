@@ -5,21 +5,22 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { connect, createServer } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireSqliteMutex, initializeSqliteMutex } from "./sqlite-mutex.mjs";
 import { appendReleaseEvent, loadReleaseEvents, summarizeReleaseEvents } from "./release-history.mjs";
 import { pruneReleases } from "./release-retention.mjs";
 import { installReleaseDependencies, runDependencyInstall, verifyReleaseBudget } from "./release-dependencies.mjs";
 import { verifyProduction } from "./verify-production.mjs";
-import { assertReleaseLockCompatibility, readRuntimeCapabilities, buildReleaseEnvironment, resolveManagedProcessState, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
+import { buildReleaseEnvironment, resolveManagedProcessState, resolveStartupRelease, resolveStopTarget } from "./release-runtime.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.mjs";
 import { cutoverWithRollback, verifyBeforeServiceCutover, verifyOriginalServiceWithRetries } from "./service-deployment-policy.mjs";
@@ -41,17 +42,12 @@ const healthUrl = process.env.TASKCENTER_HEALTH_URL || `http://127.0.0.1:${proce
 const dashboardPort = portOf(dashboardUrl);
 const controlPort = portOf(healthUrl);
 const action = process.argv[2] || "status";
-const offlineUpgrade = process.argv.includes("--offline-upgrade");
-const offlineConfirmed = process.argv.includes("--offline-confirmed");
 const disruptionOverride = process.env.TASKCENTER_ALLOW_SERVICE_DISRUPTION === "1";
 
 mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(logDir, { recursive: true });
 
 try {
-  if ((offlineUpgrade || offlineConfirmed) && (action !== "start" || !offlineUpgrade || !offlineConfirmed)) {
-    throw new Error("离线升级仅支持 start --offline-upgrade --offline-confirmed；必须先停用所有旧写者并显式迁移锁。");
-  }
   await withLock(async () => {
     if (action === "start") await startService();
     else if (action === "stop") await stopService();
@@ -72,38 +68,18 @@ try {
 }
 
 async function startService(options = {}) {
-  if (offlineUpgrade) await requireOfflineUpgrade();
-  const startup = options.release
-    ? { mode: "release", release: options.release }
-    : resolveStartupRelease(readJson(activeReleasePath), {
-      offlineUpgrade,
-      allowLegacyDev: process.env.TASKCENTER_ALLOW_LEGACY_DEV_START === "1",
-      projectRoot,
-    });
-  // Validate before treating an already-running instance as a successful start.
-  if (startup.release) assertReleaseLockCompatibility(startup.release, { allowWorktree: startup.mode === "legacy_test_only" });
-  // Mirror the selected launch environment, including test-only custom data.
-  // Production buildReleaseEnvironment binds dataRoot to projectRoot/data.
-  const decisions = startup.mode === "legacy_test_only"
-    ? resolve(process.env.TASKCENTER_TASK_REUSE_DECISIONS_PATH || resolve(projectRoot, "data/task-reuse-decisions.jsonl"))
-    : resolve(projectRoot, "data/task-reuse-decisions.jsonl");
-  const releaseReuseProbe = acquireSqliteMutex({ databasePath: `${decisions}.mutex.sqlite`, legacyLockPath: `${decisions}.lock` });
-  releaseReuseProbe();
   if (await healthCheck()) {
-    const current = readManagedProcess();
-    if (!startup.release || !current || current.sourceRoot !== startup.release.sourceRoot || current.revision !== startup.release.revision) {
-      throw new Error("启动已阻止：现有服务与兼容 release 不一致；请安排离线升级，不能将旧实例视为新协议启动成功。");
-    }
     await openDashboard();
     console.log("TaskCenter 已在运行：http://localhost:3000");
     return;
   }
+  const startup = options.release
+    ? { mode: "release", release: options.release }
+    : resolveStartupRelease(readJson(activeReleasePath), {
+      allowLegacyDev: process.env.TASKCENTER_ALLOW_LEGACY_DEV_START === "1",
+      projectRoot,
+    });
   const release = startup.mode === "bootstrap" ? await bootstrapRelease() : startup.release;
-  assertReleaseLockCompatibility(release, { allowWorktree: startup.mode === "legacy_test_only" });
-  if (offlineUpgrade) {
-    await validateCandidateRelease(release);
-    await requireOfflineUpgrade();
-  }
   if (!existsSync(resolve(release.sourceRoot, "node_modules"))) {
     throw new Error("启动失败：项目依赖未安装，请先在 TaskCenter 目录运行 npm ci。");
   }
@@ -150,18 +126,6 @@ async function startService(options = {}) {
   throw new Error(`TaskCenter 启动失败，请查看日志：${logPath}`);
 }
 
-async function requireOfflineUpgrade() {
-  // These checks supplement, never replace, the operator assertion about every
-  // old writer, CLI and automatic restarter using these data directories.
-  const state = readJson(statePath);
-  const liveState = state?.pid && (isProcessAlive(state.pid) || isProcessTreeAlive(state.pid));
-  if (!offlineConfirmed || liveState || managedChildPids(runtimeDir).some(isProcessAlive)
-    || readJson(resolve(runtimeDir, "web-launch-intent.json"))
-    || await isPortBusy(dashboardPort) || await isPortBusy(controlPort)) {
-    throw new Error("离线升级已阻止：仍有进程、启动意图或占用端口。先人工停止全部旧写者/自动重启器并处理残留启动意图，不会自动停机或回滚旧协议。");
-  }
-}
-
 async function stopService(options = {}) {
   if (!options.authorized) await requireDisruptionAuthorization("stop");
   const state = readManagedProcess();
@@ -202,7 +166,6 @@ async function deployService() {
   if (!original || !(await healthCheck())) {
     throw new Error("部署已阻止：当前 TaskCenter 未处于健康运行状态。请先恢复原服务，不要用部署流程掩盖运行故障。");
   }
-  assertReleaseLockCompatibility({ sourceRoot: original.sourceRoot || projectRoot, revision: original.revision });
   if (original.supervision === "orphaned") {
     console.warn(`TaskCenter 检测到 supervisor 已退出，但 PID group ${original.pid} 的完整 release 进程与健康端口一致；本次受控部署将接管并替换该进程组。`);
   }
@@ -237,7 +200,6 @@ async function deployService() {
   });
 
   const previousRelease = await resolvePreviousRelease(original, previousRevision);
-  assertReleaseLockCompatibility(previousRelease);
   await requireOriginalService(original, "rollback artifact");
 
   const candidateStartedAt = Date.now();
@@ -365,7 +327,6 @@ async function prepareRelease(revision) {
   const markerPath = resolve(sourceRoot, ".taskcenter-release.json");
   const marker = readJson(markerPath);
   if (marker?.revision === revision && existsSync(resolve(sourceRoot, "dist")) && existsSync(resolve(sourceRoot, "node_modules"))) {
-    assertReleaseLockCompatibility({ sourceRoot, revision });
     verifyReleaseBudget({ sourceRoot, revision, budgetPath: resolve(projectRoot, "config/artifact-size-budget.json"), reuse: true });
     return { sourceRoot, revision, releaseId, webMode: "start", builtAt: marker.builtAt };
   }
@@ -378,7 +339,6 @@ async function prepareRelease(revision) {
   if (existsSync(sourceRoot)) await runGit(["worktree", "remove", "--force", sourceRoot], projectRoot, "清理不完整 release");
   await runGit(["worktree", "add", "--detach", sourceRoot, revision], projectRoot, "创建不可变 release worktree");
   try {
-    const runtimeCapabilities = readRuntimeCapabilities(sourceRoot);
     const invocation = npmInvocation();
     const installStartedAt = Date.now();
     const installMode = await installReleaseDependencies((args, timeoutMs) =>
@@ -390,7 +350,7 @@ async function prepareRelease(revision) {
     verifyReleaseBudget({ sourceRoot, revision, budgetPath: resolve(projectRoot, "config/artifact-size-budget.json"), activeSourceRoot: active?.sourceRoot });
     await verifyProduction(sourceRoot);
     const builtAt = new Date().toISOString();
-    writeJson(markerPath, { schemaVersion: "taskcenter-release/v1", revision, releaseId, builtAt, runtimeCapabilities });
+    writeJson(markerPath, { schemaVersion: "taskcenter-release/v1", revision, releaseId, builtAt });
     return { sourceRoot, revision, releaseId, webMode: "start", builtAt };
   } catch (error) {
     await runGit(["worktree", "remove", "--force", sourceRoot], projectRoot, "清理失败 release").catch(() => {});
@@ -431,10 +391,6 @@ async function validateCandidateRelease(release) {
   for (const path of [candidateRuntime, candidateLogs, candidateData, resolve(candidateCodex, "sessions")]) {
     mkdirSync(path, { recursive: true });
   }
-  assertReleaseLockCompatibility(release);
-  initializeSqliteMutex({ databasePath: resolve(candidateRuntime, "launcher.mutex.sqlite"), legacyLockPath: resolve(candidateRuntime, "launcher.lock"), offlineConfirmed: true });
-  const candidateDecisions = resolve(candidateData, "task-reuse-decisions.jsonl");
-  initializeSqliteMutex({ databasePath: `${candidateDecisions}.mutex.sqlite`, legacyLockPath: `${candidateDecisions}.lock`, offlineConfirmed: true });
   writeJson(resolve(candidateData, "session-selection.json"), { mode: "allowlist", threadIds: [] });
   writeJson(resolve(candidateData, "session-merges.json"), []);
 
@@ -716,13 +672,33 @@ async function openDashboard() {
 }
 
 async function withLock(operation) {
-  const release = acquireSqliteMutex({
-    databasePath: resolve(runtimeDir, "launcher.mutex.sqlite"),
-    legacyLockPath: lockDir,
-    timeoutMs: 5_000,
-  });
-  try { return await operation(); }
-  finally { release(); }
+  const ownerDir = mkdtempSync(resolve(runtimeDir, ".launcher-owner-"));
+  try {
+    writeJson(resolve(ownerDir, "owner.json"), { pid: process.pid, createdAt: new Date().toISOString() });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        // Publish the fully populated owner atomically; a crash cannot leave a new ownerless lock.
+        symlinkSync(ownerDir, lockDir, process.platform === "win32" ? "junction" : "dir");
+        try {
+          return await operation();
+        } finally {
+          rmSync(lockDir, { recursive: true, force: true });
+        }
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        const owner = readJson(resolve(lockDir, "owner.json"));
+        if (!owner?.pid && attempt === 49) {
+          throw new Error(`启停锁缺少有效 owner：${lockDir}。请确认没有启停进程后人工处理；不会自动删除身份未知的锁。`);
+        }
+        if (owner?.pid && !isProcessAlive(owner.pid)) {
+          rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+        await sleep(100);
+      }
+    }
+    throw new Error("另一个 TaskCenter 启停操作正在执行，请稍后重试。");
+  } finally { rmSync(ownerDir, { recursive: true, force: true }); }
 }
 
 function rotateLog() {
@@ -768,7 +744,7 @@ function childResult(child, label) {
 }
 
 function usageError() {
-  const error = new Error("用法：node scripts/taskcenter-control.mjs {start [--offline-upgrade --offline-confirmed]|stop|restart|deploy|prune [--dry-run]|status|history}");
+  const error = new Error("用法：node scripts/taskcenter-control.mjs {start|stop|restart|deploy|prune [--dry-run]|status|history}");
   error.exitCode = 2;
   return error;
 }

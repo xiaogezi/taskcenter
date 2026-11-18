@@ -14,7 +14,6 @@ import {
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
-import { acquireSqliteMutex } from "./sqlite-mutex.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 export const taskReuseDecisionsPath = resolve(
@@ -26,9 +25,11 @@ export const taskReuseDecisionIndexPath = `${taskReuseDecisionsPath}.event-index
 export const TASK_REUSE_ADVISOR_VERSION = "task-reuse-advisor-v1";
 const UNKNOWN_PROJECT_ID = "unknown";
 const decisionLockPath = `${taskReuseDecisionsPath}.lock`;
-export const taskReuseDecisionMutexPath = `${taskReuseDecisionsPath}.mutex.sqlite`;
+const decisionLockOwnerPath = join(decisionLockPath, "owner.json");
 const decisionIndexStatePath = join(taskReuseDecisionIndexPath, "state.json");
+const decisionLockWaiter = new Int32Array(new SharedArrayBuffer(4));
 const decisionLockTimeoutMs = 5_000;
+const decisionLockStaleMs = 30_000;
 const decisionOrderIndexPath = join(taskReuseDecisionIndexPath, "order.idx");
 const decisionStoreMetrics = { full_ledger_scans: 0, indexed_queries: 0 };
 const candidateStatuses = new Set(["planned", "in_progress", "blocked", "done_claimed"]);
@@ -203,14 +204,71 @@ function readTaskReuseDecisionRecords() {
 }
 
 function acquireDecisionLock() {
+  mkdirSync(dirname(taskReuseDecisionsPath), { recursive: true });
+  const deadline = Date.now() + decisionLockTimeoutMs;
+  const owner = {
+    pid: process.pid,
+    nonce: randomUUID(),
+    acquired_at: new Date().toISOString(),
+  };
+  while (true) {
+    try {
+      mkdirSync(decisionLockPath, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (clearStaleDecisionLock()) continue;
+      if (Date.now() >= deadline) {
+        throw new TaskReuseAdvisorError(503, "复用决策审计正由另一进程写入，请稍后重试。");
+      }
+      Atomics.wait(decisionLockWaiter, 0, 0, 10);
+      continue;
+    }
+    try {
+      writeFileSync(decisionLockOwnerPath, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+      return () => releaseDecisionLock(owner.nonce);
+    } catch (error) {
+      rmSync(decisionLockPath, { recursive: true, force: true });
+      throw error;
+    }
+  }
+}
+
+function clearStaleDecisionLock() {
+  let lockAge = 0;
   try {
-    return acquireSqliteMutex({
-      databasePath: taskReuseDecisionMutexPath,
-      legacyLockPath: decisionLockPath,
-      timeoutMs: decisionLockTimeoutMs,
-    });
+    lockAge = Date.now() - statSync(decisionLockPath).mtimeMs;
   } catch (error) {
-    throw new TaskReuseAdvisorError(503, error.message);
+    return error?.code === "ENOENT";
+  }
+  try {
+    const owner = JSON.parse(readFileSync(decisionLockOwnerPath, "utf8"));
+    if (Number.isInteger(owner?.pid) && processIsAlive(owner.pid)) return false;
+    rmSync(decisionLockPath, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    if (error?.code !== "ENOENT" && error?.name !== "SyntaxError") throw error;
+    if (lockAge < decisionLockStaleMs) return false;
+    rmSync(decisionLockPath, { recursive: true, force: true });
+    return true;
+  }
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+}
+
+function releaseDecisionLock(nonce) {
+  try {
+    const owner = JSON.parse(readFileSync(decisionLockOwnerPath, "utf8"));
+    if (owner?.nonce !== nonce) return;
+    rmSync(decisionLockPath, { recursive: true, force: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   }
 }
 
