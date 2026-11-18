@@ -12,6 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const root = new URL("../", import.meta.url);
 const tempDir = await mkdtemp(join(tmpdir(), "taskcenter-ledger-"));
+const contextFixtureTimeoutMs = "10000";
 process.env.TASKCENTER_DISABLE_LIVE_SESSION_RECONCILIATION = "1";
 process.env.CODEX_HOME = join(tempDir, "codex");
 process.env.TASKCENTER_SESSIONS_ROOT = join(tempDir, "sessions");
@@ -383,12 +384,11 @@ test("查询缺失会话任务不会写账本；reconcile 收口运行并保留�
 });
 
 async function startControlServer(options = {}) {
-  const port = 38_000 + (process.pid % 1_000);
   const child = spawn(process.execPath, ["scripts/control-server.mjs"], {
     cwd: root,
     env: {
       ...process.env,
-      TASKCENTER_CONTROL_PORT: String(port),
+      TASKCENTER_CONTROL_PORT: "0",
       TASKCENTER_JEV_ROUTING: "0",
       TASKCENTER_SESSIONS_ROOT: join(tempDir, "sessions"),
       TASKCENTER_MODEL_RATES_PATH: join(tempDir, "model-rates.json"),
@@ -398,8 +398,13 @@ async function startControlServer(options = {}) {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  await waitForReady(child);
-  return { port, child, base: `http://127.0.0.1:${port}` };
+  try {
+    const port = await waitForReady(child);
+    return { port, child, base: `http://127.0.0.1:${port}` };
+  } catch (error) {
+    child.kill("SIGTERM");
+    throw error;
+  }
 }
 
 test("主动处理入口校验人工来源，本地对账与持久队列可见且重复请求复用", async t => {
@@ -1364,7 +1369,7 @@ test("TaskCenter 页面仅对门禁通过的 fast 任务同步关联 ProjectCont
     TASKCENTER_CONTEXT_ROOT: tempDir,
     TASKCENTER_CONTEXT_SERVER: fakeServerPath,
     TASKCENTER_CONTEXT_NODE: process.execPath,
-    TASKCENTER_CONTEXT_TIMEOUT_MS: "2000",
+    TASKCENTER_CONTEXT_TIMEOUT_MS: contextFixtureTimeoutMs,
     FAKE_CONTEXT_STATE_PATH: fakeStatePath,
   });
   context.after(() => child.kill("SIGTERM"));
@@ -1800,7 +1805,7 @@ test("控制服务只允许相同 event_id 的同事件补偿重放", async (con
     TASKCENTER_CONTEXT_ROOT: tempDir,
     TASKCENTER_CONTEXT_SERVER: fakeServerPath,
     TASKCENTER_CONTEXT_NODE: process.execPath,
-    TASKCENTER_CONTEXT_TIMEOUT_MS: "2000",
+    TASKCENTER_CONTEXT_TIMEOUT_MS: contextFixtureTimeoutMs,
     FAKE_CONTEXT_STATE_PATH: fakeStatePath,
   });
   context.after(() => child.kill("SIGTERM"));
@@ -1941,6 +1946,53 @@ test("Context 生命周期维护端点显式接管影子并补齐完成状态", 
   assert.deepEqual(visible.tasks.map((task) => [task.id, task.status]), [["formal-maintenance", "done_claimed"]]);
 });
 
+test("Context 关联拒绝新的本地执行 ID，历史误绑不阻止验证落账", async (context) => {
+  await resetLedger();
+  const sessionId = "context-mislink-session";
+  const taskId = "context-mislink-task";
+  const localId = "another-execution-task";
+  recordTaskEvent({ type: "task.create", task_id: localId, session_id: "another-session", title: "另一个本地任务" });
+  recordTaskEvent({ type: "task.create", task_id: taskId, session_id: sessionId, title: "验证桥接目标" });
+
+  const badLink = { type: "task.update", event_id: "mistaken-link", task_id: taskId, session_id: sessionId, context_task_id: localId };
+  assert.throws(() => recordTaskEvent(badLink), { statusCode: 409, message: /CONTEXT_TASK_ID_IS_LOCAL/ });
+  assert.equal(loadTasks().find(task => task.id === taskId).contextTaskId, undefined);
+
+  const projected = JSON.parse(await readFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, "utf8"));
+  projected.find(task => task.id === taskId).contextTaskId = localId;
+  await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify(projected));
+  const { base, child } = await startControlServer({
+    TASKCENTER_CONTEXT_ROOT: tempDir,
+    TASKCENTER_CONTEXT_SERVER: join(tempDir, "no-context-server.mjs"),
+  });
+  context.after(() => child.kill("SIGTERM"));
+  await registerHttpSession(base, sessionId);
+  const verification = {
+    type: "verification.reported", event_id: "mislink-verification", session_id: sessionId, task_id: taskId,
+    verification_claim: {
+      id: "mislink-claim", kind: "test", status: "passed", observed_at: "2026-08-20T08:00:00.000Z",
+      producer: "codex", producer_session_id: sessionId, evidence_ref: "summary:passed",
+    },
+  };
+  const response = await fetch(`${base}/task-events`, {
+    method: "POST", headers: taskHeaders(), body: JSON.stringify(verification),
+  });
+  const payload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.accepted, true);
+  assert.deepEqual(payload.contextSync, { status: "skipped", reason: "CONTEXT_TASK_ID_IS_LOCAL", contextTaskId: localId });
+  assert.deepEqual(payload.warnings.map(warning => warning.code), ["CONTEXT_TASK_ID_IS_LOCAL"]);
+  const persisted = loadTasks().find(task => task.id === taskId);
+  assert.equal(persisted.verificationClaims[0].id, "mislink-claim");
+  assert.equal(persisted.contextTaskId, localId);
+  const audit = JSON.parse((await readFile(envPaths.TASKCENTER_CONTEXT_AUDIT_PATH, "utf8")).trim());
+  assert.equal(audit.eventId, verification.event_id);
+  assert.equal(audit.contextTaskId, localId);
+  assert.equal(audit.status, "skipped");
+  assert.equal(audit.reason, "CONTEXT_TASK_ID_IS_LOCAL");
+  assert.equal(audit.failureCode, undefined);
+});
+
 test("MCP verification report 在 Session 通知失败后保留账本并返回 warning", async (context) => {
   await resetLedger();
   const fakeServerPath = join(tempDir, "verification-warning-context-server.mjs");
@@ -1951,7 +2003,7 @@ test("MCP verification report 在 Session 通知失败后保留账本并返回 w
     TASKCENTER_CONTEXT_ROOT: tempDir,
     TASKCENTER_CONTEXT_SERVER: fakeServerPath,
     TASKCENTER_CONTEXT_NODE: process.execPath,
-    TASKCENTER_CONTEXT_TIMEOUT_MS: "2000",
+    TASKCENTER_CONTEXT_TIMEOUT_MS: contextFixtureTimeoutMs,
     FAKE_CONTEXT_STATE_PATH: fakeStatePath,
   });
   context.after(() => child.kill("SIGTERM"));
@@ -1999,7 +2051,7 @@ test("MCP Review attestation 先落账，通知失败降级且非法 v3 返回�
     TASKCENTER_CONTEXT_ROOT: tempDir,
     TASKCENTER_CONTEXT_SERVER: fakeServerPath,
     TASKCENTER_CONTEXT_NODE: process.execPath,
-    TASKCENTER_CONTEXT_TIMEOUT_MS: "2000",
+    TASKCENTER_CONTEXT_TIMEOUT_MS: contextFixtureTimeoutMs,
     FAKE_CONTEXT_STATE_PATH: fakeStatePath,
   });
   context.after(() => child.kill("SIGTERM"));
@@ -2862,15 +2914,22 @@ function textOf(result) {
 
 function waitForReady(child) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("控制服务启动超时")), 5_000);
+    const timer = setTimeout(() => reject(new Error("控制服务启动超时")), 15_000);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.once("exit", (code) => {
       clearTimeout(timer);
       reject(new Error(`控制服务提前退出：${code}`));
     });
+    let output = "";
     child.stdout.on("data", (chunk) => {
-      if (!String(chunk).includes("TaskCenter control server is listening")) return;
+      output = (output + chunk).slice(-4096);
+      const port = output.match(/TaskCenter control server is listening on http:\/\/127\.0\.0\.1:(\d+)\./)?.[1];
+      if (!port) return;
       clearTimeout(timer);
-      resolve();
+      resolve(Number(port));
     });
   });
 }

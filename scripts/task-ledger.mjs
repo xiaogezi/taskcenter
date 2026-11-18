@@ -185,6 +185,10 @@ export function loadTaskById(taskId) {
   return task ? withTaskPhaseTiming(withCompletionState({ ...normalizeDueAtSemantics(task), sessionId: canonicalSessionId(task.sessionId) })) : null;
 }
 
+export function isLocalTaskId(taskId) {
+  return Boolean(taskId && readLedger().some(task => task.id === taskId));
+}
+
 export function loadSessionMerges() {
   if (!existsSync(sessionMergesPath)) return {};
   try {
@@ -550,6 +554,10 @@ export function recordTaskEvent(input, options = {}) {
   // close 仅声明执行完成；缺证据由就绪度如实反映，不在此强迫补报或伪造通过。
   if (event.type !== "task.close" && event.status === "done_claimed" && !event.event_id.startsWith("manual-") && !event.tests.length && !event.evidence.length) {
     throw new TaskLedgerError(400, "done_claimed 需附带 tests 或 evidence，避免将未验证完成误判为已完成。");
+  }
+  if (event.context_task_id && event.context_task_id !== current?.contextTaskId
+    && (event.context_task_id === event.task_id || isLocalTaskId(event.context_task_id))) {
+    throw new TaskLedgerError(409, "CONTEXT_TASK_ID_IS_LOCAL：context_task_id 必须是 ProjectContext 语义任务 ID，不能填 TaskCenter 执行任务 ID。");
   }
   let next = event.type === "session.register"
     ? null

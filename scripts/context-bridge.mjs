@@ -62,9 +62,10 @@ export async function syncContextEvent(event, task, options = {}) {
       },
       loadMap: options.loadMap || loadMap,
       saveMap: options.saveMap || saveMap,
+      isLocalTaskId: options.isLocalTaskId,
     }), options.timeoutMs || timeoutMs);
-    if (options.audit !== false) appendAudit({ event, task, status: "synced", contextTaskId: result.contextTaskId, elapsedMs: Math.round(performance.now() - started) });
-    return { status: "synced", contextTaskId: result.contextTaskId };
+    if (options.audit !== false) appendAudit({ event, task, ...result, elapsedMs: Math.round(performance.now() - started) });
+    return result;
   } catch (error) {
     const message = String(error?.message || error).slice(0, 500);
     if (options.audit !== false) appendAudit({ event, task, status: "failed", error: message, elapsedMs: Math.round(performance.now() - started) });
@@ -238,6 +239,10 @@ async function sync(event, task, dependencies) {
   const explicitContextTaskId = task.contextTaskId || event.context_task_id || "";
   let contextTaskId = explicitContextTaskId
     || (mapped?.workspace === task.workspace ? mapped.contextTaskId : undefined);
+  if (dependencies.isLocalTaskId?.(contextTaskId)) {
+    // Historical mislinks remain in the ledger. Never forward their evidence to a different task.
+    return { status: "skipped", reason: "CONTEXT_TASK_ID_IS_LOCAL", contextTaskId };
+  }
   if (!contextTaskId) {
     const started = await dependencies.callTool("context.start_task", {
       ...(task.projectId ? { project_id: task.projectId } : {}),
@@ -262,7 +267,7 @@ async function sync(event, task, dependencies) {
     });
   }
 
-  if (event.type === "task.create") return { contextTaskId };
+  if (event.type === "task.create") return { status: "synced", contextTaskId };
 
   const completion = event.status === "done_claimed" || event.type === "task.done_claimed";
   const observationType = event.status === "blocked" ? "risk" : completion || event.type === "task.report" ? "test_result" : "code_evidence";
@@ -293,7 +298,7 @@ async function sync(event, task, dependencies) {
       event_id: `reqradar-context-complete-${event.event_id}`,
     });
   }
-  return { contextTaskId };
+  return { status: "synced", contextTaskId };
 }
 
 async function callTool(name, arguments_, { signal } = {}) {
@@ -384,7 +389,7 @@ function appendAudit(value) {
   const descriptor = openSync(auditPath, "a", 0o600);
   try {
     fchmodSync(descriptor, 0o600);
-    const failureCode = String(value.error || "").match(/\b(?:CORE_REVISION_MISMATCH|CORE_RECOVERY_REQUIRED|CORE_TIMEOUT|USER_ATTESTATION_REQUIRED|IDEMPOTENCY_CONFLICT)\b/)?.[0]
+    const failureCode = String(value.error || "").match(/\b(?:CORE_TASK_REQUIRED|CORE_REVISION_MISMATCH|CORE_RECOVERY_REQUIRED|CORE_TIMEOUT|USER_ATTESTATION_REQUIRED|IDEMPOTENCY_CONFLICT)\b/)?.[0]
       || (String(value.error || "").includes("超时") ? "CONTEXT_TIMEOUT" : "SYNC_FAILED");
     writeFileSync(descriptor, `${JSON.stringify({
       schemaVersion: 2,
@@ -393,6 +398,7 @@ function appendAudit(value) {
       taskId: String(value.task?.id || value.taskCenterTaskId || "").slice(0, 200),
       contextTaskId: String(value.contextTaskId || value.task?.contextTaskId || "").slice(0, 200),
       status: value.status,
+      ...(value.reason ? { reason: value.reason } : {}),
       ...(value.error ? { failureCode } : {}),
       ...(Number.isFinite(value.elapsedMs) ? { elapsedMs: value.elapsedMs } : {}),
       ...(value.packetDigest ? { packetDigest: value.packetDigest } : {}),

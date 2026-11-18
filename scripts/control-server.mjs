@@ -40,6 +40,7 @@ import {
   loadVisibleTasks,
   loadVisibleSessionTasks,
   loadTaskById,
+  isLocalTaskId,
   reconcileContextShadowTasks,
   recordSessionL0Audit,
   recordTaskEvent,
@@ -752,6 +753,7 @@ const server = createServer(async (request, response) => {
       if (body.confirm !== true) throw new TaskLedgerError(400, "同步 ProjectContext 需要显式 confirm=true。");
       const task = loadTasks().find(item => item.id === contextCompletionMatch[1]);
       if (!task) throw new TaskLedgerError(404, "任务不存在。");
+      if (isLocalTaskId(task.contextTaskId)) throw new TaskLedgerError(409, "CONTEXT_TASK_ID_IS_LOCAL：请先关联有效的 ProjectContext 语义任务。");
       const completionPacket = taskCompletionPacket(task.id);
       if (completionPacket.completionReadiness?.completionClaim?.allowed !== true) {
         throw new TaskLedgerError(409, `完成门禁未满足: ${(completionPacket.completionReadiness?.reasons || []).join(", ") || "unknown"}`);
@@ -842,7 +844,7 @@ const server = createServer(async (request, response) => {
       const localMs = Math.round(performance.now() - eventStarted);
       // 本地账本事件幂等不等于外部同步已成功。重复投递仍使用同一派生 event_id
       // 重试 Context MCP，由 Context 侧幂等键消除已成功的副作用并补偿超时/失败。
-      const contextSync = await syncContextEvent(result.event, result.task);
+      const contextSync = await syncContextEvent(result.event, result.task, { isLocalTaskId });
       const totalMs = Math.round(performance.now() - eventStarted);
       if (totalMs >= 1_000 || contextSync.status === "failed") {
         console.log(JSON.stringify({ event: "task_event_stage_latency", request_id: requestId,
@@ -855,7 +857,10 @@ const server = createServer(async (request, response) => {
           message: "验证事件已可靠写入本地账本，但 Session 通知失败；可使用相同 event_id 重试通知。",
           detail: contextSync.error,
         }]
-        : [];
+        : contextSync.reason === "CONTEXT_TASK_ID_IS_LOCAL" ? [{
+          code: contextSync.reason,
+          message: "本地事件已入账。现有 ProjectContext 关联使用了 TaskCenter 执行任务 ID，已跳过通知。需要同步时，请先关联有效的 ProjectContext 语义任务。",
+        }] : [];
       // 幂等重投递（重复 event_id）返回 200，只有真正新建任务时才用 201。
       sendJson(response, body.type === "task.create" && !result.idempotent ? 201 : 200, {
         accepted: true,
@@ -884,7 +889,7 @@ const server = createServer(async (request, response) => {
       const currentTask = loadTasks().find((item) => item.id === taskId);
       if (action === "verify" && currentTask?.requirementId) verifyRequirementExists(currentTask.requirementId.replace(/^promoted-/, ""));
       const result = await applyManualTaskAction(taskId, action, body.reason, body.expectedAt, body.estimatedEffortMinutes);
-      const contextSync = await syncContextEvent(result.event, result.task);
+      const contextSync = await syncContextEvent(result.event, result.task, { isLocalTaskId });
       if (action === "verify" && result.task.requirementId) {
         const requirementId = result.task.requirementId.replace(/^promoted-/, "");
         verifyRequirementExists(requirementId);
@@ -1054,7 +1059,7 @@ function metricSnapshotStatus(snapshotPath, healthPath, maxAgeMs) {
 }
 
 server.listen(port, host, () => {
-  console.log(`TaskCenter control server is listening on http://${host}:${port}.`);
+  console.log(`TaskCenter control server is listening on http://${host}:${server.address().port}.`);
 });
 
 function cancelLegacyAllowlistSetupTasks() {

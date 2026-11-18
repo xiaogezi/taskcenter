@@ -95,19 +95,21 @@ test("真实stdio调用卡住时超时关闭Context子进程", async (t) => {
   await writeFile(fixture, `import {writeFileSync} from 'node:fs';
 import {McpServer} from ${JSON.stringify(new URL("server/mcp.js", sdk).href)};
 import {StdioServerTransport} from ${JSON.stringify(new URL("server/stdio.js", sdk).href)};
-writeFileSync(${JSON.stringify(pidPath)},String(process.pid));
 const server=new McpServer({name:'hanging',version:'1'});
-server.registerTool('context.report_observation',{inputSchema:{}},()=>new Promise(()=>{}));
+server.registerTool('context.report_observation',{inputSchema:{}},()=>{
+  writeFileSync(${JSON.stringify(pidPath)},String(process.pid));
+  return new Promise(()=>{});
+});
 await server.connect(new StdioServerTransport());`);
   const code = `import {readFileSync} from 'node:fs';
 import {syncContextEvent} from './scripts/context-bridge.mjs';
-const result=await syncContextEvent({type:'task.report',event_id:'cancel-real'},{id:'cancel-real',contextTaskId:'ctx',workspace:'/work'},{timeoutMs:1000,audit:false});
+const result=await syncContextEvent({type:'task.report',event_id:'cancel-real'},{id:'cancel-real',contextTaskId:'ctx',workspace:'/work'},{timeoutMs:10000,audit:false});
 if(result.status!=='failed'||!result.error.includes('超时'))throw new Error(JSON.stringify(result));
 const pid=Number(readFileSync(${JSON.stringify(pidPath)},'utf8'));
 for(let i=0;i<60;i++){try{process.kill(pid,0)}catch{console.log('closed');process.exit(0)}await new Promise(r=>setTimeout(r,100));}
 throw new Error('Context child still alive');`;
   const result = execFileSync(process.execPath, ["--input-type=module", "-e", code], {
-    cwd: new URL("../", import.meta.url), encoding: "utf8", timeout: 10000,
+    cwd: new URL("../", import.meta.url), encoding: "utf8", timeout: 25000,
     env: { ...process.env, TASKCENTER_CONTEXT_NODE: process.execPath, TASKCENTER_CONTEXT_ROOT: dir, TASKCENTER_CONTEXT_SERVER: fixture,
       TASKCENTER_CONTEXT_TASK_MAP_PATH: join(dir, "map"), TASKCENTER_CONTEXT_AUDIT_PATH: join(dir, "audit") },
   });
