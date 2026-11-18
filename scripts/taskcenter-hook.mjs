@@ -11,7 +11,7 @@ import { taskTimeState } from "../app/task-time-state.mjs";
 import { isSubagentSession } from "./harnesses/codex-session.mjs";
 import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment, NO_ACTIVE_TASK_RECOVERY } from "./governance-metrics.mjs";
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
-import { setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
+import { sessionRegistryPath, setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
 import { isTrustedInspectionEntry } from "./trusted-cli-identity.mjs";
 import { inspectTrustedCli } from "./trusted-cli-inspection.mjs";
@@ -40,6 +40,14 @@ const workspace = String(event.cwd || process.env.CLAUDE_PROJECT_DIR || process.
 let scheduledReadonly = scheduledReadonlyConfig();
 
 try {
+  // A registered ordinary session can use the existing deterministic read-only
+  // grammar without waiting on the control service. A missing/corrupt registry
+  // or a scheduled profile falls back to the existing authoritative gate.
+  if (action === "pre-tool-use" && sessionId && !scheduledReadonly && !isInteractiveExec(event)
+    && isReadOnlyInspection(event) && isKnownOrdinarySession()) {
+    console.log("TaskCenter L0 确定性只读检查放行（快速放行，不登记任务或逐次计数）");
+    process.exit(0);
+  }
   if (isSubagentSession(sessionId, agent, event)) process.exit(0);
   if ((action === "pre-tool-use" || action === "scheduled-pre-tool-use") && isTrustedRecoveryCommand(event)) {
     console.log("TaskCenter 固定恢复命令放行");
@@ -738,6 +746,18 @@ function isTrustedRecoveryCommand(payload) {
     return samePath(scriptPath, resolve(projectRoot, "scripts", "taskcenter-control.mjs"));
   }
   return false;
+}
+
+function isKnownOrdinarySession() {
+  try {
+    const registry = JSON.parse(readFileSync(sessionRegistryPath, "utf8"));
+    if (!registry || typeof registry !== "object" || Array.isArray(registry)) return false;
+    const entry = registry[sessionId];
+    return Boolean(entry && typeof entry === "object" && !Array.isArray(entry)
+      && entry.sessionId === sessionId && entry.registeredAt
+      && typeof entry.workspace === "string" && entry.workspace === workspace
+      && !entry.scheduledReadonly);
+  } catch { return false; }
 }
 
 async function isL0ReadOnlyInspection(payload) {

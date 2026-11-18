@@ -201,7 +201,7 @@ Agent 应填写真实时间、已验证 Subject SHA、实际仓库相对覆盖�
 rtk node "/absolute/path/to/taskcenter/scripts/scheduled-report-probe.mjs" --report "/absolute/path/to/inStory/project-context/90-Agent提案/自动化报告/附件-项目研发效能夜间优化探索.md"
 ```
 
-Codex 配置中的 `UserPromptSubmit` Hook 会在非门禁豁免 Session 没有活跃正式任务时，提前向 Agent 注入任务准备指令。已登记且无活跃任务的 Session 可在 L0 运行单条确定性只读命令：`pwd`、`ls`、`cat`、`head`、`tail`、`wc`、`du`、`stat`、`file`、`rg`、`sed -n`、受限 `find`，以及限定的只读 `git` 子命令（可选前缀 `rtk`）。重定向、管道、命令替换、解释器和复合命令均会 fail-closed；提示会要求拆成单条只读命令，或创建任务。L0 只保留每个 Session 的计数聚合，不创建任务、验收或 Review，也不记录命令历史。未登记 Session 不享有 L0。
+Codex 配置中的 `UserPromptSubmit` Hook 会在非门禁豁免 Session 没有活跃正式任务时，提前向 Agent 注入任务准备指令。已登记的普通 Session 在当前工作区可通过 L0 快速通道运行已核验的确定性只读命令，不等待控制服务或要求活跃任务：`pwd`、`ls`、`cat`、`head`、`tail`、`wc`、`du`、`stat`、`file`、`rg`、`sed -n`、受限 `find`，以及限定的只读 `git` 子命令（可选前缀 `rtk`）。重定向、管道、命令替换、解释器和复合命令均会 fail-closed；提示会要求拆成单条只读命令，或创建任务。快速通道不逐次记录 L0 计数，也不创建任务、验收或 Review，不记录命令历史。未登记、工作区不匹配、注册表不可读或定时巡检 Session 不使用快速通道，继续执行原门禁。
 
 需要写入时由 Agent 主动登记并创建或复用任务后再调用工具，不应要求用户代为处理。L1 `fast` 默认不要求 verification plan 或 review；L2 `standard` 必须声明 verification plan、默认不要求独立 review；L3 `strict` 必须有 verification plan 和当前 Subject 的独立 review。Subject 更新会使旧验证和 Review 失效。CLI 没有 Agent 的路径可直接调用 Core HTTP/导入证据接口；它不依赖 Hook 或 MCP，恢复服务后再补录 `occurred_at` 与证据即可。`PreToolUse` 仍保留硬阻断作为兜底。只有显式加入“门禁豁免”白名单的精确 Session ID 才会跳过任务要求，不会按项目、目录或标题自动扩大豁免。
 
@@ -221,7 +221,7 @@ TaskCenter Core 不依赖 Codex、Context Agent、OCR、GitHub/GitLab、Worktree
 
 受信 CLI 通过 `scripts/trusted-cli-inspection.mjs` 统一分派审核适配器，必须同时满足固定安装入口身份和精确参数白名单，不按任意程序的 `--help` / `--version` 放行。DevKit 保留原有 `env PYTHONDONTWRITEBYTECODE=1` 及受限只读动作；DCB 仅支持已审核 SHA-256 的 `0.4.0-alpha.1` 安装产物（含 Skill 的 `bin/dcb`、`~/.local/bin/dcb` 软链接），允许单独 `--version` / `--help`、`doctor --project-root WORKSPACE`、`interaction query|graph|check`。交互查询须指定现存的绝对 `--interaction-map`，可读取项目外独立 map；项目根须对应当前登记工作区，query 必须精确选择 screen 或 entity 及方向。支持直接入口或 `rtk proxy`；伪入口、替换二进制、额外环境变量、未知参数、写入和 preview 分支均拒绝。CLI 升级后须复核源码及产物摘要后更新适配器，不能自动扩大权限。Hook 是生命周期守卫，不是进程级文件沙箱。
 
-已登记但没有活跃任务的普通 Session 可使用 L0 只读查询，包括带引号的正则检索（如 `rtk rg 'foo|bar' README.md`）、`rtk proxy` 包装以及固定 `adb devices [-l]` / `adb version` 探针。引号内的正则符号按字面参数处理；管道、重定向、命令替换、变量展开、不完整引号和执行型参数继续拒绝。`npm run service:status` 不属于固定只读探针，因为任意工作区的同名 npm script 可执行任意代码。L0 不等同于文件系统沙箱，也不会恢复 Codex 尚未挂载的 MCP；服务不可用仍遵循离线恢复门禁。
+已登记但没有活跃任务的普通 Session 可使用 L0 只读查询，包括带引号的正则检索（如 `rtk rg 'foo|bar' README.md`）、`rtk proxy` 包装以及固定 `adb devices [-l]` / `adb version` 探针。引号内的正则符号按字面参数处理；管道、重定向、命令替换、变量展开、不完整引号和执行型参数继续拒绝。`npm run service:status` 不属于固定只读探针，因为任意工作区的同名 npm script 可执行任意代码。L0 不等同于文件系统沙箱，也不会恢复 Codex 尚未挂载的 MCP；服务不可用时，符合快速通道条件的查询仍可执行，其余操作遵循离线恢复门禁。
 
 闭环的两个 `requirement_id` 指向不同集合：`close_requirements[].requirement_id` 引用 `acceptance_criteria[].id`；`close_verifications[].requirement_id` 引用 `verification_plan[].id`，其 `kind` 必须匹配计划。Claim 自身 `id` 是唯一证据记录 ID。引用错误返回 `UNKNOWN_ACCEPTANCE_REFERENCE` / `UNKNOWN_VERIFICATION_REFERENCE` 和合法 ID，类型不符返回 `VERIFICATION_KIND_MISMATCH`。应在一次 `task_close` 中提交整包证据。请求校验失败后可修正再提交；已成功落账的 event_id 只能重放相同内容，不能用幂等键覆盖已记录事实。
 

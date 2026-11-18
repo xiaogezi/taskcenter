@@ -615,7 +615,7 @@ test("L0 历史本机查询与 RTK read 不要求任务，危险参数仍拒绝"
     "xcrun simctl boot ABCD", "xcrun --toolchain evil swift --version",
   ]) assert.equal((await check(cmd)).code, 2, cmd);
   const status = await (await fetch(`${base}/session-status`)).json();
-  assert.equal(status.sessions.find(item => item.sessionId === session_id).l0Audit.count, allowed.filter(cmd => installedInspection(cmd, rootPath)).length);
+  assert.equal(status.sessions.find(item => item.sessionId === session_id).l0Audit.count, 0);
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
 });
@@ -678,7 +678,7 @@ test("L0 逐条识别历史查询包装和网络参数，拒绝混合副作用",
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
   const status = await (await fetch(`${base}/session-status`)).json();
-  assert.equal(status.sessions.find(item => item.sessionId === session_id).l0Audit.count, allowed.filter(cmd => installedInspection(cmd, rootPath)).length + (existsSync("/usr/bin/curl") ? 1 : 0));
+  assert.equal(status.sessions.find(item => item.sessionId === session_id).l0Audit.count, 0);
 });
 
 test("L0 Git -C 按实际目录识别只读查询，保留写入和对象读取边界", async () => {
@@ -726,7 +726,7 @@ test("L0 Git -C 按实际目录识别只读查询，保留写入和对象读取�
     "git -C --help status",
   ]) assert.equal((await check(cmd)).code, 2, cmd);
   const registry = JSON.parse(await readFile(paths.TASKCENTER_SESSION_REGISTRY_PATH, "utf8"));
-  assert.equal(registry[session_id].l0Audit.count, allowed.length);
+  assert.equal(registry[session_id].l0Audit?.count || 0, 0);
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
 });
@@ -803,7 +803,7 @@ test("L0 真实 SSH 入口放行远端有界探针并落盘无任务审计", asy
     for (const cmd of [wrap(allowed[0]).replace("-F /dev/null ", ""), wrap(allowed[0]).replace("-F /dev/null", "-F /tmp/config"),
       wrap(allowed[0]).replace("-o IdentitiesOnly=yes", "-L 8080:evil:80"), wrap(allowed[0]).replace("-o IdentitiesOnly=yes", "-o ProxyCommand=evil")]) assert.equal((await check(cmd)).code, 2, cmd);
     const sessions = (await (await fetch(`${base}/session-status`)).json()).sessions;
-    assert.equal(sessions.find(item => item.sessionId === session_id).l0Audit.count, allowed.length);
+    assert.equal(sessions.find(item => item.sessionId === session_id).l0Audit.count, 0);
     const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
     assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
   } finally { await rm(fixture, { recursive: true, force: true }); }
@@ -872,7 +872,7 @@ test("L0 ZIP 跨项目只读支持RTK和空格路径，拒绝落盘并持久化�
     const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
     assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
     const registry = JSON.parse(await readFile(paths.TASKCENTER_SESSION_REGISTRY_PATH, "utf8"));
-    assert.equal(registry[session_id].l0Audit.count, allowed.length);
+    assert.equal(registry[session_id].l0Audit?.count || 0, 0);
   } finally { await rm(fixture, { recursive: true, force: true }); }
 });
 
@@ -906,7 +906,7 @@ test("L0 security 无任务只放行系统签名查询与限定描述文件并�
     const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
     assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
     const registry = JSON.parse(await readFile(paths.TASKCENTER_SESSION_REGISTRY_PATH, "utf8"));
-    assert.equal(registry[session_id].l0Audit.count, 3);
+    assert.equal(registry[session_id].l0Audit?.count || 0, 0);
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
@@ -2005,4 +2005,35 @@ test("custom execution shells cannot claim L0 or fixed-recovery exemptions", asy
       }
     }
   }
+});
+
+
+test("L0 快速通道不等待控制服务且不绕过定时会话与危险操作", async context => {
+  let requests = 0;
+  const probe = createServer((req, res) => { requests++; res.writeHead(503); res.end(); });
+  await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
+  context.after(() => { probe.closeAllConnections(); probe.close(); });
+  const registryPath = join(tempDir, "fast-path-registry.json");
+  const sessionId = "fast-path-ordinary";
+  const registry = { [sessionId]: { sessionId, registeredAt: "2026-11-18T00:00:00Z", workspace: rootPath } };
+  const url = `http://127.0.0.1:${probe.address().port}`;
+  const env = { TASKCENTER_SESSION_REGISTRY_PATH: registryPath };
+  const event = (cmd) => ({ session_id: sessionId, cwd: rootPath, tool_name: "exec_command", tool_input: { cmd } });
+  await writeFile(registryPath, JSON.stringify(registry));
+  for (const cmd of ["pwd", "cat README.md"]) {
+    const result = await runHook("pre-tool-use", "codex", event(cmd), [], url, env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /L0 确定性只读检查放行.*快速放行/);
+  }
+  assert.equal(requests, 0);
+  const write = await runHook("pre-tool-use", "codex", event("touch sentinel"), [], url, env);
+  assert.equal(write.code, 2);
+  registry[sessionId].scheduledReadonly = { profile: "scheduled_readonly" };
+  await writeFile(registryPath, JSON.stringify(registry));
+  const scheduled = await runHook("pre-tool-use", "codex", event("pwd"), [], url, env);
+  assert.equal(scheduled.code, 2);
+  assert.doesNotMatch(scheduled.stdout, /快速放行/);
+  await writeFile(registryPath, "{");
+  const corrupt = await runHook("pre-tool-use", "codex", event("pwd"), [], url, env);
+  assert.equal(corrupt.code, 2);
 });
