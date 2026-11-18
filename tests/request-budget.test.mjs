@@ -4,7 +4,24 @@ import { mkdtemp, writeFile, appendFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { boundedResponse } from "../scripts/bounded-response.mjs";
-import { budgetSnapshot, readRequestBudget } from "../scripts/request-budget.mjs";
+import { budgetSnapshot, readPreparationBudget, readRequestBudget } from "../scripts/request-budget.mjs";
+
+test("任务准备到期时返回未知的建议预算，迟到读取仍可完成", async () => {
+  const task = { workflowProfile: "fast" };
+  let complete;
+  const pending = new Promise((resolve) => { complete = resolve; });
+  const result = await readPreparationBudget(task, () => pending, 10);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.budget.source, "unavailable");
+  assert.equal(result.budget.continuation_count.session, null);
+  assert.equal(result.budget.request_limit, 8);
+  assert.equal(result.budget.handoff_required, false);
+  const updated = budgetSnapshot({ requests: [], compactions: 0 }, task);
+  complete(updated);
+  const next = await readPreparationBudget(task, () => pending);
+  assert.equal(next.timedOut, false);
+  assert.deepEqual(next.budget, updated);
+});
 
 test("L1 和普通阶段在第 8/35 次预警，重复 started 不重置同阶段预算", () => {
   for (const [profile, limit] of [["fast", 8], ["standard", 35]]) {

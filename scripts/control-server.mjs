@@ -77,7 +77,7 @@ import {
 import { normalizeSessionAllowlist, readSessionAllowlist, sessionIdPattern, updateSessionAllowlist } from "./session-allowlist.mjs";
 import { AiGovernanceError, aiActivity, createGovernanceRunner, governanceSnapshot, agentGuidance } from "./ai-governance.mjs";
 import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.mjs";
-import { readRequestBudget } from "./request-budget.mjs";
+import { readPreparationBudget, readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
 import { queryUsageReport } from "./usage-query.mjs";
 import { buildGovernanceMetrics, gateDenialSnapshot, recordGateDenial } from "./governance-metrics.mjs";
@@ -313,9 +313,11 @@ const server = createServer(async (request, response) => {
       const activeTask = tasks.find((item) => ["planned", "in_progress", "blocked"].includes(item.status));
       const task = activeTask || tasks[0] || null;
       markPrepareStage(request, "budget");
-      const budget = await readRequestBudget(sessionId, sessionsRoot, task);
-      // Budget reads may finish after the Hook has disconnected. Preserve the
-      // read/cache outcome but do not build a handoff nobody can receive.
+      const { budget, timedOut, elapsedMs } = await readPreparationBudget(task, () => readRequestBudget(sessionId, sessionsRoot, task));
+      if (timedOut) {
+        console.log(JSON.stringify({ event: "task_prepare_budget_unavailable", request_id: requestId,
+          reason: "advisory_deadline", elapsed_ms: elapsedMs }));
+      }
       if (response.destroyed) return;
       markPrepareStage(request, "response");
       const prepared = boundedResponse({

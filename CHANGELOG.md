@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- `/task-prepare` 的会话预算读取最多等待 400 毫秒，并发请求共享同一次刷新。超时保留登记和任务状态，预算明确显示暂不可用，并记录请求 ID 和耗时。
+
 - 拒绝把 TaskCenter 执行任务 ID 写成 ProjectContext 语义任务 ID。历史误绑保留，本地验证照常落账，桥接跳过通知并记录原因；真正的 ProjectContext 通知故障仍可用原幂等键重试。
 
 - 兼容现有 MCP 客户端：本次部署沿用原有文件锁和常规 `service:deploy`。两处锁的旧 owner 回收竞态及 SQLite 迁移留待后续维护窗口。

@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import { consumeJsonl, jsonlCheckpointFingerprint } from "./jsonl-stream.mjs";
 import { findSessionPath } from "./session-cli.mjs";
 
@@ -22,16 +23,17 @@ export async function readRequestBudget(sessionId, root, task = null) {
   if (!sessionId) return budgetSnapshot(null, task);
   const read = async (id) => {
     const key = `${root}:${id}`;
-    const previous = inFlight.get(key) || Promise.resolve();
-    const pending = previous.catch(() => {}).then(() => readSessionBudget(id, root, task));
-    inFlight.set(key, pending);
-    try {
-      return await pending;
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      cache.delete(key);
-      return budgetSnapshot(null, task);
-    } finally { if (inFlight.get(key) === pending) inFlight.delete(key); }
+    let pending = inFlight.get(key);
+    if (!pending) {
+      pending = readSessionBudget(id, root).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+        cache.delete(key);
+        return null;
+      }).finally(() => inFlight.delete(key));
+      inFlight.set(key, pending);
+    }
+    // Build per-task projections only after the shared filesystem refresh.
+    return budgetSnapshot(await pending, task);
   };
   const result = await read(sessionId);
   for (const previous of task?.sessionHistory || []) {
@@ -43,10 +45,24 @@ export async function readRequestBudget(sessionId, root, task = null) {
   return result;
 }
 
-async function readSessionBudget(sessionId, root, task) {
+export async function readPreparationBudget(task, read, waitMs = 400) {
+  const started = performance.now();
+  let timer;
+  try {
+    const budget = await Promise.race([
+      Promise.resolve().then(read),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), waitMs); }),
+    ]);
+    return { budget: budget ?? budgetSnapshot(null, task), timedOut: budget === null, elapsedMs: Math.round(performance.now() - started) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readSessionBudget(sessionId, root) {
   let state = cache.get(`${root}:${sessionId}`);
   const path = state?.path || findSessionPath(sessionId, root);
-  if (!path) return budgetSnapshot(null, task);
+  if (!path) return null;
   const info = await stat(path);
   const identity = `${info.dev}:${info.ino}`;
   if (!state || state.identity !== identity || info.size < state.offset || state.hash !== await jsonlCheckpointFingerprint(path, state.offset)) {
@@ -63,7 +79,7 @@ async function readSessionBudget(sessionId, root, task) {
   }
   if (!cache.has(`${root}:${sessionId}`) && cache.size >= 64) cache.delete(cache.keys().next().value);
   cache.set(`${root}:${sessionId}`, state);
-  return budgetSnapshot(state.sessionId === sessionId ? state : null, task);
+  return state.sessionId === sessionId ? state : null;
 }
 
 export function budgetSnapshot(state, task = null) {
