@@ -2509,7 +2509,10 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
       assert.equal(reply.task.requirementResults.length, 0);
       assert.equal(reply.task.verificationClaims.length, 0);
       assert.notEqual(reply.task.acceptanceStatus, "accepted");
-      assert.deepEqual(reply.agent_guidance.steps, [], "关闭回包不再要求补证据或继续query");
+      assert.deepEqual(reply.agent_guidance.steps, [], "关闭不强迫继续执行或额外query");
+      assert.match(reply.follow_up.label, /待补条件满足；待补检查/);
+      const compact = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_close", arguments: { ...slim, response_mode: "summary" } })));
+      assert.equal(compact.follow_up.label, reply.follow_up.label);
     }
     if (scenario === "ready") {
       assert.deepEqual(reply.task.verificationClaims[0].subject_ref, closeSubject);

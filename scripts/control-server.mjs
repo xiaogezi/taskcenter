@@ -80,7 +80,7 @@ import { readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
 import { queryUsageReport } from "./usage-query.mjs";
 import { buildGovernanceMetrics, gateDenialSnapshot, recordGateDenial } from "./governance-metrics.mjs";
-import { taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
+import { evidenceFollowUp, taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
 import { enrichTaskWorkspaceEvent } from "../lib/git-workspace.mjs";
 import {
   ContextManagementPilotError,
@@ -862,6 +862,7 @@ const server = createServer(async (request, response) => {
         idempotent: Boolean(result.idempotent),
         event: result.event,
         task: result.task,
+        ...(evidenceFollowUp(result.task) ? { follow_up: evidenceFollowUp(result.task) } : {}),
         agent_guidance: agentGuidance(result.task, aiActivityPath),
         contextSync,
         warnings,

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { evidenceFollowUp } from "../lib/task-workspace.mjs";
 import { schemaToolRegistry } from "./mcp-schema.mjs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -186,7 +187,7 @@ toolRegistry.register("taskcenter_task_report", {
 
 toolRegistry.register("taskcenter_task_close", {
   title: "原子关闭 TaskCenter 任务",
-  description: "声明任务执行完成；除任务身份外，摘要、测试、证据及逐项结果均可省略，已有结果继续用于计算就绪度。同一 event_id 重试幂等；done_claimed 不等于验证或独立验收通过，completion_claim_allowed=false 不得宣称真正完成。",
+  description: "声明任务执行完成；除任务身份外，摘要、测试、证据及逐项结果均可省略，已有结果继续用于计算就绪度。同一 event_id 重试幂等；done_claimed 不等于验证或独立验收通过，completion_claim_allowed=false 不得宣称真正完成；follow_up 列出待补缺项，执行可先收尾，待办保留到补齐。",
   inputSchema: z.object(taskFields).extend({
     task_id: z.string().min(1).max(200),
     tests: z.array(z.string().min(1).max(500)).max(30).default([]),
@@ -619,6 +620,8 @@ async function postAcceptance(input) {
 }
 
 function writeResult(payload, responseModeValue) {
+  const followUp = evidenceFollowUp(payload?.task);
+  if (followUp) payload = { ...payload, follow_up: followUp };
   if (responseModeValue === "full" || payload?.error) return result(payload);
   return result(compactResult(payload));
 }
@@ -642,6 +645,8 @@ function compactResult(payload) {
     missing_count: missing.length || [...new Set(readiness.reasons || [])].length,
     completion_claim_allowed: readiness.completionClaim?.allowed === true,
   };
+  const followUp = evidenceFollowUp(task);
+  if (followUp) compact.follow_up = followUp;
   if (payload?.session_lifecycle) compact.session_lifecycle = payload.session_lifecycle;
   if (payload?.agent_guidance) compact.agent_guidance = payload.agent_guidance;
   if (payload?.route) compact.route = payload.route;

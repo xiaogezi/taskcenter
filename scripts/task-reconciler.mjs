@@ -3,6 +3,7 @@
 //
 // 触发点：运行结束 / 回执到达时立即处理；服务启动时恢复未处理记录；低频扫描补漏。
 // 日常只读查询不经过本模块，不会出现“打开任务页面就改变账本”的副作用。
+import { evidenceFollowUp } from "../lib/task-workspace.mjs";
 import { readFileSync, existsSync, appendFileSync, mkdirSync, openSync, closeSync, fstatSync, readSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -22,7 +23,8 @@ function activeRuns(task) {
 
 // 计算单条任务的对账发现（只读，不写任务）。
 function findingsForTask(task) {
-  const findings = [];
+  const followUp = evidenceFollowUp(task);
+  const findings = followUp ? [{ ...followUp, task_id: task.id }] : [];
   const running = activeRuns(task);
   const hasRuns = (task.runs || []).length > 0;
   if (hasRuns && !running.length) {
@@ -104,8 +106,8 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       const inactiveOwner = !sessionMissing && !sessionReadFailed && inactiveOwnerArchiveReady(task, terminal);
       if (inactiveOwner) basis = "owner_inactive";
       const state = sessionMissing ? "recovery_pending" : terminal || (!running.length && runs.length) ? "execution_unconfirmed" : "recovery_pending";
-      const archive = inactiveOwner || (sessionMissing && task.executionReconciliation?.basis === "session_missing" && Date.now() - Date.parse(task.updatedAt || task.createdAt) >= 300_000);
-      const nextAction = archive ? "原执行承载已失效且无活跃执行者，任务已自动归档；契约、证据及未完成状态保留，需要继续时先取消归档并绑定真实 Session。" : sessionMissing ? "原会话文件缺失，等待五分钟静默核对；无活跃执行者时默认归档，保留契约、证据及未完成状态。" : "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
+      const archive = !ACTIVE_TASK_STATUSES.has(task.status) && !evidenceFollowUp(task) && (inactiveOwner || (sessionMissing && task.executionReconciliation?.basis === "session_missing" && Date.now() - Date.parse(task.updatedAt || task.createdAt) >= 300_000));
+      const nextAction = evidenceFollowUp(task) ? "执行已收尾，待补证据仍保留在需处理；请补齐当前契约要求后再进行最终验收。" : ACTIVE_TASK_STATUSES.has(task.status) ? "执行是否结束尚待确认，任务保留在需处理；请核对宿主运行事实，在原契约内收尾或恢复，也可由人工明确处置。" : archive ? "原执行承载已失效且无活跃执行者，任务已自动归档；契约、证据及未完成状态保留，需要继续时先取消归档并绑定真实 Session。" : sessionMissing ? "原会话文件缺失，等待五分钟静默核对；无活跃执行者时默认归档，保留契约、证据及未完成状态。" : "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
       const id = `reconcile-${createHash("sha256").update(JSON.stringify([task.id, startedAt, basis, task.currentSubject, archive ? task.lastEventId : ""])).digest("hex")}`;
       const completion = computeCompletionReadiness({ ...task, status: "done_claimed" });
       const fresh = [...(task.requirementResults || []), ...(task.verificationClaims || [])]

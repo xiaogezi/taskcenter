@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { controlProxyTarget, isAllowedControlPath } from "../lib/control-proxy.mjs";
-import { actionReasons, parseTaskWorkspaceSearch, projectInfo, taskActions, taskAxes, taskListRequestKey, taskMatchesBucket, taskViewBuckets } from "../lib/task-workspace.mjs";
+import { evidenceFollowUp, actionReasons, parseTaskWorkspaceSearch, projectInfo, taskActions, taskAxes, taskListRequestKey, taskMatchesBucket, taskViewBuckets } from "../lib/task-workspace.mjs";
 
 test("任务工作区 URL 仅用列表条件构造请求 key", () => {
   const state = parseTaskWorkspaceSearch("?project=/work&bucket=attention&query=api&page=2&task=t-1&tab=evidence");
@@ -131,4 +131,45 @@ test("结束与事实待确认任务从执行中统计剔除但保持可恢复",
     assert.equal(taskMatchesBucket(task, "completed"), false);
   }
   assert.equal(taskMatchesBucket({ status: "in_progress", runs: [{ ended_at: "" }] }, "in_progress"), true);
+});
+
+
+test("无任务的会话回执不产生补证据项", () => {
+  assert.equal(evidenceFollowUp(null), null);
+  assert.equal(evidenceFollowUp(), null);
+});
+
+test("关闭执行后具体缺项保留需处理，不计已完成；补齐后待独立验收", () => {
+  const task = { status: "done_claimed", acceptanceStatus: "pending", verificationStatus: "pending",
+    acceptanceRequirements: [{ id: "final", description: "最终清单" }],
+    verificationPlan: [{ id: "test", title: "定向测试" }, { id: "build", title: "构建" }],
+    completionReadiness: { missingRequirements: ["final", "test", "build"], reasons: ["required_verification_missing"] } };
+  assert.match(actionReasons(task)[0].label, /待补最终清单；待补定向测试；待补构建/);
+  assert.equal(taskViewBuckets(task).attention, true);
+  assert.equal(taskViewBuckets(task).completed, false);
+  assert.equal(taskViewBuckets(task).awaiting_verification, true);
+  const ready = { ...task, verificationStatus: "passed", acceptanceStatus: "ready", completionReadiness: { ready: true, reasons: [], missingRequirements: [] } };
+  assert.deepEqual(actionReasons(ready), []);
+  assert.equal(taskViewBuckets(ready).completed, false);
+  assert.equal(taskViewBuckets(ready).awaiting_acceptance, true);
+  assert.equal(taskViewBuckets({ ...ready, status: "verified" }).completed, false);
+  assert.equal(taskViewBuckets({ ...ready, status: "verified" }).awaiting_acceptance, true);
+  assert.equal(taskViewBuckets({ ...ready, acceptanceStatus: "accepted" }).completed, true);
+  assert.deepEqual(actionReasons({ ...task, status: "in_progress" }), []);
+});
+
+test("失效证据不能消除待办，非阻断Review不制造证据待办", () => {
+  const task = { status: "done_claimed", acceptanceStatus: "stale", verificationStatus: "stale", completionReadiness: { staleEvidence: ["test-v1"], reasons: ["verification_stale"] } };
+  assert.ok(actionReasons(task).some(reason => reason.label === "待更新过期证据"));
+  assert.equal(taskViewBuckets(task).completed, false);
+  assert.deepEqual(actionReasons({ status: "done_claimed", reviewStatus: "pending", completionReadiness: { reasons: ["review_pending"] } }), []);
+});
+
+test("计划中的失联Run显示执行待确认，正常阻塞不误报结束事实", () => {
+  const task = { status: "planned", runs: [{ ended_at: "" }], executionReconciliation: { state: "recovery_pending", basis: "session_end_unconfirmed" } };
+  assert.equal(taskViewBuckets(task).planned, false);
+  assert.equal(taskViewBuckets(task).execution_unconfirmed, true);
+  assert.equal(taskViewBuckets(task).attention, true);
+  assert.equal(taskViewBuckets(task).completed, false);
+  assert.equal(taskViewBuckets({ status: "blocked", runs: [{ ended_at: "2026-11-18" }] }).execution_unconfirmed, false);
 });
