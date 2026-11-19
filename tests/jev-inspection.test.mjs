@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, writeFileSync, symlinkSync, rmSync } from "node
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { isReadOnlyJev } from "../scripts/jev-inspection.mjs";
+import { explorationCommand, isReadOnlyJev } from "../scripts/jev-inspection.mjs";
+import { inspectionWords } from "../scripts/inspection-command.mjs";
 import { inspectTrustedCli } from "../scripts/trusted-cli-inspection.mjs";
 
 test("Jev report validates exact query and complete reviewed local import graph", t => {
@@ -24,6 +25,16 @@ test("Jev report validates exact query and complete reviewed local import graph"
   for (const args of [["advise"], ["record"], ["declare"], ["report", "--help"], ["report", "a/b"], ["report", "task-a", "extra"]]) assert.equal(isReadOnlyJev([alias, ...args], options), false);
   assert.equal(isReadOnlyJev(["jev-decision", "report"], options), false);
   assert.equal(isReadOnlyJev([alias, "report"], { ...options, env: { NODE_OPTIONS: "--import=evil" } }), false);
+  const session = "00000000-0000-0000-0000-000000000001";
+  const turn = "00000000-0000-0000-0000-000000000002";
+  const command = `rtk proxy "${alias}" explore '{"state":{"summary":"literal $(echo example)"},"sanitized":true}'`;
+  assert.deepEqual(inspectionWords(explorationCommand(command, session, turn, options)),
+    [process.execPath, installed, "explore", session, turn, '{"state":{"summary":"literal $(echo example)"},"sanitized":true}']);
+  for (const invalid of [command + " && pwd", command + " > out",
+    `"${alias}" explore '{"task_id":null}'`, `/tmp/jev-decision explore '{}'`]) {
+    assert.equal(explorationCommand(invalid, session, turn, options), null);
+  }
+  assert.equal(explorationCommand(command, session, "", options), null);
   const dependency = join(root, "mcp/runtime/file-lease.mjs"), outside = join(home, "outside.mjs");
   writeFileSync(outside, "mcp/runtime/file-lease.mjs", { mode: 0o755 });
   rmSync(dependency); symlinkSync(outside, dependency);
@@ -31,6 +42,7 @@ test("Jev report validates exact query and complete reviewed local import graph"
   rmSync(dependency); writeFileSync(dependency, "mcp/runtime/file-lease.mjs", { mode: 0o755 });
   writeFileSync(join(root, "mcp/runtime/path-safety.mjs"), "replacement");
   assert.equal(isReadOnlyJev([alias, "report"], options), false);
+  assert.equal(explorationCommand(command, session, turn, options), null);
 });
 
 test("installed audited Jev report is routed through trusted CLI with RTK", () => {

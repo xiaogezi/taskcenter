@@ -13,6 +13,7 @@ import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment, NO
 import { inspectManagedReport, inspectManagedReportContent, repairManagedReportHash } from "./scheduled-report-probe.mjs";
 import { sessionRegistryPath, setSessionScheduledReadonlyProfile } from "./task-ledger.mjs";
 import { inspectionBatch } from "./inspection-command.mjs";
+import { explorationCommand } from "./jev-inspection.mjs";
 import { isTrustedInspectionEntry } from "./trusted-cli-identity.mjs";
 import { inspectTrustedCli } from "./trusted-cli-inspection.mjs";
 import { isTrustedSystemQuery } from "./network-inspection.mjs";
@@ -141,6 +142,18 @@ try {
     if (prepared) {
       if (prepared.task_id && isRecoveryOperation(event)) {
         console.log("TaskCenter 收尾通道放行；写入仍由服务端校验 task 身份。");
+        process.exit(0);
+      }
+    }
+    if (agent === "codex" && !scheduledReadonly && prepared?.active_task === null
+      && event.session_id === sessionId && typeof event.turn_id === "string"
+      && ["Bash", "exec_command"].includes(event.tool_name) && !hasCustomExecutionShell(event)
+      && isKnownOrdinarySession() && isFastPathWorkdirWithinWorkspace(event)) {
+      const command = explorationCommand(event.tool_input?.command ?? event.tool_input?.cmd, sessionId, event.turn_id);
+      if (command) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { command } },
+        }));
         process.exit(0);
       }
     }
