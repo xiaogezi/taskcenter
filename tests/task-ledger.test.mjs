@@ -47,6 +47,7 @@ const {
   isContextShadowTask,
   loadSessionRegistry,
   loadTasks,
+  loadVisibleSessionTasks,
   loadVisibleTasks,
   reconcileContextShadowTasks,
   reconcileTasks,
@@ -270,6 +271,31 @@ async function resetLedger() {
     await rm(path, { force: true });
   }
 }
+
+test("工具计数只投影目标，仍按最新会话别名检查归属与活跃任务冲突", async () => {
+  await resetLedger();
+  const task = { id: "tool-target", sessionId: "tool-owner", status: "in_progress" };
+  const unrelated = { id: "tool-unrelated", sessionId: "other", status: "done_claimed", title: "旧记录" };
+  const path = envPaths.TASKCENTER_TASK_LEDGER_PATH;
+  await writeFile(path, JSON.stringify([task, unrelated]));
+  const original = await readFile(path, "utf8");
+  const registration = { type: "session.register", session_id: task.sessionId, event_id: "tool-owner-register" };
+  assert.equal(recordTaskEvent(registration).task, null);
+  assert.equal(recordTaskEvent(registration).idempotent, true);
+  assert.equal(await readFile(path, "utf8"), original);
+  const input = { type: "tool.call", event_id: "tool-target-count", task_id: task.id, session_id: task.sessionId, tool_name: "exec_command" };
+  assert.equal(recordTaskEvent(input).task.toolCalls.exec_command, 1);
+  assert.equal(recordTaskEvent(input).idempotent, true);
+  const persisted = JSON.parse(await readFile(path, "utf8"));
+  assert.deepEqual(persisted.find(row => row.id === unrelated.id), unrelated);
+  assert.equal(loadVisibleSessionTasks(task.sessionId)[0].toolCalls.exec_command, 1);
+
+  const alias = "old-tool-owner";
+  await writeFile(envPaths.TASKCENTER_SESSION_MERGES_PATH, JSON.stringify({ canonicalSessionId: task.sessionId, aliases: [alias] }));
+  await writeFile(path, JSON.stringify([...persisted, { id: "tool-conflict", sessionId: alias, status: "planned" }]));
+  assert.deepEqual(loadVisibleSessionTasks(alias).map(row => row.id), [task.id, "tool-conflict"]);
+  assert.throws(() => recordTaskEvent({ ...input, event_id: "tool-conflicting-count" }), /ACTIVE_TASK_CONFLICT/);
+});
 
 test("128 MB 堆下扫描大事件历史仍能创建与幂等重放中文任务", async () => {
   await resetLedger();

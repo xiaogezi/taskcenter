@@ -42,10 +42,11 @@ export { taskTimeState, STALE_TASK_MS };
 export function loadTasks() {
   const source = readLedger();
   if (normalizedTasksCache?.source === source) return normalizedTasksCache.tasks.map((task) => withTaskPhaseTiming(withCompletionState(task)));
+  const merges = loadSessionMerges();
   const tasks = source
     .filter((task) => task.status !== "removed")
     .map((task) => normalizeDueAtSemantics(task))
-    .map((task) => withCompletionState({ ...task, sessionId: canonicalSessionId(task.sessionId) }));
+    .map((task) => withCompletionState({ ...task, sessionId: resolveSessionAlias(task.sessionId, merges) }));
   normalizedTasksCache = { source, tasks };
   return tasks.map((task) => withTaskPhaseTiming(withCompletionState(task)));
 }
@@ -174,15 +175,20 @@ export function loadVisibleTasks() {
 
 // Gate requests need one Session; hydrate completion/timing only after selecting it.
 export function loadVisibleSessionTasks(sessionId) {
-  const canonical = canonicalSessionId(sessionId);
+  const merges = loadSessionMerges();
+  const canonical = resolveSessionAlias(sessionId, merges);
   return readLedger()
-    .filter(task => task.status !== "removed" && !task.archivedAt && !isContextShadowTask(task) && canonicalSessionId(task.sessionId) === canonical)
-    .map(task => withTaskPhaseTiming(withCompletionState({ ...normalizeDueAtSemantics(task), sessionId: canonical })));
+    .filter(task => task.status !== "removed" && !task.archivedAt && !isContextShadowTask(task) && resolveSessionAlias(task.sessionId, merges) === canonical)
+    .map(task => hydrateTask(task, canonical));
 }
 
 export function loadTaskById(taskId) {
   const task = readLedger().find(task => task.id === taskId && task.status !== "removed");
-  return task ? withTaskPhaseTiming(withCompletionState({ ...normalizeDueAtSemantics(task), sessionId: canonicalSessionId(task.sessionId) })) : null;
+  return task ? hydrateTask(task, canonicalSessionId(task.sessionId)) : null;
+}
+
+function hydrateTask(task, sessionId) {
+  return withTaskPhaseTiming(withCompletionState({ ...normalizeDueAtSemantics(task), sessionId }));
 }
 
 export function isLocalTaskId(taskId) {
@@ -203,8 +209,12 @@ export function loadSessionMerges() {
 }
 
 export function canonicalSessionId(sessionId) {
+  return resolveSessionAlias(sessionId, loadSessionMerges());
+}
+
+function resolveSessionAlias(sessionId, merges) {
   const value = String(sessionId || "");
-  return loadSessionMerges()[value] || value;
+  return merges[value] || value;
 }
 
 export function isProjectContextClientSessionId(sessionId) {
@@ -212,9 +222,14 @@ export function isProjectContextClientSessionId(sessionId) {
 }
 
 export function loadSessionRegistry() {
-  let registry = {};
   const registryIdentity = fileIdentity(sessionRegistryPath);
   const mergesIdentity = fileIdentity(sessionMergesPath);
+  const baseIdentity = `${registryIdentity}:${mergesIdentity}`;
+  if (sessionRegistryCache?.baseIdentity === baseIdentity
+    && (!sessionRegistryCache.useLegacyEvents || sessionRegistryCache.eventsIdentity === fileIdentity(taskEventsPath))) {
+    return { ...sessionRegistryCache.value };
+  }
+  let registry = {};
   if (existsSync(sessionRegistryPath)) {
     try {
       const value = JSON.parse(readFileSync(sessionRegistryPath, "utf8"));
@@ -224,8 +239,7 @@ export function loadSessionRegistry() {
     }
   }
   const useLegacyEvents = Object.keys(registry).length === 0;
-  const cacheIdentity = `${registryIdentity}:${mergesIdentity}:${useLegacyEvents ? fileIdentity(taskEventsPath) : "registry-primary"}`;
-  if (sessionRegistryCache?.identity === cacheIdentity) return { ...sessionRegistryCache.value };
+  const eventsIdentity = useLegacyEvents ? fileIdentity(taskEventsPath) : null;
   // 兼容注册表上线前的历史事件：已有 session.register 也应显示为已登记。
   try {
     if (useLegacyEvents && existsSync(taskEventsPath)) {
@@ -254,16 +268,20 @@ export function loadSessionRegistry() {
   const normalized = {};
   for (const [sessionId, entry] of Object.entries(registry)) {
     if (merges[sessionId]) continue;
-    const canonical = canonicalSessionId(entry?.sessionId || sessionId);
+    const canonical = resolveSessionAlias(entry?.sessionId || sessionId, merges);
     if (!canonical || normalized[canonical]) continue;
     normalized[canonical] = { ...entry, sessionId: canonical };
   }
-  sessionRegistryCache = { identity: cacheIdentity, value: normalized };
-  return normalized;
+  sessionRegistryCache = { baseIdentity, useLegacyEvents, eventsIdentity, value: normalized };
+  return { ...normalized };
 }
 
 function fileIdentity(path) {
-  try { const info = statSync(path); return `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`; } catch { return "missing"; }
+  try { return snapshotIdentity(statSync(path)); } catch { return "missing"; }
+}
+
+function snapshotIdentity(info) {
+  return `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`;
 }
 
 export function getSessionStatuses(availableSessionIds = [], tasks = loadTasks()) {
@@ -415,7 +433,7 @@ function readLedger() {
   }
   try {
     const info = statSync(taskLedgerPath);
-    const identity = `${info.dev || 0}:${info.ino || 0}:${info.size}:${info.mtimeMs}`;
+    const identity = snapshotIdentity(info);
     if (ledgerCache?.identity === identity) return ledgerCache.tasks;
     const value = JSON.parse(readFileSync(taskLedgerPath, "utf8"));
     const tasks = Array.isArray(value) ? value : [];
@@ -429,8 +447,15 @@ function readLedger() {
 export function recordTaskEvent(input, options = {}) {
   if (input?.type === "task.execution_reconciled" && options.internalReconciliation !== true) throw new TaskLedgerError(403, "执行对账事件仅允许内部确定性对账器写入。");
   if (["bug", "bug_merge", "bug_acceptance"].some(field => Object.hasOwn(input || {}, field))) throw new TaskLedgerError(400, "RETIRED_BUG_WORKFLOW：Bug 闭环字段已退休，不接受新写入。");
-  const tasks = loadTasks();
-  const current = input?.task_id ? tasks.find((task) => task.id === String(input.task_id)) : null;
+  // Tool telemetry needs the target's full projection, but must not hydrate or
+  // rewrite unrelated tasks' derived state on every gated command.
+  const toolEvent = input?.type === "tool.call";
+  const registrationOnly = input?.type === "session.register" && !input.task_id;
+  const tasks = registrationOnly ? [] : toolEvent
+    ? readLedger().filter(task => task.status !== "removed")
+    : loadTasks();
+  const selected = input?.task_id ? tasks.find((task) => task.id === String(input.task_id)) : null;
+  const current = toolEvent && selected ? hydrateTask(selected, canonicalSessionId(selected.sessionId)) : selected;
   let event;
   try { event = normalizeEvent(input, current); }
   catch (error) { if (Number.isInteger(error.statusCode)) throw new TaskLedgerError(error.statusCode, error.message); throw error; }
@@ -493,6 +518,7 @@ export function recordTaskEvent(input, options = {}) {
     let originalTask = original.task_id
       ? tasks.find((task) => task.id === original.task_id) ?? null
       : null;
+    if (toolEvent && originalTask) originalTask = hydrateTask(originalTask, canonicalSessionId(originalTask.sessionId));
     if (originalTask && event.type !== "review.reported" && eventStore(taskEventsPath)?.projectionBehind(original.event_id, originalTask.lastEventId)) {
       throw new TaskLedgerError(409, "TASK_LEDGER_RECOVERY_REQUIRED：事件已持久化但任务投影落后，请核对恢复预览；不会重放写请求。");
     }
@@ -565,7 +591,7 @@ export function recordTaskEvent(input, options = {}) {
       ? current
       : applyEvent(current, event);
   const activeConflict = next && !next.archivedAt && !isContextShadowTask(next) && activeTaskStatuses.has(next.status)
-    ? tasks.find((task) => task.id !== next.id && !task.archivedAt && !isContextShadowTask(task) && task.sessionId === next.sessionId && activeTaskStatuses.has(task.status))
+    ? findActiveTaskConflict(tasks, next, toolEvent)
     : null;
   if (activeConflict) throw new TaskLedgerError(409, `ACTIVE_TASK_CONFLICT：当前 Session 已有活跃任务 ${activeConflict.id}。`);
   if (previousTaskId) {
@@ -599,14 +625,23 @@ export function recordTaskEvent(input, options = {}) {
   mkdirSync(dirname(taskEventsPath), { recursive: true });
   const derivedEvents = derivedCompletionEvents(current, next, event);
   appendTaskEvents([event, ...derivedEvents]);
-  // Keep removed records available for historical recovery; loadTasks hides them from views.
-  const nextIds = new Set(nextTasks.map((task) => task.id));
-  persistTasks([...readLedger().filter((task) => task.status === "removed" && !nextIds.has(task.id)), ...nextTasks]);
+  if (next) {
+    // Keep removed records available for historical recovery; loadTasks hides them from views.
+    const nextIds = new Set(nextTasks.map((task) => task.id));
+    persistTasks([...readLedger().filter((task) => task.status === "removed" && !nextIds.has(task.id)), ...nextTasks]);
+  }
   touchSession(event);
   processed.add(event.event_id);
   for (const derived of derivedEvents) processed.add(derived.event_id);
   persistProcessedEventIds(processed);
   return { event, task: next, supersededTaskIds };
+}
+
+function findActiveTaskConflict(tasks, next, rawTasks) {
+  const merges = rawTasks ? loadSessionMerges() : null;
+  return tasks.find((task) => task.id !== next.id && !task.archivedAt && !isContextShadowTask(task)
+    && activeTaskStatuses.has(task.status)
+    && (merges ? resolveSessionAlias(task.sessionId, merges) : task.sessionId) === next.sessionId);
 }
 
 function authorizePhaseSession(task, event, sameOwnerSession) {
@@ -1474,6 +1509,7 @@ function persistTasks(tasks) {
   const temporaryPath = `${taskLedgerPath}.tmp`;
   // Serialize one task at a time so UTF-8 encoding never flattens a full ledger copy.
   const descriptor = openSync(temporaryPath, "w", 0o600);
+  let identity;
   try {
     writeFileSync(descriptor, "[\n");
     for (let index = 0; index < tasks.length; index++) {
@@ -1482,9 +1518,12 @@ function persistTasks(tasks) {
       while (offset < buffer.length) offset += writeSync(descriptor, buffer, offset, buffer.length - offset);
     }
     writeFileSync(descriptor, "\n]\n");
+    // Read the identity from our descriptor, not the target path that another
+    // writer could replace between publication and stat.
+    identity = snapshotIdentity(fstatSync(descriptor));
   } finally { closeSync(descriptor); }
   renameSync(temporaryPath, taskLedgerPath);
-  ledgerCache = null;
+  ledgerCache = { identity, tasks };
   normalizedTasksCache = null;
 }
 
