@@ -7,6 +7,7 @@ import { constants as bufferConstants } from "node:buffer";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { taskViewBuckets } from "../lib/task-workspace.mjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -3635,6 +3636,20 @@ test("运行收口：Run 生命周期与 session 切换、结束事件解耦", a
   assert.equal(task.runs[1].ended_reason, "completed");
   assert.ok(task.runs[1].ended_at);
   assert.equal(task.status, "done_claimed", "close 正常推进完成判定");
+});
+
+test("计划中任务登记工具调用后取消管理仍需核对执行", async () => {
+  await resetLedger();
+  const common = { task_id: "planned-tool-cancel", session_id: "planned-tool-session" };
+  recordTaskEvent({ ...common, type: "task.create", status: "planned" });
+  const executing = recordTaskEvent({ ...common, type: "tool.call", tool_name: "exec_command" }).task;
+  assert.equal(executing.status, "planned");
+  assert.equal(executing.firstStartedAt, "");
+  assert.equal(executing.toolCalls.exec_command, 1);
+  const cancelled = recordTaskEvent({ ...common, type: "task.update", status: "cancelled" }).task;
+  const buckets = taskViewBuckets(cancelled);
+  assert.equal(buckets.attention, true);
+  assert.equal(buckets.completed, false);
 });
 
 test("UI取消仅取消管理，隔离执行者仍存活且Run没有伪造结束", async t => {

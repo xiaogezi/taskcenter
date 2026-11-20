@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskEventStore, journalEvent, storePaths } from "../scripts/task-event-store.mjs";
+import { TaskEventStore, durableTouch, journalEvent, storePaths } from "../scripts/task-event-store.mjs";
 import { migrateTaskEvents, recoverLegacyJournal } from "../scripts/task-event-migration.mjs";
 import { eventFingerprint } from "../scripts/task-event-identity.mjs";
 import { spawn } from "node:child_process";
@@ -17,6 +17,16 @@ function fixture(t, events) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return source;
 }
+
+test("durableTouch creates a missing file and never truncates existing bytes", t => {
+  const source = fixture(t, [event("create", "task.create")]);
+  const original = readFileSync(source);
+  const missing = `${source}.new`;
+  durableTouch(missing);
+  assert.equal(statSync(missing).size, 0);
+  durableTouch(source);
+  assert.deepEqual(readFileSync(source), original);
+});
 
 test("migration preserves original bytes read-only, all critical facts and complete ID/switch queries", t => {
   const input = [event("create", "task.create"), event("old", "tool.call", now - 31 * 86400000), event("recent"),
