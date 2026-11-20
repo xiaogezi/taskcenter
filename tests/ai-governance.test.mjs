@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { parseInferenceJson } from "../scripts/claude-inference.mjs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { agentGuidance, aiActivity, collaborationRules, createGovernanceRunner, governanceSnapshot, validateGovernanceResult } from "../scripts/ai-governance.mjs";
+import { agentGuidance, aiActivity, readActivityPage, presentActivity, collaborationRules, createGovernanceRunner, governanceSnapshot, validateGovernanceResult } from "../scripts/ai-governance.mjs";
 import { controlProxyTarget, isAllowedControlPath } from "../lib/control-proxy.mjs";
 const task = { id: "task-test", title: "验证导出", goal: "导出全部记录", status: "blocked", blocker: "导出缺行", acceptanceCriteria: ["数量一致"], tests: ["单条导出通过"], evidence: ["/Users/example/private/report.log"], verificationClaims: [{ id: "export", status: "passed", summary: "仅验证单条记录" }] };
 const result = { summary: "尚未证明完整导出", findings: [{ severity: "medium", basis: "insufficient_data", message: "单条测试不能证明完整导出", evidence_refs: ["criterion:1", "verification:1"] }], next_steps: ["增加多条记录的数量核对"] };
@@ -107,6 +107,25 @@ test("主线 AI 推理独立于派发配置并禁用工具、MCP 和持久化", 
   await assert.rejects(runClaudeInference({ profile: { model: "other", effort: "low" }, prompt: "bounded snapshot" }), /CLI_MODEL_MISMATCH/);
 });
 
+
+test("并发时间线共享日志读取，保留独立账本回执并在日志替换后刷新", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "ai-poll-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const reconciliationPath = join(dir, "reconcile");
+  const options = { reconciliationPath, params: new URLSearchParams({ source: "reconciliation" }) };
+  const log = id => JSON.stringify({ observedAt: "2026-11-20T01:00:00Z", actions: [{ event_id: id, task_id: "t" }] }) + "\n";
+  await writeFile(reconciliationPath, log("a"));
+  const pages = await Promise.all(Array.from({ length: 6 }, () => readActivityPage(options)));
+  for (const page of pages) assert.equal(page.logs, pages[0].logs);
+  assert.equal((await readActivityPage(options)).logs, pages[0].logs);
+  const optionsWithTask = { tasks: [{ id: "other", executionReconciliation: { observed_at: "2026-11-20T02:00:00Z", event_id: "b" } }] };
+  assert.deepEqual(presentActivity(pages[0], optionsWithTask).rows.map(row => row.id), ["b", "a"]);
+  assert.deepEqual(presentActivity(pages[1], {}).rows.map(row => row.id), ["a"]);
+  const replacement = join(dir, "replacement");
+  await writeFile(replacement, log("c"));
+  await rename(replacement, reconciliationPath);
+  assert.deepEqual((await aiActivity(options)).rows.map(row => row.id), ["c"]);
+});
 
 test("实际处置日志加入AI时间线，可按任务与来源查询成功和失败", async t => {
   const dir = await mkdtemp(join(tmpdir(), "ai-reconcile-")); t.after(() => rm(dir, { recursive: true, force: true }));

@@ -75,7 +75,7 @@ import {
   reconcileReflectionSessionSelection,
 } from "./reflection-engine.mjs";
 import { normalizeSessionAllowlist, readSessionAllowlist, sessionIdPattern, updateSessionAllowlist } from "./session-allowlist.mjs";
-import { AiGovernanceError, aiActivity, createGovernanceRunner, governanceSnapshot, agentGuidance } from "./ai-governance.mjs";
+import { AiGovernanceError, readActivityPage, presentActivity, createGovernanceRunner, governanceSnapshot, agentGuidance } from "./ai-governance.mjs";
 import { recommendSessionLifecycle, machineHandoff } from "./session-lifecycle.mjs";
 import { readPreparationBudget, readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
@@ -195,6 +195,8 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && /^\/ai\/activity(?:\?|$)/.test(request.url)) {
       const params = new URL(request.url, "http://localhost").searchParams;
+      const page = await readActivityPage({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params });
+      if (response.destroyed) return;
       const observer = readSnapshot(join(resolve(process.env.TASKCENTER_RUNTIME_DIR || join(projectRoot, ".local/runtime")), "ai-observer-health.json"), { status: "stopped" });
       const stale = !observer.updated_at || Date.now() - Date.parse(observer.updated_at) > 15_000;
       const work = readSnapshot(join(aiRuntime, "ai-work-request.json"), null);
@@ -203,7 +205,7 @@ const server = createServer(async (request, response) => {
       const tasks = loadVisibleTasks();
       const pending = work ? work.task_ids.filter(id => tasks.some(task => task.id === id && !task.archivedAt && ["planned", "in_progress", "blocked"].includes(task.status)) && state.tasks[id]?.request_id !== work.id).length : 0;
       const counts = Object.values(maintenance.actions).reduce((counts, item) => { counts[item.status] = (counts[item.status] || 0) + 1; return counts; }, {});
-      sendJson(response, 200, { ...await aiActivity({ path: aiActivityPath, jevPath: jevActivityPath, reconciliationPath: taskReconcilePath, params, tasks, running: aiGovernance.running || (!stale && (observer.status === "analyzing" || observer.maintenance?.status === "executing")) }), current_action: currentMaintenanceAction(maintenance.actions, tasks, observer, stale), observer: { ...observer, stale }, maintenance: counts, work: work ? { id: work.id, at: work.at, total: work.task_ids.length, pending, intent: work.intent || "", results: tasks.filter(task => work.task_ids.includes(task.id) && state.tasks[task.id]?.request_id === work.id).slice(0, 10).map(task => ({ task_id: task.id, title: safeActionText(task.title), ...state.tasks[task.id]?.work_result, action: maintenance.actions[task.id]?.request_id === work.id ? maintenance.actions[task.id].latest_operation?.summary : null })) } : null });
+      sendJson(response, 200, { ...presentActivity(page, { tasks, running: aiGovernance.running || (!stale && (observer.status === "analyzing" || observer.maintenance?.status === "executing")) }), current_action: currentMaintenanceAction(maintenance.actions, tasks, observer, stale), observer: { ...observer, stale }, maintenance: counts, work: work ? { id: work.id, at: work.at, total: work.task_ids.length, pending, intent: work.intent || "", results: tasks.filter(task => work.task_ids.includes(task.id) && state.tasks[task.id]?.request_id === work.id).slice(0, 10).map(task => ({ task_id: task.id, title: safeActionText(task.title), ...state.tasks[task.id]?.work_result, action: maintenance.actions[task.id]?.request_id === work.id ? maintenance.actions[task.id].latest_operation?.summary : null })) } : null });
       return;
     }
     if (request.method === "POST" && request.url === "/ai/work") {

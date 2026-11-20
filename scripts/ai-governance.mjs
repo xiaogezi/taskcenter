@@ -1,5 +1,5 @@
 import { appendFileSync, mkdirSync, readFileSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
-import { createReadStream } from "node:fs";
+import { createReadStream, statSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -167,23 +167,90 @@ export function createGovernanceRunner({ path, infer = runClaudeInference, profi
   };
 }
 
-export async function aiActivity({ path, jevPath, reconciliationPath, params = new URLSearchParams(), running = false, tasks = [] }) {
+export async function aiActivity(options) {
+  return presentActivity(await readActivityPage(options), options);
+}
+
+export async function readActivityPage({ path, jevPath, reconciliationPath, params = new URLSearchParams() }) {
   const source = params.get("source") || "", taskId = params.get("task_id") || "", before = params.get("before") || "";
   const limit = Number(params.get("limit") || 30);
   if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (source && !["governance", "jev", "reconciliation", "maintenance"].includes(source))) throw new AiGovernanceError(400, "行为筛选参数无效。");
   let boundary;
   try { boundary = before ? JSON.parse(Buffer.from(before, "base64url").toString()) : null; } catch { throw new AiGovernanceError(400, "行为游标无效。"); }
   if (boundary && (!Array.isArray(boundary) || boundary.length !== 2 || boundary.some(item => typeof item !== "string"))) throw new AiGovernanceError(400, "行为游标无效。");
-  const rows = [], warnings = [], seen = new Set();
-  const compare = (a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id);
+  const files = [[path, "governance"], [`${jevPath}.1`, "jev"], [jevPath, "jev"], [reconciliationPath, "reconciliation"]]
+    .filter(([file, origin]) => file && (!source || source === origin || origin === "governance"));
+  const query = { source, taskId, boundary, limit };
+  return { logs: await activityLogPage(files, query), query };
+}
+
+export function presentActivity({ logs, query }, { running = false, tasks = [] }) {
+  const { limit } = query;
+  const rows = logs.rows.map(row => ({ ...row }));
+  const receiptIds = new Set();
   const add = row => {
-    if (!row.at || !row.id || seen.has(row.id) || (source && row.source !== source) || (taskId && row.task_id !== taskId) || (boundary && compare(row, { at: boundary[0], id: boundary[1] }) <= 0)) return;
-    seen.add(row.id);
-    rows.push(row);
-    if (rows.length > limit * 2) { rows.sort(compare); rows.length = limit + 1; }
+    if (!logs.seen.has(row.id)) addActivityRow(row, query, rows, receiptIds);
   };
-  for (const [file, origin] of [[path, "governance"], [`${jevPath}.1`, "jev"], [jevPath, "jev"], [reconciliationPath, "reconciliation"]]) {
-    if (!file) continue;
+  // Durable task receipts also cover a process stopping between projection and activity append.
+  for (const task of tasks) {
+    const receipt = task.executionReconciliation;
+    if (receipt?.event_id) add({ id: receipt.event_id, source: "reconciliation", at: receipt.observed_at, task_id: task.id, title: "自主任务处置", model: "rules", status: "succeeded", summary: "已登记运行事实与恢复动作，保留原契约和任务归属", result: { action: receipt.state, basis: receipt.basis, next_action: receipt.next_action } });
+  }
+  rows.sort(compareActivity);
+  const page = rows.slice(0, limit), last = page.at(-1);
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  for (const row of page) {
+    const task = byId.get(row.task_id);
+    if (!task || row.source !== "governance" || !row.result?.next_steps?.length) continue;
+    let changed = null;
+    try { if (row.snapshot?.state_fingerprint) changed = row.snapshot.state_fingerprint !== governanceSnapshot(task, row.kind || "evidence").state_fingerprint; } catch { /* No secret fields in the derived view. */ }
+    row.follow_up = { status: task.status, updated_at: task.updatedAt, changed_since_analysis: changed, verification_status: task.verificationStatus || "unknown", acceptance_status: task.acceptanceStatus || "pending", remaining_steps: collaborationRules(task).steps, attribution: "任务账本后续事实；未确认 Agent 采纳建议，不能据此推断因果或独立验收。" };
+  }
+  return { rows: page, running, next_cursor: rows.length > limit ? Buffer.from(JSON.stringify([last.at, last.id])).toString("base64url") : null, warnings: [...logs.warnings], coverage: "TaskCenter 治理、维护工具调用与效果回执、自主对账及 Jev 判断；不包含模型内部思维或平台外调用。" };
+}
+
+const compareActivity = (a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id);
+
+function addActivityRow(row, { source, taskId, boundary, limit }, rows, seen) {
+  if (!row.at || !row.id || seen.has(row.id) || (source && row.source !== source) || (taskId && row.task_id !== taskId) || (boundary && compareActivity(row, { at: boundary[0], id: boundary[1] }) <= 0)) return;
+  seen.add(row.id);
+  rows.push(row);
+  if (rows.length > limit * 2) { rows.sort(compareActivity); rows.length = limit + 1; }
+}
+
+// Polls can outlive the UI interval. Share log reads, while deriving task follow-up
+// and durable receipts from each caller's current ledger.
+const activityReads = new Map();
+let lastActivityPage;
+
+function activityLogPage(files, query) {
+  const snapshots = files.map(([file]) => {
+    try {
+      const stat = statSync(file, { bigint: true });
+      return [file, String(stat.dev), String(stat.ino), String(stat.size), String(stat.ctimeNs)];
+    } catch (error) { return [file, error.code]; }
+  });
+  const key = JSON.stringify([query, snapshots]);
+  if (lastActivityPage?.key === key) return lastActivityPage.page;
+  const readerKey = JSON.stringify([files, query]);
+  const pending = activityReads.get(readerKey);
+  if (pending) {
+    if (pending.key === key) return pending.read;
+    // A writer advanced a log during this scan. Refresh after it finishes.
+    return pending.read.then(() => activityLogPage(files, query));
+  }
+  const read = scanActivityLogs(files, query).then(page => {
+    if (!page.warnings.size && page.seen.size <= 20000) lastActivityPage = { key, page };
+    return page;
+  }).finally(() => activityReads.delete(readerKey));
+  activityReads.set(readerKey, { key, read });
+  return read;
+}
+
+async function scanActivityLogs(files, query) {
+  const rows = [], warnings = new Set(), seen = new Set();
+  const add = row => addActivityRow(row, query, rows, seen);
+  for (const [file, origin] of files) {
     try {
       const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
       let index = 0;
@@ -195,24 +262,9 @@ export async function aiActivity({ path, jevPath, reconciliationPath, params = n
             for (const [index, action] of (row.actions || []).entries()) add({ id: action.event_id || `reconciliation:${row.observedAt}:${action.task_id}:${index}`, source: origin, at: row.observedAt, task_id: action.task_id, title: "自主任务处置", model: "rules", status: action.status, action: action.action, summary: action.status === "failed" ? "处置失败，保留原任务，下次对账重试" : action.action === "delivery_reconciled" ? "已补齐完成声明，等待独立验收" : action.action === "orphan_archived" ? "原执行承载已失效，已自动归档；原契约、证据和执行状态保留" : "已登记运行事实与恢复动作，保留原契约和任务归属", result: action });
           } else if (origin === "governance") add(row);
           else add({ id: `jev:${file.endsWith(".1") ? "previous" : "current"}:${index}:${row.input_hash || row.event_id || ""}`, source: "jev", at: row.observed_at, task_id: row.task_id, title: `Jev 观察 · ${(row.lines || []).join(" / ") || row.status}`, model: row.model || "unknown", status: row.status, summary: row.reason || row.error || "观察建议", result: row.answers || null, input_hash: row.input_hash, prompt_version: row.prompt_version, duration_ms: row.latency_ms, usage: row.usage });
-        } catch { warnings.push("行为日志存在无效记录，已跳过"); }
+        } catch { warnings.add("行为日志存在无效记录，已跳过"); }
       }
-    } catch (error) { if (error.code !== "ENOENT") warnings.push(`${origin} 日志读取失败`); }
+    } catch (error) { if (error.code !== "ENOENT") warnings.add(`${origin} 日志读取失败`); }
   }
-  // Durable task receipts also cover a process stopping between projection and activity append.
-  for (const task of tasks) {
-    const receipt = task.executionReconciliation;
-    if (receipt?.event_id) add({ id: receipt.event_id, source: "reconciliation", at: receipt.observed_at, task_id: task.id, title: "自主任务处置", model: "rules", status: "succeeded", summary: "已登记运行事实与恢复动作，保留原契约和任务归属", result: { action: receipt.state, basis: receipt.basis, next_action: receipt.next_action } });
-  }
-  rows.sort(compare);
-  const page = rows.slice(0, limit), last = page.at(-1);
-  const byId = new Map(tasks.map(task => [task.id, task]));
-  for (const row of page) {
-    const task = byId.get(row.task_id);
-    if (!task || row.source !== "governance" || !row.result?.next_steps?.length) continue;
-    let changed = null;
-    try { if (row.snapshot?.state_fingerprint) changed = row.snapshot.state_fingerprint !== governanceSnapshot(task, row.kind || "evidence").state_fingerprint; } catch { /* No secret fields in the derived view. */ }
-    row.follow_up = { status: task.status, updated_at: task.updatedAt, changed_since_analysis: changed, verification_status: task.verificationStatus || "unknown", acceptance_status: task.acceptanceStatus || "pending", remaining_steps: collaborationRules(task).steps, attribution: "任务账本后续事实；未确认 Agent 采纳建议，不能据此推断因果或独立验收。" };
-  }
-  return { rows: page, running, next_cursor: rows.length > limit ? Buffer.from(JSON.stringify([last.at, last.id])).toString("base64url") : null, warnings: [...new Set(warnings)], coverage: "TaskCenter 治理、维护工具调用与效果回执、自主对账及 Jev 判断；不包含模型内部思维或平台外调用。" };
+  return { rows, warnings, seen };
 }
