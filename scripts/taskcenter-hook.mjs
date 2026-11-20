@@ -1064,6 +1064,7 @@ async function reportGateDenial(error) {
       failure_kind: "",
     }, { report: true });
     if (result?.assessment) console.error(formatGateDenialAssessment(result.assessment));
+    else if (error.message.includes("TASKCENTER_NO_ACTIVE_TASK")) console.error(NO_ACTIVE_TASK_RECOVERY);
   } catch (reportError) {
     console.error(`TaskCenter Hook 警告：拒绝记录失败，门禁结果不变（${reportError.message}）`);
     console.error("本地恢复说明：未记录，无批量判断；控制面不可用时仅继续只读并报告 TASKCENTER_UNAVAILABLE，恢复后重新核对登记、任务和路由。");
@@ -1335,13 +1336,14 @@ async function requireTask() {
 }
 
 function noActiveTaskError() {
-  return new Error(`当前 Session 无活跃任务（TASKCENTER_NO_ACTIVE_TASK）。${NO_ACTIVE_TASK_RECOVERY}\n真实 Hook 身份：${JSON.stringify({ session_id: sessionId, workspace })}。\n该命令不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED），不等于检测到写入。受信 CLI 须匹配已审核安装入口、产物版本及精确只读参数；升级或新增 CLI 应修复适配器。纯路径探测可使用 which NAME、command -v NAME 或 type NAME，无需新建任务；避免执行包装、重定向或混入非只读命令。`);
+  return new Error(`当前 Session 无活跃任务（TASKCENTER_NO_ACTIVE_TASK）。真实 Hook 身份：${JSON.stringify({ session_id: sessionId, workspace })}。\n该操作不满足 L0 确定性只读规则（L0_COMMAND_NOT_RECOGNIZED）。纯路径探测可直接使用 which NAME、command -v NAME 或 type NAME。`);
 }
 
 async function prepareCurrentTask() {
   if (preparedTask !== undefined) return preparedTask;
   try {
-    preparedTask = await request("GET", `/task-prepare?session_id=${encodeURIComponent(sessionId)}&workspace=${encodeURIComponent(workspace)}`);
+    const view = action === "user-prompt-submit" ? "" : "&view=gate";
+    preparedTask = await request("GET", `/task-prepare?session_id=${encodeURIComponent(sessionId)}&workspace=${encodeURIComponent(workspace)}${view}`);
     return preparedTask;
   } catch (error) {
     if (/接口不存在|\b404\b|尚未登记/.test(String(error.message || ""))) { preparedTask = null; return null; }
@@ -1352,7 +1354,11 @@ async function prepareCurrentTask() {
 async function provideTaskPreparationContext() {
   const prepared = await prepareCurrentTask();
   if (prepared) {
-    const context = prepared.active_task ? prepared : { ...prepared, recovery_instructions: NO_ACTIVE_TASK_RECOVERY };
+    const context = prepared.active_task
+      ? { ...prepared, binding_instructions: "同一交付直接沿用本轮任务绑定。目标、归属变化或恢复信息缺失时再准备。" }
+      : { ...prepared, recovery_instructions: prepared.task_id === null
+        ? "本次准备已确认当前 Session 无可见任务。纯查询直接继续；已授权的新交付直接 taskcenter_task_begin；明确移交的已有任务按原身份 taskcenter_task_resume。"
+        : NO_ACTIVE_TASK_RECOVERY };
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: JSON.stringify(context) } }));
     return;
   }

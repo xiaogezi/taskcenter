@@ -1329,10 +1329,7 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
   assert.equal(preparation.task_id, null);
   assert.equal(preparation.session_id, sessionId);
   assert.match(preparation.recovery_instructions, /taskcenter_task_resume/);
-  assert.match(preparation.recovery_instructions, /taskcenter_task_begin.*当前已授权交付/);
-  assert.match(preparation.recovery_instructions, /accepted=true.*重试原操作并继续/);
-  assert.match(preparation.recovery_instructions, /不要要求用户手动建任务/);
-  assert.match(preparation.recovery_instructions, /L0 适配缺口不得靠创建无关写任务/);
+  assert.match(preparation.recovery_instructions, /纯查询直接继续.*已授权的新交付直接 taskcenter_task_begin/);
 
   const originalOperation = { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_use_id: "prompt-recovery-call", tool_input: { cmd: "jev-decision declare" } };
   const rejected = await runHook("pre-tool-use", "codex", originalOperation);
@@ -1404,6 +1401,12 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
   assert.equal(active.code, 0);
   const activePreparation = JSON.parse(JSON.parse(active.stdout).hookSpecificOutput.additionalContext);
   assert.equal(activePreparation.task_id, "prompt-preparation-task");
+  assert.match(activePreparation.binding_instructions, /直接沿用本轮任务绑定/);
+  const gate = await (await fetch(`${base}/task-prepare?session_id=${sessionId}&view=gate`)).json();
+  for (const field of ["session_id", "task_id", "status", "active_task", "gate_allowlisted", "scheduled_readonly"]) {
+    assert.deepEqual(gate[field], activePreparation[field]);
+  }
+  assert.ok(!("contract" in gate) && !("token_budget" in gate));
   assert.equal(activePreparation.recovery_instructions, undefined);
 
   const reported = await fetch(`${base}/task-events`, {
@@ -1912,6 +1915,7 @@ test("ordinary hooks use only one current-session preparation; no all-session fe
   const probe = createServer(async (req, res) => {
     calls.push(req.url.split("?")[0]);
     if (req.url.startsWith("/task-prepare?")) {
+      assert.equal(new URL(req.url, "http://localhost").searchParams.get("view"), "gate");
       res.end(JSON.stringify({ session_id: "hot-path", task_id: active ? "active" : null, active_task: active ? { id: "active", sessionId: "hot-path", status: "in_progress" } : null, scheduled_readonly: null, gate_allowlisted: false }));
     } else if (req.url === "/task-events" || req.url === "/gate-denials") { req.resume(); res.end("{}"); }
     else { res.writeHead(500); res.end('{"error":"unexpected all-session request"}'); }

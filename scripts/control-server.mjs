@@ -314,6 +314,17 @@ const server = createServer(async (request, response) => {
       const tasks = loadVisibleSessionTasks(sessionId).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
       const activeTask = tasks.find((item) => ["planned", "in_progress", "blocked"].includes(item.status));
       const task = activeTask || tasks[0] || null;
+      const binding = {
+        session_id: sessionId, task_id: task?.id || null, status: task?.status || null,
+        active_task: activeTask ? Object.fromEntries(["id", "sessionId", "status", "dueAt", "estimatedEffortMs", "activeDurationMs", "activeStartedAt"].map((key) => [key, activeTask[key]])) : null,
+        gate_allowlisted: readSessionAllowlist(gateSessionAllowlistPath).threadIds?.includes(sessionId) || false,
+        scheduled_readonly: registry.scheduledReadonly || null,
+      };
+      if (params.get("view") === "gate") {
+        sendJson(response, 200, binding);
+        markPrepareStage(request, null);
+        return;
+      }
       markPrepareStage(request, "budget");
       const { budget, timedOut, elapsedMs } = await readPreparationBudget(task, () => readRequestBudget(sessionId, sessionsRoot, task));
       if (timedOut) {
@@ -323,10 +334,7 @@ const server = createServer(async (request, response) => {
       if (response.destroyed) return;
       markPrepareStage(request, "response");
       const prepared = boundedResponse({
-        session_id: sessionId, task_id: task?.id || null, status: task?.status || null,
-        active_task: activeTask ? Object.fromEntries(["id", "sessionId", "status", "dueAt", "estimatedEffortMs", "activeDurationMs", "activeStartedAt"].map((key) => [key, activeTask[key]])) : null,
-        gate_allowlisted: readSessionAllowlist(gateSessionAllowlistPath).threadIds?.includes(sessionId) || false,
-        scheduled_readonly: registry.scheduledReadonly || null,
+        ...binding,
         contract: task ? boundedResponse({ goal: task.goal, scope: task.scope, non_goals: task.nonGoals, acceptance_criteria: task.acceptanceCriteria, verification_plan: task.verificationPlan, subject: task.currentSubject, next_action: task.nextAction }, { maxBytes: budget.handoff_recommended || !activeTask ? 800 : 2600 }) : null,
         handoff: task && (budget.handoff_recommended || !activeTask) ? machineHandoff(task) : null,
         agent_guidance: task ? agentGuidance(task, aiActivityPath) : null,
