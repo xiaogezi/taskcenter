@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { eventFingerprint } from "./task-event-identity.mjs";
@@ -248,7 +248,7 @@ export function eventStore(source) {
 }
 
 export function durableTouch(path) {
-  appendFileSync(path, "", { mode: 0o600 });
-  const descriptor = openSync(path, "r");
+  // Windows fsync needs write access; create missing files without truncating existing data.
+  const descriptor = openSync(path, constants.O_CREAT | constants.O_WRONLY, 0o600);
   try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
