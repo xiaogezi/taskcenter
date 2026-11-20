@@ -417,7 +417,7 @@ toolRegistry.register("taskcenter_response_continue", {
 
 toolRegistry.register("taskcenter_task_prepare", {
   title: "准备或恢复当前目标",
-  description: "读取当前绑定、合同、预算和交接。已有本轮 Hook 上下文或成功的 begin/resume 回执时，同一交付直接继续；目标、归属变化或恢复信息缺失时再准备。",
+  description: "读取当前绑定、合同、预算和交接。同一交付沿用已有绑定；所需内容截断时按已有游标调用 taskcenter_response_continue。目标或归属变化时再准备。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200) }).strict(),
 }, async ({ session_id }) => queryEndpoint(`/task-prepare?session_id=${encodeURIComponent(session_id)}`));
 

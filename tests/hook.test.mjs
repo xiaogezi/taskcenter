@@ -12,6 +12,7 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isTrustedInspectionEntry } from "../scripts/trusted-cli-identity.mjs";
 import { inspectionBatch } from "../scripts/inspection-command.mjs";
+import { boundedResponse } from "../scripts/bounded-response.mjs";
 
 // Argument-policy cases also need installed executables now. Keep missing tools
 // as explicit deny assertions instead of assuming every CI host has macOS CLIs.
@@ -1420,6 +1421,43 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
   const completedPreparation = JSON.parse(JSON.parse(continuation.stdout).hookSpecificOutput.additionalContext);
   assert.equal(completedPreparation.status, "done_claimed");
   assert.match(completedPreparation.recovery_instructions, /taskcenter_task_resume.*无时间限制/);
+
+  const taskId = completedPreparation.task_id;
+  const archived = await fetch(`${base}/tasks/${taskId}/actions`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: "http://localhost:3000", "X-TaskCenter-Action": "delegate" },
+    body: JSON.stringify({ action: "archive" }),
+  });
+  assert.equal(archived.status, 200);
+  const archivedPrompt = await runHook("user-prompt-submit", "codex", { session_id: sessionId, cwd: "/work", prompt: "继续验证同一交付" });
+  const archivedPreparation = JSON.parse(JSON.parse(archivedPrompt.stdout).hookSpecificOutput.additionalContext);
+  assert.equal(archivedPreparation.task_id, null);
+  assert.match(archivedPreparation.recovery_instructions, /已归档的同一交付.*原 task_id.*taskcenter_task_resume/);
+  const resumed = await fetch(`${base}/task-resume`, {
+    method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "mcp" },
+    body: JSON.stringify({ task_id: taskId, session_id: sessionId, expected_session_id: sessionId }),
+  });
+  assert.equal(resumed.status, 200);
+  assert.equal((await resumed.json()).active_task.id, taskId);
+});
+
+test("UserPromptSubmit points to the existing cursor for a truncated contract or preparation", async context => {
+  const contract = boundedResponse({ scope: ["长契约".repeat(600)] });
+  const binding = { session_id: "prompt-cursor", active_task: { id: "task-cursor" }, contract };
+  let prepared = binding;
+  const probe = createServer((_req, res) => res.end(JSON.stringify(prepared)));
+  await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
+  context.after(() => { probe.closeAllConnections(); probe.close(); });
+  for (const outer of [false, true]) {
+    if (outer) prepared = boundedResponse({ ...binding, handoff: "长交接".repeat(600) });
+    const prompt = await runHook("user-prompt-submit", "codex", { session_id: binding.session_id, cwd: "/work" }, [], `http://127.0.0.1:${probe.address().port}`);
+    assert.equal(prompt.code, 0, prompt.stderr);
+    const result = JSON.parse(JSON.parse(prompt.stdout).hookSpecificOutput.additionalContext);
+    const snapshot = outer ? result : result.contract;
+    assert.ok(boundedResponse(null, { cursor: snapshot.continuation_cursor }).fragment);
+    const path = outer ? "continuation_cursor" : "contract.continuation_cursor";
+    assert.ok(result.binding_instructions.includes(`taskcenter_response_continue 读取 ${path}`));
+    assert.equal(result.recovery_instructions, undefined);
+  }
 });
 
 test("Stop 不因完成就绪度或 Review 缺口打断 Codex 回复", async () => {

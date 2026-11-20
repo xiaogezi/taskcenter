@@ -1354,11 +1354,18 @@ async function prepareCurrentTask() {
 async function provideTaskPreparationContext() {
   const prepared = await prepareCurrentTask();
   if (prepared) {
-    const context = prepared.active_task
-      ? { ...prepared, binding_instructions: "同一交付直接沿用本轮任务绑定。目标、归属变化或恢复信息缺失时再准备。" }
-      : { ...prepared, recovery_instructions: prepared.task_id === null
-        ? "本次准备已确认当前 Session 无可见任务。纯查询直接继续；已授权的新交付直接 taskcenter_task_begin；明确移交的已有任务按原身份 taskcenter_task_resume。"
-        : NO_ACTIVE_TASK_RECOVERY };
+    const context = { ...prepared };
+    if (prepared.truncated || prepared.contract?.truncated) {
+      const cursorPath = prepared.truncated ? "continuation_cursor" : "contract.continuation_cursor";
+      context.binding_instructions = `如本轮所需的契约或交接内容缺失，先用 taskcenter_response_continue 读取 ${cursorPath} 并按返回游标续读；还原的 contract 若仍被截断，再按其游标读取。已有完整依据时复用当前绑定。`;
+    } else if (prepared.active_task) {
+      context.binding_instructions = "同一交付直接沿用本轮任务绑定。目标、归属变化或恢复信息缺失时再准备。";
+    }
+    if (prepared.active_task === null) {
+      context.recovery_instructions = prepared.task_id === null
+        ? "当前 Session 无可见任务。纯查询直接继续；已授权的新交付直接 taskcenter_task_begin。继续本会话已归档的同一交付时，沿用原 task_id 和本会话身份调用 taskcenter_task_resume；明确移交的任务按实际归属接续。"
+        : NO_ACTIVE_TASK_RECOVERY;
+    }
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: JSON.stringify(context) } }));
     return;
   }
