@@ -63,6 +63,7 @@
     "size:check": "node scripts/artifact-size-budget.mjs",
     "size:report": "node scripts/artifact-size-budget.mjs",
     "verify:production": "node scripts/verify-production.mjs",
+    "verify:production:isolated": "node scripts/verify-production.mjs --install",
     "typecheck": "tsc --noEmit --incremental false"
   },
   "dependencies": {

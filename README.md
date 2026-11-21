@@ -330,4 +330,4 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 
 运行依赖不再包含 Codex SDK 或原生 CLI。方案 A 保留 vinext/React 页面和 Node 服务，移除 Next 编译器、Cloudflare/Wrangler/Workerd 及未使用的 Drizzle、Worker、Sites 模板链；页面直接引用 vinext 导出的兼容 API。类型检查使用 TypeScript，lint 使用已有 React、Hooks、无障碍和 TypeScript 插件。release 在完整构建后检查开发依赖预算，再裁剪开发/可选依赖，通过生产体积预算与隔离候选验证。详见 [轻量化方案及实施证据](docs/lightweight-tool-plan.md)。
 
-`npm run size:check` / `size:report` 检查已有构建，不重复构建或自动更新基线；全部资产、JS/CSS gzip、最大 JS chunk、服务端和完整开发依赖分别受累计 2% 预警、5% 失败约束。开发依赖统计排除 npm 根安装元数据及 Vite 缓存，真实包文件仍全部计入。release 额外检查实际生产依赖与单版本总量，复用旧 release 也重测目录和报告；锁文件、直接依赖和安装树禁止被移除的重依赖重新进入。`npm run verify:production -- --install` 在临时目录验证裁剪后的六个页面、控制面、MCP、同步与 watcher，不读取真实 Codex 数据。未知平台/Node/npm 版本缺基线时失败，不能跳过检查；当前基线及未覆盖平台见方案文档。
+`npm run size:check` / `size:report` 检查已有构建，不重复构建或自动更新基线；全部资产、JS/CSS gzip、最大 JS chunk、服务端和完整开发依赖分别受累计 2% 预警、5% 失败约束。开发依赖统计排除 npm 根安装元数据及 Vite 缓存，真实包文件仍全部计入。release 额外检查实际生产依赖与单版本总量，复用旧 release 也重测目录和报告；锁文件、直接依赖和安装树禁止被移除的重依赖重新进入。`npm run verify:production:isolated`（CI 同一入口）在临时目录验证裁剪后的六个页面、控制面、MCP、同步与 watcher，不读取真实 Codex 数据。未知平台/Node/npm 版本缺基线时失败，不能跳过检查；当前基线及未覆盖平台见方案文档。

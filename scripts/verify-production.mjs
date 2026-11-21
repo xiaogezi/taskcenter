@@ -104,7 +104,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const root = install ? productionFixture(source) : resolve(process.argv[2] || source);
   try {
     if (install) {
-      if (!process.env.npm_execpath) throw new Error("Use npm run verify:production -- --install");
+      if (!process.env.npm_execpath) throw new Error("Use npm run verify:production:isolated");
       execFileSync(process.execPath, [process.env.npm_execpath, "ci", "--omit=dev", "--omit=optional", "--no-audit", "--no-fund"], { cwd: root, stdio: "inherit" });
     }
     console.log(JSON.stringify(await verifyProduction(root)));

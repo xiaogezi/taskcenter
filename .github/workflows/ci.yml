@@ -30,7 +30,7 @@ jobs:
       - run: npm test
       - name: Verify isolated production closure and platform budget
         if: always()
-        run: npm run verify:production -- --install
+        run: npm run verify:production:isolated
       - name: Check committed whitespace
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}

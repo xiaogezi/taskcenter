@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- CI 通过独立脚本固定启用隔离生产依赖安装及 release 预算验证，避免 Windows 调用因丢失转发参数而退回普通烟测。
+
 - 修正任务准备提示，契约或交接内容截断时按已有游标补读，原会话继续已归档交付时按原任务 ID 恢复。
 
 - Codex 同一交付可复用本轮任务绑定，空会话的新交付可直接登记。工具门禁查询跳过预算、交接和 AI 建议计算，减少控制服务等待。
