@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,7 +11,7 @@ const installedRg = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/code
 const hookScript = fileURLToPath(new URL("../scripts/taskcenter-hook.mjs", import.meta.url));
 
 test("actual Hook accepts signed ChatGPT rg, rejects aliases, PATH shadows and shell override", {
-  skip: process.platform !== "darwin" || !existsSync(installedRg), timeout: 30_000,
+  skip: process.platform !== "darwin", timeout: 30_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "taskcenter-host-rg-"));
   const sessionId = "019f0000-0000-7000-8000-000000000098";
@@ -38,9 +37,14 @@ test("actual Hook accepts signed ChatGPT rg, rejects aliases, PATH shadows and s
       child.on("error", reject); child.on("close", code => resolve({ code, stdout, stderr }));
       child.stdin.end(JSON.stringify({ session_id: sessionId, cwd: root, tool_name: "exec_command", tool_input: { cmd, ...extra } }));
     });
+    // App bundles are optional. Verify the fixture independently of the Hook.
+    const signed = spawnSync("/usr/bin/codesign", ["--verify", "--strict", "-R",
+      '=identifier "com.openai.codex.rg" and anchor apple generic and certificate leaf[subject.OU] = "2DC432GLL2"',
+      installedRg]).status === 0;
     for (const cmd of [`${installedRg} needle README.md`, "rg needle README.md"]) {
       const result = await run(cmd);
-      assert.equal(result.code, 0, `${cmd}: ${result.stderr}`); assert.match(result.stdout, /L0/);
+      assert.equal(result.code, signed ? 0 : 2, `${cmd}: ${result.stderr}`);
+      if (signed) assert.match(result.stdout, /L0/);
     }
     for (const [cmd, extra, path] of [
       [`${join(root, "shadow", "rg")} needle`, {}, undefined],

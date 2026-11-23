@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复新 Mac 首次启动时完整测试因缺少可选的 OCR、RTK 或 rg 而失败的问题。
+
 - 修正任务准备提示，契约或交接内容截断时按已有游标补读，原会话继续已归档交付时按原任务 ID 恢复。
 
 - Codex 同一交付可复用本轮任务绑定，空会话的新交付可直接登记。工具门禁查询跳过预算、交接和 AI 建议计算，减少控制服务等待。
