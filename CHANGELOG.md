@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复新 Mac 首次启动时完整测试因缺少可选的 OCR、RTK 或 rg 而失败的问题。
+
 - Windows 普通账本文件使用可写、不截断的文件句柄同步磁盘，避免只读句柄触发同步失败。
 - 取消管理后，仍有关联执行线索且宿主停止未确认的任务保留在“需处理”，包括已记录工具调用的计划中任务。
 

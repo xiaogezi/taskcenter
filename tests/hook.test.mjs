@@ -38,6 +38,15 @@ function assertInstalledL0(result, command, cwd, path) {
   return installed;
 }
 
+// Adapter fixtures establish their own entry identity. Only the optional RTK
+// wrapper depends on the host; an invalid command must still be denied.
+function assertAdapterL0(result, cmd, code, env = {}) {
+  const missingWrapper = cmd.startsWith("rtk ") && !isTrustedInspectionEntry("rtk", { path: env.PATH });
+  const expected = missingWrapper ? 2 : code;
+  assert.equal(result.code, expected, `${cmd}\n${result.stderr}`);
+  if (expected === 0) assert.match(result.stdout, /L0/);
+}
+
 const root = new URL("../", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
 const tempDir = await realpath(await mkdtemp(join(tmpdir(), "taskcenter-hook-")));
@@ -703,8 +712,7 @@ test("L0 Git -C 按实际目录识别只读查询，保留写入和对象读取�
   ];
   for (const cmd of allowed) {
     const result = await check(cmd);
-    assert.equal(result.code, 0, `${cmd}: ${result.stderr}`);
-    assert.match(result.stdout, /L0/);
+    assertInstalledL0(result, cmd, rootPath);
   }
   for (const cmd of [
     `git -C '${other}' commit -m x`,
@@ -765,8 +773,7 @@ test("L0 无任务 DevKit 仅放行可信入口的受限只读参数", async () 
     ];
     for (const [cmd, code] of cases) {
       const result = await runHook("pre-tool-use", "codex", { session_id, cwd: workspace, tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
-      assert.equal(result.code, code, `${cmd}\n${result.stderr}`);
-      if (code === 0) assert.match(result.stdout, /L0/);
+      assertAdapterL0(result, cmd, code, env);
     }
     const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
     assert.equal(tasks.filter((task) => task.sessionId === session_id).length, 0);
@@ -781,7 +788,7 @@ test("L0 真实 SSH 入口放行远端有界探针并落盘无任务审计", asy
     await mkdir(join(home, ".ssh"), { recursive: true });
     await writeFile(join(home, ".ssh/config"), "Host *\n  ProxyCommand unsafe\n");
     const env = { HOME: home, SSLKEYLOGFILE: join(home, "local-tls-key") };
-    const prefix = `rtk proxy ssh -F /dev/null -i ${home}/.ssh/mini -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=5 instory@192.168.50.167`;
+    const prefix = `ssh -F /dev/null -i ${home}/.ssh/mini -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=5 instory@192.168.50.167`;
     const curl = `/usr/bin/env -i /usr/bin/curl -q --noproxy '*' --proto '=https' --connect-timeout 5 --max-time 15 --silent --show-error --output /dev/null --write-out 'http_code=%{http_code} remote_ip=%{remote_ip} ssl_verify_result=%{ssl_verify_result} time_namelookup=%{time_namelookup} time_connect=%{time_connect} time_appconnect=%{time_appconnect} time_total=%{time_total}\\n' https://git.myinstory.com/`;
     // Double quotes preserve the single quotes required by the remote shell.
     const wrap = remote => `${prefix} "${remote}"`;
@@ -795,6 +802,7 @@ test("L0 真实 SSH 入口放行远端有界探针并落盘无任务审计", asy
       assert.equal(result.code, 0, `${command}\n${result.stderr}`);
       assert.match(result.stdout, /L0/);
     }
+    assertAdapterL0(await check("rtk proxy " + wrap(allowed[0])), "rtk proxy " + wrap(allowed[0]), 0, env);
     for (const command of ["/usr/sbin/sysctl -w hw.ncpu=1", "/usr/sbin/sysctl -a", "/usr/bin/vm_stat 1", "/usr/bin/dscl . -read /Users/instory ShadowHashData",
       "/usr/bin/dscl . -create /Users/runner", curl.replace("/usr/bin/env -i ", ""), curl.replace(" -q ", " "), curl.replace("--silent", "--insecure"),
       curl.replace("%{http_code}", "%{header_json}"), curl.replace("git.myinstory.com", "evil.example"), `${curl} --output /tmp/x`,
@@ -812,10 +820,10 @@ test("L0 真实 SSH 入口放行远端有界探针并落盘无任务审计", asy
 
 test("L0 固定 SSH 检查无需建任务，远端 shell 和覆写拒绝", async () => {
   const session_id = "ssh-l0-session";
-  const prefix = "rtk proxy ssh -o BatchMode=yes -o ConnectTimeout=10 instory@instoryMacmini.local";
+  const prefix = "ssh -o BatchMode=yes -o ConnectTimeout=10 instory@instoryMacmini.local";
   await runHook("session-start", "codex", { session_id, cwd: "/work" });
   for (const [cmd, code] of [
-    [`${prefix} hostname`, 0], [`${prefix} 'uptime'`, 0],
+    [`${prefix} hostname`, 0], [`rtk proxy ${prefix} hostname`, 0], [`${prefix} 'uptime'`, 0],
     [`${prefix} 'git --no-optional-locks -c core.fsmonitor=false -C /Users/instory/Services/instory-lan/src/instory status --short'`, 0],
     [`${prefix} 'docker ps --format={{.Names}}'`, 0],
     [`${prefix} 'curl -q --max-time 10 http://127.0.0.1:8500/readyz'`, 0],
@@ -826,8 +834,7 @@ test("L0 固定 SSH 检查无需建任务，远端 shell 和覆写拒绝", async
     ["ssh -o ProxyCommand=evil -o BatchMode=yes -o ConnectTimeout=10 instory@instoryMacmini.local hostname", 2],
   ]) {
     const result = await runHook("pre-tool-use", "codex", { session_id, cwd: "/work", tool_name: "exec_command", tool_input: { cmd } });
-    assert.equal(result.code, code, `${cmd}\n${result.stderr}`);
-    if (code === 0) assert.match(result.stdout, /L0/);
+    assertAdapterL0(result, cmd, code);
   }
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
@@ -853,8 +860,7 @@ test("L0 ZIP 跨项目只读支持RTK和空格路径，拒绝落盘并持久化�
     ];
     for (const cmd of allowed) {
       const result = await runHook("pre-tool-use", "codex", { session_id, cwd: workspace, tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
-      assert.equal(result.code, 0, `${cmd}\n${result.stderr}`);
-      assert.match(result.stdout, /L0/);
+      assertAdapterL0(result, cmd, 0, env);
     }
     const stdout = await promisify(execFile)("/usr/bin/unzip", ["-p", archive, member], { cwd: workspace, env: { ...process.env, ...env } });
     assert.equal(stdout.stdout, content);
@@ -901,8 +907,7 @@ test("L0 security 无任务只放行系统签名查询与限定描述文件并�
       ["env HOME=/tmp security find-identity -v -p codesigning", 2],
     ]) {
       const result = await runHook("pre-tool-use", "codex", { session_id, cwd: "/work", tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
-      assert.equal(result.code, code, `${cmd}\n${result.stderr}`);
-      if (code === 0) assert.match(result.stdout, /L0/);
+      assertAdapterL0(result, cmd, code, env);
     }
     const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
     assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
@@ -911,7 +916,8 @@ test("L0 security 无任务只放行系统签名查询与限定描述文件并�
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
-test("L0 AWS 无任务可执行精确诊断，写入与覆写拒绝", { skip: !existsSync("/opt/homebrew/opt/awscli/bin/aws") }, async () => {
+test("L0 AWS 无任务可执行精确诊断，写入与覆写拒绝", { skip: !existsSync("/opt/homebrew/bin/aws") }, async () => {
+  const env = { PATH: "/opt/homebrew/bin:/usr/bin:/bin" };
   const session_id = "aws-l0-session";
   await runHook("session-start", "codex", { session_id, cwd: "/work" });
   for (const [cmd, code] of [
@@ -929,9 +935,8 @@ test("L0 AWS 无任务可执行精确诊断，写入与覆写拒绝", { skip: !e
     ["aws sts get-caller-identity; touch sentinel", 2],
     ["env AWS_ENDPOINT_URL=http://evil aws sts get-caller-identity", 2],
   ]) {
-    const result = await runHook("pre-tool-use", "codex", { session_id, cwd: "/work", tool_name: "exec_command", tool_input: { cmd } });
-    assert.equal(result.code, code, `${cmd}\n${result.stderr}`);
-    if (code === 0) assert.match(result.stdout, /L0/);
+    const result = await runHook("pre-tool-use", "codex", { session_id, cwd: "/work", tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
+    assertAdapterL0(result, cmd, code, env);
   }
   const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
   assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
@@ -964,8 +969,7 @@ test("L0 DCB 原 Skill 入口可查询且不创建任务，伪入口和混合写
       [`env INJECT=1 ${dcbEntry} --version`, 2],
     ]) {
       const result = await runHook("pre-tool-use", "codex", { session_id, cwd: workspace, tool_name: "exec_command", tool_input: { cmd } }, [], base, env);
-      assert.equal(result.code, code, `${cmd}\n${result.stderr}`);
-      if (code === 0) assert.match(result.stdout, /L0/);
+      assertAdapterL0(result, cmd, code, env);
     }
     const tasks = (await (await fetch(`${base}/tasks`)).json()).tasks;
     assert.equal(tasks.filter(task => task.sessionId === session_id).length, 0);
@@ -985,8 +989,8 @@ test("L0 worktree list 支持原生和 RTK，拒绝写操作及混合命令", as
       ["git worktree list; git worktree prune", 2],
     ]) {
       const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: prefix + command } });
-      assert.equal(result.code, expected, prefix + command);
-      if (expected === 0) assert.match(result.stdout, /L0/);
+      if (expected === 0) assertInstalledL0(result, prefix + command, "/work");
+      else assert.equal(result.code, expected, prefix + command);
     }
   }
 });
@@ -1017,8 +1021,8 @@ test("L0 OCR 仅放行确定性 delegate preview/rule 及安全参数", async ()
       for (const command of commands) {
         const cmd = prefix + command;
         const result = await runHook("pre-tool-use", "codex", { session_id: sessionId, cwd: "/work", tool_name: "exec_command", tool_input: { cmd } });
-        assert.equal(result.code, expected, cmd);
-        if (expected === 0) assert.match(result.stdout, /L0/);
+        if (expected === 0) assertInstalledL0(result, cmd, "/work");
+        else assert.equal(result.code, expected, cmd);
       }
     }
   }
@@ -1643,12 +1647,12 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
     cwd: "/work",
     tool_name: "Bash",
     hook_event_name: "PreToolUse",
-    tool_input: { command: "rg -n TODO src" },
+    tool_input: { command: "git status" },
   });
   assert.equal(readOnly.code, 0);
   assert.match(readOnly.stdout, /L0.*只读检查放行/);
 
-  for (const command of ["rtk rg -n TODO src", "rtk git status", "/opt/homebrew/bin/rtk git branch --show-current"]) {
+  for (const command of ["rg -n TODO src", "rtk rg -n TODO src", "rtk git status", "/opt/homebrew/bin/rtk git branch --show-current"]) {
     const wrappedReadOnly = await runHook("pre-tool-use", "codex", {
       session_id: "unknown-session",
       cwd: "/work",
@@ -1656,8 +1660,7 @@ test("PreToolUse 未登记或未建任务时阻断，建任务后放行", async 
       hook_event_name: "PreToolUse",
       tool_input: { command },
     });
-    assert.equal(wrappedReadOnly.code, 0, `${command} 应按内部只读命令放行`);
-    assert.match(wrappedReadOnly.stdout, /L0.*只读检查放行/);
+    assertInstalledL0(wrappedReadOnly, command, "/work");
   }
 
   for (const cmd of [

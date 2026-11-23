@@ -4,7 +4,10 @@ import test from "node:test";
 import { inspectTrustedCli } from "../scripts/trusted-cli-inspection.mjs";
 import { awsTaskQuery, awsServiceQuery } from "../scripts/aws-inspection.mjs";
 
-test("AWS 仅可信入口、精确操作和有界查询可进入 L0", { skip: !existsSync("/opt/homebrew/opt/awscli/bin/aws") }, () => {
+test("AWS 仅可信入口、精确操作和有界查询可进入 L0", { skip: !existsSync("/opt/homebrew/bin/aws") }, (t) => {
+  const originalPath = process.env.PATH;
+  process.env.PATH = "/opt/homebrew/bin:/usr/bin:/bin";
+  t.after(() => { process.env.PATH = originalPath; });
   const check = args => inspectTrustedCli(["/opt/homebrew/bin/aws", ...args], {});
   const logs = ["logs", "filter-log-events", "--log-group-name", "/ecs/app", "--start-time", "1700000000000", "--end-time", "1700000060000", "--limit", "100", "--no-paginate"];
   for (const args of [["--version"], ["sts", "get-caller-identity"], logs, [...logs, "--filter-pattern", '"run_id"'],
