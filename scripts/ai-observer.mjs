@@ -80,7 +80,8 @@ export async function requestAutomaticWork({ tasks, workspace, profile, runtime,
     void (async () => {
       try {
         const result = await reconcile();
-        await record({ id: `${request.id}:reconciliation`, at: new Date().toISOString(), source: "governance", title: "主动处理 · 本地对账", mode: "automatic", trigger: "manual_work", status: "succeeded", model: "rules", summary: `本地对账完成，实际处置 ${result.actions.length} 条，发现 ${result.findings.length} 条缺项。`, result: { actions: result.actions, findings: result.findings.length } });
+        const failures = result.findings.filter(item => item.code === "reconciliation_failed").length;
+        await record({ id: `${request.id}:reconciliation`, at: new Date().toISOString(), source: "governance", title: "主动处理 · 本地对账", mode: "automatic", trigger: "manual_work", status: failures ? "failed" : "succeeded", model: "rules", summary: `本地对账处理成功 ${result.actions.filter(item => item.status === "succeeded").length} 条，失败 ${failures} 条。`, result: { actions: result.actions, findings: result.findings.length } });
       } catch {
         await record({ id: `${request.id}:reconciliation`, at: new Date().toISOString(), source: "governance", title: "主动处理 · 本地对账", status: "failed", model: "rules", summary: "本地对账失败，保留原任务；核实队列仍已登记。", error: "RECONCILIATION_FAILED" });
       }

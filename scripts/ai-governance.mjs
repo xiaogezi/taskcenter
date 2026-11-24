@@ -77,8 +77,8 @@ export function collaborationRules(task) {
   if (readiness.staleEvidence.length) add("binding", "evidence", "核对旧证据对应的代码、契约与环境是否变化。仅登记/绑定有误时，引用已有真实证据并用新 id 追加正确 subject_ref；对象变化时补做受影响验证，不能直接改旧证据版本。", "taskcenter_task_close", `证据过期：${readiness.staleEvidence.join("、")}`);
   if (readiness.reasons.includes("portable_evidence_missing")) add("portable", "evidence", "为已执行验证补充真实可访问的 evidence_ref 或 artifact_refs，不编造日志、不为补登记重复验证。", "taskcenter_task_verification_report", "缺少证据引用");
   if (readiness.failedRequirements.length) add("failed", "evidence", "先核对失败项及复现依据，在契约范围内修复，再验证受影响行为；保留原失败记录。", "taskcenter_task_query", `失败项：${readiness.failedRequirements.join("、")}`);
-  if (readiness.missingRequirements.length) add("missing", "evidence", "执行期间继续契约内计划，不因尚未提交完成证据而停工。交付时先盘点已有验证和产物：已执行的如实登记，未验证的执行必要检查；用当前完整 subject_ref 和新 id 一次提交条件结果与 Verification Claim。", "taskcenter_task_close", `待补齐：${readiness.missingRequirements.join("、")}`);
-  if (!steps.length) add("continue", "progress", "继续当前契约内的计划与下一步；执行完成后声明关闭，已有证据复用，有新结果时随同提交。", "taskcenter_task_update", "未发现需要停止执行的辅助缺口");
+  if (readiness.missingRequirements.length) add("missing", "evidence", "执行期间继续契约内计划，不因尚未提交完成证据而停工。最终回复前调用 taskcenter_task_close 并核对 completion_claim_allowed 和 follow_up；交付时先盘点已有验证和产物：已执行的如实登记，未验证的执行必要检查；用当前完整 subject_ref 和新 id 一次提交条件结果与 Verification Claim。", "taskcenter_task_close", `待补齐：${readiness.missingRequirements.join("、")}`);
+  if (!steps.length) add("continue", "progress", "继续当前契约内的计划与下一步；最终回复前调用 taskcenter_task_close 并核对 completion_claim_allowed 和 follow_up，已有证据复用，有新结果时随同提交。", "taskcenter_task_update", "未发现需要停止执行的辅助缺口");
   return { advisory_only: true, task_id: task.id, source: "rules", steps, boundary: "建议不授予权限、不修改契约或验收；执行由当前 Agent 负责。" };
 }
 

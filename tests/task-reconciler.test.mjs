@@ -355,12 +355,26 @@ test("执行已关闭但缺证据，来源缺失后仍保留补证据待办并�
   assert.equal(closed.completionReadiness.ready, false);
   assert.match(queryFindings().find(item => item.code === "evidence_follow_up").label, /最终清单/);
   const inspectSession = async () => { throw Object.assign(new Error("gone"), { code: "CODEX_SESSION_NOT_FOUND" }); };
-  await runReconciliation({ inspectSession });
+  assert.ok((await runReconciliation({ inspectSession })).notifications.some(item => item.code === "evidence_follow_up"));
   await writeFile(envPaths.TASKCENTER_TASK_LEDGER_PATH, JSON.stringify([{ ...loadTasks()[0], updatedAt: new Date(Date.now() - 600_000).toISOString() }]));
-  await runReconciliation({ inspectSession });
+  assert.deepEqual((await runReconciliation({ inspectSession })).notifications, []);
   assert.ok(!loadTasks()[0].archivedAt);
   recordTaskEvent({ type: "task.close", task_id: "followup", session_id: "followup", status: "done_claimed", close_requirements: [{ requirement_id: "final", status: "passed", evidence_refs: ["artifact:final-list"] }] });
   assert.equal(loadTasks()[0].completionReadiness.ready, true);
   assert.equal(loadTasks()[0].acceptanceStatus, "ready");
   assert.ok(!queryFindings().some(item => item.code === "evidence_follow_up"));
+});
+
+test("重复写入故障只提示一次，后续成功清除故障", async () => {
+  await resetLedger();
+  recordTaskEvent({ type: "task.create", task_id: "retry", session_id: "retry-session", title: "核对", goal: "核对运行事实" });
+  const options = { availableSessionIds: ["retry-session"], inspectSession: () => ({ busy: false }) };
+  const failed = { ...options, recordEvent() { throw new Error("event_id conflict"); } };
+  const first = await runReconciliation(failed);
+  assert.ok(first.notifications.some(item => item.code === "reconciliation_failed"));
+  assert.deepEqual((await runReconciliation(failed)).notifications, []);
+  assert.equal(lastReconciliation().failures[0].task_id, "retry");
+  assert.equal((await runReconciliation(options)).actions[0].status, "succeeded");
+  assert.deepEqual(lastReconciliation().failures, []);
+  assert.notEqual(loadTasks()[0].acceptanceStatus, "accepted");
 });

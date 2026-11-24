@@ -59,13 +59,20 @@ function findingsForTask(task) {
 
 // 运行一次对账：收口脱离会话的运行（幂等），并生成缺项清单。
 // 返回 { reconciled, findings, actions }；逐条让出事件循环，不阻塞控制请求。
+function fingerprint(fields) {
+  return createHash("sha256").update(JSON.stringify(fields)).digest("hex");
+}
+
 let reconciling = false;
-export async function runReconciliation({ availableSessionIds = [], inspectSession = inspectSessionStateAsync, maintenancePath = join(resolve(process.env.TASKCENTER_RUNTIME_DIR || join(import.meta.dirname, "../.local/runtime")), "ai-maintenance-state.json") } = {}) {
-  if (reconciling) return { reconciled: [], findings: [], actions: [], observedAt: new Date().toISOString() };
+export async function runReconciliation({ availableSessionIds = [], inspectSession = inspectSessionStateAsync, recordEvent = recordTaskEvent, maintenancePath = join(resolve(process.env.TASKCENTER_RUNTIME_DIR || join(import.meta.dirname, "../.local/runtime")), "ai-maintenance-state.json") } = {}) {
+  if (reconciling) return { reconciled: [], findings: [], actions: [], notifications: [], observedAt: new Date().toISOString() };
   reconciling = true;
   try {
     const reconciled = reconcileTasks(availableSessionIds);
     const actions = [];
+    const previous = lastReconciliation();
+    const priorKeys = new Set(previous?.noticeKeys || []);
+    const failures = [];
     const candidates = loadTasks().filter(task => !task.archivedAt && !isContextShadowTask(task) && RECONCILABLE_TASK_STATUSES.has(task.status)).map(task => task.id);
     for (const taskId of candidates) {
       await setImmediate();
@@ -108,7 +115,7 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       const state = sessionMissing ? "recovery_pending" : terminal || (!running.length && runs.length) ? "execution_unconfirmed" : "recovery_pending";
       const archive = !ACTIVE_TASK_STATUSES.has(task.status) && !evidenceFollowUp(task) && (inactiveOwner || (sessionMissing && task.executionReconciliation?.basis === "session_missing" && Date.now() - Date.parse(task.updatedAt || task.createdAt) >= 300_000));
       const nextAction = evidenceFollowUp(task) ? "执行已收尾，待补证据仍保留在需处理；请补齐当前契约要求后再进行最终验收。" : ACTIVE_TASK_STATUSES.has(task.status) ? "执行是否结束尚待确认，任务保留在需处理；请核对宿主运行事实，在原契约内收尾或恢复，也可由人工明确处置。" : archive ? "原执行承载已失效且无活跃执行者，任务已自动归档；契约、证据及未完成状态保留，需要继续时先取消归档并绑定真实 Session。" : sessionMissing ? "原会话文件缺失，等待五分钟静默核对；无活跃执行者时默认归档，保留契约、证据及未完成状态。" : "在原契约内核对当前交付证据；未完成时由宿主恢复原任务继续执行，权限缺口仅暂停相关动作。";
-      const id = `reconcile-${createHash("sha256").update(JSON.stringify([task.id, startedAt, basis, task.currentSubject, archive ? task.lastEventId : ""])).digest("hex")}`;
+      const id = `reconcile-${fingerprint([task.id, task.sessionId, startedAt, basis, task.currentSubject, task.contractRevision, task.executionReconciliation?.event_id, terminal, nextAction, archive ? task.lastEventId : ""])}`;
       const completion = computeCompletionReadiness({ ...task, status: "done_claimed" });
       const fresh = [...(task.requirementResults || []), ...(task.verificationClaims || [])]
         .filter(item => item.status === "passed" || item.status === "not_applicable")
@@ -117,14 +124,16 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
       const completedRun = terminal?.type === "task_complete" || (!running.length && runs.at(-1)?.ended_reason === "completed");
       try {
         if (!archive && !sessionMissing && completedRun && task.currentSubject?.type !== "none" && task.currentSubject && task.evidence?.length && fresh && completion.completionClaim.allowed) {
-          const result = recordTaskEvent({ type: "task.close", event_id: `${id}-close`, task_id: task.id, session_id: task.sessionId, status: "done_claimed", subject_ref: task.currentSubject, tests: task.tests || [], evidence: task.evidence, current_step: "自动对账：当前版本交付证据满足契约，补齐完成声明", next_action: "由独立授权主体验收；自动对账不代替验收。" });
+          const result = recordEvent({ type: "task.close", event_id: `${id}-close`, task_id: task.id, session_id: task.sessionId, status: "done_claimed", subject_ref: task.currentSubject, tests: task.tests || [], evidence: task.evidence, current_step: "自动对账：当前版本交付证据满足契约，补齐完成声明", next_action: "由独立授权主体验收；自动对账不代替验收。" });
           if (!result.idempotent) actions.push({ event_id: result.event.event_id, task_id: task.id, action: "delivery_reconciled", status: "succeeded", basis });
         } else if (archive || task.executionReconciliation?.basis !== basis) {
-          const result = recordTaskEvent({ type: "task.execution_reconciled", event_id: id, task_id: task.id, session_id: task.sessionId, ...(archive ? { archived_at: new Date().toISOString() } : {}), execution_observation: { state, basis, terminal, next_action: nextAction } }, { internalReconciliation: true });
+          const result = recordEvent({ type: "task.execution_reconciled", event_id: id, task_id: task.id, session_id: task.sessionId, ...(archive ? { archived_at: new Date().toISOString() } : {}), execution_observation: { state, basis, terminal, next_action: nextAction } }, { internalReconciliation: true });
           if (!result.idempotent) actions.push({ event_id: result.event.event_id, task_id: task.id, action: archive ? "orphan_archived" : state, status: "succeeded", basis });
         }
       } catch (error) {
-        actions.push({ task_id: task.id, action: state, status: "failed", basis, error: error.message });
+        const key = fingerprint([task.id, id, error.message]);
+        failures.push({ task_id: task.id, code: "reconciliation_failed", label: "对账失败", detail: error.message, key });
+        if (!priorKeys.has(key)) actions.push({ task_id: task.id, action: state, status: "failed", basis, error: error.message });
       }
       const action = actions.at(-1);
       if (action?.task_id === task.id) {
@@ -132,20 +141,25 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
         appendFileSync(taskReconcilePath, `${JSON.stringify({ type: "reconciliation.action", observedAt: new Date().toISOString(), actions: [action] })}\n`, { mode: 0o600 });
       }
     }
-    const findings = loadTasks()
-      .filter((task) => !task.archivedAt)
-      .flatMap((task) => findingsForTask(task));
+    const findings = loadTasks().filter(task => !task.archivedAt).flatMap(task =>
+      findingsForTask(task).map(finding => ({ ...finding, key: fingerprint([
+        task.id, task.sessionId, task.contractRevision, task.currentSubject, finding,
+        task.requirementResults, task.verificationClaims,
+      ]) })));
+    findings.push(...failures);
+    const noticeKeys = findings.map(item => item.key);
+    const notifications = findings.filter(item => !priorKeys.has(item.key));
     const now = new Date().toISOString();
-    if (reconciled.length || actions.length) {
+    if (reconciled.length || actions.length || notifications.length || noticeKeys.length !== priorKeys.size) {
       mkdirSync(dirname(taskReconcilePath), { recursive: true });
       appendFileSync(taskReconcilePath, `${JSON.stringify({
         type: "reconciliation.run",
         observedAt: now,
         reconciled: reconciled.map((task) => ({ id: task.id, sessionId: task.sessionId })),
-        findings,
+        noticeKeys, failures, findings: notifications,
       })}\n`, { mode: 0o600 });
     }
-    return { reconciled, findings, actions, observedAt: now };
+    return { reconciled, findings, actions, notifications, observedAt: now };
   } finally { reconciling = false; }
 }
 

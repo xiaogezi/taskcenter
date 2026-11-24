@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 执行者收尾指引明确检查关闭回执。对账按任务、版本、执行者和证据变化提示缺项，记录对账失败并区分不同运行观察的幂等事件。
+
 - 修复 MCP 目录压缩后结构对象仅保留 `$ref`，部分宿主将验证计划条目降为空对象的问题；保留字段约束与 schema 预算，standard/strict 验证要求不变。
 
 - AI 行为时间线按当前来源与页游标串行刷新，切换前的迟到结果不覆盖当前页；手动刷新或受理后直接读取最新页。

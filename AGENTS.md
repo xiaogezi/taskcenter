@@ -45,6 +45,8 @@ If the Codex TaskCenter MCP is unavailable in a gate-enabled Session, restrict p
 
 ## Verification
 
+- 执行者在最终交付回复前调用 taskcenter_task_close，核对 completion_claim_allowed 和 follow_up。缺证据时交代具体缺项、对应版本和负责补证的人；就绪任务交由独立授权主体验收。
+
 ```bash
 npm run sync
 npm run lint

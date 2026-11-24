@@ -151,7 +151,7 @@ if (startupContextReconciliation.reconciled.length) {
 if (reconcileLiveSessions) {
   try {
     void runReconciliation({ availableSessionIds: availableSessionIds() }).then(result => {
-      console.log(`[TaskCenter] 启动对账：处置 ${result.actions.length} 条任务，发现 ${result.findings.length} 条缺项。`);
+      console.log(`[TaskCenter] 启动对账：处置 ${result.actions.length} 条任务，发现 ${result.notifications.length} 条缺项。`);
     }).catch(error => console.error(`[TaskCenter] 启动对账失败：${error.message}`));
   } catch (error) {
     console.error(`[TaskCenter] 启动对账失败：${error?.message || error}`);
@@ -162,8 +162,8 @@ const reconciliationTimer = setInterval(async () => {
   if (!reconcileLiveSessions) return;
   try {
     const result = await runReconciliation({ availableSessionIds: availableSessionIds() });
-    if (result.reconciled.length || result.findings.length) {
-      console.log(`[TaskCenter] 对账扫描：收口 ${result.reconciled.length} 条脱离运行，发现 ${result.findings.length} 条缺项。`);
+    if (result.reconciled.length || result.notifications.length) {
+      console.log(`[TaskCenter] 对账扫描：收口 ${result.reconciled.length} 条脱离运行，发现 ${result.notifications.length} 条缺项。`);
     }
   } catch (error) {
     console.error(`[TaskCenter] 对账扫描失败：${error?.message || error}`);
@@ -405,7 +405,8 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "GET" && request.url === "/reconciliation") {
-      sendJson(response, 200, { findings: queryFindings(), lastRunAt: lastReconciliation()?.observedAt || null });
+      const lastRun = lastReconciliation();
+      sendJson(response, 200, { findings: [...queryFindings(), ...(lastRun?.failures || [])], lastRunAt: lastRun?.observedAt || null });
       return;
     }
     if (request.method === "GET" && request.url === "/session-status") {
