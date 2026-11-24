@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- CI 通过独立脚本固定启用隔离生产依赖安装及 release 预算验证，避免 Windows 调用因丢失转发参数而退回普通烟测。
+
 - 修复新 Mac 首次启动时完整测试因缺少可选的 OCR、RTK 或 rg 而失败的问题。
 
 - Windows 普通账本文件使用可写、不截断的文件句柄同步磁盘，避免只读句柄触发同步失败。
