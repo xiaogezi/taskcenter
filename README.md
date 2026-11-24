@@ -279,16 +279,11 @@ Review 过程使用 `taskcenter_review_cycle_report` 按稳定 `cycle_id` 增量
 
 调用方用 `taskcenter_task_reuse_decision_report` 把 Advisor 建议与最终 `reuse/create_new/uncertain` 选择写入独立 append-only 账本；覆盖 `reuse/uncertain` 建议而新建时必须填写 `force_new_reason`。相同 `event_id` 只有在语义完全一致时幂等，冲突重放会被拒绝；专用跨进程锁以及可从 JSONL 重建的 event-id、顺序、project 和 workspace 索引保证并发唯一性与有界逆序查询，JSONL 仍是唯一审计事实源。`taskcenter_task_reuse_decision_query` 通过本机 MCP 运行时令牌读取审计，用于试点评估；未知项目身份不计入项目覆盖。在完成 3 个项目、至少 10 次创建决策的观察前，不增加 Hook 提示、软门禁、自动阻断或自动合并。
 
-```bash
-npm run sync
-npm run lint
-npm test
-git diff --check
-npm audit --omit=dev
-npm pack --dry-run
-```
+## 提交前验证
 
-`npm test` 使用隔离 fixture 输出执行同步、生产构建和全部测试文件，不会覆盖本机 `data/dashboard.json`。CI 同时覆盖 Ubuntu 与 Windows；Chrome 长期稳定性和真实 Hook 生命周期仍需要本机持续运行验证。
+本仓库以本地验证结果为准。GitHub Actions 的 CI 工作流已停用，推送到 `main` 和提交 PR 都不会触发检查。提交前请在仓库根目录按顺序运行[贡献指南中的本地检查命令](CONTRIBUTING.md#before-you-commit)。
+
+`npm test` 使用隔离的测试数据执行同步、生产构建和全部测试。验证结论仅覆盖实际运行的操作系统；Chrome 长期稳定性和真实 Hook 生命周期仍需在本机持续运行验证。
 
 ## 许可证
 
@@ -330,4 +325,4 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 
 运行依赖不再包含 Codex SDK 或原生 CLI。方案 A 保留 vinext/React 页面和 Node 服务，移除 Next 编译器、Cloudflare/Wrangler/Workerd 及未使用的 Drizzle、Worker、Sites 模板链；页面直接引用 vinext 导出的兼容 API。类型检查使用 TypeScript，lint 使用已有 React、Hooks、无障碍和 TypeScript 插件。release 在完整构建后检查开发依赖预算，再裁剪开发/可选依赖，通过生产体积预算与隔离候选验证。详见 [轻量化方案及实施证据](docs/lightweight-tool-plan.md)。
 
-`npm run size:check` / `size:report` 检查已有构建，不重复构建或自动更新基线；全部资产、JS/CSS gzip、最大 JS chunk、服务端和完整开发依赖分别受累计 2% 预警、5% 失败约束。开发依赖统计排除 npm 根安装元数据及 Vite 缓存，真实包文件仍全部计入。release 额外检查实际生产依赖与单版本总量，复用旧 release 也重测目录和报告；锁文件、直接依赖和安装树禁止被移除的重依赖重新进入。`npm run verify:production:isolated`（CI 同一入口）在临时目录验证裁剪后的六个页面、控制面、MCP、同步与 watcher，不读取真实 Codex 数据。未知平台/Node/npm 版本缺基线时失败，不能跳过检查；当前基线及未覆盖平台见方案文档。
+`npm run size:check` / `size:report` 检查已有构建，不重复构建或自动更新基线；全部资产、JS/CSS gzip、最大 JS chunk、服务端和完整开发依赖分别受累计 2% 预警、5% 失败约束。开发依赖统计排除 npm 根安装元数据及 Vite 缓存，真实包文件仍全部计入。release 额外检查实际生产依赖与单版本总量，复用旧 release 也重测目录和报告；锁文件、直接依赖和安装树禁止被移除的重依赖重新进入。`npm run verify:production:isolated`在临时目录验证裁剪后的六个页面、控制面、MCP、同步与 watcher，不读取真实 Codex 数据。未知平台/Node/npm 版本缺基线时失败，不能跳过检查；当前基线及未覆盖平台见方案文档。

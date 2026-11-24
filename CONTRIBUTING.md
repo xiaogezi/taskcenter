@@ -12,12 +12,30 @@ The supported development shells are macOS/Linux shells, WSL2, and native Window
 
 Keep all session handling local and preserve the privacy boundary documented in `README.md` and `AGENTS.md`.
 
+## Before you commit
+
+Local checks are the source of verification for this repository. The GitHub Actions CI workflow is disabled for both pushes to `main` and pull requests. After installing dependencies with `npm ci`, run these commands from the repository root.
+
+```sh
+npm run sync
+npm run lint
+npm run typecheck
+npm test
+npm run verify:production:isolated
+npm audit --omit=dev
+npm pack --dry-run
+git diff --check
+git diff --cached --check
+```
+
+Run the last check after staging your changes so it covers the patch you will commit. The isolated production check uses the build from `npm test` and verifies it with production dependencies. If the size budget has no baseline for your OS and Node.js/npm versions, record the failed budget check and the toolchain versions.
+
 ## Pull requests
 
 - Keep changes focused and explain user-visible behavior.
 - Add or update tests for behavior changes.
 - Do not commit generated dashboard data, task ledgers, session IDs, absolute home-directory paths, credentials, or local Agent state.
-- Run `npm run lint`, `npm test`, `git diff --check`, and `npm audit --omit=dev`.
+- Include the local check results and the platform tested in the pull request.
 - Treat `done_claimed` as an implementation claim; human review remains authoritative.
 
 ## Versioning and changelog
