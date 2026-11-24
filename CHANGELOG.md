@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- AI 行为时间线按当前来源与页游标串行刷新，切换前的迟到结果不覆盖当前页；手动刷新或受理后直接读取最新页。
+
 - CI 通过独立脚本固定启用隔离生产依赖安装及 release 预算验证，避免 Windows 调用因丢失转发参数而退回普通烟测。
 
 - 修复新 Mac 首次启动时完整测试因缺少可选的 OCR、RTK 或 rg 而失败的问题。

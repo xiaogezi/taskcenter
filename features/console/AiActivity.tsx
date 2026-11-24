@@ -1,5 +1,6 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { startActivityPoll } from "./activity-poll.mjs";
 
 type Request = <T>(path: string, init?: RequestInit) => Promise<T>;
 type Snapshot = { input_hash: string; references: Array<{ id: string; text: string }>; scope: string; truncated: boolean };
@@ -12,19 +13,30 @@ const statuses: Record<string, string> = { degraded: "规则降级", started: "�
 Object.assign(statuses, { queued: "行动待执行", running: "执行中", retry_wait: "等待恢复", attention: "待核对接续", waiting_owner: "等待原执行者", tool_started: "工具执行中", tool_completed: "工具已返回", tool_failed: "工具错误" });
 
 export function AiActivity({ request }: { request: Request }) {
-  const [activity, setActivity] = useState<Activity>();
+  const [timeline, setTimeline] = useState<{ query: string; data?: Activity; error?: string }>();
   const [source, setSource] = useState(""); const [before, setBefore] = useState("");
   const [taskId, setTaskId] = useState(""); const [kind, setKind] = useState("evidence");
   const [tasks, setTasks] = useState<Array<{ id: string; title: string }>>([]);
   const [snapshot, setSnapshot] = useState<Snapshot>(); const [confirmed, setConfirmed] = useState(false);
   const [intent, setIntent] = useState("");
   const [busy, setBusy] = useState(false); const [notice, setNotice] = useState("");
-  const [activityError, setActivityError] = useState("");
-  const load = useCallback(async () => {
-    try { setActivity(await request<Activity>(`/ai/activity?${new URLSearchParams({ limit: "30", source, before })}`)); setActivityError(""); }
-    catch (error) { setActivityError(error instanceof Error ? error.message : "行为读取失败"); }
-  }, [request, source, before]);
-  useEffect(() => { const initial = window.setTimeout(load, 0), timer = window.setInterval(load, 5000); return () => { window.clearTimeout(initial); window.clearInterval(timer); }; }, [load]);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const query = new URLSearchParams({ limit: "30", source, before }).toString();
+  const activity = timeline?.query === query ? timeline.data : undefined;
+  const activityError = timeline?.query === query ? timeline.error : undefined;
+  useEffect(() => startActivityPoll(
+    signal => request<Activity>(`/ai/activity?${query}`, { signal }),
+    data => setTimeline({ query, data }),
+    error => setTimeline(previous => ({
+      query,
+      data: previous?.query === query ? previous.data : undefined,
+      error: error instanceof Error ? error.message : "行为读取失败",
+    })),
+  ), [request, query, refreshVersion]);
+  const refreshLatest = () => {
+    setBefore("");
+    setRefreshVersion(version => version + 1);
+  };
   useEffect(() => { void request<{ tasks: Array<{ id: string; title: string }> }>("/tasks?view=summary&page_size=100").then(data => setTasks(data.tasks || [])).catch(() => setNotice("任务列表读取失败；可直接输入任务 ID")); }, [request]);
   const preview = async () => {
     setBusy(true); setConfirmed(false); setSnapshot(undefined);
@@ -34,7 +46,7 @@ export function AiActivity({ request }: { request: Request }) {
   };
   const analyze = async (mode = "ai") => {
     setBusy(true);
-    try { await request("/ai/analyze", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: JSON.stringify({ task_id: taskId, kind, mode, confirm_data_scope: confirmed, input_hash: snapshot?.input_hash }) }); setConfirmed(false); setNotice("请求已受理，结果会自动出现在时间线。"); setBefore(""); await load(); }
+    try { await request("/ai/analyze", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: JSON.stringify({ task_id: taskId, kind, mode, confirm_data_scope: confirmed, input_hash: snapshot?.input_hash }) }); setConfirmed(false); setNotice("请求已受理，结果会自动出现在时间线。"); refreshLatest(); }
     catch (error) { setNotice(error instanceof Error ? error.message : "分析启动失败"); }
     finally { setBusy(false); }
   };
@@ -48,12 +60,12 @@ export function AiActivity({ request }: { request: Request }) {
       const handoff = selected ? { task_id: handoffTask, expected_session_id: selected.sessionId, expected_event_id: selected.lastEventId } : undefined;
       const result = await request<{ queued: number; reused: boolean; intent: string }>("/ai/work", { method: "POST", headers: { "content-type": "application/json", "x-taskcenter-action": "delegate" }, body: JSON.stringify({ intent, handoff }), signal: controller.signal });
       setNotice(result.queued ? `${result.reused ? "继续已有处理轮次" : "已受理主动处理"}：核实队列 ${result.queued} 条；本地对账在后台执行，实际结果会出现在下方时间线。` : result.intent ? "未找到能明确关联的任务，请在目标中补充任务名称；未调用模型，本地对账继续。" : "没有新的明确异常；未调用模型，本地对账继续。");
-      setBefore(""); void load();
+      refreshLatest();
     } catch (error) { setNotice(error instanceof Error && error.name === "AbortError" ? "受理响应超时，结果待核对；请刷新查看已登记轮次，同一目标重试会复用请求。" : error instanceof Error ? error.message : "主动处理启动失败"); }
     finally { window.clearTimeout(timer); setBusy(false); }
   };
   return <>
-    <header className="task-header"><div><p>AI ACTIVITY</p><h1>AI 行为</h1><small>发现异常、执行维护、验证效果；每一步保存真实回执。</small></div><div><button disabled={busy} onClick={() => void work()}>{busy ? "正在受理…" : "立即主动处理"}</button><button onClick={() => { setBefore(""); void load(); }}>刷新</button></div></header>
+    <header className="task-header"><div><p>AI ACTIVITY</p><h1>AI 行为</h1><small>发现异常、执行维护、验证效果；每一步保存真实回执。</small></div><div><button disabled={busy} onClick={() => void work()}>{busy ? "正在受理…" : "立即主动处理"}</button><button onClick={refreshLatest}>刷新</button></div></header>
     <section className="console-card ai-analysis"><label htmlFor="ai-work-intent">告诉 AI，你希望解决什么（可选）</label><textarea id="ai-work-intent" value={intent} maxLength={2000} rows={3} disabled={busy} placeholder="例如：优先处理「修复导出」任务的缺行问题。请带上任务名称。" onChange={event => setIntent(event.target.value)} /><small>留空仅处理尚未分析的新异常；填写任务名称后在现有契约内处理，无法明确关联时不会遍历其他任务。</small></section>
     <p role="status">{notice}</p>{activityError && <p role="alert">时间线刷新失败：{activityError}；已受理请求的后台处理不受此提示影响。</p>}{activity?.work && <p>本轮核实：已处理 {activity.work.total - activity.work.pending} / {activity.work.total} 条。结果包括分析、规则降级与跳过，不代表业务任务完成。</p>}
     <section className="console-card ai-analysis"><h2>移交任务给维护 AI</h2><label htmlFor="ai-handoff-task">指定任务</label><select id="ai-handoff-task" value={taskId} disabled={busy} onChange={event => setTaskId(event.target.value)}><option value="">选择任务</option>{tasks.map(task => <option key={task.id} value={task.id}>{task.title || task.id}</option>)}</select><button disabled={busy || !taskId} onClick={() => void work(taskId)}>授权此任务由维护 AI 接续</button><small>授权仅绑定所选任务的当前归属与内容。维护 AI 核对执行者空闲后，在原契约内实际修复和验证；目标、契约或归属变化需重新授权。</small></section>
@@ -79,6 +91,6 @@ export function AiActivity({ request }: { request: Request }) {
       {Array.isArray(row.result?.next_steps) && row.result.next_steps.length > 0 && <section><h3>推进建议</h3><ol>{(row.result.next_steps as string[]).map((step, index) => <li key={index}>{step}</li>)}</ol></section>}
       {row.follow_up && <section><h3>任务后续事实</h3><p>{row.follow_up.changed_since_analysis === true ? "分析后任务内容已变化" : row.follow_up.changed_since_analysis === false ? "尚无新的任务内容变化" : "无法核对内容变化"} · 执行：{row.follow_up.status} · 验证：{row.follow_up.verification_status} · 验收：{row.follow_up.acceptance_status}</p><p>{row.follow_up.attribution}</p><details><summary>当前可继续的动作</summary><ol>{row.follow_up.remaining_steps.map(step => <li key={step.id}>{step.action}<small> · {step.tool} · {step.reason}</small></li>)}</ol></details></section>}
       <details><summary>查看依据与结果</summary>{row.snapshot && <pre>{JSON.stringify(row.snapshot, null, 2)}</pre>}{row.result && <pre>{JSON.stringify(row.result, null, 2)}</pre>}<p>输入指纹：{row.input_hash || "未记录"} · Prompt：{row.prompt_version || "未记录"}</p><p>调用：{row.run_id || row.id} · 错误：{row.error || row.fallback_reason || "无"}</p><p>用量：{row.usage ? JSON.stringify(row.usage) : "未提供，不计为零"}</p></details>
-    </article>)}</div>{!rows.length && <p>暂无符合筛选条件的记录。观察器会自动关联当前项目的任务，并记录参与判断、分析或规则降级结果。</p>}<footer className="task-pagination"><button disabled={!before} onClick={() => setBefore("")}>返回最新</button><button disabled={!activity?.next_cursor} onClick={() => setBefore(activity?.next_cursor || "")}>查看更早行为</button></footer>
+    </article>)}</div>{!rows.length && (activity ? <p>暂无符合筛选条件的记录。观察器会自动关联当前项目的任务，并记录参与判断、分析或规则降级结果。</p> : !activityError && <p>正在读取时间线…</p>)}<footer className="task-pagination"><button disabled={!before} onClick={() => setBefore("")}>返回最新</button><button disabled={!activity?.next_cursor} onClick={() => setBefore(activity?.next_cursor || "")}>查看更早行为</button></footer>
   </>;
 }
