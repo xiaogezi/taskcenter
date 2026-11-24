@@ -2264,9 +2264,12 @@ test("MCP stdio 真实协议：session_register 与 task_create 取得 task_id",
   assert.equal(loadSessionRegistry()["sess-begin"].agent, "kimi");
   const nextBegun = JSON.parse(textOf(await client.callTool({
     name: "taskcenter_task_begin",
-    arguments: { ...beginArguments, event_id: "begin-next", task_id: "task-begin-next", title: "下一任务", goal: "顺序创建" },
+    arguments: { ...beginArguments, event_id: "begin-next", task_id: "task-begin-next", title: "下一任务", goal: "顺序创建",
+      workflow_profile: "standard", verification_plan: [{ id: "verify", title: "定向回归", kind: "test", required: true }] },
   })));
   assert.equal(nextBegun.task_id, "task-begin-next");
+  assert.deepEqual(loadTasks().find((task) => task.id === "task-begin-next").verificationPlan,
+    [{ id: "verify", title: "定向回归", kind: "test", required: true }]);
   assert.equal(getSessionStatuses([], loadTasks()).find((item) => item.sessionId === "sess-begin").taskCount, 2);
 
   const gateStatusBefore = JSON.parse(textOf(await client.callTool({

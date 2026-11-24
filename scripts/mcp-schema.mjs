@@ -36,6 +36,10 @@ export function compactSchema(schema) {
   const definitions = {};
   function replace(node) {
     if (!node || typeof node !== "object") return node;
+    // Some hosts reduce a referenced object array item to an unconstrained
+    // empty schema. Keep structured objects inline so their fields reach the
+    // model, including verification_plan and structured acceptance criteria.
+    if (node.type === "object") return mapChildren(node, replace);
     const key = JSON.stringify(node);
     const count = counts.get(key);
     if (count > 1 && (count - 1) * key.length > count * 40 + 20) {

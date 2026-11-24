@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 修复 MCP 目录压缩后结构对象仅保留 `$ref`，部分宿主将验证计划条目降为空对象的问题；保留字段约束与 schema 预算，standard/strict 验证要求不变。
+
 - AI 行为时间线按当前来源与页游标串行刷新，切换前的迟到结果不覆盖当前页；手动刷新或受理后直接读取最新页。
 
 - CI 通过独立脚本固定启用隔离生产依赖安装及 release 预算验证，避免 Windows 调用因丢失转发参数而退回普通烟测。

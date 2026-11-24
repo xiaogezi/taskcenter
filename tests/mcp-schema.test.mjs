@@ -25,12 +25,25 @@ function expand(value, root = value) {
     .map(([key, item]) => [key, expand(item, root)]));
 }
 
+function assertStructuredObjectsAreInline(value, root = value) {
+  if (Array.isArray(value)) return value.forEach(item => assertStructuredObjectsAreInline(item, root));
+  if (!value || typeof value !== "object") return;
+  if (value.$ref) {
+    const target = root.$defs[value.$ref.split("/").at(-1)];
+    assert.notEqual(target?.type, "object", "structured object references lose their fields in some hosts");
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (key !== "$defs") assertStructuredObjectsAreInline(item, root);
+  }
+}
+
 test("real tools/list: all contracts survive reference compression and stay within budget", async () => {
   const inline = await listSchemaTools("inline");
   const compact = await listSchemaTools("compact");
   assert.deepEqual(compact.map(t => t.name), inline.map(t => t.name));
   const validator = new AjvJsonSchemaValidator();
   for (let i = 0; i < inline.length; i++) {
+    assertStructuredObjectsAreInline(compact[i].inputSchema);
     assert.deepEqual({ ...compact[i], inputSchema: expand(compact[i].inputSchema) }, inline[i], inline[i].name);
     // Compile every advertised schema with the MCP SDK's actual validator.
     validator.getValidator(compact[i].inputSchema);
@@ -41,6 +54,9 @@ test("real tools/list: all contracts survive reference compression and stay with
   const report = checkSchemaBudget(metrics, budget);
   console.log(report.message);
   assert.equal(report.failed, false, report.message);
+  const begin = compact.find(tool => tool.name === "taskcenter_task_begin");
+  const verificationItems = begin.inputSchema.properties.verification_plan.items;
+  assert.deepEqual(Object.keys(verificationItems.properties), ["id", "title", "kind", "required", "suggested_command"]);
   const inflated = structuredClone(compact);
   inflated[0].description += "schema growth ".repeat(Math.ceil(budget.max_bytes / 14));
   const rejected = checkSchemaBudget(schemaMetrics(inflated), budget);
