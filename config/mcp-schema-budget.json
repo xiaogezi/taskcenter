@@ -1,10 +1,11 @@
 {
-  "policy": "Initial optimized tools/list baseline; warn at +2%, fail at +5% in bytes OR tokens. Budget changes require documented rationale and compatibility evidence; never auto-refresh.",
+  "policy": "Compact tools/list cap after the 37-tool audit. The historical baseline is retained for comparison. Explicit review is required to increase tool count, byte or token caps.",
+  "max_tools": 37,
   "encoding": "o200k_base",
-  "warn_bytes": 90421,
-  "max_bytes": 93081,
-  "warn_tokens": 25440,
-  "max_tokens": 26189,
+  "warn_bytes": 69381,
+  "max_bytes": 69400,
+  "warn_tokens": 20090,
+  "max_tokens": 20100,
   "baseline": {
     "bytes": 88648,
     "tokens": 24941,

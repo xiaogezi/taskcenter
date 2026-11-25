@@ -57,6 +57,8 @@ test("real tools/list: all contracts survive reference compression and stay with
   const begin = compact.find(tool => tool.name === "taskcenter_task_begin");
   const verificationItems = begin.inputSchema.properties.verification_plan.items;
   assert.deepEqual(Object.keys(verificationItems.properties), ["id", "title", "kind", "required", "suggested_command"]);
+  const extraTool = "tool_that_duplicates_existing_capability";
+  assert.equal(checkSchemaBudget({ ...metrics, tools: { ...metrics.tools, [extraTool]: 1 } }, budget).failed, true);
   const inflated = structuredClone(compact);
   inflated[0].description += "schema growth ".repeat(Math.ceil(budget.max_bytes / 14));
   const rejected = checkSchemaBudget(schemaMetrics(inflated), budget);

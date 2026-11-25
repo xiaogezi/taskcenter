@@ -325,6 +325,12 @@ const server = createServer(async (request, response) => {
         markPrepareStage(request, null);
         return;
       }
+      const promptView = params.get("view") === "prompt";
+      if (promptView && !task) {
+        sendJson(response, 200, { session_id: sessionId, task_id: null, active_task: null, gate_allowlisted: binding.gate_allowlisted });
+        markPrepareStage(request, null);
+        return;
+      }
       markPrepareStage(request, "budget");
       const { budget, timedOut, elapsedMs } = await readPreparationBudget(task, () => readRequestBudget(sessionId, sessionsRoot, task));
       if (timedOut) {
@@ -333,13 +339,20 @@ const server = createServer(async (request, response) => {
       }
       if (response.destroyed) return;
       markPrepareStage(request, "response");
-      const prepared = boundedResponse({
-        ...binding,
-        contract: task ? boundedResponse({ goal: task.goal, scope: task.scope, non_goals: task.nonGoals, acceptance_criteria: task.acceptanceCriteria, verification_plan: task.verificationPlan, subject: task.currentSubject, next_action: task.nextAction }, { maxBytes: budget.handoff_recommended || !activeTask ? 800 : 2600 }) : null,
-        handoff: task && (budget.handoff_recommended || !activeTask) ? machineHandoff(task) : null,
-        agent_guidance: task ? agentGuidance(task, aiActivityPath) : null,
-        ...budget,
-      });
+      const contract = task ? boundedResponse({
+        contract_revision: task.contractRevision ?? null,
+        goal: task.goal, scope: task.scope, non_goals: task.nonGoals, acceptance_criteria: task.acceptanceCriteria,
+        verification_plan: task.verificationPlan, subject: task.currentSubject, next_action: task.nextAction,
+      }, { maxBytes: budget.handoff_recommended || !activeTask ? 800 : 2600 }) : null;
+      const handoff = task && (budget.handoff_recommended || !activeTask) ? machineHandoff(task) : null;
+      const prepared = boundedResponse(promptView ? {
+        session_id: binding.session_id, task_id: binding.task_id, status: binding.status,
+        active_task: activeTask ? { id: activeTask.id } : null, gate_allowlisted: binding.gate_allowlisted,
+        contract_revision: task.contractRevision ?? null, contract,
+        ...(handoff ? { handoff } : {}),
+        ...(budget.handoff_recommended ? { handoff_recommended: true } : {}),
+        ...(budget.new_session_recommended ? { new_session_recommended: true } : {}),
+      } : { ...binding, contract, handoff, agent_guidance: task ? agentGuidance(task, aiActivityPath) : null, ...budget });
       sendJson(response, 200, prepared);
       markPrepareStage(request, null);
       return;
