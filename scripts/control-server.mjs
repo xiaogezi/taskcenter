@@ -590,7 +590,10 @@ const server = createServer(async (request, response) => {
         const pageSize = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("page_size") || "40", 10) || 40));
         const start = (page - 1) * pageSize;
         const pageTasks = filteredTasks.slice(start, start + pageSize);
-        const actionCounts = Object.fromEntries(["planned", "in_progress", "execution_unconfirmed", "completed", "attention", "awaiting_verification", "awaiting_acceptance", "blocked"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
+        const actionCounts = Object.fromEntries(["planned", "in_progress", "execution_unconfirmed", "completed", "attention", "awaiting_verification", "awaiting_acceptance", "blocked", "independent_acceptance", "executor_evidence", "execution_recovery"].map((name) => [name, projectTasks.filter((task) => taskMatchesBucket(task, name)).length]));
+        const closeTimes = projectTasks.filter(task => task.responsibilityQueue === "independent_acceptance")
+          .map(task => Date.parse(task.actualAt)).filter(Number.isFinite);
+        const oldestAcceptanceCloseAt = closeTimes.reduce((oldest, at) => Math.min(oldest, at), Infinity);
         actionCounts.all = projectTasks.length;
         const projects = new Map();
         for (const task of presentedTasks) if (!projects.has(task.project.id)) projects.set(task.project.id, task.project);
@@ -601,6 +604,7 @@ const server = createServer(async (request, response) => {
           total: filteredTasks.length,
           totalPages: Math.max(1, Math.ceil(filteredTasks.length / pageSize)),
           actionCounts,
+          oldestAcceptanceCloseHours: Number.isFinite(oldestAcceptanceCloseAt) ? Math.max(0, Math.floor((Date.now() - oldestAcceptanceCloseAt) / 3_600_000)) : null,
           projects: [...projects.values()].sort((left, right) => left.label.localeCompare(right.label, "zh-CN")),
         });
         return;

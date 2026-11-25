@@ -153,6 +153,9 @@ test("Control API 在全量任务上筛选后分页，并返回项目范围 acti
   assert.equal(filtered.tasks[0].id, "filter-alpha-2");
   assert.equal(filtered.actionCounts.all, 2, "counts must not be based on the single result page");
   assert.equal(filtered.actionCounts.blocked, 1);
+  assert.equal(filtered.actionCounts.execution_recovery, 1);
+  assert.equal(filtered.tasks[0].responsibilityQueue, "execution_recovery");
+  assert.equal(filtered.oldestAcceptanceCloseHours, null);
   assert.deepEqual(filtered.projects.find((item) => item.id === "project:alpha"), { id: "project:alpha", label: "Alpha" });
 });
 

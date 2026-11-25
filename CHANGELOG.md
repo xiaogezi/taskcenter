@@ -4,6 +4,8 @@ All notable changes to TaskCenter are documented here.
 
 ## Unreleased
 
+- 任务工作区可按原执行者补证、维护处置和独立验收筛选，并显示待验收任务最早的执行收尾时间距今多久。
+
 - 执行者收尾指引明确检查关闭回执。对账按任务、版本、执行者和证据变化提示缺项，记录对账失败并区分不同运行观察的幂等事件。
 
 - 修复 MCP 目录压缩后结构对象仅保留 `$ref`，部分宿主将验证计划条目降为空对象的问题；保留字段约束与 schema 预算，standard/strict 验证要求不变。

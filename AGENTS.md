@@ -25,6 +25,8 @@ PCA 提供版本化规格与项目知识；TaskCenter 管理本次委托的契�
 
 One registered Codex Session may carry multiple formal tasks sequentially. A new task may be created after the previous task is no longer `planned`, `in_progress`, or `blocked`; only one formal task may be active in a Session at a time. Reuse the existing task for the same deliverable, and create a distinct task for a new deliverable without requiring a new Session.
 
+同一授权交付中的实现、部署与冒烟可作为同一任务的计划步骤和验收条件；后续另行授权或目标变化时再登记独立任务。存量补证回填原任务，ready 由独立验收人处理。
+
 Before changing project files in an MCP-enabled session:
 
 1. Prefer `taskcenter_task_begin` to register the real Session and create the task in one call. Existing clients may call `taskcenter_session_register` followed by `taskcenter_task_create`.
