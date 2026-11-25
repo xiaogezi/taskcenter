@@ -1342,8 +1342,8 @@ function noActiveTaskError() {
 async function prepareCurrentTask() {
   if (preparedTask !== undefined) return preparedTask;
   try {
-    const view = action === "user-prompt-submit" ? "" : "&view=gate";
-    preparedTask = await request("GET", `/task-prepare?session_id=${encodeURIComponent(sessionId)}&workspace=${encodeURIComponent(workspace)}${view}`);
+    const view = action === "user-prompt-submit" ? "prompt" : "gate";
+    preparedTask = await request("GET", `/task-prepare?session_id=${encodeURIComponent(sessionId)}&workspace=${encodeURIComponent(workspace)}&view=${view}`);
     return preparedTask;
   } catch (error) {
     if (/接口不存在|\b404\b|尚未登记/.test(String(error.message || ""))) { preparedTask = null; return null; }
@@ -1354,17 +1354,24 @@ async function prepareCurrentTask() {
 async function provideTaskPreparationContext() {
   const prepared = await prepareCurrentTask();
   if (prepared) {
-    const context = { ...prepared };
+    if (!prepared.truncated && prepared.active_task === null && prepared.task_id === null && prepared.gate_allowlisted) return;
+    // Project known fields even against older controllers that ignore view=prompt.
+    // Do not assume a prior Hook result reached or survived in the model context.
+    const context = Object.fromEntries([
+      "session_id", "task_id", "status", "contract_revision", "contract", "handoff",
+      "handoff_recommended", "new_session_recommended", "truncated", "continuation_cursor",
+    ].filter((key) => prepared[key] != null && prepared[key] !== false).map((key) => [key, prepared[key]]));
+    if (prepared.task_id === null) context.task_id = null;
     if (prepared.truncated || prepared.contract?.truncated) {
       const cursorPath = prepared.truncated ? "continuation_cursor" : "contract.continuation_cursor";
-      context.binding_instructions = `如本轮所需的契约或交接内容缺失，先用 taskcenter_response_continue 读取 ${cursorPath} 并按返回游标续读；还原的 contract 若仍被截断，再按其游标读取。已有完整依据时复用当前绑定。`;
+      context.binding_instructions = `所需契约或交接不全时，用 taskcenter_response_continue 读取 ${cursorPath}；按游标续读（包括内层 contract）。`;
     } else if (prepared.active_task) {
-      context.binding_instructions = "同一交付直接沿用本轮任务绑定。目标、归属变化或恢复信息缺失时再准备。";
+      context.binding_instructions = "同一交付直接沿用本轮任务绑定。执行收尾用 taskcenter_task_close，核对完成与待补项。";
     }
-    if (prepared.active_task === null) {
+    if (prepared.active_task === null && !prepared.truncated) {
       context.recovery_instructions = prepared.task_id === null
-        ? "当前 Session 无可见任务。纯查询直接继续；已授权的新交付直接 taskcenter_task_begin。继续本会话已归档的同一交付时，沿用原 task_id 和本会话身份调用 taskcenter_task_resume；明确移交的任务按实际归属接续。"
-        : NO_ACTIVE_TASK_RECOVERY;
+        ? "纯查询直接继续；已授权的新交付直接 taskcenter_task_begin；继续已归档的同一交付时，使用原 task_id 和真实会话调用 taskcenter_task_resume。"
+        : "继续同一交付用 taskcenter_task_resume（含已完成任务，无时间限制）；纯查询直接继续，已授权的新交付用 taskcenter_task_begin。";
     }
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: JSON.stringify(context) } }));
     return;

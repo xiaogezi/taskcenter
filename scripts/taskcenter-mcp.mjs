@@ -122,7 +122,7 @@ toolRegistry.register("taskcenter_session_register", {
 
 toolRegistry.register("taskcenter_task_begin", {
   title: "开始 TaskCenter 任务",
-  description: "一次完成 Session 登记和 v2 任务创建；同一 Session 可在上一任务关闭后继续创建下一任务。默认返回紧凑状态。",
+  description: "登记真实 Session 并创建 v2 任务；上个任务结束后可继续新建。默认返回摘要。",
   inputSchema: z.object({
     session_id: z.string().min(1).max(200),
     workspace: z.string().min(1).max(4_096),
@@ -187,7 +187,7 @@ toolRegistry.register("taskcenter_task_report", {
 
 toolRegistry.register("taskcenter_task_close", {
   title: "原子关闭 TaskCenter 任务",
-  description: "声明任务执行完成；除任务身份外，摘要、测试、证据及逐项结果均可省略，已有结果继续用于计算就绪度。同一 event_id 重试幂等；done_claimed 不等于验证或独立验收通过，completion_claim_allowed=false 不得宣称真正完成；follow_up 列出待补缺项，执行可先收尾，待办保留到补齐。",
+  description: "收尾执行并复用已登记证据；其余结果可选。以同一 event_id 幂等重试。done_claimed 不等于验收；核对 completion_claim_allowed 和 follow_up。",
   inputSchema: z.object(taskFields).extend({
     task_id: z.string().min(1).max(200),
     tests: z.array(z.string().min(1).max(500)).max(30).default([]),
@@ -417,7 +417,7 @@ toolRegistry.register("taskcenter_response_continue", {
 
 toolRegistry.register("taskcenter_task_prepare", {
   title: "准备或恢复当前目标",
-  description: "读取当前绑定、合同、预算和交接。同一交付沿用已有绑定；所需内容截断时按已有游标调用 taskcenter_response_continue。目标或归属变化时再准备。",
+  description: "按需读取绑定、契约、交接、预算及指导；截断用 taskcenter_response_continue。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200) }).strict(),
 }, async ({ session_id }) => queryEndpoint(`/task-prepare?session_id=${encodeURIComponent(session_id)}`));
 
@@ -438,7 +438,7 @@ for (const operation of ["prepare", "confirm"]) {
 
 toolRegistry.register("taskcenter_task_resume", {
   title: "接手或接续共享任务",
-  description: "任意客户端可用已登记的真实 Session 接手同一 workspace 的任务，不限创建客户端。先查询任务，expected_session_id 必须等于当前 sessionId；接手后旧 Session 失去主执行权，保留创建者、合同、Subject、证据和交接记录。未结束/撤销的有效委派阻止跨 Session 接手；目标 Session 不能已有其他活跃任务。跨 Session 接手或恢复已完成任务进入 in_progress，取消/移除任务拒绝。重复请求不重复交接。仅转移逻辑执行权，不停止已运行进程，不启动客户端；原执行者应先停止操作。返回 prepare 结果。",
+  description: "同工作区接续或接手任务。先查原归属并填 expected_session_id；目标会话须已登记且无其他活跃任务。未结束委派阻止跨会话接手。只转移逻辑执行权，不停止原进程；由原执行者先停止操作。返回准备结果。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), expected_session_id: z.string().min(1).max(200), expected_event_id: z.string().min(1).max(200).optional(), event_id: z.string().max(200).optional() }).strict(),
 }, async (input) => postCore("/task-resume", { ...input, response_mode: "full" }));
 
@@ -450,7 +450,7 @@ toolRegistry.register("taskcenter_session_lifecycle", {
 
 toolRegistry.register("taskcenter_governance_metrics", {
   title: "查询 TaskCenter 治理试点指标",
-  description: "返回 Credits 等价值、续调、输入分位数、归属覆盖率、往返、返工率、耗时和观察性调试指标，并按 profile、任务类别与模型分组。指标不用于绩效或门禁。",
+  description: "按档位、任务类别和模型汇总用量与流程指标；不用于绩效或门禁。",
   inputSchema: z.object({}).strict(),
 }, async () => queryEndpoint("/governance-metrics"));
 

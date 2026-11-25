@@ -1333,6 +1333,7 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
   const preparation = JSON.parse(context.hookSpecificOutput.additionalContext);
   assert.equal(preparation.task_id, null);
   assert.equal(preparation.session_id, sessionId);
+  assert.ok(Buffer.byteLength(context.hookSpecificOutput.additionalContext) <= 360);
   assert.match(preparation.recovery_instructions, /taskcenter_task_resume/);
   assert.match(preparation.recovery_instructions, /纯查询直接继续.*已授权的新交付直接 taskcenter_task_begin/);
 
@@ -1404,15 +1405,33 @@ test("UserPromptSubmit 在非白名单 Session 无活跃任务时前置提醒 Ag
     prompt: "继续修改",
   });
   assert.equal(active.code, 0);
-  const activePreparation = JSON.parse(JSON.parse(active.stdout).hookSpecificOutput.additionalContext);
+  const activeText = JSON.parse(active.stdout).hookSpecificOutput.additionalContext;
+  const activePreparation = JSON.parse(activeText);
   assert.equal(activePreparation.task_id, "prompt-preparation-task");
+  assert.equal(activePreparation.contract_revision, 1);
   assert.match(activePreparation.binding_instructions, /直接沿用本轮任务绑定/);
   const gate = await (await fetch(`${base}/task-prepare?session_id=${sessionId}&view=gate`)).json();
-  for (const field of ["session_id", "task_id", "status", "active_task", "gate_allowlisted", "scheduled_readonly"]) {
-    assert.deepEqual(gate[field], activePreparation[field]);
-  }
+  const detail = await (await fetch(`${base}/task-prepare?session_id=${sessionId}`)).json();
+  for (const field of ["session_id", "task_id", "status"]) assert.deepEqual(gate[field], activePreparation[field]);
+  assert.deepEqual(detail.contract, activePreparation.contract);
+  assert.deepEqual(activePreparation.contract.non_goals, ["安装或改配置"]);
+  assert.ok(detail.agent_guidance.steps.length);
   assert.ok(!("contract" in gate) && !("token_budget" in gate));
-  assert.equal(activePreparation.recovery_instructions, undefined);
+  for (const field of ["active_task", "gate_allowlisted", "scheduled_readonly", "token_budget", "agent_guidance", "recovery_instructions"]) {
+    assert.equal(Object.hasOwn(activePreparation, field), false, field);
+  }
+  assert.ok(Buffer.byteLength(activeText) <= 850, activeText);
+  assert.ok(Buffer.byteLength(activeText) < Buffer.byteLength(JSON.stringify(detail)) * 0.6);
+
+  const revised = await fetch(`${base}/task-events`, {
+    method: "POST", headers: { "Content-Type": "application/json", "X-TaskCenter-Task": "hook" },
+    body: JSON.stringify({ type: "task.update", session_id: sessionId, task_id: gate.task_id, scope: ["更新后的工作范围"] }),
+  });
+  assert.equal(revised.status, 200);
+  const again = await runHook("user-prompt-submit", "codex", { session_id: sessionId, cwd: "/work", prompt: "继续修改" });
+  const fresh = JSON.parse(JSON.parse(again.stdout).hookSpecificOutput.additionalContext);
+  assert.equal(fresh.contract_revision, 2);
+  assert.deepEqual(fresh.contract.scope, ["更新后的工作范围"]);
 
   const reported = await fetch(`${base}/task-events`, {
     method: "POST",
