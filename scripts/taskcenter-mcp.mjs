@@ -175,8 +175,8 @@ toolRegistry.register("taskcenter_task_create", {
 
 toolRegistry.register("taskcenter_task_update", {
   title: "更新 TaskCenter 任务",
-  description: "更新当前步骤、下一步、假设、风险、取舍和阻塞信息。",
-  inputSchema: z.object(taskFields).extend({ task_id: z.string().min(1).max(200) }).strict(),
+  description: "更新进展。等待外部时填 blocked、原因与下一步，可释放会话。",
+  inputSchema: z.object(taskFields).extend({ task_id: z.string().min(1).max(200), release_session: z.boolean().optional() }).strict(),
 }, async (input) => report("task.update", input));
 
 toolRegistry.register("taskcenter_task_report", {
@@ -438,7 +438,7 @@ for (const operation of ["prepare", "confirm"]) {
 
 toolRegistry.register("taskcenter_task_resume", {
   title: "接手或接续共享任务",
-  description: "同工作区接续或接手任务。先查原归属并填 expected_session_id；目标会话须已登记且无其他活跃任务。未结束委派阻止跨会话接手。只转移逻辑执行权，不停止原进程；由原执行者先停止操作。返回准备结果。",
+  description: "同工作区接续。填原归属；已释放任务须用新会话并填 expected_event_id。只转移执行权，不停止进程。",
   inputSchema: z.object({ session_id: z.string().min(1).max(200), task_id: z.string().min(1).max(200), expected_session_id: z.string().min(1).max(200), expected_event_id: z.string().min(1).max(200).optional(), event_id: z.string().max(200).optional() }).strict(),
 }, async (input) => postCore("/task-resume", { ...input, response_mode: "full" }));
 
@@ -649,6 +649,7 @@ function compactResult(payload) {
   if (followUp) compact.follow_up = followUp;
   if (payload?.session_lifecycle) compact.session_lifecycle = payload.session_lifecycle;
   if (payload?.agent_guidance) compact.agent_guidance = payload.agent_guidance;
+  if (task.sessionReleased) compact.session_released = true;
   if (payload?.route) compact.route = payload.route;
   // 通知属于账本写入后的可补偿副作用；摘要回包也必须让调用方看见失败警告。
   if (Array.isArray(payload?.warnings) && payload.warnings.length) compact.warnings = payload.warnings;

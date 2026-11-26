@@ -81,7 +81,7 @@ import { readPreparationBudget, readRequestBudget } from "./request-budget.mjs";
 import { boundedResponse } from "./bounded-response.mjs";
 import { queryUsageReport } from "./usage-query.mjs";
 import { buildGovernanceMetrics, gateDenialSnapshot, recordGateDenial } from "./governance-metrics.mjs";
-import { evidenceFollowUp, taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
+import { evidenceFollowUp, occupiesSession, taskMatchesBucket, taskMatchesQuery, taskPresentation } from "../lib/task-workspace.mjs";
 import { enrichTaskWorkspaceEvent } from "../lib/git-workspace.mjs";
 import {
   ContextManagementPilotError,
@@ -290,11 +290,15 @@ const server = createServer(async (request, response) => {
       if (body.expected_event_id && task.lastEventId !== body.expected_event_id) throw new TaskLedgerError(409, "TASK_CHANGED：任务已变化，请重新核对现场后接续。");
       if (registry.workspace !== task.workspace) throw new TaskLedgerError(409, "恢复 Session 的 workspace 与合同不一致。");
       if (["cancelled", "removed"].includes(task.status)) throw new TaskLedgerError(409, "TASK_NOT_RESUMABLE：已取消或移除任务不能接手。");
+      if (task.sessionReleased) {
+        if (!body.expected_event_id) throw new TaskLedgerError(409, "TASK_CHANGED：接续已释放任务需要当前 expected_event_id。");
+        verifyNoManagedExecution(task, body.session_id, body.expected_event_id);
+      }
       const reopen = Boolean(task.archivedAt) || ["done_claimed", "verified"].includes(task.status);
       const resumeExecution = !task.runs?.some(run => !run.ended_at) || Boolean(task.executionReconciliation) || Boolean(task.sessionDetachedAt);
       if (task.sessionId !== body.session_id || reopen || resumeExecution) {
         if (task.sessionId !== body.expected_session_id) throw new TaskLedgerError(409, "SESSION_BINDING_CHANGED：请重新读取交接状态。");
-        if (loadVisibleTasks().some((item) => item.id !== task.id && item.sessionId === body.session_id && ["planned", "in_progress", "blocked"].includes(item.status))) throw new TaskLedgerError(409, "ACTIVE_TASK_CONFLICT：目标 Session 已有其他活跃任务。");
+        if (loadVisibleTasks().some((item) => item.id !== task.id && item.sessionId === body.session_id && occupiesSession(item))) throw new TaskLedgerError(409, "ACTIVE_TASK_CONFLICT：目标 Session 已有其他活跃任务。");
         recordTaskEvent({ type: "task.resume", task_id: task.id, session_id: body.session_id, workspace: task.workspace, agent: registry.agent, model: registry.model, provider: registry.provider, event_id: body.event_id, ...(task.archivedAt ? { archived_at: "__UNARCHIVE__" } : {}), status: "in_progress" }, { requireRegistered: true, authorizedResume: true });
       }
       request.method = "GET";
@@ -312,8 +316,8 @@ const server = createServer(async (request, response) => {
       if (!registry) throw new TaskLedgerError(409, "当前 Session 尚未登记。");
       markPrepareStage(request, "tasks");
       const tasks = loadVisibleSessionTasks(sessionId).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-      const activeTask = tasks.find((item) => ["planned", "in_progress", "blocked"].includes(item.status));
-      const task = activeTask || tasks[0] || null;
+      const activeTask = tasks.find(occupiesSession);
+      const task = activeTask || tasks.find(item => !item.sessionReleased) || null;
       const binding = {
         session_id: sessionId, task_id: task?.id || null, status: task?.status || null,
         active_task: activeTask ? Object.fromEntries(["id", "sessionId", "status", "dueAt", "estimatedEffortMs", "activeDurationMs", "activeStartedAt"].map((key) => [key, activeTask[key]])) : null,
@@ -385,7 +389,7 @@ const server = createServer(async (request, response) => {
     if (lifecycleMatch) {
       const sessionId = lifecycleMatch[1] ? decodeURIComponent(lifecycleMatch[1]) : "";
       const tasks = loadVisibleTasks().filter((task) => !sessionId || task.sessionId === sessionId);
-      const currentTask = tasks.filter((task) => ["planned", "in_progress", "blocked"].includes(task.status)).at(-1) || tasks.at(-1) || null;
+      const currentTask = tasks.filter(occupiesSession).at(-1) || tasks.findLast(task => !task.sessionReleased) || null;
       const workspaces = new Set(tasks.map((task) => task.workspace).filter(Boolean));
       const usage = currentUsageReport();
       const lifecycle = recommendSessionLifecycle({
@@ -864,7 +868,13 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/task-events") {
       verifyTaskRequest(request);
       const input = await readJsonBody(request);
-      const body = enrichTaskWorkspaceEvent(input, loadSessionRegistry()[input.session_id], loadTaskById(input.task_id) ?? undefined);
+      const task = loadTaskById(input.task_id);
+      if (input.release_session === true) {
+        const releaseFields = new Set(["type", "task_id", "session_id", "event_id", "status", "blocker", "next_action", "current_step", "release_session", "workspace"]);
+        if (Object.keys(input).some(key => !releaseFields.has(key))) throw new TaskLedgerError(400, "释放会话不同时修改合同或证据；请分开提交。");
+        if (task && !task.sessionReleased) verifyNoManagedExecution(task);
+      }
+      const body = enrichTaskWorkspaceEvent(input, loadSessionRegistry()[input.session_id], task ?? undefined);
       if (body.type === "task.review" || body.status === "verified" || String(body.type || "").startsWith("acceptance.")) {
         throw new TaskLedgerError(403, "人工审核必须通过本机任务操作入口完成。");
       }
@@ -1337,6 +1347,15 @@ function verifyManualTaskAction(request) {
   }
 }
 
+function verifyNoManagedExecution(task, targetSession, expectedEventId) {
+  if (task.cliRuns?.some(run => run.status === "active")) throw new TaskLedgerError(409, "任务仍有活跃 CLI 执行。");
+  let maintenance;
+  try { maintenance = JSON.parse(readFileSync(join(aiRuntime, "ai-maintenance-state.json"), "utf8")).actions?.[task.id]; }
+  catch (error) { if (error.code !== "ENOENT") throw new TaskLedgerError(409, "无法核对维护宿主，请稍后重试。"); }
+  if (maintenance?.status === "running" && (!targetSession || maintenance.session_id !== targetSession
+    || maintenance.expected_event_id !== expectedEventId)) throw new TaskLedgerError(409, "维护宿主执行尚未结束。");
+}
+
 async function applyManualTaskAction(taskId, action, reason = "", expectedAt = "", estimatedEffortMinutes = undefined) {
   const tasks = loadTasks();
   const task = tasks.find((item) => item.id === taskId);
@@ -1390,7 +1409,7 @@ async function applyManualTaskAction(taskId, action, reason = "", expectedAt = "
     reviewed_at: ["verify", "reject"].includes(action) ? new Date().toISOString() : "",
     created_at: new Date().toISOString(),
   };
-  const result = recordTaskEvent(event);
+  const result = recordTaskEvent(event, { manualTaskAction: true });
   return { event, task: result.task };
 }
 

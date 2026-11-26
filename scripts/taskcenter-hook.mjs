@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createHookTransport } from "./hook-transport.mjs";
+import { occupiesSession } from "../lib/task-workspace.mjs";
 import { taskTimeState } from "../app/task-time-state.mjs";
 import { isSubagentSession } from "./harnesses/codex-session.mjs";
 import { classifyGateDenial, evaluateGateDenials, formatGateDenialAssessment, NO_ACTIVE_TASK_RECOVERY } from "./governance-metrics.mjs";
@@ -798,7 +799,7 @@ async function isL0ReadOnlyInspection(payload) {
     : null;
   if (!current || current.status !== "registered") return false;
   const tasks = await request("GET", "/tasks");
-  const hasActiveTask = (tasks.tasks || []).some((task) => task.sessionId === sessionId && ["in_progress", "blocked", "planned"].includes(task.status));
+  const hasActiveTask = (tasks.tasks || []).some((task) => task.sessionId === sessionId && occupiesSession(task));
   return !hasActiveTask;
 }
 
@@ -1328,7 +1329,7 @@ async function requireTask() {
     throw new Error("当前 Session 尚未登记，请先完成 SessionStart 登记。");
   }
   const tasks = await request("GET", "/tasks");
-  const active = (tasks.tasks || []).filter((task) => task.sessionId === sessionId && ["in_progress", "blocked", "planned"].includes(task.status));
+  const active = (tasks.tasks || []).filter((task) => task.sessionId === sessionId && occupiesSession(task));
   const rank = { in_progress: 3, blocked: 2, planned: 1 };
   const task = active.sort((left, right) => (rank[right.status] - rank[left.status]) || (Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || "")))[0];
   if (task) return task;
@@ -1385,7 +1386,7 @@ async function provideTaskPreparationContext() {
   if (current?.status === "registered" && current.taskCount > 0) {
     const tasks = await request("GET", "/tasks");
     activeTask = (tasks.tasks || []).find(
-      (task) => task.sessionId === sessionId && ["in_progress", "blocked", "planned"].includes(task.status),
+      (task) => task.sessionId === sessionId && occupiesSession(task),
     );
   }
   if (activeTask) return;

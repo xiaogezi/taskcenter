@@ -241,7 +241,7 @@ TaskCenter 是执行合同、运行状态、验证、Review、验收的权威来
 
 默认情况下，每个 Session 按以下顺序执行：
 
-1. `taskcenter_task_begin`：一次完成 Session 登记和 v2 任务创建，默认只返回任务状态、下一步和本地上下文引用。同一 Session 可在上一任务关闭或取消后顺序创建下一任务，但同一时间只允许一个活跃任务。已有客户端可继续分别调用 `taskcenter_session_register` 和 `taskcenter_task_create`；`standard/strict` 仍须提交验证计划。
+1. `taskcenter_task_begin`：一次完成 Session 登记和 v2 任务创建，默认只返回任务状态、下一步和本地上下文引用。同一 Session 可在上一任务关闭、取消或显式释放占用后创建下一任务，同时只承载一个执行目标。已有客户端可继续分别调用 `taskcenter_session_register` 和 `taskcenter_task_create`；`standard/strict` 仍须提交验证计划。
 2. 收到 `accepted=true` 与独立 `task_id` 后才能执行写操作。
    Codex 或 Git 创建关联 worktree 后，适配器会从 `.git` 指针自动识别主仓库、当前分支和 `execution_environment=worktree`。每个 worktree 保留独立 `workspace` 与 Subject，稳定 `project_id` 归并到同一项目；TaskCenter 不负责创建、合并或删除 worktree。Context bridge 同时把稳定 `project_id` 和具体 worktree workspace 传给 ProjectContext，使项目知识共享、执行证据隔离。
 3. 使用 `taskcenter_task_update` 更新进度，使用 `taskcenter_task_report` 上报结果。
@@ -291,7 +291,11 @@ Apache License 2.0。参见 [LICENSE](LICENSE)。
 
 ### 同一 Codex Session 顺序承载任务
 
-普通顺序任务无需切换或压缩：关闭或取消当前任务后，直接调用 `taskcenter_task_begin` 创建下一任务。TaskCenter 保留每个独立 `task_id` 的合同、证据和用量归属；Hook 始终绑定该 Session 最新的唯一活跃任务。
+普通顺序任务无需切换或压缩：关闭、取消或显式释放当前任务占用后，直接调用 `taskcenter_task_begin` 创建下一任务。TaskCenter 保留每个独立 `task_id` 的合同、证据和用量归属；Hook 始终绑定该 Session 最新的唯一活跃任务。
+
+**等待外部，不占用会话。** 当前执行者确认不再操作该任务后，用现有 `taskcenter_task_update` 发送真实 `session_id`、`task_id`、`event_id`，以及 `status: "blocked"`、`release_session: true`、非空的 `blocker` 和 `next_action`。任务仍在「需处理」，合同和证据不变；普通标记阻塞不会释放会话。释放只收尾账本 Run，不停止进程；已知有活跃 CLI、维护执行或未核实的运行时拒绝释放。
+
+外部条件满足后，在同一工作区用一个从未释放过该任务的已登记 Session 调用 `taskcenter_task_resume`，带原 `task_id`、旧归属 `expected_session_id` 与当前任务详情的 `lastEventId`（作为 `expected_event_id`）。原会话可继续别的任务，但不能重新取得这条任务的写入权，避免迟到请求落到新 Run。独立验收机制不变。
 
 仅当上下文已经过大并且需要恢复检查点与显式压缩时，才使用下面的会话切换协议。
 
