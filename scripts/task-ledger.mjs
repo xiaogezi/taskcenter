@@ -1034,7 +1034,18 @@ export function ensureContextTask(input) {
   if (!contextTaskId) throw new TaskLedgerError(400, "缺少 context_task_id。");
   if (!sessionId) throw new TaskLedgerError(400, "缺少 session_id。");
 
-  if (!loadSessionRegistry()[sessionId]) {
+  const registered = loadSessionRegistry()[sessionId];
+  const contextTasks = loadTasks().filter(task => task.contextTaskId === contextTaskId);
+  const sessionWorkspace = registered ? registered.workspace : workspace;
+  const released = contextTasks.find(task => !task.archivedAt && !isContextShadowTask(task)
+    && activeTaskStatuses.has(task.status)
+    && ((task.sessionReleased && (task.sessionId === sessionId || (sessionWorkspace && task.workspace === sessionWorkspace)))
+      || task.releasedSessionIds?.some(id => canonicalSessionId(id) === sessionId)));
+  if (released) {
+    throw new TaskLedgerError(409, "TASK_SESSION_RELEASED：上下文关联不授予执行权；请在同工作区从原 task_id 显式接续。");
+  }
+
+  if (!registered) {
     recordTaskEvent({
       type: "session.register",
       event_id: `context-session-${contextIdentity(sessionId)}`,
@@ -1046,8 +1057,8 @@ export function ensureContextTask(input) {
     });
   }
 
-  const mapped = loadTasks()
-    .filter((task) => task.sessionId === sessionId && task.contextTaskId === contextTaskId)
+  const mapped = contextTasks
+    .filter((task) => task.sessionId === sessionId)
     .sort((left, right) => Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || ""));
   const activeFormal = mapped.find((task) => !task.archivedAt && !isContextShadowTask(task) && activeTaskStatuses.has(task.status));
   if (activeFormal) {
