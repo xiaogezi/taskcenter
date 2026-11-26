@@ -3479,7 +3479,7 @@ test("显式释放等待任务：原会话继续 B，另一会话接续 A，旧�
   const binding = async session => (await fetch(`${base}/task-prepare?view=gate&session_id=${session}`)).json();
   const details = async () => (await (await fetch(`${base}/tasks?task_id=${taskId}`)).json()).tasks[0];
   for (const session of [source, target]) await registerHttpSession(base, session);
-  const created = await post("/task-events", { type: "task.create", task_id: taskId, session_id: source, title: "任务 A", goal: "等待外部回执", evidence: ["probe:original"], contract_version: "v2", scope: ["已有实现"], non_goals: [], acceptance_criteria: ["核对回执"], workflow_profile: "fast", review_policy: "not_required" });
+  const created = await post("/task-events", { type: "task.create", task_id: taskId, session_id: source, context_task_id: "park-context", title: "任务 A", goal: "等待外部回执", evidence: ["probe:original"], contract_version: "v2", scope: ["已有实现"], non_goals: [], acceptance_criteria: ["核对回执"], workflow_profile: "fast", review_policy: "not_required" });
   assert.equal(created.status, 201);
   const original = (await created.json()).task;
   const taskB = { type: "task.create", task_id: "park-b", session_id: source, title: "任务 B", goal: "独立交付" };
@@ -3506,6 +3506,9 @@ test("显式释放等待任务：原会话继续 B，另一会话接续 A，旧�
   const receipt = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_update", arguments: park })));
   assert.equal(receipt.session_released, true, JSON.stringify(receipt));
   assert.equal(receipt.status, "blocked");
+  const ensured = await post("/context-tasks/ensure", { session_id: source, context_task_id: "park-context", workspace: "/work" });
+  assert.equal(ensured.status, 409);
+  assert.match((await ensured.json()).error, /TASK_SESSION_RELEASED/);
   const parked = await details();
   assert.equal(parked.runs[0].run_id, original.runs[0].run_id);
   assert.ok(parked.runs[0].ended_at);

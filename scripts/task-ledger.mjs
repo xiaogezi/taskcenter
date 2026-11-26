@@ -1049,10 +1049,13 @@ export function ensureContextTask(input) {
   const mapped = loadTasks()
     .filter((task) => task.sessionId === sessionId && task.contextTaskId === contextTaskId)
     .sort((left, right) => Date.parse(right.updatedAt || "") - Date.parse(left.updatedAt || ""));
-  const activeFormal = mapped.find((task) => !task.archivedAt && !isContextShadowTask(task) && activeTaskStatuses.has(task.status));
+  const formal = mapped.filter(task => !task.archivedAt && !isContextShadowTask(task));
+  const activeFormal = formal.find(occupiesSession);
   if (activeFormal) {
     return { task: activeFormal, created: false, resumed: true, reactivated: false };
   }
+  const released = formal.find(task => task.sessionReleased && task.status === "blocked");
+  if (released) throw new TaskLedgerError(409, `TASK_SESSION_RELEASED：任务 ${released.id} 已释放，请由符合条件的新会话接续。`);
   const shadows = mapped.filter((task) => !task.archivedAt && isContextShadowTask(task) && !task.supersededBy);
   const activeShadow = shadows.find((task) => activeTaskStatuses.has(task.status));
   if (activeShadow) {

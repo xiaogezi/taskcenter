@@ -311,6 +311,21 @@ test("不抢占运行中的宿主；普通事件变化不丢弃恢复行动", as
   assert.equal((await f.state()).actions.task.expected_event_id, "event-2");
 });
 
+test("维护接续跳过已释放会话但仍核对其活跃 CLI", async t => {
+  for (const active of [false, true]) {
+    const current = { ...task, agent: "codex" };
+    const other = { ...task, id: "other", sessionId: "released", status: "blocked", sessionReleased: true,
+      cliRuns: active ? [{ status: "active" }] : [] };
+    const f = await fixture(t, { maintenanceOwned: false, tasks: () => [current, other], inspect: async id => {
+      if (id === other.sessionId) throw new Error("原会话已不可读");
+      return { busy: false };
+    } });
+    await f.worker.enqueue(current, analysis, profile, { handoff: { task_id: task.id, expected_session_id: task.sessionId, workspace: task.workspace, input_hash: governanceSnapshot(current, "evidence").input_hash } });
+    await f.worker.tick(profile);
+    assert.equal(f.calls(), active ? 0 : 1);
+  }
+});
+
 test("首次显式移交跨重启可执行，普通事件不撤销授权", async t => {
   const current = { ...task, agent: "codex" };
   const f = await fixture(t, { maintenanceOwned: false }); f.update(current);

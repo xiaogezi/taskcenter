@@ -8,6 +8,7 @@ import { governanceSnapshot, ruleResult, validateWorkIntent } from "./ai-governa
 import { computeCompletionReadiness } from "./completion-state.mjs";
 import { inspectSessionStateAsync } from "./harnesses/codex-session.mjs";
 import { loadVisibleTasks } from "./task-ledger.mjs";
+import { occupiesSession } from "../lib/task-workspace.mjs";
 import { resolveSpawnCommand } from "./platform-command.mjs";
 import { claudeSettings } from "./print-integrations.mjs";
 import { terminateProcessTree, isProcessTreeAlive } from "./process-tree.mjs";
@@ -228,6 +229,7 @@ export async function createMaintenanceWorker({ statePath, record, execute = run
           // Check all other active owners in this workspace before handing it to a CLI.
           if (safe) for (const other of tasks().filter(item => item.id !== task.id && !item.archivedAt && item.workspace === task.workspace && activeStatuses.has(item.status))) {
             if (other.cliRuns?.some(run => run.status === "active")) { safe = false; break; }
+            if (!occupiesSession(other)) continue;
             try { if ((await inspect(other.sessionId)).busy) safe = false; }
             catch { safe = false; }
           }
