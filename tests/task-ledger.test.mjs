@@ -3549,6 +3549,47 @@ test("显式释放等待任务：原会话继续 B，另一会话接续 A，旧�
   assert.equal((await binding(source)).active_task.id, "park-b");
 });
 
+test("Context ensure 不把已释放任务当作恢复，也不创建重复影子任务", async t => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  t.after(() => child.kill("SIGTERM"));
+  const source = "context-park-owner", target = "context-park-next";
+  const contextId = "semantic-context-park";
+  const post = (path, body) => fetch(base + path, { method: "POST", headers: taskHeaders(), body: JSON.stringify(body) });
+  const ensure = session_id => post("/context-tasks/ensure", { session_id, context_task_id: contextId, workspace: "/work" });
+  for (const session of [source, target]) await registerHttpSession(base, session);
+  const a = { task_id: "context-park-a", session_id: source, workspace: "/work" };
+  recordTaskEvent({ ...a, type: "task.create", context_task_id: contextId, goal: "外部回执" }, { requireRegistered: true });
+  const original = await ensure(source);
+  assert.equal(original.status, 200);
+  assert.equal((await original.json()).resumed, true);
+  const parked = recordTaskEvent({ ...a, type: "task.update", event_id: "context-park-release",
+    status: "blocked", blocker: "等回执", next_action: "收到后接续", release_session: true }, { requireRegistered: true }).task;
+  recordTaskEvent({ ...a, type: "task.create", task_id: "context-park-b", goal: "另一目标" }, { requireRegistered: true });
+  for (const session of [source, target]) {
+    const response = await ensure(session);
+    assert.equal(response.status, 409);
+    const result = await response.json();
+    assert.match(result.error, /TASK_SESSION_RELEASED/);
+    assert.notEqual(result.accepted, true);
+  }
+  assert.equal(loadTasks().find(task => task.id === a.task_id).lastEventId, parked.lastEventId);
+  assert.deepEqual(loadTasks().filter(task => task.contextTaskId === contextId).map(task => task.id), [a.task_id]);
+
+  const resumed = await post("/task-resume", { task_id: a.task_id, session_id: target,
+    expected_session_id: source, expected_event_id: parked.lastEventId });
+  assert.equal(resumed.status, 200);
+  assert.equal((await ensure(source)).status, 409);
+  const response = await ensure(target);
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.accepted, true);
+  assert.equal(result.resumed, true);
+  assert.equal(result.created, false);
+  assert.equal(result.task.id, a.task_id);
+  assert.deepEqual(loadTasks().filter(task => task.contextTaskId === contextId).map(task => task.id), [a.task_id]);
+});
+
 test("同 Session HTTP 恢复重开已收口 Run，清除旧对账且重复恢复幂等", async context => {
   await resetLedger();
   const { base, child } = await startControlServer();
