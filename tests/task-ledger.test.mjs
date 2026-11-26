@@ -3470,6 +3470,85 @@ test("Codex Session 可顺序承载多个任务，但同一时间只允许一个
   assert.match((await third.json()).error, /ACTIVE_TASK_CONFLICT/);
 });
 
+test("显式释放等待任务：原会话继续 B，另一会话接续 A，旧会话不能写 A", async t => {
+  await resetLedger();
+  const { base, child } = await startControlServer();
+  t.after(() => child.kill("SIGTERM"));
+  const source = "park-owner", target = "park-resume", taskId = "park-a";
+  const post = (path, body) => fetch(base + path, { method: "POST", headers: taskHeaders(), body: JSON.stringify(body) });
+  const binding = async session => (await fetch(`${base}/task-prepare?view=gate&session_id=${session}`)).json();
+  const details = async () => (await (await fetch(`${base}/tasks?task_id=${taskId}`)).json()).tasks[0];
+  for (const session of [source, target]) await registerHttpSession(base, session);
+  const created = await post("/task-events", { type: "task.create", task_id: taskId, session_id: source, title: "任务 A", goal: "等待外部回执", evidence: ["probe:original"], contract_version: "v2", scope: ["已有实现"], non_goals: [], acceptance_criteria: ["核对回执"], workflow_profile: "fast", review_policy: "not_required" });
+  assert.equal(created.status, 201);
+  const original = (await created.json()).task;
+  const taskB = { type: "task.create", task_id: "park-b", session_id: source, title: "任务 B", goal: "独立交付" };
+  const block = { task_id: taskId, session_id: source, status: "blocked", blocker: "等待外部回执", next_action: "收到回执后接续" };
+  assert.equal((await post("/task-events", { type: "task.update", ...block })).status, 200);
+  assert.equal((await post("/task-events", taskB)).status, 409);
+  assert.equal((await binding(source)).active_task.id, taskId);
+  const maintenancePath = join(tempDir, "runtime", "ai-maintenance-state.json");
+  await mkdir(dirname(maintenancePath), { recursive: true });
+  const park = { ...block, event_id: "park-a-release", release_session: true };
+  await writeFile(maintenancePath, JSON.stringify({ actions: { [taskId]: { status: "running" } } }));
+  try {
+    assert.equal((await post("/task-events", { type: "task.update", ...park })).status, 409);
+  } finally {
+    await rm(maintenancePath, { force: true });
+  }
+  assert.equal((await post("/task-events", { type: "task.update", ...park, blocker: "" })).status, 400);
+  assert.equal((await post("/task-events", { type: "task.update", ...park, goal: "不应一起改目标" })).status, 400);
+  assert.equal((await post("/task-events", { type: "task.update", ...park, session_id: target })).status, 403);
+
+  const client = new Client({ name: "taskcenter-park-test", version: "0.0.0" });
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: ["scripts/taskcenter-mcp.mjs"], env: { ...process.env, TASKCENTER_CONTROL_URL: base }, cwd: root }));
+  t.after(() => client.close());
+  const receipt = JSON.parse(textOf(await client.callTool({ name: "taskcenter_task_update", arguments: park })));
+  assert.equal(receipt.session_released, true, JSON.stringify(receipt));
+  assert.equal(receipt.status, "blocked");
+  const parked = await details();
+  assert.equal(parked.runs[0].run_id, original.runs[0].run_id);
+  assert.ok(parked.runs[0].ended_at);
+  assert.deepEqual(parked.evidence, original.evidence);
+  assert.equal((await binding(source)).active_task, null);
+  const gate = await runTaskcenterHook(base, { session_id: source, cwd: "/work", tool_name: "exec_command", tool_input: { cmd: "touch change" } });
+  assert.equal(gate.code, 2, JSON.stringify(gate));
+  assert.equal((await post("/task-events", { type: "task.update", ...park })).status, 200);
+  const retryWithChangedSemantics = await post("/task-events", { type: "task.update", ...park, release_session: false });
+  assert.equal(retryWithChangedSemantics.status, 409);
+  const oldWrite = { type: "task.update", task_id: taskId, session_id: source, current_step: "旧执行迟到" };
+  assert.equal((await post("/task-events", oldWrite)).status, 409);
+  const attention = await (await fetch(`${base}/tasks?bucket=attention`)).json();
+  assert.equal(attention.tasks.find(task => task.id === taskId).actionReasons[0].label, "等待外部 · 已释放会话");
+  const { runReconciliation } = await import("../scripts/task-reconciler.mjs");
+  let sourceInspected = false;
+  await runReconciliation({ maintenancePath, inspectSession: async () => { sourceInspected = true; throw new Error("fixture unavailable"); } });
+  assert.equal(sourceInspected, false);
+  assert.equal((await details()).lastEventId, parked.lastEventId);
+
+  assert.equal((await post("/task-events", taskB)).status, 201);
+  assert.equal((await binding(source)).active_task.id, "park-b");
+  const resume = { task_id: taskId, session_id: target, expected_session_id: source, expected_event_id: parked.lastEventId };
+  assert.equal((await post("/task-resume", { ...resume, expected_event_id: undefined })).status, 409);
+  assert.equal((await post("/task-resume", { ...resume, expected_event_id: "stale" })).status, 409);
+  assert.equal((await post("/task-resume", { ...resume, session_id: source })).status, 409);
+  assert.equal((await post("/task-resume", resume)).status, 200);
+  const resumed = await details();
+  assert.equal(resumed.sessionId, target);
+  assert.equal(resumed.sessionReleased, undefined);
+  assert.equal(resumed.status, "in_progress");
+  assert.equal(resumed.runs.length, 2);
+  assert.notEqual(resumed.runs[1].run_id, original.runs[0].run_id);
+  assert.deepEqual(resumed.evidence, original.evidence);
+  assert.equal(resumed.goal, original.goal);
+  assert.equal(resumed.contractFingerprint, original.contractFingerprint);
+  assert.notEqual(resumed.acceptanceStatus, "accepted");
+  assert.equal((await post("/task-events", oldWrite)).status, 409);
+  assert.equal((await post("/core/task-events", { ...oldWrite, session_id: undefined })).status, 409);
+  assert.equal((await post("/task-events", { ...oldWrite, session_id: target })).status, 200);
+  assert.equal((await binding(source)).active_task.id, "park-b");
+});
+
 test("同 Session HTTP 恢复重开已收口 Run，清除旧对账且重复恢复幂等", async context => {
   await resetLedger();
   const { base, child } = await startControlServer();

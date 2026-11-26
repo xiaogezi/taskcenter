@@ -3,6 +3,7 @@ import { eventStore } from "./task-event-store.mjs";
 import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { occupiesSession } from "../lib/task-workspace.mjs";
 import { taskTimeState, STALE_TASK_MS } from "../app/task-time-state.mjs";
 import {
   applyCompletionEvent,
@@ -393,7 +394,7 @@ export function reconcileTasks(availableSessionIds) {
   const registered = new Set(Object.keys(loadSessionRegistry()).map(canonicalSessionId));
   const tasks = readLedger();
   const stale = tasks.filter((task) => {
-    if (task.status === "removed" || task.archivedAt) return false;
+    if (task.status === "removed" || task.archivedAt || task.sessionReleased) return false;
     const sessionId = canonicalSessionId(task.sessionId);
     if (!sessionId) return false;
     return !task.sessionDetachedAt && !available.has(sessionId) && !registered.has(sessionId);
@@ -542,6 +543,35 @@ export function recordTaskEvent(input, options = {}) {
   if (current && (tasks.some((task) => task.previousTaskId === current.id) || switchEvents.some((item) => item.previous_task_id === current.id))) {
     throw new TaskLedgerError(409, "SWITCH_PREDECESSOR_SEALED：顺序切换后的旧任务不可变。");
   }
+  if (event.release_session) {
+    if (!options.requireRegistered || !isRegistered || !current || current.archivedAt || isContextShadowTask(current)
+      || canonicalSessionId(current.sessionId) !== eventSessionId
+      || sessionRegistry[eventSessionId].workspace !== current.workspace || event.workspace !== current.workspace) {
+      throw new TaskLedgerError(403, "只有当前工作区的登记执行会话可释放正式任务。");
+    }
+    const run = current.runs?.at(-1);
+    if (!occupiesSession(current) || !run || canonicalSessionId(run.session_id) !== eventSessionId || (run.ended_at && run.ended_reason !== "blocked")
+      || current.executionReconciliation || current.cliRuns?.some(run => run.status === "active")) {
+      throw new TaskLedgerError(409, "TASK_SESSION_RELEASE_UNAVAILABLE：存在未核实的执行，或没有可释放的 Run。");
+    }
+  }
+  if (current) {
+    const releasedSessions = current.releasedSessionIds || [];
+    const releasedCaller = Boolean(eventSessionId && releasedSessions.some(id => canonicalSessionId(id) === eventSessionId));
+    const independentEvent = !event.status && ["review.reported", "review_cycle.reported", "acceptance.accepted", "acceptance.rejected", "task.reminder"].includes(event.type);
+    const offlineEvidence = !eventSessionId && !event.status
+      && ["subject.updated", "requirement.reported", "verification.reported"].includes(event.type);
+    const manualMetadata = options.manualTaskAction && (!current.sessionReleased
+      || (event.type === "task.update" && (!event.status || event.status === "cancelled"))
+      || (event.type === "task.review" && !event.status));
+    if (event.type === "task.resume" && releasedCaller) {
+      throw new TaskLedgerError(409, "TASK_FRESH_SESSION_REQUIRED：已释放该任务的 Session 不能重新获得执行权，请换一个未释放过该任务的 Session。");
+    }
+    if ((current.sessionReleased || releasedCaller || (releasedSessions.length && !eventSessionId))
+      && !options.authorizedResume && !independentEvent && !manualMetadata && !offlineEvidence) {
+      throw new TaskLedgerError(409, "TASK_SESSION_RELEASED：请先通过恢复入口获取该任务的执行权。");
+    }
+  }
   let previousTaskId = "";
   if (event.type === "task.create" && !current && event.session_switch_id) {
     if (switchEvents.some((item) => item.session_switch_id === event.session_switch_id)) throw new TaskLedgerError(409, "SWITCH_ALREADY_CONSUMED");
@@ -590,7 +620,7 @@ export function recordTaskEvent(input, options = {}) {
     : event.type === "task.reminder"
       ? current
       : applyEvent(current, event);
-  const activeConflict = next && !next.archivedAt && !isContextShadowTask(next) && activeTaskStatuses.has(next.status)
+  const activeConflict = next && !next.archivedAt && !isContextShadowTask(next) && occupiesSession(next)
     ? findActiveTaskConflict(tasks, next, toolEvent)
     : null;
   if (activeConflict) throw new TaskLedgerError(409, `ACTIVE_TASK_CONFLICT：当前 Session 已有活跃任务 ${activeConflict.id}。`);
@@ -640,7 +670,7 @@ export function recordTaskEvent(input, options = {}) {
 function findActiveTaskConflict(tasks, next, rawTasks) {
   const merges = rawTasks ? loadSessionMerges() : null;
   return tasks.find((task) => task.id !== next.id && !task.archivedAt && !isContextShadowTask(task)
-    && activeTaskStatuses.has(task.status)
+    && occupiesSession(task)
     && (merges ? resolveSessionAlias(task.sessionId, merges) : task.sessionId) === next.sessionId);
 }
 
@@ -1144,6 +1174,11 @@ function normalizeEvent(input, current = null, legacyText = false) {
     "task.execution_reconciled",
   ]);
   if (!allowedTypes.has(type)) throw new TaskLedgerError(400, "任务事件类型无效。");
+  if (input.release_session !== undefined && (typeof input.release_session !== "boolean"
+    || (input.release_session && (type !== "task.update" || input.status !== "blocked" || !String(input.event_id || "").trim()
+      || !String(input.blocker || "").trim() || !String(input.next_action || "").trim())))) {
+    throw new TaskLedgerError(400, "释放会话需要 task.update、blocked、event_id、blocker 和 next_action。");
+  }
   if (input.status !== undefined && !statuses.has(input.status)) throw new TaskLedgerError(400, "任务状态无效。");
   if (input.contract_version !== undefined && !["legacy", "v2"].includes(input.contract_version)) throw new TaskLedgerError(400, "contract_version 无效。");
   if (type === "session.register" && !sessionId) throw new TaskLedgerError(400, "Session 登记事件缺少 session_id。");
@@ -1154,6 +1189,7 @@ function normalizeEvent(input, current = null, legacyText = false) {
     text_format: "multiline-v1",
     event_id: String(input.event_id || randomUUID()),
     type,
+    ...(input.release_session === true ? { release_session: true } : {}),
     task_id: String(input.task_id || (type === "task.create" ? `task-${randomUUID()}` : "")),
     session_switch_id: cleanText(input.session_switch_id, 200),
     context_task_id: cleanText(input.context_task_id, 200),
@@ -1404,6 +1440,7 @@ function applyEvent(current, event) {
     || ["done_claimed", "blocked", "verified"].includes(next.status))) {
     next = withRunClosed(next, event, now, next.status === "blocked" ? "blocked" : "completed");
   }
+  if (event.release_session) next = { ...next, sessionReleased: true, releasedSessionIds: [...(base.releasedSessionIds || []), event.session_id] };
   if (next.status === "cancelled") next = withManagementCancelled(next, now);
   try {
     next = applyCompletionEvent(next, event, current || next);
@@ -1446,6 +1483,7 @@ function runSummary(task) {
 // 打开一个 Run：同 session 延续当前 Run；切换到新 session 时结束旧 Run（handoff）并新开。
 function withRunOpened(task, event, now) {
   task = { ...task, executionReconciliation: null, executionControl: null, sessionDetachedAt: "" };
+  delete task.sessionReleased;
   const runs = [...(task.runs || [])];
   const last = runs[runs.length - 1];
   if (last && !last.ended_at && last.session_id === event.session_id) return task;
@@ -1467,6 +1505,7 @@ function auditState(task) {
   const summary = runSummary(task);
   return {
     execution_status: task.status,
+    ...(task.sessionReleased ? { session_released: true } : {}),
     execution_control: task.executionControl || null,
     run_status: summary.running && task.executionControl?.managementStatus === "cancelled" ? "unknown" : summary.running ? "running" : (task.sessionDetachedAt ? "detached" : summary.count ? "ended" : "none"),
     verification_status: task.verificationStatus || "not_required",

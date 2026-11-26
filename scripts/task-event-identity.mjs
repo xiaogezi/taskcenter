@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const idempotentEventFields = [
-  "session_switch_id",
+  "session_switch_id", "release_session",
   "event_id", "type", "task_id", "context_task_id", "requirement_id", "session_id",
   "agent", "provider", "model", "workspace", "project_id", "title", "goal", "status", "priority",
   "plan", "current_step", "next_action", "blocker", "acceptance_criteria", "changed_files",

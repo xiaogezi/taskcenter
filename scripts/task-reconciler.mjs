@@ -77,7 +77,7 @@ export async function runReconciliation({ availableSessionIds = [], inspectSessi
     for (const taskId of candidates) {
       await setImmediate();
       const task = loadTaskById(taskId);
-      if (!task || task.archivedAt || !RECONCILABLE_TASK_STATUSES.has(task.status)) continue;
+      if (!task || task.archivedAt || task.sessionReleased || !RECONCILABLE_TASK_STATUSES.has(task.status)) continue;
       // A live maintenance host owns execution just like any other client.
       try {
         const action = JSON.parse(readFileSync(maintenancePath, "utf8")).actions?.[task.id];
